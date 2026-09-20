@@ -1,0 +1,58 @@
+[package]
+name = "local-evidence-desk"
+version = "0.2.1"
+edition = "2021"
+license = "Apache-2.0"
+description = "Local-first, versioned evidence review workspace"
+
+[lib]
+name = "evidence_desk"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "local-evidence-desk"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = []
+desktop = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:keyring"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+regex = "1"
+percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+fs2 = "0.4"
+base64 = "0.22"
+infer = "0.19"
+age = "0.11"
+tar = "0.4"
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["time", "sync", "macros", "rt-multi-thread"] }
+tauri = { version = "2", optional = true , features = [] }
+tauri-plugin-dialog = { version = "2", optional = true }
+keyring = { version = "3", features = ["windows-native"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Isolation", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Memory"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# Preserve fast source integrity checks in the developer desktop build.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3

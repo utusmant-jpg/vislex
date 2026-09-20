@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VisLex",
+  "version": "0.2.1",
+  "identifier": "org.localevidencedesk.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "VisLex",
+        "width": 1500,
+        "height": 960,
+        "minWidth": 1000,
+        "minHeight": 680,
+        "decorations": false,
+        "backgroundColor": "#010102",
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://evidence.localhost evidence:; media-src 'self' blob: http://evidence.localhost evidence:; frame-src 'self' blob: http://evidence.localhost evidence:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "resources": [
+      "resources/worker/**/*"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/32x32.png",
+      "icons/128x128.png"
+    ],
+    "shortDescription": "Agentic evidence review workspace",
+    "category": "Productivity"
+  }
+}

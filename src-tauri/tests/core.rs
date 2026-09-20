@@ -1,0 +1,748 @@
+use evidence_desk::{
+    agent, backup,
+    case::{Case, Settings},
+};
+use serde_json::json;
+use std::fs;
+
+fn setup() -> (tempfile::TempDir, Case, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut case = Case::create(&dir.path().join("test.ledcase"), "Synthetic case").unwrap();
+    let source = dir.path().join("witness.txt");
+    fs::write(
+        &source,
+        "A witness reported a blue bag.\nThe clock is uncertain.\n",
+    )
+    .unwrap();
+    case.import_files(&[source.to_string_lossy().into()], "Production A")
+        .unwrap();
+    let sid = case.sources().unwrap()[0].id.clone();
+    (dir, case, sid)
+}
+fn enable(case: &mut Case) {
+    case.save_settings(Settings {
+        offline: false,
+        allow_text: true,
+        allow_images: false,
+        model: "test-model".into(),
+        case_budget: 10.,
+        input_per_million: 1.,
+        output_per_million: 5.,
+    })
+    .unwrap();
+}
+
+#[test]
+fn import_deduplicates_bytes_but_preserves_occurrences() {
+    let (dir, mut c, s) = setup();
+    let p = dir.path().join("copy.txt");
+    fs::write(
+        &p,
+        "A witness reported a blue bag.\nThe clock is uncertain.\n",
+    )
+    .unwrap();
+    c.import_files(&[p.to_string_lossy().into()], "Production B")
+        .unwrap();
+    assert_eq!(c.sources().unwrap().len(), 1);
+    assert_eq!(c.source(&s).unwrap().occurrences, 2);
+    assert_eq!(c.generation().unwrap(), 1);
+    c.verify_source(&s).unwrap();
+    assert_eq!(
+        c.search("blue", 0).unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+#[test]
+fn failed_import_is_accounted_for() {
+    let (dir, mut c, _) = setup();
+    let receipt = c
+        .import_files(
+            &[dir.path().join("missing.txt").to_string_lossy().into()],
+            "A",
+        )
+        .unwrap();
+    assert_eq!(receipt["items"][0]["status"], "failed");
+    assert_eq!(
+        c.db.query_row(
+            "SELECT count(*) FROM imports WHERE status='failed'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+#[test]
+fn case_lock_prevents_concurrent_editor() {
+    let (_dir, c, _) = setup();
+    assert!(Case::open(&c.root).is_err());
+}
+#[test]
+fn citations_validate_exact_bounds() {
+    let (_dir, c, s) = setup();
+    c.validate_citation(&format!("evidence:{s}#L1-L2")).unwrap();
+    assert!(c.validate_citation(&format!("evidence:{s}#L1-L3")).is_err());
+    assert!(c.validate_citation(&format!("evidence:{s}#image")).is_err());
+    assert!(c.validate_citation("file:///etc/passwd").is_err());
+}
+#[test]
+fn edits_are_versioned_conflict_checked_and_review_does_not_transfer() {
+    let (_dir, mut c, s) = setup();
+    let r = c
+        .write_record(
+            None,
+            0,
+            "Notes",
+            "note",
+            "first",
+            "human",
+            "initial",
+            None,
+            vec![s],
+        )
+        .unwrap();
+    c.review_record(&r.id, 1, None).unwrap();
+    let r2 = c
+        .write_record(
+            Some(&r.id),
+            1,
+            "Notes",
+            "note",
+            "second",
+            "agent",
+            "recheck",
+            None,
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(r2.review, "unreviewed");
+    assert!(c
+        .write_record(
+            Some(&r.id),
+            1,
+            "Notes",
+            "note",
+            "lost update",
+            "human",
+            "old",
+            None,
+            vec![]
+        )
+        .is_err());
+    let history = c.revisions(&r.id).unwrap();
+    assert_eq!(history[1]["review"], "human-reviewed");
+    let restored = c.rollback(&r.id, 1, 2).unwrap();
+    assert_eq!(restored.content, "first");
+    assert_eq!(restored.revision, 3);
+}
+#[test]
+fn protected_records_reject_agent_edits() {
+    let (_dir, mut c, _) = setup();
+    let r = c
+        .write_record(
+            None,
+            0,
+            "Notes",
+            "note",
+            "private",
+            "human",
+            "initial",
+            None,
+            vec![],
+        )
+        .unwrap();
+    c.review_record(&r.id, 1, Some(true)).unwrap();
+    assert!(c
+        .write_record(
+            Some(&r.id),
+            1,
+            "Notes",
+            "note",
+            "changed",
+            "agent",
+            "edit",
+            None,
+            vec![]
+        )
+        .is_err());
+}
+#[test]
+fn new_import_marks_outputs_stale() {
+    let (dir, mut c, _) = setup();
+    let r = c
+        .write_record(
+            None,
+            0,
+            "Chronology",
+            "report",
+            "all evidence",
+            "human",
+            "initial",
+            None,
+            vec![],
+        )
+        .unwrap();
+    let p = dir.path().join("new.txt");
+    fs::write(&p, "contrary material").unwrap();
+    c.import_files(&[p.to_string_lossy().into()], "New production")
+        .unwrap();
+    assert!(c.record(&r.id).unwrap().stale);
+}
+#[test]
+fn agent_is_scoped_and_ask_is_read_only() {
+    let (_dir, mut c, s) = setup();
+    enable(&mut c);
+    let task = agent::start(
+        &mut c,
+        "What is reported?",
+        "ask",
+        vec![s.clone()],
+        vec![],
+        1.,
+    )
+    .unwrap();
+    assert!(agent::execute_tool(
+        &mut c,
+        &task,
+        "read_text",
+        &json!({"source_id":"outside","start":1,"count":1})
+    )
+    .is_err());
+    assert!(agent::execute_tool(&mut c, &task, "write_record", &json!({})).is_err());
+    assert!(agent::execute_tool(&mut c, &task, "shell", &json!({"command":"anything"})).is_err());
+    assert!(agent::execute_tool(
+        &mut c,
+        &task,
+        "read_text",
+        &json!({"source_id":s,"start":1,"count":1})
+    )
+    .is_ok());
+}
+#[test]
+fn offline_blocks_network_preparation_and_revoked_permissions() {
+    let (_dir, mut c, s) = setup();
+    assert!(agent::start(&mut c, "question", "ask", vec![s.clone()], vec![], 1.).is_err());
+    enable(&mut c);
+    let task = agent::start(&mut c, "question", "ask", vec![s.clone()], vec![], 1.).unwrap();
+    c.set_restricted(&s, true).unwrap();
+    assert!(agent::prepare_request(&mut c, &task).is_err());
+}
+#[test]
+fn legacy_caps_and_step_count_do_not_block_enabled_agent() {
+    let (_dir, mut c, s) = setup();
+    enable(&mut c);
+    let mut settings = c.settings().unwrap();
+    settings.case_budget = 0.;
+    settings.input_per_million = 0.;
+    settings.output_per_million = 0.;
+    c.save_settings(settings).unwrap();
+    let task = agent::start(&mut c, "question", "ask", vec![s], vec![], 0.).unwrap();
+    c.db.execute("UPDATE tasks SET step=25,reserved=999999 WHERE id=?", [&task]).unwrap();
+    let request = agent::prepare_request(&mut c, &task).unwrap();
+    assert_eq!(request.body["store"], false);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM transmissions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+}
+#[test]
+fn actual_agent_tool_response_writes_once_and_checkpoints() {
+    let (_dir, mut c, s) = setup();
+    enable(&mut c);
+    let task = agent::start(
+        &mut c,
+        "Write notes",
+        "investigate",
+        vec![s.clone()],
+        vec![],
+        1.,
+    )
+    .unwrap();
+    let request = agent::prepare_request(&mut c, &task).unwrap();
+    let response = json!({"status":"completed","usage":{"input_tokens":100,"output_tokens":100},"output":[{"type":"function_call","call_id":"call_1","name":"write_record","arguments":json!({"record_id":null,"base_revision":0,"title":"Findings","kind":"note","content":"An attributed report, not verification.","reason":"Record finding","source_ids":[s]}).to_string()}]});
+    assert!(agent::receive(&mut c, &task, &request.transmission, response.clone()).unwrap());
+    assert!(agent::receive(&mut c, &task, &request.transmission, response).is_err());
+    assert_eq!(c.records().unwrap().len(), 1);
+    assert_eq!(c.records().unwrap()[0].actor, "agent");
+    assert_eq!(c.actions(&task).unwrap()[0]["status"], "complete");
+}
+#[test]
+fn encrypted_backup_roundtrips_and_wrong_password_fails() {
+    let (dir, mut c, s) = setup();
+    let r = c
+        .write_record(
+            None,
+            0,
+            "Memo",
+            "note",
+            "Review needed",
+            "human",
+            "initial",
+            None,
+            vec![s.clone()],
+        )
+        .unwrap();
+    let destination = dir.path().join("backup.age");
+    backup::backup(&mut c, &destination, "test-only-passphrase-long").unwrap();
+    let bytes = fs::read(&destination).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("Review needed"));
+    assert!(backup::restore(
+        &destination,
+        &dir.path().join("wrong"),
+        "incorrect-passphrase"
+    )
+    .is_err());
+    let restored = backup::restore(
+        &destination,
+        &dir.path().join("restored"),
+        "test-only-passphrase-long",
+    )
+    .unwrap();
+    assert_eq!(restored.record(&r.id).unwrap().content, "Review needed");
+    restored.verify_source(&s).unwrap();
+    restored.verify_audit().unwrap();
+}
+#[test]
+fn audit_tampering_is_detected() {
+    let (_dir, mut c, _) = setup();
+    c.audit("test", json!({"value":1})).unwrap();
+    c.db.execute("UPDATE audit SET data='tampered' WHERE seq=1", [])
+        .unwrap();
+    assert!(c.verify_audit().is_err());
+}
+#[test]
+fn restricted_dependencies_block_draft_export() {
+    let (dir, mut c, s) = setup();
+    let r = c
+        .write_record(
+            None,
+            0,
+            "Memo",
+            "note",
+            "restricted info",
+            "human",
+            "initial",
+            None,
+            vec![s.clone()],
+        )
+        .unwrap();
+    c.set_restricted(&s, true).unwrap();
+    assert!(c.export_record(&r.id, &dir.path().join("memo.md")).is_err());
+}
+
+#[test]
+fn case_wide_agent_reads_and_edits_existing_records_without_attachments() {
+    let (dir, mut case, source) = setup();
+    let record = case
+        .write_record(
+            None,
+            0,
+            "Available notes",
+            "note",
+            "Existing working content",
+            "human",
+            "initial",
+            None,
+            vec![source.clone()],
+        )
+        .unwrap();
+    let private = dir.path().join("restricted.txt");
+    fs::write(&private, "restricted source").unwrap();
+    case.import_files(&[private.to_string_lossy().into()], "test")
+        .unwrap();
+    let restricted = case
+        .sources()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id != source)
+        .unwrap()
+        .id;
+    let private_record = case
+        .write_record(
+            None,
+            0,
+            "Restricted notes",
+            "note",
+            "private",
+            "human",
+            "initial",
+            None,
+            vec![restricted.clone()],
+        )
+        .unwrap();
+    case.set_restricted(&restricted, true).unwrap();
+    let (sources, records) = agent::case_scope(&case).unwrap();
+    assert!(sources.contains(&source));
+    assert!(!sources.contains(&restricted));
+    assert!(records.contains(&record.id));
+    assert!(!records.contains(&private_record.id));
+    enable(&mut case);
+    let task = agent::start(
+        &mut case,
+        "Read and update my working notes",
+        "investigate",
+        sources,
+        records,
+        1.0,
+    )
+    .unwrap();
+    let read = agent::execute_tool(
+        &mut case,
+        &task,
+        "read_record",
+        &json!({"record_id":record.id,"start":1,"count":10}),
+    )
+    .unwrap();
+    assert_eq!(read["content"], "Existing working content");
+    let write=agent::execute_tool(&mut case,&task,"write_record",&json!({"record_id":record.id,"base_revision":record.revision,"title":record.title,"kind":"note","content":"Updated through case-wide tools","reason":"User requested edit","source_ids":[source]})).unwrap();
+    assert_eq!(write["revision"], 2);
+    assert_eq!(case.record(&record.id).unwrap().actor, "agent");
+}
+
+#[test]
+fn agent_can_read_new_processor_transcripts_only_for_scoped_sources() {
+    let (_dir, mut c, sid) = setup();
+    enable(&mut c);
+    let task = agent::start(&mut c, "Transcribe and inspect", "investigate", vec![sid.clone()], vec![], 0.).unwrap();
+    let r = c.write_record(None,0,"New transcript","transcript","Locally processed speech","processor","processing",None,vec![sid.clone()]).unwrap();
+    assert!(agent::execute_tool(&mut c,&task,"read_record",&json!({"record_id":r.id,"start":1,"count":10})).is_ok());
+    c.set_restricted(&sid,true).unwrap();
+    assert!(agent::execute_tool(&mut c,&task,"read_record",&json!({"record_id":r.id,"start":1,"count":10})).is_err());
+}
+
+#[test]
+fn passage_search_uses_alternatives_and_searches_saved_records() {
+    let (_dir, mut c, sid) = setup(); enable(&mut c);
+    let record=c.write_record(None,0,"Camera mapping","note","Candidate Officer Sample at 00:50; needs review.","human","test",None,vec![sid.clone()]).unwrap();
+    let task=agent::start(&mut c,"find", "investigate",vec![sid.clone()],vec![record.id],0.).unwrap();
+    let result=agent::execute_tool(&mut c,&task,"search_passages",&json!({"terms":["nonexistent","blue","Sample"],"offset":0})).unwrap();
+    assert_eq!(result["total"],2);
+    assert!(result["matches"].as_array().unwrap().iter().any(|m|m["type"]=="working_record"));
+    c.set_restricted(&sid,true).unwrap();
+    assert_eq!(agent::execute_tool(&mut c,&task,"search_passages",&json!({"terms":["blue","Sample"],"offset":0})).unwrap()["total"],0);
+}
+
+#[test]
+fn cited_answers_require_review_and_are_saved_for_followups() {
+    let (_dir, mut c, sid) = setup(); enable(&mut c);
+    let task=agent::start(&mut c,"Review witness", "investigate",vec![sid.clone()],vec![],0.).unwrap();
+    let args=json!({"answer":"The witness reports a blue bag.","citations":[format!("evidence:{sid}#L1-L1")],"gaps":["Not independently corroborated."]});
+    for (index, expected) in [(0,true),(1,false)] {
+        let request=agent::prepare_request(&mut c,&task).unwrap();
+        let response=json!({"status":"completed","usage":{"input_tokens":100,"output_tokens":20},"output":[{"type":"function_call","call_id":format!("finish_{index}"),"name":"finish_task","arguments":args.to_string()}]});
+        assert_eq!(agent::receive(&mut c,&task,&request.transmission,response).unwrap(),expected);
+        if index==0 { assert!(c.records().unwrap().is_empty()); }
+    }
+    let records=c.records().unwrap();assert_eq!(records.len(),1);assert_eq!(records[0].review,"unreviewed");assert_eq!(records[0].actor,"agent");
+    assert!(records[0].content.contains("Not independently corroborated"));
+    let snapshot=c.snapshot().unwrap();assert_eq!(snapshot["tasks"][0]["input_tokens"],200);
+}
+
+#[test]
+fn older_visual_inputs_remain_revisitable_without_resending_all_images() {
+    let (dir, mut c, _) = setup(); enable(&mut c);
+    let image=dir.path().join("image.png");
+    fs::write(&image,b"synthetic-image-input").unwrap();
+    c.import_files(&[image.to_string_lossy().into()],"synthetic").unwrap();
+    let sid=c.sources().unwrap().into_iter().find(|s|s.name=="image.png").unwrap().id;
+    let mut settings=c.settings().unwrap();settings.allow_images=true;c.save_settings(settings).unwrap();
+    let task=agent::start(&mut c,"inspect","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    let mut history:Vec<_>=vec![json!({"role":"user","content":"ANCHOR_TO_EXCLUDE: this must show a door"})];
+    history.extend((0..50).map(|_|json!({"type":"local_image","source_id":sid})));
+    c.db.execute("UPDATE tasks SET history=? WHERE id=?",rusqlite::params![serde_json::to_string(&history).unwrap(),task]).unwrap();
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert!(!request.body.to_string().contains("ANCHOR_TO_EXCLUDE"));
+    assert_eq!(request.body["tool_choice"]["name"],"record_visual_observations");
+    let input=request.body["input"].as_array().unwrap();
+    assert_eq!(input.iter().filter(|m|m["content"].is_array()).count(),48);
+    assert!(input[0]["content"].as_str().unwrap().contains("omitted from this request"));
+    let persisted:String=c.db.query_row("SELECT history FROM tasks WHERE id=?",[&task],|r|r.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<Vec<serde_json::Value>>(&persisted).unwrap().len(),51);
+    let response=json!({"status":"completed","usage":{"input_tokens":100,"output_tokens":50},"output":[{"type":"function_call","call_id":"vision_pass","name":"record_visual_observations","arguments":json!({"observations":[{"source_id":sid,"artifact_id":null,"description":"Synthetic observation","visible_text":"","uncertainty":"Test fixture only"}]}).to_string()}]});
+    assert!(agent::receive(&mut c,&task,&request.transmission,response).unwrap());
+    let next=agent::prepare_request(&mut c,&task).unwrap();
+    assert!(next.body["tool_choice"].is_null());
+    assert!(!next.body["input"].to_string().contains("data:image"), "Already-described images must not be resent on every text reasoning step");
+    assert!(next.body["tools"].as_array().unwrap().iter().any(|t|t["name"]=="search_passages"));
+
+}
+
+#[test]
+fn long_investigations_archive_receipts_without_losing_retrieval() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let mut settings=c.settings().unwrap();settings.model="gpt-5.6-luna".into();c.save_settings(settings).unwrap();
+    let task=agent::start(&mut c,"long task","investigate",vec![sid],vec![],0.).unwrap();
+    let full="evidence detail ".repeat(20000);
+    let mut history=vec![json!({"type":"function_call_output","call_id":"old_result","output":full})];
+    for i in 0..4 {history.push(json!({"type":"function_call_output","call_id":format!("later_{i}"),"output":"small result"}));}
+    c.db.execute("UPDATE tasks SET history=? WHERE id=?",rusqlite::params![serde_json::to_string(&history).unwrap(),task]).unwrap();
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert_eq!(request.body["reasoning"]["effort"],"high");assert_eq!(request.body["max_output_tokens"],16384);
+    assert!(request.body["input"][0]["output"].as_str().unwrap().contains("ARCHIVED RESULT, NOT COMPLETE"));
+    let recovered=agent::execute_tool(&mut c,&task,"read_tool_result",&json!({"call_id":"old_result","offset":200000,"count":12000})).unwrap();
+    assert_eq!(recovered["total_characters"],full.len());assert_eq!(recovered["text"].as_str().unwrap(),&full[200000..212000]);assert_eq!(recovered["next_offset"],212000);
+}
+#[test]
+fn conversation_followups_preserve_prior_turns_and_receipts() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let first=agent::start(&mut c,"Remember our disputed time","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    assert_eq!(agent::continue_conversation(&mut c,&first,None).unwrap(),first);
+    c.db.execute("UPDATE tasks SET status='complete',answer='First answer' WHERE id=?",[&first]).unwrap();
+    let second=agent::start(&mut c,"Why did you say that?","investigate",vec![sid],vec![],0.).unwrap();
+    assert_eq!(agent::continue_conversation(&mut c,&second,Some(&first)).unwrap(),first);
+    let prepared=agent::prepare_request(&mut c,&second).unwrap();
+    let context=prepared.body["input"].to_string();
+    assert!(context.contains("Remember our disputed time"));assert!(context.contains("Why did you say that?"));
+    let snapshot=c.snapshot().unwrap();
+    assert!(snapshot["tasks"].as_array().unwrap().iter().all(|t|t["conversation_id"]==first));
+}
+
+#[test]
+fn large_conversation_keeps_saved_history_and_valid_tool_pairs() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Current request","investigate",vec![sid],vec![],0.).unwrap();
+    let mut history=vec![json!({"role":"user","content":"Original question"})];
+    for i in 0..90 {history.push(json!({"type":"function_call","call_id":format!("call_{i}"),"name":"read_text","arguments":"{}"}));history.push(json!({"type":"function_call_output","call_id":format!("call_{i}"),"output":"detail ".repeat(600)}));}
+    history.push(json!({"role":"user","content":"Continue this same chat"}));
+    let raw=serde_json::to_string(&history).unwrap();
+    c.db.execute("UPDATE tasks SET history=? WHERE id=?",rusqlite::params![raw,task]).unwrap();
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    let input=request.body["input"].as_array().unwrap();assert!(input.len()<history.len());assert!(input.last().unwrap()["content"]=="Continue this same chat");
+    for item in input.iter().filter(|v|v["type"]=="function_call_output") {assert!(input.iter().any(|v|v["type"]=="function_call"&&v["call_id"]==item["call_id"]));}
+    let persisted:String=c.db.query_row("SELECT history FROM tasks WHERE id=?",[&task],|r|r.get(0)).unwrap();assert_eq!(persisted,raw);
+}
+#[test]
+fn ordinary_conversation_reply_does_not_pause_for_missing_tool_call() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Remember amber notebook","investigate",vec![sid],vec![],0.).unwrap();
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    let response=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":5},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Remembered: amber notebook."}]}]});
+    assert!(!agent::receive(&mut c,&task,&request.transmission,response).unwrap());
+    let snapshot=c.snapshot().unwrap();assert_eq!(snapshot["tasks"][0]["status"],"complete");assert!(snapshot["tasks"][0]["answer"].as_str().unwrap().contains("amber notebook"));
+}
+#[test]
+#[cfg(windows)]
+fn recent_case_accepts_canonical_local_path_but_rejects_unc() {
+    let (dir,c,_)=setup();let path=c.root.clone();drop(c);
+    assert!(evidence_desk::case::validate_local_root(&path).is_ok());
+    let reopened=Case::open(&path).unwrap();drop(reopened);drop(dir);
+    assert!(evidence_desk::case::validate_local_root(std::path::Path::new(r"\\server\share\case")).is_err());
+    assert!(evidence_desk::case::validate_local_root(std::path::Path::new(r"\\?\UNC\server\share\case")).is_err());
+}
+#[test]
+fn deleting_chat_is_reversible_and_keeps_its_case_records() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Temporary chat","investigate",vec![sid],vec![],0.).unwrap();
+    agent::continue_conversation(&mut c,&task,None).unwrap();
+    assert!(c.delete_conversation(&task,true).is_err());
+    agent::pause(&mut c,&task,"Stopped").unwrap();
+    c.delete_conversation(&task,true).unwrap();
+    assert!(c.snapshot().unwrap()["tasks"].as_array().unwrap().is_empty());
+    let count:i64=c.db.query_row("SELECT count(*) FROM tasks",[],|r|r.get(0)).unwrap();assert_eq!(count,1);
+    assert_eq!(c.sources().unwrap().len(),1);
+    c.delete_conversation(&task,false).unwrap();assert_eq!(c.snapshot().unwrap()["tasks"][0]["id"],task);
+}
+
+#[test]
+fn agent_can_open_viewer_but_cannot_expand_source_scope() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Show this file","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    let result=agent::execute_tool(&mut c,&task,"open_source",&json!({"source_id":sid,"time_seconds":null,"page":null})).unwrap();
+    assert_eq!(result["status"],"opened_in_workspace");assert_eq!(result["inspection_performed"],false);
+    assert_eq!(c.snapshot().unwrap()["viewer_request"]["source_id"],sid);
+    assert!(agent::execute_tool(&mut c,&task,"open_source",&json!({"source_id":"outside-case","time_seconds":null,"page":null})).is_err());
+    assert!(agent::execute_tool(&mut c,&task,"open_source",&json!({"source_id":sid,"time_seconds":5,"page":null})).is_err());
+}
+#[test]
+fn current_view_is_visible_to_agent_without_expanding_scope() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"What is on my right?","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    agent::attach_viewer_context(&mut c,&task,&json!({"type":"source","id":sid,"locator":"L1-L2","time_seconds":null})).unwrap();
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert!(request.body["input"].to_string().contains("Workspace view at submission"));
+    assert!(request.body["input"].to_string().contains("L1-L2"));
+    assert!(agent::attach_viewer_context(&mut c,&task,&json!({"type":"source","id":"different-case"})).is_err());
+}
+
+
+#[test]
+fn recursive_import_preserves_nested_occurrences_and_skips_case_internals() {
+    let (dir, mut c, _) = setup();
+    let folder = dir.path().join("discovery");
+    fs::create_dir_all(folder.join("nested/deeper")).unwrap();
+    fs::create_dir_all(folder.join("archive.ledcase")).unwrap();
+    fs::write(folder.join("nested/deeper/new.txt"), "Nested discovery evidence").unwrap();
+    fs::write(folder.join("archive.ledcase/secret.txt"), "Must not import").unwrap();
+    let receipt = c.import_folder(&folder, "Recursive production").unwrap();
+    assert_eq!(receipt["items"].as_array().unwrap().len(), 1);
+    assert_eq!(receipt["skipped"].as_array().unwrap().len(), 1);
+    assert_eq!(c.sources().unwrap().len(), 2);
+    assert!(c.import_folder(&c.root.clone(), "Bad import").is_err());
+}
+
+#[test]
+fn renaming_preserves_originals_citations_and_audit() {
+    let (_dir, mut c, source) = setup();
+    let before = c.source(&source).unwrap();
+    c.rename("case", "", "Renamed matter").unwrap();
+    c.rename("source", &source, "Witness alias").unwrap();
+    let after = c.source(&source).unwrap();
+    assert_eq!(before.sha256, after.sha256);
+    assert_eq!(before.id, after.id);
+    assert_eq!(after.name, "Witness alias.txt");
+    c.verify_source(&source).unwrap();
+    c.validate_citation(&format!("evidence:{source}#L1-L2")).unwrap();
+    c.verify_audit().unwrap();
+    assert!(c.rename("case", "", "\n").is_err());
+    assert!(c.rename("source", "missing", "Name").is_err());
+    enable(&mut c);
+    let task=agent::start(&mut c,"Original question","ask",vec![source],vec![],1.).unwrap();
+    c.rename("chat", &task, "Useful chat title").unwrap();
+    let snapshot=c.snapshot().unwrap();
+    assert_eq!(snapshot["tasks"][0]["title"], "Useful chat title");
+    assert_eq!(snapshot["tasks"][0]["prompt"], "Original question");
+}
+
+#[test]
+fn completed_transcript_overrides_stale_video_status_but_missing_record_does_not() {
+    let (_dir, mut c, source) = setup();
+    let record = c.write_record(None,0,"Machine transcript","transcript","Unreviewed machine text","human","Test transcript",None,vec![source.clone()]).unwrap();
+    c.db.execute("UPDATE sources SET kind='video',status='frames decoded · audio unprocessed' WHERE id=?", [&source]).unwrap();
+    c.db.execute("INSERT INTO processing_jobs VALUES('test-job',?,'full_audio','complete',?,'','2026-09-20T00:00:00Z')", rusqlite::params![source,json!({"record_id":record.id}).to_string()]).unwrap();
+    assert!(c.source(&source).unwrap().status.starts_with("text transcribed"));
+    c.db.execute("UPDATE processing_jobs SET result='{}' WHERE id='test-job'", []).unwrap();
+    assert!(c.source(&source).unwrap().status.contains("missing"));
+}
+
+#[test]
+fn streaming_decoder_handles_split_unicode_multiple_events_and_invalid_payloads() {
+    let mut stream = agent::ResponseStream::default();
+    let event = "event: response.output_text.delta\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"cité\"}\r\n\r\n";
+    let split=event.find('é').unwrap()+1;
+    assert!(stream.push(&event.as_bytes()[..split]).unwrap().is_empty());
+    let parsed=stream.push(&event.as_bytes()[split..]).unwrap();
+    assert_eq!(parsed[0]["delta"], "cité");
+    let done=stream.push(b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\ndata: [DONE]\n\n").unwrap();
+    assert_eq!(done.len(),1);
+    assert_eq!(done[0]["response"]["status"],"completed");
+    assert!(stream.push(b"data: {bad}\n").is_err());
+}
+
+#[test]
+fn staging_cleanup_only_removes_verified_duplicate_import_copies() {
+    let (_dir, mut c, source) = setup();
+    let duplicate=c.root.join("staging").join(evidence_desk::case::id());
+    let unknown=c.root.join("staging").join(evidence_desk::case::id());
+    let note=c.root.join("staging/keep.txt");
+    fs::copy(c.source_path(&source).unwrap(),&duplicate).unwrap();
+    fs::write(&unknown,"Unknown material, retain").unwrap();
+    fs::write(&note,"Keep this staging note").unwrap();
+    let before=c.storage_usage().unwrap()["staging"].as_u64().unwrap();
+    let receipt=c.reclaim_staging().unwrap();
+    assert_eq!(receipt["files"].as_array().unwrap().len(),1);
+    assert!(!duplicate.exists());
+    assert!(unknown.exists()&&note.exists());
+    c.verify_source(&source).unwrap();
+    c.verify_audit().unwrap();
+    assert!(c.storage_usage().unwrap()["staging"].as_u64().unwrap()<before);
+    enable(&mut c);
+    agent::start(&mut c,"Inspect","ask",vec![source],vec![],1.).unwrap();
+    assert!(c.reclaim_staging().is_err());
+}
+
+
+fn deliver_tool(c:&mut Case, task:&str, name:&str, args:serde_json::Value) -> bool {
+    let request=agent::prepare_request(c,task).unwrap();
+    let response=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":5},"output":[{"type":"function_call","call_id":evidence_desk::case::id(),"name":name,"arguments":args.to_string()}]});
+    agent::receive(c,task,&request.transmission,response).unwrap()
+}
+#[test]
+fn repeated_successful_reads_checkpoint_then_synthesize_instead_of_crashing() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Summarize the witness","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    for _ in 0..3 {assert!(deliver_tool(&mut c,&task,"read_text",json!({"source_id":sid,"start":1,"count":200})));}
+    assert_eq!(c.snapshot().unwrap()["tasks"][0]["status"],"running");
+    assert_eq!(evidence_desk::review_progress::load(&c,&task).unwrap().duplicate_reads,2);
+    let checkpoint=json!({"summary":format!("The witness reports a blue bag, not independently corroborated. evidence:{sid}#L1-L1"),"citations":[format!("evidence:{sid}#L1-L1")],"gaps":["No independent corroboration"],"next_steps":["Synthesize supported findings"]});
+    assert!(deliver_tool(&mut c,&task,"checkpoint_review",checkpoint.clone()));
+    for _ in 0..2 {assert!(deliver_tool(&mut c,&task,"read_text",json!({"source_id":sid,"start":1,"count":100})));}
+    assert!(deliver_tool(&mut c,&task,"checkpoint_review",checkpoint));
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert_eq!(request.body["tool_choice"]["name"],"finish_task");
+    assert!(request.body["input"].to_string().contains("blue bag"));
+    assert!(request.body["input"].to_string().contains("Durable review ledger"));
+    let args=json!({"answer":"The witness reports a blue bag.","citations":[format!("evidence:{sid}#L1-L1")],"gaps":["No independent corroboration"]});
+    let response=json!({"status":"completed","usage":{},"output":[{"type":"function_call","call_id":"finish-recovered","name":"finish_task","arguments":args.to_string()}]});
+    assert!(agent::receive(&mut c,&task,&request.transmission,response).unwrap()); // support review
+    assert!(!deliver_tool(&mut c,&task,"finish_task",args));
+    assert_eq!(c.snapshot().unwrap()["tasks"][0]["status"],"complete");
+}
+#[test]
+fn checkpoints_preserve_attribution_and_progress_across_pause_and_reopen() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"review","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    deliver_tool(&mut c,&task,"read_text",json!({"source_id":sid,"start":1,"count":2}));
+    deliver_tool(&mut c,&task,"checkpoint_review",json!({"summary":format!("Attributed witness claim evidence:{sid}#L1-L1"),"citations":[format!("evidence:{sid}#L1-L1")],"gaps":["Clock not reconciled"],"next_steps":["Check original recording"]}));
+    agent::pause(&mut c,&task,"test interruption").unwrap();let root=c.root.clone();drop(c);
+    let mut c=Case::open(&root).unwrap();
+    assert!(c.snapshot().unwrap()["tasks"][0]["progress"]["summary"].as_str().unwrap().contains("Attributed witness claim"));
+    agent::resume(&mut c,&task).unwrap();
+    let next=agent::prepare_request(&mut c,&task).unwrap();
+    let context=next.body["input"].to_string();assert!(context.contains("Clock not reconciled"));assert!(context.contains("read_text"));
+    assert!(context.contains("witness.txt"));
+    let invalid=json!({"summary":"Forged citation","citations":["evidence:outside#L1-L1"],"gaps":[],"next_steps":[]});
+    assert!(agent::execute_tool(&mut c,&task,"checkpoint_review",&invalid).is_err());
+}
+#[test]
+fn unrelated_changes_do_not_mark_immutable_machine_transcripts_stale() {
+    let (dir,mut c,sid)=setup();
+    let transcript=c.write_record(None,0,"Transcript","transcript","machine text","processor","test",None,vec![sid.clone()]).unwrap();
+    let path=dir.path().join("extra.txt");fs::write(&path,"new source").unwrap();c.import_files(&[path.to_string_lossy().into()],"extra").unwrap();
+    assert!(!c.record(&transcript.id).unwrap().stale);
+    c.db.execute("UPDATE records SET stale=1 WHERE id=?",[&transcript.id]).unwrap();
+    assert!(!c.record(&transcript.id).unwrap().stale); // legacy false-stale rows
+    c.write_record(Some(&transcript.id),1,"Edited transcript","transcript","human correction","human","correction",None,vec![sid]).unwrap();
+    c.db.execute("UPDATE records SET stale=1 WHERE id=?",[&transcript.id]).unwrap();
+    assert!(c.record(&transcript.id).unwrap().stale);
+}
+#[test]
+fn visual_requests_are_steered_to_frames_after_text_retrieval_and_disclose_gaps() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let mut settings=c.settings().unwrap();settings.allow_images=true;c.save_settings(settings).unwrap();
+    c.db.execute("UPDATE sources SET kind='video' WHERE id=?",[&sid]).unwrap();
+    let task=agent::start(&mut c,"What can you see visually in keyframes?","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    for _ in 0..6 {deliver_tool(&mut c,&task,"read_text",json!({"source_id":sid,"start":1,"count":2}));}
+    deliver_tool(&mut c,&task,"checkpoint_review",json!({"summary":"Text read; visual question remains unanswered.","citations":[],"gaps":["No frames inspected"],"next_steps":["Inspect relevant frames"]}));
+    let next=agent::prepare_request(&mut c,&task).unwrap();assert_eq!(next.body["tool_choice"]["name"],"inspect_video_interval");
+    let final_result=agent::execute_tool(&mut c,&task,"finish_task",&json!({"answer":"Only text was available in this diagnostic.","citations":[],"gaps":[]})).unwrap();assert_eq!(final_result["status"],"complete");
+    assert!(c.snapshot().unwrap()["tasks"][0]["answer"].as_str().unwrap().contains("No frames visually inspected"));
+}
+
+#[test]
+fn changing_passage_search_terms_restarts_pagination_instead_of_skipping_matches() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Search","investigate",vec![sid],vec![],0.).unwrap();
+    deliver_tool(&mut c,&task,"search_passages",json!({"terms":["blue"],"offset":0}));
+    let result=agent::execute_tool(&mut c,&task,"search_passages",&json!({"terms":["clock"],"offset":30})).unwrap();
+    assert_eq!(result["effective_offset"],0);
+    assert!(!result["matches"].as_array().unwrap().is_empty());
+    assert!(result["pagination_notice"].as_str().unwrap().contains("avoid skipping"));
+}
+
+#[test]
+fn transcript_search_returns_source_citations_and_corrects_record_id_confusion() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let record=c.write_record(None,0,"Full transcript","transcript","[00:02.440] merchandise is unclear","processor","test",None,vec![sid.clone()]).unwrap();
+    let locator=format!("evidence:{sid}#L1-L1");
+    c.db.execute("INSERT INTO processing_jobs VALUES('citation-job',?,'full_audio','complete',?,'','2026-09-20T00:00:00Z')",rusqlite::params![sid,json!({"record_id":record.id,"locator":locator}).to_string()]).unwrap();
+    let task=agent::start(&mut c,"Find merchandise statements","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    let results=agent::execute_tool(&mut c,&task,"search_passages",&json!({"terms":["merchandise"]})).unwrap();
+    let hit=results["matches"].as_array().unwrap().iter().find(|h|h["record_id"]==record.id).unwrap();
+    assert_eq!(hit["locator"],locator);
+    assert_eq!(hit["source_names"][0]["filename"],"witness.txt");
+    let page=agent::execute_tool(&mut c,&task,"read_record",&json!({"record_id":record.id,"start":1,"count":10})).unwrap();
+    assert_eq!(page["source_citations"][0],locator);
+    let invalid=agent::execute_tool(&mut c,&task,"checkpoint_review",&json!({"summary":"Uncertain machine statement","citations":[format!("evidence:{}#L1-L1",record.id)],"gaps":[],"next_steps":[]})).unwrap_err().to_string();
+    assert!(invalid.contains("WORKING RECORD"));assert!(invalid.contains(&locator));
+    agent::execute_tool(&mut c,&task,"checkpoint_review",&json!({"summary":"Uncertain machine statement","citations":[locator],"gaps":["Machine text requires listening verification"],"next_steps":[]})).unwrap();
+}

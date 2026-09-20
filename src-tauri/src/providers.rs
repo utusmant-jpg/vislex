@@ -1,0 +1,526 @@
+//! Provider adapters. The coordinator, not a hosted agent runtime, owns tool execution.
+use anyhow::{bail, ensure, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    #[default]
+    Openai,
+    Anthropic,
+    Gemini,
+    Xai,
+}
+impl Provider {
+    pub fn credential(self) -> &'static str {
+        match self {
+            Self::Openai => "openai-api-key",
+            Self::Anthropic => "anthropic-api-key",
+            Self::Gemini => "gemini-api-key",
+            Self::Xai => "xai-api-key",
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Openai => "OpenAI",
+            Self::Anthropic => "Anthropic",
+            Self::Gemini => "Gemini",
+            Self::Xai => "xAI",
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Profile {
+    pub provider: Provider,
+    pub model: String,
+    #[serde(default)]
+    pub allow_text: bool,
+    #[serde(default)]
+    pub allow_images: bool,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Execution {
+    #[default]
+    Single,
+    Parallel,
+    Auto,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Review {
+    #[default]
+    Standard,
+    Independent,
+    Challenge,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub provider: Provider,
+    pub execution: Execution,
+    pub review: Review,
+    pub pool: Vec<Profile>,
+}
+impl Config {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.pool.len() <= 16,
+            "Configure at most sixteen provider/model profiles"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for p in &self.pool {
+            validate_model(&p.model)?;
+            ensure!(
+                seen.insert((p.provider.credential(), p.model.clone())),
+                "Duplicate provider/model profile"
+            );
+            ensure!(
+                !p.allow_images || p.allow_text,
+                "Image permission requires text permission"
+            );
+        }
+        Ok(())
+    }
+}
+pub fn validate_model(model: &str) -> Result<()> {
+    ensure!(
+        !model.trim().is_empty()
+            && model.len() <= 120
+            && model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._:/".contains(c)),
+        "Invalid model identifier"
+    );
+    Ok(())
+}
+pub fn load(case: &crate::case::Case) -> Result<Config> {
+    Ok(case
+        .meta("ai_config")?
+        .map(|v| serde_json::from_str(&v))
+        .transpose()?
+        .unwrap_or_default())
+}
+pub fn save(case: &mut crate::case::Case, config: Config) -> Result<()> {
+    config.validate()?;
+    ensure!(
+        case.db.query_row(
+            "SELECT count(*) FROM tasks WHERE status='running'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )? == 0,
+        "Stop the active investigation before changing provider routing"
+    );
+    let changed_provider = load(case)?.provider != config.provider;
+    case.db.execute_batch("SAVEPOINT provider_config")?;
+    let result = (|| -> Result<()> {
+        if changed_provider {
+            let mut settings = case.settings()?;
+            settings.allow_text = false;
+            settings.allow_images = false;
+            case.save_settings(settings)?;
+        }
+        case.set_meta("ai_config", &serde_json::to_string(&config)?)?;
+        case.audit("ai_configuration_changed", serde_json::to_value(config)?)
+    })();
+    if let Err(e) = result {
+        case.db
+            .execute_batch("ROLLBACK TO provider_config; RELEASE provider_config")?;
+        return Err(e);
+    }
+    case.db.execute_batch("RELEASE provider_config")?;
+    Ok(())
+}
+pub fn task_profile(case: &crate::case::Case, task: &str) -> Result<Profile> {
+    if let Some(v) = case.meta(&format!("task_profile:{task}"))? {
+        return Ok(serde_json::from_str(&v)?);
+    }
+    let s = case.settings()?;
+    Ok(Profile {
+        provider: load(case)?.provider,
+        model: s.model,
+        allow_text: s.allow_text,
+        allow_images: s.allow_images,
+    })
+}
+pub fn check_permission(case: &crate::case::Case, p: &Profile) -> Result<()> {
+    let s = case.settings()?;
+    ensure!(
+        !s.offline && s.allow_text && p.allow_text,
+        "Text transmission is disabled"
+    );
+    let c = load(case)?;
+    if p.provider == c.provider && p.model == s.model {ensure!(!p.allow_images || s.allow_images,"Provider image permission is no longer approved");}
+    if p.provider != c.provider || p.model != s.model {
+        ensure!(
+            c.pool
+                .iter()
+                .any(|x| x.provider == p.provider && x.model == p.model && x.allow_text),
+            "Provider profile is no longer approved"
+        );
+        if p.allow_images {
+            ensure!(
+                c.pool
+                    .iter()
+                    .any(|x| x.provider == p.provider && x.model == p.model && x.allow_images),
+                "Provider image permission is no longer approved"
+            );
+        }
+    }
+    Ok(())
+}
+
+pub struct WireRequest {
+    pub url: String,
+    pub body: Value,
+}
+fn image_data(url: &str) -> Result<(&str, &str)> {
+    let (mime, data) = url
+        .strip_prefix("data:")
+        .context("Only source-linked inline images are supported")?
+        .split_once(";base64,")
+        .context("Invalid image data")?;
+    ensure!(
+        ["image/jpeg", "image/png", "image/webp"].contains(&mime),
+        "Unsupported image type"
+    );
+    Ok((mime, data))
+}
+/// Translate our persisted Responses-shaped tool transcript without flattening tool results into prose.
+pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
+    let model = body["model"].as_str().context("Missing model")?;
+    validate_model(model)?;
+    if matches!(provider, Provider::Openai | Provider::Xai) {
+        let mut request = body.clone();
+        if let Some(input) = request["input"].as_array_mut() {
+            input.retain(|v| v["type"] != "provider_native");
+            for v in input {
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("native_part");
+                }
+            }
+        }
+        if provider == Provider::Xai {
+            request.as_object_mut().unwrap().remove("reasoning");
+        }
+        return Ok(WireRequest {
+            url: match provider {
+                Provider::Xai => "https://api.x.ai/v1/responses",
+                _ => "https://api.openai.com/v1/responses",
+            }
+            .into(),
+            body: request,
+        });
+    }
+    let mut messages: Vec<Value> = Vec::new();
+    let mut names = std::collections::HashMap::<String, String>::new();
+    for item in body["input"].as_array().context("Missing input")? {
+        let kind = item["type"].as_str().unwrap_or("message");
+        let (role, parts) = match kind {
+            "reasoning" => continue,
+            "provider_native" => {
+                if item["provider"] == serde_json::to_value(provider)? {
+                    ("assistant", vec![item["part"].clone()])
+                } else {
+                    continue;
+                }
+            }
+            "function_call" => {
+                let cid = item["call_id"].as_str().context("Missing call ID")?;
+                let name = item["name"].as_str().context("Missing tool name")?;
+                names.insert(cid.into(), name.into());
+                let args: Value = serde_json::from_str(
+                    item["arguments"]
+                        .as_str()
+                        .context("Missing tool arguments")?,
+                )?;
+                let part = if provider == Provider::Anthropic {
+                    json!({"type":"tool_use","id":cid,"name":name,"input":args})
+                } else if item["native_part"].is_object() {
+                    item["native_part"].clone()
+                } else {
+                    json!({"functionCall":{"id":cid,"name":name,"args":args}})
+                };
+                ("assistant", vec![part])
+            }
+            "function_call_output" => {
+                let cid = item["call_id"].as_str().context("Missing result call ID")?;
+                let name = names
+                    .get(cid)
+                    .context("Orphaned tool result; restore its original call before dispatch")?;
+                let value = item["output"].as_str().unwrap_or("");
+                let part = if provider == Provider::Anthropic {
+                    json!({"type":"tool_result","tool_use_id":cid,"content":value})
+                } else {
+                    json!({"functionResponse":{"id":cid,"name":name,"response":{"result":value}}})
+                };
+                ("user", vec![part])
+            }
+            _ => {
+                let mut parts = Vec::new();
+                if let Some(s) = item["content"].as_str() {
+                    if !s.is_empty() {
+                        parts.push(if provider == Provider::Anthropic {
+                            json!({"type":"text","text":s})
+                        } else {
+                            json!({"text":s})
+                        });
+                    }
+                } else if let Some(items) = item["content"].as_array() {
+                    for part in items {
+                        if let Some(t) = part["text"].as_str() {
+                            parts.push(if provider == Provider::Anthropic {
+                                json!({"type":"text","text":t})
+                            } else {
+                                json!({"text":t})
+                            });
+                        } else if let Some(url) = part["image_url"].as_str() {
+                            let (mime, data) = image_data(url)?;
+                            parts.push(if provider==Provider::Anthropic{json!({"type":"image","source":{"type":"base64","media_type":mime,"data":data}})}else{json!({"inlineData":{"mimeType":mime,"data":data}})});
+                        }
+                    }
+                }
+                (
+                    if item["role"] == "assistant" {
+                        "assistant"
+                    } else {
+                        "user"
+                    },
+                    parts,
+                )
+            }
+        };
+        if parts.is_empty() {
+            continue;
+        }
+        let wire_role = if provider == Provider::Gemini && role == "assistant" {
+            "model"
+        } else {
+            role
+        };
+        let field = if provider == Provider::Anthropic {
+            "content"
+        } else {
+            "parts"
+        };
+        if messages.last().is_some_and(|m| m["role"] == wire_role) {
+            messages.last_mut().unwrap()[field]
+                .as_array_mut()
+                .unwrap()
+                .extend(parts);
+        } else {
+            let mut m = json!({"role":wire_role});
+            m[field] = json!(parts);
+            messages.push(m);
+        }
+    }
+    let defs = body["tools"].as_array().cloned().unwrap_or_default();
+    let forced = body["tool_choice"]["name"].as_str();
+    let request = if provider == Provider::Anthropic {
+        let tools:Vec<_>=defs.iter().map(|t|json!({"name":t["name"],"description":t["description"],"input_schema":t["parameters"]})).collect();
+        let mut value = json!({"model":model,"max_tokens":body["max_output_tokens"],"system":body["instructions"],"messages":messages,"tools":tools,"stream":false});
+        value["tool_choice"] = if let Some(name) = forced {
+            json!({"type":"tool","name":name,"disable_parallel_tool_use":true})
+        } else {
+            json!({"type":"auto","disable_parallel_tool_use":true})
+        };
+        value
+    } else {
+        let tools:Vec<_>=defs.iter().map(|t|json!({"name":t["name"],"description":t["description"],"parametersJsonSchema":t["parameters"]})).collect();
+        let mut value = json!({"systemInstruction":{"parts":[{"text":body["instructions"]}]},"contents":messages,"tools":[{"functionDeclarations":tools}],"generationConfig":{"maxOutputTokens":body["max_output_tokens"]}});
+        if let Some(name) = forced {
+            value["toolConfig"] =
+                json!({"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":[name]}});
+        }
+        value
+    };
+    let url = if provider == Provider::Anthropic {
+        "https://api.anthropic.com/v1/messages".into()
+    } else {
+        ensure!(
+            model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)),
+            "Gemini requires a model ID without a path"
+        );
+        format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent")
+    };
+    Ok(WireRequest { url, body: request })
+}
+
+pub fn decode(provider: Provider, response: Value) -> Result<Value> {
+    if matches!(provider, Provider::Openai | Provider::Xai) {
+        return Ok(response);
+    }
+    let mut output = Vec::new();
+    if provider == Provider::Anthropic {
+        ensure!(
+            ["end_turn", "tool_use"].contains(&response["stop_reason"].as_str().unwrap_or("")),
+            "Claude response was incomplete or refused"
+        );
+        for part in response["content"]
+            .as_array()
+            .context("Missing Claude content")?
+        {
+            match part["type"].as_str().unwrap_or("") {
+                "text"=>output.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":part["text"]}]})),
+                "tool_use"=>output.push(json!({"type":"function_call","call_id":part["id"],"name":part["name"],"arguments":part["input"].to_string()})),
+                "thinking"|"redacted_thinking"=>output.push(json!({"type":"provider_native","provider":"anthropic","part":part})),
+                _=>{}
+            }
+        }
+        return Ok(json!({"status":"completed","output":output,"usage":response["usage"]}));
+    }
+    let candidate = &response["candidates"][0];
+    ensure!(
+        candidate["finishReason"] == "STOP",
+        "Gemini response was incomplete or blocked"
+    );
+    for part in candidate["content"]["parts"]
+        .as_array()
+        .context("Missing Gemini content")?
+    {
+        if part["functionCall"].is_object() {
+            let call = &part["functionCall"];
+            let cid = call["id"]
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(crate::case::id);
+            let mut native = part.clone();
+            native["functionCall"]["id"] = json!(cid);
+            output.push(json!({"type":"function_call","call_id":cid,"name":call["name"],"arguments":call["args"].to_string(),"native_part":native}));
+        } else if part["thought"] != true && part["text"].is_string() {
+            output.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":part["text"]}]}));
+        }
+    }
+    Ok(
+        json!({"status":"completed","output":output,"usage":{"input_tokens":response["usageMetadata"]["promptTokenCount"],"output_tokens":response["usageMetadata"]["candidatesTokenCount"],"reasoning_tokens":response["usageMetadata"]["thoughtsTokenCount"]}}),
+    )
+}
+
+pub async fn send(
+    provider: Provider,
+    key: &str,
+    body: Value,
+    mut progress: impl FnMut(Value),
+) -> Result<Value> {
+    let wire = encode(provider, &body)?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let request = client.post(&wire.url).json(&wire.body);
+    let request = match provider {
+        Provider::Anthropic => request
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+        Provider::Gemini => request.header("x-goog-api-key", key),
+        _ => request.bearer_auth(key),
+    };
+    let mut response = request.send().await?;
+    ensure!(response.status().is_success(),"{} returned HTTP {}. Check model, credentials, permissions and quota. Response body is not logged.",provider.name(),response.status().as_u16());
+    if !matches!(provider, Provider::Openai | Provider::Xai) {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            ensure!(
+                bytes.len() + chunk.len() <= 32 * 1024 * 1024,
+                "Provider response exceeded size limit"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        let value = decode(provider, serde_json::from_slice(&bytes)?)?;
+        progress(json!({"activity":"Provider response received; validating evidence tools"}));
+        return Ok(value);
+    }
+    let mut stream = crate::agent::ResponseStream::default();
+    while let Some(chunk) = response.chunk().await? {
+        for event in stream.push(&chunk)? {
+            match event["type"].as_str().unwrap_or("") {
+                "response.completed" => return Ok(event["response"].clone()),
+                "response.failed" | "response.incomplete" | "error" => {
+                    bail!("Provider stopped before completing the response")
+                }
+                "response.output_text.delta" => progress(json!({"text":event["delta"]})),
+                "response.output_item.added" if event["item"]["type"] == "function_call" => {
+                    progress(json!({"activity":event["item"]["name"]}))
+                }
+                "response.function_call_arguments.delta" => progress(
+                    json!({"characters":event["delta"].as_str().map(str::len).unwrap_or(0)}),
+                ),
+                _ => {}
+            }
+        }
+    }
+    bail!("Provider stream ended without completion; no final result published")
+}
+
+/// Resolve only explicitly approved models; callers cannot elevate modality permissions.
+pub fn select_profile(case: &crate::case::Case, provider: Provider, model: &str) -> Result<Profile> {
+    let settings = case.settings()?;
+    let config = load(case)?;
+    let profile = if provider == config.provider && model == settings.model {
+        Profile { provider, model: model.into(), allow_text: settings.allow_text, allow_images: settings.allow_images }
+    } else {
+        config.pool.into_iter().find(|p| p.provider == provider && p.model == model)
+            .context("Enable this provider/model in AI settings first")?
+    };
+    validate_model(&profile.model)?;
+    check_permission(case, &profile)?;
+    Ok(profile)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelOption { pub id: String, pub name: String }
+/// Catalogue membership is not a tool/modality capability certification.
+pub fn model_options(provider: Provider, value: &Value) -> Result<Vec<ModelOption>> {
+    let rows=value[if provider==Provider::Gemini {"models"} else {"data"}].as_array().context("Provider returned an invalid model catalogue")?;
+    let mut result=Vec::new();
+    for row in rows {
+        let id=row[if provider==Provider::Gemini {"name"} else {"id"}].as_str().unwrap_or("").trim_start_matches("models/");
+        if validate_model(id).is_err() {continue;}
+        let lower=id.to_ascii_lowercase();
+        let candidate=match provider {
+            Provider::Openai => (lower.starts_with("gpt-") || lower.starts_with("chatgpt-") || lower.starts_with("o1") || lower.starts_with("o3") || lower.starts_with("o4") || lower.starts_with("ft:gpt-")) && !["audio","realtime","transcribe","image","search","instruct"].iter().any(|part|lower.contains(part)),
+            Provider::Anthropic => lower.starts_with("claude-"),
+            Provider::Gemini => row["supportedGenerationMethods"].as_array().is_some_and(|methods|methods.iter().any(|m|m=="generateContent")) && !["tts","image","robotics"].iter().any(|part|lower.contains(part)),
+            Provider::Xai => lower.starts_with("grok-") && !["image","video","imagine"].iter().any(|part|lower.contains(part)),
+        };
+        if candidate {result.push(ModelOption{id:id.into(),name:row[if provider==Provider::Gemini {"displayName"} else {"display_name"}].as_str().unwrap_or(id).into()});}
+    }
+    result.sort_by(|a,b|a.id.cmp(&b.id));result.dedup_by(|a,b|a.id==b.id);Ok(result)
+}
+pub async fn list_models(provider: Provider, key: &str) -> Result<Vec<ModelOption>> {
+    let url=match provider {
+        Provider::Openai=>"https://api.openai.com/v1/models",
+        Provider::Anthropic=>"https://api.anthropic.com/v1/models",
+        Provider::Gemini=>"https://generativelanguage.googleapis.com/v1beta/models",
+        Provider::Xai=>"https://api.x.ai/v1/models",
+    };
+    let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).connect_timeout(std::time::Duration::from_secs(10)).timeout(std::time::Duration::from_secs(20)).build()?;
+    let mut cursor=String::new();let mut models=Vec::new();let mut seen=std::collections::HashSet::new();
+    for _ in 0..20 {
+        let mut request=client.get(url);
+        request=match provider {
+            Provider::Anthropic=>request.header("x-api-key",key).header("anthropic-version","2023-06-01").query(&[("limit","1000")]),
+            Provider::Gemini=>request.header("x-goog-api-key",key).query(&[("pageSize","1000")]),
+            _=>request.bearer_auth(key),
+        };
+        if !cursor.is_empty() {request=request.query(&[(if provider==Provider::Gemini {"pageToken"}else{"after_id"},&cursor)]);}
+        let mut response=request.send().await.context("Could not reach the model catalogue; check your network and retry")?;
+        ensure!(response.status().is_success(),"{} model list returned HTTP {}. Check the saved API key and account access.",provider.name(),response.status().as_u16());
+        let mut bytes=Vec::new();
+        while let Some(chunk)=response.chunk().await? {ensure!(bytes.len()+chunk.len()<=4*1024*1024,"Model catalogue is too large");bytes.extend_from_slice(&chunk);}
+        let value:Value=serde_json::from_slice(&bytes)?;
+        models.extend(model_options(provider,&value)?);
+        cursor=match provider {
+            Provider::Gemini=>value["nextPageToken"].as_str().unwrap_or("").into(),
+            Provider::Anthropic if value["has_more"]==true=>value["last_id"].as_str().context("Missing model pagination cursor")?.into(),
+            _=>String::new(),
+        };
+        if cursor.is_empty() {models.sort_by(|a,b|a.id.cmp(&b.id));models.dedup_by(|a,b|a.id==b.id);return Ok(models);}
+        ensure!(seen.insert(cursor.clone()),"Provider repeated a model catalogue page");
+    }
+    bail!("Model catalogue pagination exceeded the safe response limit; retry later")
+}
