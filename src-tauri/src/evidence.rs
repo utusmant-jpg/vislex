@@ -178,6 +178,8 @@ pub struct ObjectInput {
 pub fn write(case: &mut Case, input: ObjectInput, actor: &str) -> Result<Value> {
     ensure!(
         [
+            "issue_matrix", "discovery", "contract_review", "deposition", "draft", "exhibit_list",
+            "track",
             "observation",
             "statement",
             "event",

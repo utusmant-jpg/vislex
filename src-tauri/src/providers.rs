@@ -192,6 +192,7 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
     let model = body["model"].as_str().context("Missing model")?;
     validate_model(model)?;
     if matches!(provider, Provider::Openai | Provider::Xai) {
+        ensure!(!body["input"].as_array().into_iter().flatten().flat_map(|i|i["content"].as_array().into_iter().flatten()).any(|p|p["type"]=="input_media"),"Direct media is supported only by Gemini");
         let mut request = body.clone();
         if let Some(input) = request["input"].as_array_mut() {
             input.retain(|v| v["type"] != "provider_native");
@@ -275,6 +276,13 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
                             } else {
                                 json!({"text":t})
                             });
+                        } else if part["type"]=="input_media" {
+                            ensure!(provider==Provider::Gemini,"Direct media is supported only by the Gemini adapter");
+                            let mime=part["mime_type"].as_str().context("Missing media type")?;
+                            ensure!(["video/mp4","video/webm","audio/wav","audio/x-wav","audio/mpeg","audio/mp4","audio/flac","audio/ogg"].contains(&mime),"Unsupported direct media type");
+                            let data=part["data"].as_str().context("Missing media payload")?;
+                            ensure!(data.len()<=16*1024*1024,"Direct media payload too large");
+                            parts.push(json!({"inlineData":{"mimeType":mime,"data":data}}));
                         } else if let Some(url) = part["image_url"].as_str() {
                             let (mime, data) = image_data(url)?;
                             parts.push(if provider==Provider::Anthropic{json!({"type":"image","source":{"type":"base64","media_type":mime,"data":data}})}else{json!({"inlineData":{"mimeType":mime,"data":data}})});
@@ -523,4 +531,19 @@ pub async fn list_models(provider: Provider, key: &str) -> Result<Vec<ModelOptio
         ensure!(seen.insert(cursor.clone()),"Provider repeated a model catalogue page");
     }
     bail!("Model catalogue pagination exceeded the safe response limit; retry later")
+}
+
+/// Apply the app's provider preferences to a case without copying any credentials.
+pub fn apply_app_settings(case:&mut crate::case::Case,value:&Value)->Result<()> {
+    let mut config:Config=serde_json::from_value(value["config"].clone())?;
+    let mut settings:crate::case::Settings=serde_json::from_value(value["settings"].clone())?;
+    config.execution=Execution::Auto;config.review=Review::Standard;
+    for profile in &mut config.pool {profile.allow_text=true;profile.allow_images=true;}
+    config.validate()?;if !settings.model.is_empty(){validate_model(&settings.model)?;}
+    settings.offline=false;settings.allow_text=true;settings.allow_images=true;
+    settings.case_budget=0.;settings.input_per_million=0.;settings.output_per_million=0.;
+    case.db.execute_batch("SAVEPOINT app_preferences")?;
+    let result=(||->Result<()> {save(case,config)?;case.save_settings(settings)?;case.set_meta("gemini_direct_media","true")?;Ok(())})();
+    match result {Ok(())=>case.db.execute_batch("RELEASE app_preferences")?,Err(error)=>{case.db.execute_batch("ROLLBACK TO app_preferences; RELEASE app_preferences")?;return Err(error);}}
+    Ok(())
 }

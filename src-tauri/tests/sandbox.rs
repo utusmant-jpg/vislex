@@ -4,6 +4,24 @@ use serde_json::{json, Value};
 use std::{fs, net::TcpListener, time::Duration};
 
 #[test]
+#[ignore = "Requires packaged worker and generated fixtures"]
+fn prepared_processing_cancels_without_publishing_or_changing_originals() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut case=Case::create(&dir.path().join("case"),"Cancellation fixture").unwrap();
+    let source=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/photograph.png");
+    case.import_files(&[source.to_string_lossy().into_owned()],"fixture").unwrap();
+    let source=case.sources().unwrap()[0].id.clone();
+    let job=processing::prepare_request(&mut case,&source,json!({"crop":null})).unwrap();
+    assert_eq!(case.snapshot().unwrap()["jobs"][0]["status"],"running");
+    processing::cancel(&case,&job.job_id).unwrap();
+    let result=processing::run_prepared(&job);assert!(result.is_err());
+    assert!(processing::publish_prepared(&mut case,&job,result).is_err());
+    assert_eq!(case.snapshot().unwrap()["jobs"][0]["status"],"cancelled");
+    assert_eq!(case.db.query_row("SELECT count(*) FROM artifacts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    case.verify_source(&source).unwrap();
+}
+
+#[test]
 #[ignore = "Requires packaged worker; run after scripts/build-worker.ps1"]
 fn appcontainer_denies_outside_files_and_network() {
     let dir = tempfile::tempdir().unwrap();
@@ -308,4 +326,158 @@ fn sound_discovery_preserves_original_and_returns_citable_candidates() {
     case.verify_source(&sid).unwrap();
     assert!(case.read_text(&sid,1,100).is_err(),"Sound candidates must not overwrite a source transcript");
     case.verify_audit().unwrap();
+}
+
+#[test]
+#[ignore = "Requires packaged OCR worker"]
+fn automatic_ocr_and_media_inventory_publish_with_originals_preserved() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Automatic analysis fixture").unwrap();
+    let fixtures=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("fixtures/generated");
+    for filename in ["statement.pdf","photograph.png"] {
+        case.import_files(&[fixtures.join(filename).to_string_lossy().into()],"synthetic").unwrap();
+    }
+    evidence_desk::automatic::enqueue(&mut case).unwrap();
+    while let Some(job)=evidence_desk::automatic::next(&mut case).unwrap() {
+        // Preparing a worker does not retain a case borrow during computation.
+        assert_eq!(case.snapshot().unwrap()["automatic_analysis"]["files"],2);
+        let value=processing::run_prepared(&job.processor).unwrap();
+        assert!(value["pages"].as_array().unwrap().iter().any(|p|p["method"].as_str().unwrap_or("").contains("RapidOCR")),"{value}");
+        if job.processor.source.kind=="pdf" {assert!(value["pages"].as_array().unwrap().iter().filter(|p|p["method"].as_str().unwrap_or("").contains("RapidOCR")).any(|p|p["text"].as_str().unwrap_or("").to_uppercase().contains("SYNTHETIC")),"{value}");}
+        evidence_desk::automatic::publish(&mut case,&job,Ok(value)).unwrap();
+        case.verify_source(&job.processor.source.id).unwrap();
+    }
+    assert_eq!(evidence_desk::automatic::status(&case).unwrap()["prepared"],2);
+    case.import_files(&[fixtures.join("variable-timing.mp4").to_string_lossy().into()],"synthetic").unwrap();
+    let source=case.sources().unwrap().into_iter().find(|s|s.kind=="video").unwrap();
+    let inventory=processing::process_request(&mut case,&source.id,json!({"operation":"automatic"})).unwrap();
+    assert!(inventory["metadata"]["streams"].as_array().unwrap().iter().any(|s|s["type"]=="video"));
+    assert_eq!(inventory["metadata"]["coverage"]["model_inspected"],false);
+
+}
+
+#[test]
+#[ignore = "Requires packaged worker"]
+fn completed_worker_output_survives_restart_before_publication() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path().join("case");let mut case=Case::create(&root,"Recovery fixture").unwrap();
+    let file=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/photograph.png");case.import_files(&[file.to_string_lossy().into_owned()],"Synthetic").unwrap();let source=case.sources().unwrap()[0].id.clone();
+    let job=processing::prepare_request(&mut case,&source,json!({"crop":null})).unwrap();let job_id=job.job_id.clone();processing::run_prepared(&job).unwrap();let staged=job.staging.path().to_path_buf();drop(job);drop(case);
+    assert!(staged.join("result.json").exists());let mut case=Case::open(&root).unwrap();let resumed=processing::resume(&mut case,&job_id).unwrap();let output=processing::run_prepared(&resumed).unwrap();processing::publish_prepared(&mut case,&resumed,Ok(output)).unwrap();
+    case.verify_source(&source).unwrap();assert!(processing::resume(&mut case,&job_id).is_err());case.verify_audit().unwrap();
+}
+#[test]
+#[ignore = "Requires packaged worker"]
+fn word_export_preserves_saved_text_and_rechecks_revision_before_publication() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Word export").unwrap();
+    let record=case.write_record(None,0,"Synthetic draft","note","Unicode evidence: café. No identity established.","human","fixture",None,vec![]).unwrap();
+    let target=dir.path().join("draft.docx");let job=evidence_desk::exports::prepare_document(&case,&record.id,&target).unwrap();evidence_desk::exports::run_document(&job).unwrap();evidence_desk::exports::publish_document(&mut case,&job).unwrap();
+    assert!(target.metadata().unwrap().len()>1000);
+    assert!(evidence_desk::exports::publish_document(&mut case,&job).is_err());
+    case.import_files(&[target.to_string_lossy().into_owned()],"Synthetic export").unwrap();let source=case.sources().unwrap()[0].id.clone();let extracted=processing::process(&mut case,&source,None).unwrap();assert!(extracted.to_string().contains("No identity established"));case.verify_audit().unwrap();
+}
+
+#[test]
+#[ignore = "Requires packaged worker"]
+fn flattened_redaction_requires_page_review_and_exports_only_derivative() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Redaction fixture").unwrap();let file=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/statement.pdf");case.import_files(&[file.to_string_lossy().into_owned()],"Synthetic").unwrap();let source=case.sources().unwrap()[0].id.clone();
+    let result=processing::process_request(&mut case,&source,json!({"operation":"redact","boxes":[{"page":1,"x":40,"y":40,"width":550,"height":100}]})).unwrap();let pdf=result["published"].as_array().unwrap().iter().find(|p|p["metadata"]["mime"]=="application/pdf").unwrap()["artifact_id"].as_str().unwrap();
+    let target=dir.path().join("redacted.pdf");assert!(evidence_desk::exports::export_redaction(&mut case,pdf,&target).is_err());
+    assert!(evidence_desk::exports::review_redaction(&mut case,pdf,&[],"").is_err());evidence_desk::exports::review_redaction(&mut case,pdf,&[1],"Synthetic page review").unwrap();evidence_desk::exports::export_redaction(&mut case,pdf,&target).unwrap();case.verify_source(&source).unwrap();
+    case.import_files(&[target.to_string_lossy().into_owned()],"Synthetic redacted output").unwrap();let derivative=case.sources().unwrap().into_iter().find(|s|s.id!=source).unwrap();let extracted=processing::process_request(&mut case,&derivative.id,json!({})).unwrap();assert!(extracted["pages"].as_array().unwrap().iter().all(|p|p["text"].as_str().unwrap_or("").trim().is_empty()));
+}
+#[test]
+#[ignore = "Requires packaged worker"]
+fn pdf_draft_export_preserves_unicode_text() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"PDF draft").unwrap();let record=case.write_record(None,0,"Synthetic report","note","café — unresolved evidence.","human","fixture",None,vec![]).unwrap();let target=dir.path().join("draft.pdf");let job=evidence_desk::exports::prepare_document(&case,&record.id,&target).unwrap();evidence_desk::exports::run_document(&job).unwrap();evidence_desk::exports::publish_document(&mut case,&job).unwrap();case.import_files(&[target.to_string_lossy().into_owned()],"Synthetic").unwrap();let source=case.sources().unwrap()[0].id.clone();let result=processing::process_request(&mut case,&source,json!({})).unwrap();assert!(result.to_string().contains("café"));
+}
+
+#[test]
+#[ignore = "Requires packaged MiniLM worker"]
+fn semantic_search_finds_synonyms_and_rejects_changed_permissions() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Semantic fixture").unwrap();
+    let file=dir.path().join("report.txt");fs::write(&file,"The automobile collided with the pedestrian.\nThe kitchen contains a refrigerator.\nThe gardener planted tulips.").unwrap();
+    case.import_files(&[file.to_string_lossy().into_owned()],"fixture").unwrap();let id=case.sources().unwrap()[0].id.clone();
+    let job=evidence_desk::semantic::prepare(&case,"A car hit a person walking",vec![id.clone()]).unwrap();
+    let output=evidence_desk::semantic::run(&job).unwrap();
+    let result=evidence_desk::semantic::publish(&mut case,&job,output.clone()).unwrap();
+    assert!(result["results"][0]["excerpt"].as_str().unwrap().contains("automobile"));assert_eq!(result["remaining_passages"],0);
+    case.db.execute("UPDATE sources SET restricted=1 WHERE id=?",[&id]).unwrap();
+    assert!(evidence_desk::semantic::publish(&mut case,&job,output).is_err());
+    assert!(evidence_desk::semantic::prepare(&case,"car",vec![id.clone()]).is_err());
+    case.db.execute("UPDATE sources SET restricted=0 WHERE id=?",[&id]).unwrap();
+    case.db.execute("UPDATE extracts SET revision=revision+1 WHERE source_id=?",[&id]).unwrap();
+    let new_job=evidence_desk::semantic::prepare(&case,"car",vec![id]).unwrap();
+    let output=evidence_desk::semantic::run(&new_job).unwrap();
+    let result=evidence_desk::semantic::publish(&mut case,&new_job,output).unwrap();assert_eq!(result["indexed_passages"],3);
+}
+#[test]
+#[ignore = "Requires packaged transcription checkpoint worker"]
+fn interrupted_transcription_reuses_durable_chunks_and_keeps_cancellation_gate() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path().join("case");let mut case=Case::create(&root,"Resume transcription").unwrap();
+    let file=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/synthetic-speech.wav");case.import_files(&[file.to_string_lossy().into_owned()],"fixture").unwrap();let id=case.sources().unwrap()[0].id.clone();
+    let job=evidence_desk::transcription::begin(&mut case,&id).unwrap();let original=evidence_desk::transcription::run(&job).unwrap();
+    let checkpoints=fs::read_dir(&job.staging).unwrap().map(|e|e.unwrap().path()).filter(|p|p.file_name().unwrap().to_string_lossy().starts_with("chunk-")).map(|p|{let m=p.metadata().unwrap().modified().unwrap();(p,m)}).collect::<Vec<_>>();assert!(!checkpoints.is_empty());
+    let jobid=job.id.clone();drop(case);let mut case=Case::open(&root).unwrap();
+    let resumed=evidence_desk::transcription::resume(&mut case,&jobid).unwrap();let output=evidence_desk::transcription::run(&resumed).unwrap();assert_eq!(original,output);
+    for (path,time) in checkpoints {assert_eq!(path.metadata().unwrap().modified().unwrap(),time,"Inference checkpoint was rewritten");}
+    fs::write(resumed.staging.join("cancel.request"),b"cancel").unwrap();assert!(evidence_desk::transcription::publish(&mut case,&resumed,output).is_err());
+}
+#[test]
+#[ignore = "Requires packaged worker"]
+fn agent_prepared_media_publishes_once_and_records_actual_page_receipt() {
+    use evidence_desk::agent;
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Prepared agent fixture").unwrap();
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/statement.pdf");case.import_files(&[path.to_string_lossy().into_owned()],"fixture").unwrap();let source=case.sources().unwrap()[0].id.clone();
+    let mut settings=case.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.allow_images=true;settings.model="synthetic".into();case.save_settings(settings).unwrap();
+    let task=agent::start(&mut case,"Inspect page","investigate",vec![source.clone()],vec![],0.).unwrap();let request=agent::prepare_request(&mut case,&task).unwrap();
+    let response=json!({"status":"completed","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"function_call","call_id":"prepared-page","name":"inspect_document_page","arguments":json!({"source_id":source,"page":1}).to_string()}]});
+    let jobs=agent::prepare_media(&mut case,&task,&request.transmission,&response).unwrap();assert_eq!(jobs.len(),1);
+    let mut media=agent::PreparedMedia{jobs:jobs.into_iter().map(|j|{let output=processing::run_prepared(&j);(j,output)}).collect(),external:true,error:None};
+    agent::receive_prepared(&mut case,&task,&request.transmission,response.clone(),&mut media).unwrap();assert!(media.jobs.is_empty());
+    assert_eq!(case.actions(&task).unwrap()[0]["status"],"complete");
+    assert_eq!(case.db.query_row("SELECT count(*) FROM processing_jobs WHERE kind='pdf_page'",[],|r|r.get::<_,u64>(0)).unwrap(),1);
+    assert_eq!(case.db.query_row("SELECT count(*) FROM coverage_receipts WHERE stage='page_rendered'",[],|r|r.get::<_,u64>(0)).unwrap(),1);
+    assert!(agent::receive_prepared(&mut case,&task,&request.transmission,response,&mut media).is_err());
+}
+#[test]
+#[ignore = "Requires packaged diarization models"]
+fn local_speaker_turns_are_anonymous_scoped_and_timestamped() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Speaker fixture").unwrap();
+    let source=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/synthetic-speech.wav");case.import_files(&[source.to_string_lossy().into_owned()],"fixture").unwrap();let id=case.sources().unwrap()[0].id.clone();
+    let result=processing::process_request(&mut case,&id,json!({"operation":"diarize","start":0,"end":10,"track":0})).unwrap();
+    let turns=result["metadata"]["turns"].as_array().unwrap();assert!(!turns.is_empty());assert_eq!(result["metadata"]["speaker_ids_local_to_this_run"],true);
+    for turn in turns {assert!(turn["start"].as_f64().unwrap()>=0.);assert!(turn["end"].as_f64().unwrap()<=10.);assert!(turn["speaker"].as_str().unwrap().starts_with("voice_"));}
+    case.validate_citation(result["extraction_locator"].as_str().unwrap()).unwrap();case.verify_source(&id).unwrap();
+    assert!(processing::process_request(&mut case,&id,json!({"operation":"diarize","start":0,"end":10,"track":999})).is_err());
+}
+#[test]
+#[ignore = "Requires packaged small speech model"]
+fn selected_small_speech_profile_has_actual_model_provenance() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Small speech fixture").unwrap();
+    let file=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/synthetic-speech.wav");case.import_files(&[file.to_string_lossy().into_owned()],"fixture").unwrap();let id=case.sources().unwrap()[0].id.clone();case.set_meta("asr_profile","small").unwrap();
+    let job=evidence_desk::transcription::begin(&mut case,&id).unwrap();let result=evidence_desk::transcription::run(&job).unwrap();assert_eq!(result["metadata"]["model"],"faster-whisper-small");assert!(!result["pages"].as_array().unwrap().is_empty());
+    let result=evidence_desk::transcription::publish(&mut case,&job,result).unwrap();let record=case.record(result["record_id"].as_str().unwrap()).unwrap();assert!(record.content.contains("local small model"));
+}
+
+#[test]
+#[ignore = "Requires packaged worker and generated fixtures"]
+fn identical_extraction_reuses_verified_artifacts_across_reopen() {
+    let dir=tempfile::tempdir().unwrap();
+    let root=dir.path().join("case");
+    let mut case=Case::create(&root,"Cache fixture").unwrap();
+    let source=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/photograph.png");
+    case.import_files(&[source.to_string_lossy().into_owned()],"fixture").unwrap();
+    let sid=case.sources().unwrap()[0].id.clone();
+    let first=processing::process_request(&mut case,&sid,json!({"crop":null})).unwrap();
+    let count:i64=case.db.query_row("SELECT count(*) FROM artifacts",[],|r|r.get(0)).unwrap();
+    drop(case);
+    let mut case=Case::open(&root).unwrap();
+    let job=processing::prepare_request(&mut case,&sid,json!({"crop":null})).unwrap();
+    assert!(job.cached.is_some());
+    let output=processing::run_prepared(&job);
+    let second=processing::publish_prepared(&mut case,&job,output).unwrap();
+    assert_eq!(second["reused"],true);
+    assert_eq!(first["extraction_locator"],second["extraction_locator"]);
+    assert_eq!(count,case.db.query_row("SELECT count(*) FROM artifacts",[],|r|r.get::<_,i64>(0)).unwrap());
+    let changed=processing::prepare_request(&mut case,&sid,json!({"crop":[0,0,10,10]})).unwrap();
+    assert!(changed.cached.is_none());
 }

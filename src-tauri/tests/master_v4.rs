@@ -354,13 +354,15 @@ fn challenge_has_blind_first_assessment_and_separate_draft_critic() {
     }
     teams::merge(&mut c, &parent, "review").unwrap();
     teams::merge(&mut c, &parent, "review").unwrap();
-    assert!(!teams::request_review(&c, &parent, "Another draft").unwrap());
+    assert!(!teams::request_review(&c, &parent, "DRAFT_MARKER_123").unwrap());
+    assert!(teams::request_review(&c, &parent, "Another draft").unwrap());
+    assert_eq!(teams::prepare(&mut c, &parent, "review").unwrap().len(),2);
     let history: String =
         c.db.query_row("SELECT history FROM tasks WHERE id=?", [&parent], |r| {
             r.get(0)
         })
         .unwrap();
-    assert_eq!(history.matches("Team review results").count(), 1);
+    assert_eq!(history.matches("Team review-").count(), 1);
     assert!(history.contains("coverage gap"));
 }
 #[test]
@@ -542,4 +544,68 @@ fn single_agent_cannot_delegate_and_completed_batches_allow_new_work() {
     let phase=result["phase"].as_str().unwrap();teams::merge(&mut c,&parent,phase).unwrap();teams::merge(&mut c,&parent,phase).unwrap();
     let history:String=c.db.query_row("SELECT history FROM tasks WHERE id=?",[&parent],|r|r.get(0)).unwrap();assert_eq!(history.matches("Synthetic proposal").count(),1);
     assert!(teams::delegate(&mut c,&parent,&batch).is_ok());
+}
+
+#[test]
+fn automatic_queue_deduplicates_imports_resumes_and_yields_to_chat() {
+    let (_dir,mut c,sid)=setup();
+    evidence_desk::automatic::enqueue(&mut c).unwrap();
+    evidence_desk::automatic::enqueue(&mut c).unwrap();
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["files"],1);
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
+    assert!(evidence_desk::automatic::next(&mut c).unwrap().is_none());
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["prepared"],1);
+    let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
+    evidence_desk::automatic::preempt_for_chat(&mut c).unwrap();assert!(!teams::active(&c,&task).unwrap());
+    let chat=agent::start(&mut c,"My question","ask",vec![sid],vec![],0.).unwrap();
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
+    agent::pause(&mut c,&chat,"Finished test").unwrap();
+    let resumed=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();assert_ne!(resumed,task);
+    agent::pause(&mut c,&resumed,"Stopped by user").unwrap();
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
+}
+
+#[test]
+fn import_preparation_is_separate_from_publication_and_preserves_provenance() {
+    let (dir,mut c,_sid)=setup();
+    let path=dir.path().join("another.txt");std::fs::write(&path,"Synthetic second report").unwrap();
+    let prepared=evidence_desk::case::prepare_import(&c.root,&path).unwrap();
+    assert_eq!(c.sources().unwrap().len(),1);
+    let receipt=c.publish_import(prepared,"Synthetic batch","batch-123").unwrap();
+    assert_eq!(c.sources().unwrap().len(),2);
+    let sid=receipt["source_id"].as_str().unwrap();c.verify_source(sid).unwrap();
+    let occurrence:(String,String)=c.db.query_row("SELECT production,batch_id FROM occurrences WHERE source_id=?",[sid],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();assert_eq!(occurrence,("Synthetic batch".into(),"batch-123".into()));
+}
+
+#[test]
+fn job_history_only_resolves_after_same_processor_succeeds() {
+    let (_dir,c,sid)=setup();
+    for (id,kind,status) in [("old","media_inventory","failed"),("other","full_audio","complete")] {
+        c.db.execute("INSERT INTO processing_jobs VALUES(?,?,?,?,'{}','','2026-09-20')",rusqlite::params![id,sid,kind,status]).unwrap();
+    }
+    let resolved=|snapshot:serde_json::Value| snapshot["jobs"].as_array().unwrap().iter().find(|j|j["id"]=="old").unwrap()["superseded"].as_bool().unwrap();
+    assert!(!resolved(c.snapshot().unwrap()));
+    c.db.execute("INSERT INTO processing_jobs VALUES('new',?,'media_inventory','complete','{}','','2026-09-20')",[&sid]).unwrap();
+    assert!(resolved(c.snapshot().unwrap()));
+    let status:String=c.db.query_row("SELECT status FROM processing_jobs WHERE id='old'",[],|r|r.get(0)).unwrap();
+    assert_eq!(status,"failed");
+}
+
+#[test]
+fn app_preferences_replace_existing_case_model_without_credentials() {
+    let (_dir,mut c,_)=setup();
+    let mut settings=c.settings().unwrap();settings.model="app-model".into();
+    let preferences=json!({"config":{"provider":"openai","execution":"single","review":"challenge","pool":[]},"settings":settings});
+    providers::apply_app_settings(&mut c,&preferences).unwrap();
+    assert_eq!(c.settings().unwrap().model,"app-model");
+    assert_eq!(providers::load(&c).unwrap().execution,Execution::Auto);
+    assert_eq!(providers::load(&c).unwrap().review,Review::Standard);
+    assert_eq!(c.meta("gemini_direct_media").unwrap().as_deref(),Some("true"));
+    let other_dir=tempfile::tempdir().unwrap();let mut other=Case::create(&other_dir.path().join("second"),"Second case").unwrap();
+    providers::apply_app_settings(&mut other,&preferences).unwrap();
+    assert_eq!(other.settings().unwrap().model,c.settings().unwrap().model);
+    let mut invalid=preferences;invalid["settings"]["model"]=json!("invalid model!");
+    assert!(providers::apply_app_settings(&mut c,&invalid).is_err());
+    assert_eq!(c.settings().unwrap().model,"app-model");
 }

@@ -59,16 +59,22 @@ pub fn request_review(case: &Case, task: &str, draft: &str) -> Result<bool> {
     if is_child(case, task)? || policy(case, task)?.review == Review::Standard {
         return Ok(false);
     }
-    if case.meta(&format!("team_merged:{task}:review"))?.is_some() {
+    let stamp=crate::dossier::candidate_stamp(case,task,&json!({"draft":draft}))?;
+    let phase=format!("review-{}",stamp);
+    if case.meta(&format!("team_merged:{task}:{phase}"))?.is_some() {
         return Ok(false);
     }
+    case.set_meta(&format!("team_review_phase:{task}"),&phase)?;
     case.set_meta(&format!("team_draft:{task}"), draft)?;
     Ok(true)
 }
 /// Reopening a phase never duplicates its assignments. Failed/uncertain requests are not replayed.
 pub fn prepare(case: &mut Case, parent: &str, phase: &str) -> Result<Vec<String>> {
+    let resolved=if phase=="review" {case.meta(&format!("team_review_phase:{parent}"))?.unwrap_or_else(||"review".into())}else{phase.into()};
+    let phase=resolved.as_str();
+    let reviewing=phase=="review" || phase.starts_with("review-");
     ensure!(
-        ["investigate", "review"].contains(&phase) || phase.starts_with("delegated-"),
+        phase=="investigate" || reviewing || phase.starts_with("delegated-"),
         "Unknown team phase"
     );
     ensure!(
@@ -79,7 +85,7 @@ pub fn prepare(case: &mut Case, parent: &str, phase: &str) -> Result<Vec<String>
     if phase == "investigate" && config.execution != Execution::Parallel {
         return Ok(vec![]);
     }
-    if phase == "review"
+    if reviewing
         && (config.review == Review::Standard
             || case.meta(&format!("team_draft:{parent}"))?.is_none())
     {
@@ -170,6 +176,8 @@ pub fn prepare(case: &mut Case, parent: &str, phase: &str) -> Result<Vec<String>
     Ok(ids)
 }
 pub fn merge(case: &mut Case, parent: &str, phase: &str) -> Result<()> {
+    let resolved=if phase=="review" {case.meta(&format!("team_review_phase:{parent}"))?.unwrap_or_else(||"review".into())}else{phase.into()};
+    let phase=resolved.as_str();
     if case
         .meta(&format!("team_merged:{parent}:{phase}"))?
         .is_some()

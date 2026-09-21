@@ -313,6 +313,7 @@ impl Case {
         })?;
         let mut sources = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         for source in &mut sources {
+            normalize_document_status(source);
             if !["audio", "video"].contains(&source.kind.as_str()) { continue; }
             let completed: Option<String> = self.db.query_row("SELECT result FROM processing_jobs WHERE source_id=? AND kind='full_audio' AND status='complete' ORDER BY created_at DESC LIMIT 1", [&source.id], |r| r.get(0)).optional()?;
             if let Some(result) = completed {
@@ -328,10 +329,20 @@ impl Case {
         Ok(sources)
     }
     pub fn source(&self, source_id: &str) -> Result<Source> {
-        self.sources()?
-            .into_iter()
-            .find(|s| s.id == source_id)
-            .context("Source not found in this case")
+        let mut source = self.db.query_row(
+            "SELECT s.id,s.name,s.sha256,s.size,s.mime,s.kind,s.status,s.restricted,(SELECT count(*) FROM occurrences o WHERE o.source_id=s.id),s.created_at FROM sources s WHERE s.id=?",
+            [source_id], |r| Ok(Source { id:r.get(0)?, name:r.get(1)?, sha256:r.get(2)?, size:r.get(3)?, mime:r.get(4)?, kind:r.get(5)?, status:r.get(6)?, restricted:r.get(7)?, occurrences:r.get(8)?, created_at:r.get(9)? })
+        ).optional()?.context("Source not found in this case")?;
+        if ["audio", "video"].contains(&source.kind.as_str()) {
+            let result: Option<String> = self.db.query_row("SELECT result FROM processing_jobs WHERE source_id=? AND kind='full_audio' AND status='complete' ORDER BY created_at DESC LIMIT 1", [source_id], |r| r.get(0)).optional()?;
+            if let Some(result) = result {
+                let result: Value = serde_json::from_str(&result).unwrap_or(Value::Null);
+                let exists = result["record_id"].as_str().is_some_and(|id| self.db.query_row("SELECT EXISTS(SELECT 1 FROM records WHERE id=?)", [id], |r| r.get::<_,bool>(0)).unwrap_or(false));
+                source.status = if result["metadata"]["no_audio_tracks"] == true { "no audio tracks · visual review pending" } else if exists { "text transcribed · all audio tracks · unreviewed" } else { "transcript record missing · needs attention" }.into();
+            }
+        }
+        normalize_document_status(&mut source);
+        Ok(source)
     }
     pub fn source_path(&self, source_id: &str) -> Result<PathBuf> {
         let s = self.source(source_id)?;
@@ -382,48 +393,12 @@ impl Case {
         Ok(json!({"batch":batch,"items":result}))
     }
     fn import_one(&mut self, path: &Path, production: &str, batch: &str) -> Result<Value> {
-        ensure!(
-            !fs::symlink_metadata(path)?.file_type().is_symlink(),
-            "Symbolic-link imports are not supported"
-        );
-        let path = path.canonicalize()?;
-        ensure!(
-            path.is_file(),
-            "Select individual files; directory import is not yet supported"
-        );
-        ensure!(
-            !path.starts_with(&self.root),
-            "Do not import case internals"
-        );
-        let size = path.metadata()?.len();
-        let name = path
-            .file_name()
-            .context("Missing filename")?
-            .to_string_lossy()
-            .into_owned();
-        let stage = self.root.join("staging").join(id());
-        let copied = (|| -> Result<String> {
-            let mut input = File::open(&path)?;
-            let mut output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&stage)?;
-            std::io::copy(&mut input, &mut output)?;
-            output.sync_all()?;
-            let hash = file_hash(&stage)?;
-            ensure!(
-                stage.metadata()?.len() == size && file_hash(&path)? == hash,
-                "Source changed while copying; retry import"
-            );
-            Ok(hash)
-        })();
-        let sha = match copied {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = fs::remove_file(&stage);
-                return Err(e);
-            }
-        };
+        let prepared=prepare_import(&self.root,path)?;
+        self.publish_import(prepared,production,batch)
+    }
+    pub fn publish_import(&mut self,prepared:PreparedImport,production:&str,batch:&str)->Result<Value> {
+        let PreparedImport {path,stage,size,name,sha}=prepared;
+        ensure!(stage.parent()==Some(self.root.join("staging").as_path()),"Import belongs to a different case");
         let existing: Option<String> = self
             .db
             .query_row("SELECT id FROM sources WHERE sha256=?", [&sha], |r| {
@@ -470,7 +445,7 @@ impl Case {
             };
             let status = if text.is_some() {
                 "text indexed"
-            } else if ["image", "video", "audio", "pdf"].contains(&kind) {
+            } else if ["image", "video", "audio", "pdf"].contains(&kind) || ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
                 "viewer available · extraction pending"
             } else {
                 "unsupported · preserved"
@@ -821,32 +796,7 @@ impl Case {
         Ok(receipt)
     }
     pub fn import_folder(&mut self, folder: &Path, production: &str) -> Result<Value> {
-        ensure!(folder.is_dir(), "Choose an existing folder");
-        let root = folder.canonicalize()?;
-        ensure!(!root.starts_with(&self.root) && !root.join("case.sqlite3").exists(), "Do not import case internals");
-        let mut pending = vec![root];
-        let mut paths = Vec::new();
-        let mut skipped = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-        while let Some(dir) = pending.pop() {
-            let resolved = dir.canonicalize()?;
-            if resolved.starts_with(&self.root) || !visited.insert(resolved) || dir.join("case.sqlite3").exists() || dir.extension().is_some_and(|e| e.eq_ignore_ascii_case("ledcase")) {
-                skipped.push(json!({"path":dir,"reason":"case folder or repeated directory"})); continue;
-            }
-            for entry in fs::read_dir(&dir)? {
-                let entry = entry?;
-                let metadata = fs::symlink_metadata(entry.path())?;
-                #[cfg(windows)]
-                let link = { use std::os::windows::fs::MetadataExt; metadata.file_attributes() & 0x400 != 0 };
-                #[cfg(not(windows))]
-                let link = metadata.file_type().is_symlink();
-                if link { skipped.push(json!({"path":entry.path(),"reason":"link or reparse point"})); }
-                else if metadata.is_dir() { pending.push(entry.path()); }
-                else if metadata.is_file() { paths.push(entry.path().to_string_lossy().into_owned()); }
-                ensure!(paths.len() <= 10000, "Folder exceeds 10,000 files; import smaller productions");
-            }
-        }
-        paths.sort();
+        let (paths,skipped)=folder_paths(&self.root,folder)?;
         let mut receipt = self.import_files(&paths, production)?;
         receipt["skipped"] = json!(skipped);
         Ok(receipt)
@@ -866,12 +816,12 @@ impl Case {
             [],
             |r| r.get(0),
         )?;
-        let mut jobs = self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,j.error,j.created_at FROM processing_jobs j JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC")?;
-        let jobs = jobs.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut jobs = self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,j.error,j.created_at,EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.status='complete' AND newer.rowid>j.rowid) FROM processing_jobs j JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC")?;
+        let jobs = jobs.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let mut issues = self.db.prepare("SELECT id,name,output,created_at FROM actions WHERE status='failed' ORDER BY created_at DESC")?;
         let issues = issues.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"error":r.get::<_,String>(2)?,"created_at":r.get::<_,String>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(
-            json!({"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.records()?,"settings":self.settings()?,"tasks":tasks,"budget_committed":spent,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
+            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.records()?,"settings":self.settings()?,"tasks":tasks,"budget_committed":spent,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
         )
     }
     pub fn actions(&self, task: &str) -> Result<Value> {
@@ -890,6 +840,8 @@ impl Case {
         if let Some(artifact_id) = loc.strip_prefix("artifact:") {
             let (owner, _, _, _) = crate::processing::artifact(self, artifact_id)?;
             ensure!(owner == source_id, "Artifact belongs to another source");
+        } else if loc == "media" {
+            ensure!(["audio","video"].contains(&s.kind.as_str()),"Source is not media");self.verify_source(source_id)?;
         } else if loc == "image" {
             ensure!(s.kind == "image", "Source is not an image");
             self.verify_source(source_id)?;
@@ -958,4 +910,88 @@ pub fn safe_relative(path: &Path) -> bool {
         && path.components().all(|c| matches!(c, Component::Normal(_)))
         && !path.to_string_lossy().contains(':')
         && !path.to_string_lossy().contains('\\')
+}
+
+/// Prepared outside the database writer lock. Fields remain private to the importer.
+pub struct PreparedImport {path:PathBuf,stage:PathBuf,size:u64,name:String,sha:String}
+pub fn prepare_import(root:&Path,path:&Path)->Result<PreparedImport> {
+        ensure!(
+            !fs::symlink_metadata(path)?.file_type().is_symlink(),
+            "Symbolic-link imports are not supported"
+        );
+        let path = path.canonicalize()?;
+        ensure!(
+            path.is_file(),
+            "Select individual files; directory import is not yet supported"
+        );
+        ensure!(
+            !path.starts_with(root),
+            "Do not import case internals"
+        );
+        let size = path.metadata()?.len();
+        let name = path
+            .file_name()
+            .context("Missing filename")?
+            .to_string_lossy()
+            .into_owned();
+        let stage = root.join("staging").join(id());
+        let copied = (|| -> Result<String> {
+            let mut input = File::open(&path)?;
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&stage)?;
+            std::io::copy(&mut input, &mut output)?;
+            output.sync_all()?;
+            let hash = file_hash(&stage)?;
+            ensure!(
+                stage.metadata()?.len() == size && file_hash(&path)? == hash,
+                "Source changed while copying; retry import"
+            );
+            Ok(hash)
+        })();
+        let sha = match copied {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = fs::remove_file(&stage);
+                return Err(e);
+            }
+        };
+    Ok(PreparedImport {path,stage,size,name,sha})
+}
+pub fn folder_paths(case_root:&Path,folder:&Path)->Result<(Vec<String>,Vec<Value>)> {
+        ensure!(folder.is_dir(), "Choose an existing folder");
+        let root = folder.canonicalize()?;
+        ensure!(!root.starts_with(case_root) && !root.join("case.sqlite3").exists(), "Do not import case internals");
+        let mut pending = vec![root];
+        let mut paths = Vec::new();
+        let mut skipped = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        while let Some(dir) = pending.pop() {
+            let resolved = dir.canonicalize()?;
+            if resolved.starts_with(case_root) || !visited.insert(resolved) || dir.join("case.sqlite3").exists() || dir.extension().is_some_and(|e| e.eq_ignore_ascii_case("ledcase")) {
+                skipped.push(json!({"path":dir,"reason":"case folder or repeated directory"})); continue;
+            }
+            for entry in fs::read_dir(&dir)? {
+                let entry = entry?;
+                let metadata = fs::symlink_metadata(entry.path())?;
+                #[cfg(windows)]
+                let link = { use std::os::windows::fs::MetadataExt; metadata.file_attributes() & 0x400 != 0 };
+                #[cfg(not(windows))]
+                let link = metadata.file_type().is_symlink();
+                if link { skipped.push(json!({"path":entry.path(),"reason":"link or reparse point"})); }
+                else if metadata.is_dir() { pending.push(entry.path()); }
+                else if metadata.is_file() { paths.push(entry.path().to_string_lossy().into_owned()); }
+                ensure!(paths.len() <= 10000, "Folder exceeds 10,000 files; import smaller productions");
+            }
+        }
+        paths.sort();
+    Ok((paths,skipped))
+}
+
+fn normalize_document_status(source:&mut Source) {
+    let ext=Path::new(&source.name).extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if source.status=="unsupported · preserved" && ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
+        source.status="document preview available · extraction pending".into();
+    }
 }

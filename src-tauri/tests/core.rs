@@ -746,3 +746,11 @@ fn transcript_search_returns_source_citations_and_corrects_record_id_confusion()
     assert!(invalid.contains("WORKING RECORD"));assert!(invalid.contains(&locator));
     agent::execute_tool(&mut c,&task,"checkpoint_review",&json!({"summary":"Uncertain machine statement","citations":[locator],"gaps":["Machine text requires listening verification"],"next_steps":[]})).unwrap();
 }
+
+#[test]
+fn old_office_inventory_status_no_longer_reports_unsupported() {
+    let (_dir,c,s)=setup();
+    c.db.execute("UPDATE sources SET name='Notes.docx',kind='other',status='unsupported · preserved' WHERE id=?",[&s]).unwrap();
+    assert_eq!(c.source(&s).unwrap().status,"document preview available · extraction pending");
+    assert_eq!(c.sources().unwrap()[0].status,c.source(&s).unwrap().status);
+}

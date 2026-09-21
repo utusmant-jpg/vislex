@@ -10,18 +10,11 @@ pub struct Job {
     pub input: PathBuf,
     pub staging: PathBuf,
     pub worker: PathBuf,
+    pub asr_model:String,
 }
 pub fn enqueue(case: &mut Case, sources: &[String]) -> Result<Value> {
     crate::processing::worker_path()?;
-    ensure!(
-        !sources.is_empty() && sources.len() <= 32,
-        "Queue between 1 and 32 recordings"
-    );
-    let pending:i64=case.db.query_row("SELECT count(*) FROM processing_jobs WHERE kind='full_audio' AND status IN ('queued','running')",[],|r|r.get(0))?;
-    ensure!(
-        pending + sources.len() as i64 <= 32,
-        "Recording queue limit reached"
-    );
+    ensure!(!sources.is_empty() && sources.len()<=10000,"Select between 1 and 10,000 recordings");
     let mut jobs = Vec::new();
     for source_id in sources {
         let source = case.source(source_id)?;
@@ -86,6 +79,9 @@ pub fn begin(case: &mut Case, source_id: &str) -> Result<Job> {
     let job = queued.clone().unwrap_or_else(id);
     let staging = case.root.join("staging").join(format!("transcript-{job}"));
     fs::create_dir(&staging)?;
+    let asr_model=case.meta("asr_profile")?.unwrap_or_else(||"tiny".into());
+    let manifest=json!({"job_id":job,"source_id":source_id,"source_sha256":source.sha256,"worker_sha256":file_hash(&worker)?,"asr_model":asr_model});
+    let mut manifest_file=fs::File::create(staging.join("manifest.json"))?;std::io::Write::write_all(&mut manifest_file,manifest.to_string().as_bytes())?;manifest_file.sync_all()?;
     fs::write(
         staging.join("progress.json"),
         json!({"state":"copying","segments":0}).to_string(),
@@ -111,21 +107,40 @@ pub fn begin(case: &mut Case, source_id: &str) -> Result<Job> {
         input: case.source_path(source_id)?,
         staging,
         worker,
+        asr_model,
     })
 }
+pub fn resume(case:&mut Case,job_id:&str)->Result<Job> {
+    uuid::Uuid::parse_str(job_id)?;
+    let (sid,status):(String,String)=case.db.query_row("SELECT source_id,status FROM processing_jobs WHERE id=? AND kind='full_audio'",[job_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    ensure!(["failed","interrupted"].contains(&status.as_str()),"Only interrupted or failed transcription can resume");
+    let running:u64=case.db.query_row("SELECT count(*) FROM processing_jobs WHERE kind='full_audio' AND status='running'",[],|r|r.get(0))?;ensure!(running==0,"Another transcript is running");
+    let staging=case.root.join("staging").join(format!("transcript-{job_id}")).canonicalize()?;
+    ensure!(staging.starts_with(case.root.join("staging").canonicalize()?)&&!staging.join("cancel.request").exists(),"Invalid or cancelled checkpoint");
+    let manifest:Value=serde_json::from_slice(&fs::read(staging.join("manifest.json"))?)?;
+    let source=case.source(&sid)?;let worker=crate::processing::worker_path()?;
+    ensure!(!source.restricted&&manifest["job_id"]==job_id&&manifest["source_id"]==sid&&manifest["source_sha256"]==source.sha256&&manifest["worker_sha256"]==file_hash(&worker)?,"Checkpoint provenance changed; create a new transcription");
+    let asr_model=manifest["asr_model"].as_str().context("Missing checkpoint model")?.to_string();
+    case.db.execute("UPDATE processing_jobs SET status='running',error='' WHERE id=?",[job_id])?;
+    case.audit("transcription_resumed",json!({"job":job_id,"asr_model":asr_model}))?;
+    Ok(Job{id:job_id.into(),input:case.source_path(&sid)?,source,staging,worker,asr_model})
+}
 pub fn run(job: &Job) -> Result<Value> {
-    fs::copy(&job.input, job.staging.join("input"))?;
-    ensure!(
-        file_hash(&job.staging.join("input"))? == job.source.sha256,
-        "Input changed while preparing transcription"
-    );
+    {
+        use std::io::{Read,Write};use sha2::{Digest,Sha256};
+        let mut input=fs::File::open(&job.input)?;let mut output=fs::File::create(job.staging.join("input"))?;
+        let mut buffer=vec![0u8;1024*1024];let mut hash=Sha256::new();
+        loop {anyhow::ensure!(!job.staging.join("cancel.request").exists(),"Transcription cancelled while copying input");let n=input.read(&mut buffer)?;if n==0{break;}hash.update(&buffer[..n]);output.write_all(&buffer[..n])?;}
+        output.sync_all()?;
+        anyhow::ensure!(format!("{:x}",hash.finalize())==job.source.sha256,"Source changed while preparing transcription");
+    }
     fs::write(
         job.staging.join("progress.json"),
         json!({"state":"initializing","segments":0}).to_string(),
     )?;
     fs::write(
         job.staging.join("request.json"),
-        json!({"version":1,"kind":"full_audio"}).to_string(),
+        json!({"version":1,"kind":"full_audio","asr_model":job.asr_model}).to_string(),
     )?;
     #[cfg(windows)]
     crate::sandbox::run_worker(&job.worker, &job.staging, Duration::from_secs(7200))?;
@@ -158,6 +173,9 @@ fn timestamp(seconds: f64, srt: bool) -> String {
     )
 }
 pub fn publish(case: &mut Case, job: &Job, value: Value) -> Result<Value> {
+    ensure!(!job.staging.join("cancel.request").exists(),"Transcription cancelled before publication");
+    let source=case.source(&job.source.id)?;ensure!(!source.restricted&&source.sha256==job.source.sha256,"Source permission or integrity changed");
+    let state:String=case.db.query_row("SELECT status FROM processing_jobs WHERE id=?",[&job.id],|r|r.get(0))?;ensure!(state=="running","Transcription is no longer active");
     let pages = value["pages"]
         .as_array()
         .context("Transcript segments missing")?;
@@ -167,7 +185,7 @@ pub fn publish(case: &mut Case, job: &Job, value: Value) -> Result<Value> {
     let raw_path = format!("artifacts/{raw_hash}.json");
     let artifact = id();
     let locator = format!("evidence:{}#artifact:{artifact}", job.source.id);
-    let mut text=format!("# Full transcript: {}\n\nUNREVIEWED MACHINE TRANSCRIPTION · local tiny model\nSource SHA-256: {}\nEvidence: {locator}\n\n",job.source.name,job.source.sha256);
+    let mut text=format!("# Full transcript: {}\n\nUNREVIEWED MACHINE TRANSCRIPTION · local {} model\nSource SHA-256: {}\nEvidence: {locator}\n\n",job.source.name,job.asr_model,job.source.sha256);
     if value["metadata"]["no_audio_tracks"] == true {
         text.push_str("No audio tracks were found in this container. No speech transcript can be produced; visual events remain unreviewed.\n");
     }

@@ -26,6 +26,7 @@ use tauri::{Emitter, Manager};
 pub struct AppState {
 
     case: Mutex<Option<Case>>,
+    importing: std::sync::atomic::AtomicBool,
 
 }
 
@@ -54,6 +55,13 @@ fn key_entry() -> anyhow::Result<keyring::Entry> { provider_key_entry(crate::pro
 #[tauri::command]
 
 async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<Value, String> {
+    if action=="fetch_public_authority" {
+        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),url))})();
+        let (case_id,url)=prepared.map_err(|e|e.to_string())?;
+        let download=crate::authority::retrieve(&url).await.map_err(|e|e.to_string())?;
+        let value=with_case(&app,&case_id,|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
+        kick_automatic(app.clone(),case_id);let _=app.emit("case-changed",());return Ok(value);
+    }
     // Explicit account metadata lookup: no case material and no case mutex during network I/O.
     if action == "provider_models" {
         let provider:crate::providers::Provider=serde_json::from_value(args["provider"].clone()).map_err(|e|e.to_string())?;
@@ -75,14 +83,61 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
 
 fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result<Value> {
 
+    if action=="hybrid_search" {
+        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;let case=guard.as_ref().context("Open a case first")?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),crate::semantic::prepare(case,text(&args,"query")?,scope)?)};
+        let result=crate::semantic::run(&job)?;
+        return with_case(app,&case_id,|case|crate::semantic::publish(case,&job,result));
+    }
+    if action=="export_word" {
+        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;let case=guard.as_ref().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_document(case,text(&args,"record_id")?,Path::new(text(&args,"path")?))?)};
+        crate::exports::run_document(&job)?;
+        return with_case(app,&case_id,|case|crate::exports::publish_document(case,&job));
+    }
+    if action=="resume_transcription" {
+        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::transcription::resume(case,text(&args,"job_id")?)?)};
+        let output=crate::transcription::run(&job);
+        let value=with_case(app,&case_id,|case|match output {Ok(v)=>crate::transcription::publish(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
+        let _=app.emit("case-changed",());return value;
+    }
+    if action=="resume_processing" {
+        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock poisoned"))?;let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::processing::resume(case,text(&args,"job_id")?)?)};
+        let output=crate::processing::run_prepared(&job);
+        let result=with_case(app,&case_id,|case|crate::processing::publish_prepared(case,&job,output));
+        let _=app.emit("case-changed",());return result;
+    }
     if ["save_provider_key","provider_key_status","delete_provider_key"].contains(&action) {
         let provider:crate::providers::Provider=serde_json::from_value(args["provider"].clone())?;
+
         let entry=provider_key_entry(provider)?;
         return match action {
             "save_provider_key"=>{let key=text(&args,"key")?;anyhow::ensure!(!key.trim().is_empty(),"Enter a key");entry.set_password(key.trim())?;Ok(json!({"saved":true}))},
             "delete_provider_key"=>{entry.delete_credential()?;Ok(json!({"deleted":true}))},
             _=>Ok(json!({"configured":entry.get_password().is_ok()}))
         };
+    }
+    if ["import_files","import_folder"].contains(&action) {return import_background(app,action,args);}
+    if ["process_source","render_page","transcribe_source","scan_sound_events","prepare_redaction","diarize_source"].contains(&action) {
+        let (case_id,job)={
+            let state=app.state::<AppState>();
+            let mut guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;
+            let case=guard.as_mut().context("Open a case first")?;
+            let source=text(&args,"source_id")?;
+            if action=="scan_sound_events" {anyhow::ensure!(!case.source(source)?.restricted,"Restricted source");}
+            let options=match action {
+                "render_page"=>json!({"operation":"render_page","page":args["page"]}),
+                "diarize_source"=>json!({"operation":"diarize","start":args["start"],"end":args["end"],"track":args["track"]}),
+                "prepare_redaction"=>json!({"operation":"redact","boxes":args["boxes"]}),
+                "transcribe_source"=>json!({"operation":"transcribe","start":args["start"].as_f64().unwrap_or(0.),"end":args["end"].as_f64().unwrap_or(30.),"track":args["track"]}),
+                "scan_sound_events"=>json!({"operation":"sound_events","start":args["start"],"end":args["end"],"track":args["track"],"channel":args["channel"]}),
+                _=>json!({"crop":null}),
+            };
+            (case.meta("id")?.unwrap_or_default(),crate::processing::prepare_request(case,source,options)?)
+        };
+        let _=app.emit("case-changed",());
+        let output=crate::processing::run_prepared(&job);
+        let result=with_case(app,&case_id,|case|crate::processing::publish_prepared(case,&job,output));
+        let _=app.emit("case-changed",());
+        return result;
     }
     if action == "save_api_key" {
 
@@ -124,7 +179,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             let source=text(&args,"source_id")?;
 
-            let cached:Option<String>=c.db.query_row("SELECT id FROM artifacts WHERE source_id=? AND mime='video/mp4' ORDER BY created_at DESC LIMIT 1",[source],|r|r.get(0)).optional()?;
+            let cached:Option<String>=c.db.query_row("SELECT id FROM artifacts WHERE source_id=? AND mime='video/mp4' AND json_extract(metadata,'$.player_origin_seconds')=0 ORDER BY created_at DESC LIMIT 1",[source],|r|r.get(0)).optional()?;
 
             if let Some(id)=cached {crate::processing::artifact(c,&id)?;return Ok(json!({"artifact_id":id}));}
 
@@ -163,6 +218,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         .map_err(|_| anyhow::anyhow!("Case lock failed"))?;
 
     if ["create_case", "open_case", "restore_case", "close_case"].contains(&action) {
+        anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the current import before switching cases");
 
         if let Some(c) = guard.as_ref() {
 
@@ -196,7 +252,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let path = PathBuf::from(text(&args, "path")?);
 
-        let c = match action {
+        let mut c = match action {
 
             "create_case" => Case::create(&path, text(&args, "name")?)?,
 
@@ -214,10 +270,15 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         };
 
+        apply_ai_defaults(app,&mut c)?;
+        crate::automatic::enqueue(&mut c)?;
+        let case_id=c.meta("id")?.unwrap_or_default();
         let snapshot = c.snapshot()?;
 
         *guard = Some(c);
-
+        drop(guard);
+        kick_automatic(app.clone(),case_id.clone());
+        kick_transcriptions(app.clone(),case_id);
         return Ok(snapshot);
 
     }
@@ -237,8 +298,15 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     let result = match action {
 
         "snapshot" => c.snapshot()?,
+        "speaker_annotations" => crate::speaker_annotations::read(c,text(&args,"source_id")?,text(&args,"artifact_id")?)?,
+        "save_speaker_annotations" => crate::speaker_annotations::save(c,text(&args,"source_id")?,text(&args,"artifact_id")?,args["revision"].as_u64().context("Missing annotation revision")?,&args["labels"],&args["turns"])?,
+        "video_discovery_status" => crate::discovery::status(c,text(&args,"source_id")?)?,
+        "browse_video_discovery" => crate::discovery::browse(c,text(&args,"source_id")?,args["kind"].as_str().unwrap_or("video_overview"),args["start"].as_f64().unwrap_or(0.),args["end"].as_f64().unwrap_or(1e12),args["offset"].as_u64().unwrap_or(0),args["query"].as_str().unwrap_or(""))?,
+        "queue_video_discovery" => {let value=crate::discovery::enqueue(c,text(&args,"source_id")?,args["interval"].as_f64().unwrap_or(5.),true)?;kick_discovery(app.clone(),c.meta("id")?.unwrap_or_default());value},
+        "cancel_video_discovery" => crate::discovery::cancel(c,text(&args,"source_id")?)?,
+        "cancel_processing" => {crate::processing::cancel(c,text(&args,"job_id")?)?;Value::Null},
         "storage_usage" => c.storage_usage()?,
-        "reclaim_staging" => c.reclaim_staging()?,
+        "reclaim_staging" => {anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the import before reclaiming staging");c.reclaim_staging()?},
 
         "import_files" => c.import_files(
 
@@ -270,8 +338,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         )?,
 
-        "process_source" => crate::processing::process(c, text(&args, "source_id")?, None)?,
-
+        "set_asr_profile" => {let model=text(&args,"model")?;anyhow::ensure!(["tiny","small"].contains(&model),"Unsupported local speech model");let worker=crate::processing::worker_path()?;anyhow::ensure!(worker.parent().context("Missing worker folder")?.join("_internal/models").join(model).join("model.bin").is_file(),"This speech model is not installed in the packaged worker");c.set_meta("asr_profile",model)?;c.audit("asr_profile_selected",json!({"model":model}))?;Value::Null},
         "transcribe_full" => {
 
             let job = crate::transcription::begin(c, text(&args, "source_id")?)?;
@@ -361,26 +428,6 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             Value::Null
 
         }
-
-        "render_page" => crate::processing::process_request(
-
-            c,
-
-            text(&args, "source_id")?,
-
-            json!({"operation":"render_page","page":args["page"]}),
-
-        )?,
-
-        "transcribe_source" => crate::processing::process_request(
-
-            c,
-
-            text(&args, "source_id")?,
-
-            json!({"operation":"transcribe","start":args["start"].as_f64().unwrap_or(0.0),"end":args["end"].as_f64().unwrap_or(30.0),"track":args["track"]}),
-
-        )?,
 
         "artifact_info" => {
 
@@ -497,22 +544,34 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "evidence_write" => crate::evidence::write(c,serde_json::from_value(args["object"].clone())?,"human")?,
         "evidence_review" => {crate::evidence::review(c,text(&args,"id")?,args["revision"].as_i64().context("Missing revision")?,text(&args,"review")?)?;Value::Null},
         "evidence_search" => crate::evidence::search(c,text(&args,"query")?,args["offset"].as_u64().unwrap_or(0) as usize)?,
-        "scan_sound_events" => {
-            let sid=text(&args,"source_id")?;
-            anyhow::ensure!(!c.source(sid)?.restricted,"Restricted source");
-            crate::processing::process_request(c,sid,json!({"operation":"sound_events","start":args["start"],"end":args["end"],"track":args["track"],"channel":args["channel"]}))?
-        },
         "fit_clock" => crate::evidence::fit_clock(&serde_json::from_value::<Vec<crate::evidence::Anchor>>(args["anchors"].clone())?)?,
         "team_status" => crate::teams::status(c,text(&args,"task_id")?)?,
+        "investigation_workbench" => crate::workbench::view(c,args["offset"].as_u64().unwrap_or(0))?,
+        "incident_replay" => crate::workbench::replay(c,&serde_json::from_value::<Vec<String>>(args["clock_ids"].clone())?)?,
+        "coverage_map" => crate::workbench::coverage_map(c,args["offset"].as_u64().unwrap_or(0))?,
+        "processing_recovery" => crate::processing::recovery_inventory(c)?,
+        "read_coverage" => crate::coverage::view(c,text(&args,"task_id")?)?,
+        "read_dossier" => crate::dossier::view(c,text(&args,"task_id")?)?,
+        "review_dossier_claim" => crate::dossier::human_review(c,text(&args,"task_id")?,args["revision"].as_u64().context("Missing dossier revision")?,usize::try_from(args["claim_index"].as_u64().context("Missing claim index")?)?,text(&args,"decision")?,text(&args,"note")?)?,
         "save_ai_settings" => {
-            let config:crate::providers::Config=serde_json::from_value(args["config"].clone())?;
-            let settings:Settings=serde_json::from_value(args["settings"].clone())?;
-            if !settings.model.is_empty() || (!settings.offline && settings.allow_text) {crate::providers::validate_model(&settings.model)?;}
+            crate::automatic::preempt_for_chat(c)?;
             c.db.execute_batch("SAVEPOINT ai_settings")?;
-            let result=(||->anyhow::Result<()> {if serde_json::to_value(&config)?!=serde_json::to_value(crate::providers::load(c)?)? {crate::providers::save(c,config)?;}c.save_settings(settings)?;Ok(())})();
+            let result=(||->anyhow::Result<()> {
+                crate::providers::apply_app_settings(c,&args)?;
+                let directory=app.path().app_config_dir()?;std::fs::create_dir_all(&directory)?;
+                let defaults=json!({"config":crate::providers::load(c)?,"settings":c.settings()?});
+                let mut staged=tempfile::NamedTempFile::new_in(&directory)?;
+                std::io::Write::write_all(&mut staged,&serde_json::to_vec(&defaults)?)?;
+                staged.as_file().sync_all()?;
+                staged.persist(directory.join("ai-defaults.json"))?;
+                Ok(())
+            })();
             if let Err(e)=result {c.db.execute_batch("ROLLBACK TO ai_settings; RELEASE ai_settings")?;return Err(e)}
-            c.db.execute_batch("RELEASE ai_settings")?;Value::Null
+            c.db.execute_batch("RELEASE ai_settings")?;
+            Value::Null
         },
+        "direct_media_permission" => json!({"enabled":c.meta("gemini_direct_media")?.as_deref()==Some("true")}),
+        "set_direct_media_permission" => {let enabled=args["enabled"].as_bool().context("Missing permission")?;c.set_meta("gemini_direct_media",if enabled{"true"}else{"false"})?;c.audit("gemini_direct_media_permission",json!({"enabled":enabled}))?;Value::Null},
         "ai_config" => serde_json::to_value(crate::providers::load(c)?)?,
         "save_ai_config" => {crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
         "save_settings" => {
@@ -535,6 +594,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         }
 
+        "review_redaction" => crate::exports::review_redaction(c,text(&args,"artifact_id")?,&serde_json::from_value::<Vec<u64>>(args["pages"].clone())?,text(&args,"note")?)?,
+        "export_redaction" => crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?,
+        "export_dossier_bundle" => crate::exports::dossier_bundle(c,text(&args,"task_id")?,Path::new(text(&args,"path")?))?,
         "export_record" => {
 
             c.export_record(text(&args, "record_id")?, Path::new(text(&args, "path")?))?;
@@ -561,12 +623,15 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 crate::providers::select_profile(c, serde_json::from_value(provider.clone())?, model)?
             } else { crate::providers::task_profile(c, "")? };
             crate::providers::check_permission(c, &selected)?;
+            if !agent::is_file_count_question(text(&args,"prompt")?) {
             provider_key_entry(selected.provider)?
 
                 .get_password()
 
                 .map_err(|_| anyhow::anyhow!("Save an API key in Settings first"))?;
 
+            }
+            crate::automatic::preempt_for_chat(c)?;
             let (source_ids, record_ids) = agent::case_scope(c)?;
 
             let task = agent::start(
@@ -596,6 +661,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             if let Err(e)=agent::attach_viewer_context(c,&task,&args["viewer_context"]) {agent::pause(c,&task,"Open-file context could not be included")?;return Err(e);}
 
+            if agent::is_file_count_question(text(&args,"prompt")?) {
+                agent::finish_inventory(c,&task,false)?;
+                let _=app.emit("case-changed",());
+                return Ok(json!({"task_id":task,"conversation_id":conversation}));
+            }
             let case_id = c.meta("id")?.unwrap_or_default();
 
             let handle = app.clone();
@@ -646,10 +716,15 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
     };
 
+    if ["import_files","import_folder","save_ai_settings"].contains(&action) {
+        crate::automatic::enqueue(c)?;
+        let case_id=c.meta("id")?.unwrap_or_default();
+        kick_automatic(app.clone(),case_id.clone());kick_transcriptions(app.clone(),case_id);
+    }
     if ![
 
         "snapshot",
-        "ai_config", "team_status", "evidence_list", "evidence_read", "evidence_search", "fit_clock", "read_conversation",
+        "ai_config", "direct_media_permission", "investigation_workbench", "coverage_map", "incident_replay", "processing_recovery", "team_status", "read_dossier", "read_coverage", "evidence_list", "evidence_read", "evidence_search", "fit_clock", "read_conversation",
 
         "full_transcription_status",
 
@@ -663,7 +738,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "revisions",
 
-        "processing_status",
+        "processing_status", "speaker_annotations", "video_discovery_status", "browse_video_discovery",
         "storage_usage",
 
     ]
@@ -752,7 +827,7 @@ fn kick_transcriptions(app: tauri::AppHandle, case_id: String) {
 
             Ok(Some(job)) => job,
 
-            _ => break,
+            _ => {kick_automatic(app.clone(),case_id.clone());break},
 
         };
 
@@ -797,7 +872,8 @@ fn kick_transcriptions(app: tauri::AppHandle, case_id: String) {
 }
 
 async fn run_agent(app: tauri::AppHandle, case_id: String, task: String) {
-    run_session(app,case_id,task,true).await;
+    run_session(app.clone(),case_id.clone(),task,true).await;
+    kick_automatic(app,case_id);
 }
 async fn run_team_phase(app:&tauri::AppHandle,case_id:&str,parent:&str,phase:&str)->anyhow::Result<()> {
     let children=with_case(app,case_id,|c|crate::teams::prepare(c,parent,phase))?;
@@ -814,6 +890,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
     Box::pin(async move {
 
     let result=async {
+
 
 
 
@@ -841,7 +918,26 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
 
             match response {
 
-                Ok(value)=>{let more=with_case(&app,&case_id,|c|agent::receive(c,&task,&prepared.transmission,value))?;kick_transcriptions(app.clone(),case_id.clone());let _=app.emit("case-changed",());if !more{break;}},
+                Ok(value)=>{
+                    // Authorization and registration hold the lock briefly; worker decoding does not.
+                    let registered=with_case(&app,&case_id,|c|agent::prepare_media(c,&task,&prepared.transmission,&value));
+                    let (jobs,preparation_error)=match registered {Ok(j)=>(j,None),Err(e)=>(vec![],Some(e.to_string()))};
+                    let job_ids=jobs.iter().map(|j|j.job_id.clone()).collect::<Vec<_>>();
+                    let mut media=tauri::async_runtime::spawn_blocking(move || agent::PreparedMedia{jobs:jobs.into_iter().map(|job|{let output=crate::processing::run_prepared(&job);(job,output)}).collect(),external:true,error:preparation_error}).await?;
+                    let semantic=with_case(&app,&case_id,|c|{c.set_meta(&format!("semantic_result:{task}"),"")?;agent::prepare_semantic(c,&task,&prepared.transmission,&value)});
+                    if let Ok(Some(job))=semantic {
+                        let (job,output)=tauri::async_runtime::spawn_blocking(move || {let output=crate::semantic::run(&job);(job,output)}).await?;
+                        with_case(&app,&case_id,|c|{
+                            let query:Value=serde_json::from_str(value["output"].as_array().unwrap().iter().find(|v|v["name"]=="search_semantic").unwrap()["arguments"].as_str().unwrap())?;
+                            let result=output.and_then(|v|crate::semantic::publish(c,&job,v));
+                            let stored=match result {Ok(v)=>json!({"query":query["query"],"result":v}),Err(e)=>json!({"query":query["query"],"error":e.to_string()})};
+                            c.set_meta(&format!("semantic_result:{task}"),&stored.to_string())?;Ok(())
+                        })?;
+                    }
+                    let handled=with_case(&app,&case_id,|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
+                    with_case(&app,&case_id,|c|{for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}Ok(())})?;
+                    let more=handled?;kick_transcriptions(app.clone(),case_id.clone());let _=app.emit("case-changed",());if !more{break;}
+                },
 
                 Err(error)=>{with_case(&app,&case_id,|c|{c.db.execute("UPDATE transmissions SET status='uncertain' WHERE id=?",[&prepared.transmission])?;Ok(())})?;return Err(error);}
 
@@ -872,6 +968,7 @@ pub fn run() {
         .manage(AppState {
 
             case: Mutex::new(None),
+            importing: std::sync::atomic::AtomicBool::new(false),
 
         })
 
@@ -1058,3 +1155,88 @@ pub fn run() {
 
 }
 
+
+fn apply_ai_defaults(app:&tauri::AppHandle,case:&mut Case)->anyhow::Result<()> {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return Ok(());}
+    let path=app.path().app_config_dir()?.join("ai-defaults.json");
+    let value=if path.is_file(){serde_json::from_slice(&std::fs::read(path)?)?}else{json!({"config":crate::providers::load(case)?,"settings":case.settings()?})};
+    crate::providers::apply_app_settings(case,&value)
+}
+fn kick_discovery(app:tauri::AppHandle,case_id:String) {
+    static ACTIVE:std::sync::OnceLock<Mutex<std::collections::HashSet<String>>>=std::sync::OnceLock::new();
+    let active=ACTIVE.get_or_init(||Mutex::new(std::collections::HashSet::new()));
+    if !active.lock().unwrap_or_else(|e|e.into_inner()).insert(case_id.clone()) {return;}
+    struct Lease {active:&'static Mutex<std::collections::HashSet<String>>,id:String}
+    impl Drop for Lease {fn drop(&mut self){self.active.lock().unwrap_or_else(|e|e.into_inner()).remove(&self.id);}}
+    let lease=Lease{active,id:case_id.clone()};
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease=lease;
+        loop {
+            let job=match with_case(&app,&case_id,crate::discovery::next) {
+                Ok(Some(job))=>job,
+                Ok(None)=>{let pending=with_case(&app,&case_id,|c|Ok(c.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE s.restricted=0 AND j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index'))",[],|r|r.get::<_,bool>(0))?)).unwrap_or(false);if pending {std::thread::sleep(std::time::Duration::from_millis(500));continue;}break;},
+                Err(_)=>break
+            };
+            let result=crate::processing::run_prepared(&job.processor);
+            let _=with_case(&app,&case_id,|c|crate::discovery::publish(c,&job,result));
+            let _=app.emit("case-changed",());
+        }
+    });
+}
+fn kick_automatic(app:tauri::AppHandle,case_id:String) {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return;}
+    kick_discovery(app.clone(),case_id.clone());
+    for _ in 0..2 {
+        let app=app.clone();let case_id=case_id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            loop {
+                let job=match with_case(&app,&case_id,crate::automatic::next) {Ok(Some(job))=>job,_=>break};
+                let result=crate::processing::run_prepared(&job.processor);
+                let _=with_case(&app,&case_id,|c|crate::automatic::publish(c,&job,result));
+                let _=app.emit("case-changed",());
+                let task=with_case(&app,&case_id,|c| {let provider=crate::providers::load(c)?.provider;if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}crate::automatic::start_review(c)});
+                if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});}
+            }
+            let task=with_case(&app,&case_id,|c| {
+                let provider=crate::providers::load(c)?.provider;
+                if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
+                crate::automatic::start_review(c)
+            });
+            if let Ok(Some(task))=task {
+                let _=app.emit("case-changed",());
+                tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});
+            }
+        });
+    }
+}
+
+fn import_background(app:&tauri::AppHandle,action:&str,args:Value)->anyhow::Result<Value> {
+    use std::sync::atomic::{AtomicBool,Ordering};
+    let state=app.state::<AppState>();
+    anyhow::ensure!(state.importing.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).is_ok(),"An import is already active");
+    struct Lease<'a>(&'a AtomicBool);impl Drop for Lease<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
+    let _lease=Lease(&state.importing);
+    let (root,case_id)={let guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case unavailable"))?;let case=guard.as_ref().context("Open a case first")?;(case.root.clone(),case.meta("id")?.unwrap_or_default())};
+    let (paths,skipped)=if action=="import_folder" {crate::case::folder_paths(&root,Path::new(text(&args,"path")?))?}else{(serde_json::from_value::<Vec<String>>(args["paths"].clone())?,vec![])};
+    anyhow::ensure!(paths.len()<=10000,"Import at most 10,000 files per batch");
+    let production=args["production"].as_str().unwrap_or("Imported evidence");
+    let batch=crate::case::id();let mut items=Vec::new();
+    for path in paths {
+        // Large file copies and original/staging hashes never hold the case mutex.
+        let prepared=crate::case::prepare_import(&root,Path::new(&path));
+        let item=with_case(app,&case_id,|c| {
+            let result=prepared.and_then(|p|c.publish_import(p,production,&batch));
+            let status=if result.is_ok(){"imported"}else{"failed"};
+            let detail=result.unwrap_or_else(|e|json!({"error":e.to_string()}));
+            c.db.execute("INSERT INTO imports VALUES(?,?,?,?,?,?)",rusqlite::params![crate::case::id(),path,batch,status,detail.to_string(),crate::case::now()])?;
+            Ok(json!({"path":path,"status":status,"detail":detail}))
+        })?;
+        items.push(item);let _=app.emit("case-changed",());
+    }
+    with_case(app,&case_id,|c|{c.audit("import_batch",json!({"batch":batch,"items":items}))?;crate::automatic::enqueue(c)})?;
+    kick_automatic(app.clone(),case_id.clone());kick_transcriptions(app.clone(),case_id);
+    let _=app.emit("case-changed",());
+    Ok(json!({"batch":batch,"items":items,"skipped":skipped}))
+}
