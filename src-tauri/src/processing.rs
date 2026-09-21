@@ -284,7 +284,8 @@ pub fn publish_prepared(case:&mut Case,job:&PreparedJob,output:Result<Value>)->R
             );
             let hash = file_hash(&preview)?;
             let mime=if kind=="playback" {"video/mp4"}else if kind=="redaction" && entry["mime"]=="application/pdf" {"application/pdf"}else{"image/jpeg"};
-            let ext=if mime=="video/mp4" {"mp4"}else if mime=="application/pdf" {"pdf"}else{"jpg"};
+            // Publication and restore share the versioned artifact-format registry.
+            let ext=crate::artifact_registry::extension_for_mime(mime).context("Unregistered artifact format")?;
             let relative = format!("artifacts/{hash}.{ext}");
             publish_file(&preview,&case.root.join(&relative),&hash)?;
             let artifact = id();

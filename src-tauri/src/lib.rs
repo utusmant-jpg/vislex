@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod artifact_registry;
 pub mod backup;
 pub mod case;
 #[cfg(feature = "desktop")]

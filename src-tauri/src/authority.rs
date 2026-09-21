@@ -3,7 +3,6 @@ use crate::case::{Case, now};
 use anyhow::{ensure, Context, Result};
 use serde_json::{json,Value};
 use rusqlite::params;
-use std::io::Write;
 pub struct Download {pub url:String,pub bytes:Vec<u8>,pub mime:String,pub retrieved_at:String}
 
 pub fn validate_url(raw:&str)->Result<reqwest::Url> {

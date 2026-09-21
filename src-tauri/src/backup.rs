@@ -17,7 +17,18 @@ pub struct BackupPlan {
     db_path: PathBuf,
     originals: Vec<(PathBuf, String)>,
     artifacts: Vec<(PathBuf, String)>,
+    transcripts: Vec<(PathBuf, String)>,
     sources: usize,
+}
+/// Transcript publication names accepted in backup archives. Shared by prepare
+/// and restore so the archive inventory is symmetric.
+fn valid_transcript_entry(name: &str) -> bool {
+    name.strip_prefix("working/transcripts/").is_some_and(|s| {
+        s.len() <= 200
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+            && [".txt", ".json", ".srt"].iter().any(|ext| s.ends_with(ext))
+    })
 }
 pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Result<BackupPlan> {
     ensure!(
@@ -72,10 +83,30 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
         files.push(json!({"path":path,"sha256":hash}));
         artifact_entries.push((absolute, path.clone()));
     }
+    // Published transcript files are immutable case content: include them so the
+    // archive and its manifest inventory stay symmetric with restore.
+    let mut transcripts = Vec::new();
+    let transcript_dir = case.root.join("working/transcripts");
+    if transcript_dir.is_dir() {
+        for entry in fs::read_dir(&transcript_dir)? {
+            let entry = entry?;
+            if !entry.metadata()?.is_file() {
+                continue;
+            }
+            let relative = format!("working/transcripts/{}", entry.file_name().to_string_lossy());
+            ensure!(
+                valid_transcript_entry(&relative),
+                "Unexpected file in working/transcripts: {}",
+                entry.file_name().to_string_lossy()
+            );
+            files.push(json!({"path":&relative,"sha256":file_hash(&entry.path())?}));
+            transcripts.push((entry.path(), relative));
+        }
+    }
     let manifest = serde_json::to_vec_pretty(
-        &json!({"format":"local-evidence-desk","version":1,"created_at":now(),"files":files,"originals_included":true}),
+        &json!({"format":"local-evidence-desk","version":1,"artifact_formats":crate::artifact_registry::ARTIFACT_FORMAT_VERSION,"created_at":now(),"files":files,"originals_included":true}),
     )?;
-    Ok(BackupPlan{staging: temp, manifest, db_path, originals, artifacts: artifact_entries, sources: sources.len()})
+    Ok(BackupPlan{staging: temp, manifest, db_path, originals, artifacts: artifact_entries, transcripts, sources: sources.len()})
 }
 /// Encrypt and write the archive without holding the case lock.
 pub fn write_archive(plan: &BackupPlan, destination: &Path, password: &str) -> Result<()> {
@@ -89,6 +120,9 @@ pub fn write_archive(plan: &BackupPlan, destination: &Path, password: &str) -> R
             archive.append_path_with_name(absolute, name)?;
         }
         for (absolute, name) in &plan.artifacts {
+            archive.append_path_with_name(absolute, name)?;
+        }
+        for (absolute, name) in &plan.transcripts {
             archive.append_path_with_name(absolute, name)?;
         }
         let mut header = tar::Header::new_gnu();
@@ -146,19 +180,10 @@ pub fn restore(archive_path: &Path, destination: &Path, password: &str) -> Resul
         let original = name
             .strip_prefix("originals/")
             .is_some_and(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()));
-        let artifact = name.strip_prefix("artifacts/").is_some_and(|s| {
-            s.split_once('.').is_some_and(|(hash, ext)| {
-                hash.len() == 64
-                    && hash.chars().all(|c| c.is_ascii_hexdigit())
-                    && ["json", "jpg", "mp4"].contains(&ext)
-            })
-        });
-        let transcript = name.strip_prefix("working/transcripts/").is_some_and(|s| {
-            s.len() <= 200
-                && s.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-                && [".txt", ".json", ".srt"].iter().any(|ext| s.ends_with(ext))
-        });
+        // Artifact entries are validated against the versioned registry shared
+        // with publication; unknown formats fail deliberately.
+        let artifact = crate::artifact_registry::parse_artifact_file(&name).is_some();
+        let transcript = valid_transcript_entry(&name);
         ensure!(
             name == "case.sqlite3" || name == "manifest.json" || original || artifact || transcript,
             "Unexpected file in backup"
