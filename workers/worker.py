@@ -5,6 +5,7 @@ Output is untrusted until validated by Rust. No database access or arbitrary cod
 from __future__ import annotations
 import ctypes
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -318,27 +319,26 @@ def process(job: Path, request: dict) -> dict:
         notes = ['Text preview only; slide layout, images, comments, embedded files and animations are not rendered. Original file is preserved.']
     elif kind == 'xlsx':
         from openpyxl import load_workbook
-        formulas_file, cached_file = source.open('rb'), source.open('rb')
-        formulas = load_workbook(formulas_file, read_only=True, data_only=False, keep_links=False)
-        cached = load_workbook(cached_file, read_only=True, data_only=True, keep_links=False)
-        count = 0
-        for sheet in formulas:
-            for row in sheet:
-                for cell in row:
-                    if cell.value is None:
-                        continue
-                    count += 1
-                    if count > 100_000:
-                        raise ValueError('Workbook exceeds the 100,000 populated-cell processing limit')
-                    value = cell.value
-                    text = str(value)
-                    if cell.data_type == 'f':
-                        text += '\nCached value: ' + str(cached[sheet.title][cell.coordinate].value)
-                    pages.append({'locator': f'sheet:{sheet.title}!{cell.coordinate}', 'text': text, 'method': 'openpyxl read-only', 'sheet_state': sheet.sheet_state})
-        formulas.close()
-        cached.close()
-        formulas_file.close()
-        cached_file.close()
+        # Context managers keep both handles closed even when a corrupt workbook raises mid-read.
+        with source.open('rb') as formulas_file, source.open('rb') as cached_file:
+            formulas = load_workbook(formulas_file, read_only=True, data_only=False, keep_links=False)
+            cached = load_workbook(cached_file, read_only=True, data_only=True, keep_links=False)
+            count = 0
+            for sheet in formulas:
+                for row in sheet:
+                    for cell in row:
+                        if cell.value is None:
+                            continue
+                        count += 1
+                        if count > 100_000:
+                            raise ValueError('Workbook exceeds the 100,000 populated-cell processing limit')
+                        value = cell.value
+                        text = str(value)
+                        if cell.data_type == 'f':
+                            text += '\nCached value: ' + str(cached[sheet.title][cell.coordinate].value)
+                        pages.append({'locator': f'sheet:{sheet.title}!{cell.coordinate}', 'text': text, 'method': 'openpyxl read-only', 'sheet_state': sheet.sheet_state})
+            formulas.close()
+            cached.close()
         notes = ['Formulas are not executed. Cached values may be stale. Row/column visibility and styles require original-workbook review.']
     else:
         raise ValueError('Unsupported processor kind')
@@ -346,17 +346,68 @@ def process(job: Path, request: dict) -> dict:
         raise ValueError('Extracted text exceeds the allowed limit')
     return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': metadata, 'limitations': notes, 'previews': previews}
 
+def json_safe(value):
+    """Recursively convert values json.dumps cannot encode (bytes, sets, NaN, arbitrary objects) into safe strings."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        try:
+            return bytes(value).decode('utf-8', errors='replace')
+        except Exception:
+            return repr(value)
+    if isinstance(value, dict):
+        safe = {}
+        for key, item in value.items():
+            key = json_safe(key)
+            if not isinstance(key, (str, int, float, bool)):
+                key = repr(key)
+            safe[key] = json_safe(item)
+        return safe
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return '{' + ', '.join(repr(item) for item in sorted(value, key=repr)) + '}'
+    try:
+        return repr(value)
+    except Exception:
+        return '<unrepresentable>'
+
+def write_result(job: Path, result: dict) -> None:
+    """Publish result.json; if serialization fails, Rust still receives a failed diagnostic."""
+    output = job / 'result.json'
+    try:
+        output.write_text(json.dumps(json_safe(result), ensure_ascii=False), encoding='utf-8')
+    except Exception as exc:
+        output.write_text(json.dumps({'version': 1, 'status': 'failed', 'error': repr(exc)[:2000]}, ensure_ascii=False), encoding='utf-8')
+
 def main() -> None:
     if not is_appcontainer():
         raise SystemExit('Refusing to process evidence outside Windows AppContainer')
     job = Path(sys.argv[1]).resolve()
+    # Keep a crash trace inside the job directory so import/native failures leave evidence for Rust.
+    try:
+        crash_log = (job / 'stderr.log').open('w', encoding='utf-8', errors='replace')
+    except OSError:
+        crash_log = None
+    if crash_log is not None:
+        sys.stderr = crash_log
+
+        def log_uncaught(exc_type, exc_value, exc_traceback):
+            import traceback
+            crash_log.write(''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
+            crash_log.flush()
+
+        sys.excepthook = log_uncaught
     try:
         request = json.loads((job / 'request.json').read_text(encoding='utf-8'))
         result = process(job, request)
     except Exception as exc:
         result = {'version': 1, 'status': 'failed', 'error': str(exc)[:2000]}
-    output = job / 'result.json'
-    output.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
+    write_result(job, result)
+    if crash_log is not None:
+        crash_log.flush()
 
 if __name__ == '__main__':
     main()

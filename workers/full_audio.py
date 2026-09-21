@@ -89,7 +89,11 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
                       'track_count': len(tracks), 'processed_seconds': min(end, window_start + core),
                       'estimated_seconds': descriptor['estimated_seconds'], 'segments': len(pages), 'chunks': chunks})
             # Durable private processing journal: never misrepresented as a complete transcript.
-            (job / 'partial.json').write_text(json.dumps({'status': 'partial', 'pages': pages}), encoding='utf-8')
+            # Rewritten atomically every ~10 chunks (and always at the end) to bound journal I/O.
+            if final or chunks % 10 == 0:
+                temporary = job / 'partial.next.json'
+                temporary.write_text(json.dumps({'status': 'partial', 'pages': pages}), encoding='utf-8')
+                os.replace(temporary, job / 'partial.json')
             if not final:
                 audio[:context * rate] = audio[core * rate:]
                 covered[:context * rate] = covered[core * rate:]
@@ -134,6 +138,12 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
         coverage.append({**descriptor, 'decoded_to_eof': True, 'actual_end_seconds': actual_end,
                          'decoded_seconds': decoded_seconds, 'gap_seconds': gap_seconds, 'chunks': chunks})
     progress({'state': 'complete', 'track_count': len(tracks), 'segments': len(pages)})
+    # Chunk checkpoints only accelerate resuming interrupted work; prune them after a clean finish.
+    for checkpoint in job.glob('chunk-*.json'):
+        try:
+            checkpoint.unlink()
+        except OSError:
+            pass
     return {'version': 1, 'status': 'complete', 'pages': pages, 'previews': [],
             'metadata': {'scope': 'all_audio_tracks_to_decoder_eof', 'tracks': coverage,
                          'container_origin_seconds': container_origin_seconds,
