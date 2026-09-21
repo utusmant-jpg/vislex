@@ -277,7 +277,13 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let mut c = match action {
 
-            "create_case" => Case::create(&path, text(&args, "name")?)?,
+            // App defaults initialize new cases only. Opening or restoring an
+            // existing case never changes its durable AI/cloud permissions.
+            "create_case" => {
+                let mut created = Case::create(&path, text(&args, "name")?)?;
+                apply_ai_defaults(app, &mut created)?;
+                created
+            }
 
             "restore_case" => backup::restore(
 
@@ -293,7 +299,6 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         };
 
-        apply_ai_defaults(app,&mut c)?;
         crate::automatic::enqueue(&mut c)?;
         let case_id=c.meta("id")?.unwrap_or_default();
         let snapshot = c.snapshot()?;

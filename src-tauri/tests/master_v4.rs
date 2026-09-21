@@ -520,6 +520,10 @@ fn chat_model_selection_keeps_other_providers_and_enforces_permissions() {
     let (_dir,mut c,_sid)=setup();
     let profile=providers::Profile{provider:Provider::Gemini,model:"gemini-test".into(),allow_text:true,allow_images:true};
     providers::save(&mut c,Config{pool:vec![profile],..Default::default()}).unwrap();
+    // VL-002: the durable case-level image grant gates pool profiles too, so an
+    // image-capable profile is rejected while this case has not granted images.
+    assert!(providers::select_profile(&c,Provider::Gemini,"gemini-test").is_err());
+    let mut granted=c.settings().unwrap();granted.allow_images=true;c.save_settings(granted).unwrap();
     let selected=providers::select_profile(&c,Provider::Gemini,"gemini-test").unwrap();assert!(selected.allow_images);
     assert!(providers::select_profile(&c,Provider::Openai,"synthetic-model").is_ok());
     assert_eq!(providers::load(&c).unwrap().provider,Provider::Openai);
@@ -622,7 +626,9 @@ fn app_preferences_replace_existing_case_model_without_credentials() {
     assert_eq!(c.settings().unwrap().model,"app-model");
     assert_eq!(providers::load(&c).unwrap().execution,Execution::Auto);
     assert_eq!(providers::load(&c).unwrap().review,Review::Standard);
-    assert_eq!(c.meta("gemini_direct_media").unwrap().as_deref(),Some("true"));
+    // VL-002: applying app preferences never silently enables direct media;
+    // it remains a separate explicit per-case opt-in.
+    assert_ne!(c.meta("gemini_direct_media").unwrap().as_deref(),Some("true"));
     let other_dir=tempfile::tempdir().unwrap();let mut other=Case::create(&other_dir.path().join("second"),"Second case").unwrap();
     providers::apply_app_settings(&mut other,&preferences).unwrap();
     assert_eq!(other.settings().unwrap().model,c.settings().unwrap().model);

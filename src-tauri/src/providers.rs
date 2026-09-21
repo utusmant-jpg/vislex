@@ -150,8 +150,13 @@ pub fn check_permission(case: &crate::case::Case, p: &Profile) -> Result<()> {
         !s.offline && s.allow_text && p.allow_text,
         "Text transmission is disabled"
     );
+    // The durable case-level image grant gates every profile; provider/model
+    // routing and pool grants cannot silently expand it.
+    ensure!(
+        !p.allow_images || s.allow_images,
+        "Image transmission is disabled for this case"
+    );
     let c = load(case)?;
-    if p.provider == c.provider && p.model == s.model {ensure!(!p.allow_images || s.allow_images,"Provider image permission is no longer approved");}
     if p.provider != c.provider || p.model != s.model {
         ensure!(
             c.pool
@@ -543,7 +548,9 @@ pub fn apply_app_settings(case:&mut crate::case::Case,value:&Value)->Result<()> 
     settings.offline=false;settings.allow_text=true;settings.allow_images=true;
     settings.case_budget=0.;settings.input_per_million=0.;settings.output_per_million=0.;
     case.db.execute_batch("SAVEPOINT app_preferences")?;
-    let result=(||->Result<()> {save(case,config)?;case.save_settings(settings)?;case.set_meta("gemini_direct_media","true")?;Ok(())})();
+    // Direct media (original audio/video transmission) stays a separate explicit
+    // per-case opt-in; applying provider defaults never silently enables it.
+    let result=(||->Result<()> {save(case,config)?;case.save_settings(settings)?;Ok(())})();
     match result {Ok(())=>case.db.execute_batch("RELEASE app_preferences")?,Err(error)=>{case.db.execute_batch("ROLLBACK TO app_preferences; RELEASE app_preferences")?;return Err(error);}}
     Ok(())
 }

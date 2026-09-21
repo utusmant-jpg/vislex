@@ -769,3 +769,55 @@ fn old_office_inventory_status_no_longer_reports_unsupported() {
     assert_eq!(c.source(&s).unwrap().status,"document preview available · extraction pending");
     assert_eq!(c.sources().unwrap()[0].status,c.source(&s).unwrap().status);
 }
+
+#[test]
+fn case_level_image_grant_gates_pool_profiles_and_blocks_dispatch_after_revoke() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let mut settings=c.settings().unwrap();settings.allow_images=true;c.save_settings(settings).unwrap();
+    c.set_meta("ai_config",&serde_json::to_string(&json!({"provider":"openai","execution":"auto","review":"standard","pool":[{"provider":"openai","model":"other-model","allow_text":true,"allow_images":true}]})).unwrap()).unwrap();
+    let task=agent::start(&mut c,"visual question","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    c.set_meta(&format!("task_profile:{task}"),&serde_json::to_string(&json!({"provider":"openai","model":"other-model","allow_text":true,"allow_images":true})).unwrap()).unwrap();
+    assert!(agent::prepare_request(&mut c,&task).is_ok());
+    // Revoke the durable case-level image grant while the task exists: the pool
+    // profile's own grant must not keep image dispatch alive.
+    let mut revoked=c.settings().unwrap();revoked.allow_images=false;c.save_settings(revoked).unwrap();
+    let error=match agent::prepare_request(&mut c,&task){Err(e)=>e.to_string(),Ok(_)=>panic!("dispatch unexpectedly allowed")};
+    assert!(error.contains("Image transmission is disabled for this case"),"{error}");
+}
+
+#[test]
+fn revoked_direct_media_permission_blocks_existing_task_dispatch() {
+    let (dir,mut c,_text)=setup();enable(&mut c);
+    // Direct media dispatch validates the audio MIME type, so use a real WAV source.
+    let mut wav:Vec<u8>=Vec::new();
+    wav.extend_from_slice(b"RIFF");wav.extend_from_slice(&36u32.to_le_bytes());wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");wav.extend_from_slice(&16u32.to_le_bytes());wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());wav.extend_from_slice(&16000u32.to_le_bytes());wav.extend_from_slice(&32000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");wav.extend_from_slice(&0u32.to_le_bytes());
+    let wav_path=dir.path().join("recording.wav");
+    std::fs::write(&wav_path,&wav).unwrap();
+    c.import_files(&[wav_path.to_string_lossy().into()],"media").unwrap();
+    let sid=c.sources().unwrap().into_iter().find(|s|s.name=="recording.wav").unwrap().id.clone();
+    let mut settings=c.settings().unwrap();settings.model="gemini-2.5-pro".into();c.save_settings(settings).unwrap();
+    c.set_meta("ai_config",&serde_json::to_string(&json!({"provider":"gemini","execution":"auto","review":"standard","pool":[]})).unwrap()).unwrap();
+    let task=agent::start(&mut c,"listen closely","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    let history=json!([{"role":"user","content":"Task"},{"type":"local_media","source_id":sid}]);
+    c.db.execute("UPDATE tasks SET history=? WHERE id=?",rusqlite::params![history.to_string(),task]).unwrap();
+    c.set_meta("gemini_direct_media","true").unwrap();
+    assert!(agent::prepare_request(&mut c,&task).is_ok());
+    c.set_meta("gemini_direct_media","false").unwrap();
+    let error=match agent::prepare_request(&mut c,&task){Err(e)=>e.to_string(),Ok(_)=>panic!("dispatch unexpectedly allowed")};
+    assert!(error.contains("Direct media permission is disabled"),"{error}");
+}
+
+#[test]
+fn applying_app_defaults_never_silently_enables_direct_media() {
+    let (_dir,mut c,_)=setup();enable(&mut c);
+    let defaults=json!({"config":{"provider":"openai","execution":"auto","review":"standard","pool":[]},"settings":{"offline":false,"allow_text":true,"allow_images":true,"model":"m","case_budget":0.,"input_per_million":0.,"output_per_million":0.}});
+    evidence_desk::providers::apply_app_settings(&mut c,&defaults).unwrap();
+    assert_ne!(c.meta("gemini_direct_media").unwrap().as_deref(),Some("true"));
+    // The separate explicit opt-in still works.
+    c.set_meta("gemini_direct_media","true").unwrap();
+    assert_eq!(c.meta("gemini_direct_media").unwrap().as_deref(),Some("true"));
+}
