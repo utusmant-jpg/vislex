@@ -2,18 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { X, Save } from 'lucide-react';
 import { api, native } from '../bridge';
 import { configuredProfiles, defaultConfig, providerNames } from '../aiProfiles';
-import type { AIConfig, AIProfile, ModelOption, Provider, Settings, Snapshot } from '../types';
+import type { AIProfile, ModelOption, Provider, Snapshot } from '../types';
 
 const companies = Object.keys(providerNames) as Provider[];
 function initialProfiles(snapshot: Snapshot): AIProfile[] {
   const saved = configuredProfiles(snapshot);
   return [...saved.map(p => ({ ...p, allow_text: true, allow_images: true })), ...companies.filter(provider => !saved.some(p => p.provider === provider)).map(provider => ({ provider, model: '', allow_text: false, allow_images: false }))];
 }
-export default function SettingsDialog({ snapshot, onClose, refresh }: { snapshot: Snapshot; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void }) {
+export default function SettingsDialog({ snapshot, onClose, refresh }: { snapshot: Snapshot; onClose: () => void; refresh: () => Promise<void> }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const mounted = useRef(true);
-  const [settings] = useState<Settings>({ ...snapshot.settings, offline: false, allow_text: true, allow_images: true, case_budget: 0, input_per_million: 0, output_per_million: 0 });
-  const [config] = useState<AIConfig>(snapshot.ai_config ?? defaultConfig);
   const [profiles, setProfiles] = useState(() => initialProfiles(snapshot));
   const [primary, setPrimary] = useState(() => Math.max(0, initialProfiles(snapshot).findIndex(p => p.provider === (snapshot.ai_config ?? defaultConfig).provider && p.model === snapshot.settings.model)));
   const [error, setError] = useState('');
@@ -55,14 +53,12 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       for (const provider of companies) {
         if (keys[provider]?.trim()) { await api('save_provider_key', { provider, key: keys[provider] }); setKeys(s => ({ ...s, [provider]: '' })); setStored(s => ({ ...s, [provider]: true })); }
       }
-      if (!settings.offline) {
-        const enabled = [...new Set(profiles.filter(p => p.model).map(p => p.provider))];
-        for (const provider of enabled) {
-          const status = await api<{ configured: boolean }>('provider_key_status', { provider });
-          if (!status.configured) throw new Error(`Add an API key for ${providerNames[provider]}, or remove its selected model.`);
-        }
+      const enabled = [...new Set(profiles.filter(p => p.model).map(p => p.provider))];
+      for (const provider of enabled) {
+        const status = await api<{ configured: boolean }>('provider_key_status', { provider });
+        if (!status.configured) throw new Error(`Add an API key for ${providerNames[provider]}, or remove its selected model.`);
       }
-      await api('save_ai_settings', { config: { ...config, execution: 'auto', review: 'standard', provider: lead.provider, pool: profiles.filter((p, i) => i !== primary && p.model).map(p => ({ ...p, allow_text: true, allow_images: true })) }, settings: { ...settings, model: lead.model, allow_text: true, allow_images: true } });
+      await api('save_ai_settings', { config: { provider: lead.provider, execution: 'auto', review: 'standard', pool: profiles.filter((p, i) => i !== primary && p.model).map(p => ({ ...p, allow_text: true, allow_images: true })) }, settings: { model: lead.model, offline: false, allow_text: true, allow_images: true, case_budget: 0, input_per_million: 0, output_per_million: 0 } });
       await refresh(); onClose();
     } catch (e) { if (mounted.current) setError(String(e)); }
     finally { if (mounted.current) setSaving(false); }
@@ -77,7 +73,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       <div className="input-row"><input aria-label={`${providerNames[provider]} API key`} type="password" autoComplete="off" value={keys[provider] ?? ''} disabled={loading[provider]} onChange={e => setKeys(s => ({ ...s, [provider]: e.target.value }))} placeholder={stored[provider] ? 'Key saved in Windows Credential Manager' : 'Paste API key'}/><button className="secondary" disabled={!native || loading[provider] || (!stored[provider] && !keys[provider]?.trim())} onClick={() => void loadModels(provider)}>{loading[provider] ? 'Loading…' : keys[provider]?.trim() ? 'Save key & load models' : 'Load models'}</button></div>
       {catalogErrors[provider] ? <p role="alert">{catalogErrors[provider]}</p> : null}
       {profiles.map((p, i) => p.provider !== provider ? null : <div className="provider-model" key={i}>
-        <label>Model<select aria-label={`${providerNames[provider]} model ${i + 1}`} value={p.model} onFocus={() => { if (native && stored[provider] && !settings.offline && !models[provider] && !loading[provider] && !catalogErrors[provider]) void loadModels(provider); }} onChange={e => { const first = !profiles.some(x => x.model); updateProfile(i, { model: e.target.value, allow_text: true, allow_images: true }); if (first) setPrimary(i); }}><option value="">{loading[provider] ? 'Loading models…' : 'Select a model'}</option>{p.model && !models[provider]?.some(m => m.id === p.model) ? <option value={p.model}>{p.model} (saved)</option> : null}{models[provider]?.map(m => <option key={m.id} value={m.id}>{m.name === m.id ? m.id : `${m.name} · ${m.id}`}</option>)}</select></label>
+        <label>Model<select aria-label={`${providerNames[provider]} model ${i + 1}`} value={p.model} onFocus={() => { if (native && stored[provider] && !models[provider] && !loading[provider] && !catalogErrors[provider]) void loadModels(provider); }} onChange={e => { const first = !profiles.some(x => x.model); updateProfile(i, { model: e.target.value, allow_text: true, allow_images: true }); if (first) setPrimary(i); }}><option value="">{loading[provider] ? 'Loading models…' : 'Select a model'}</option>{p.model && !models[provider]?.some(m => m.id === p.model) ? <option value={p.model}>{p.model} (saved)</option> : null}{models[provider]?.map(m => <option key={m.id} value={m.id}>{m.name === m.id ? m.id : `${m.name} · ${m.id}`}</option>)}</select></label>
         <div className="provider-permissions"><label><input type="radio" name="default-model" checked={primary === i} onChange={() => setPrimary(i)}/> Default chat model</label>{p.model ? <span className="badge">Enabled</span> : null}{profiles.filter(x => x.provider === provider).length > 1 && primary !== i ? <button className="quiet" onClick={() => { setProfiles(ps => ps.filter((_, j) => j !== i)); if (primary > i) setPrimary(primary - 1); }}>Remove</button> : null}</div>
       </div>)}
       <button className="quiet" disabled={profiles.length >= 16} onClick={() => setProfiles(ps => [...ps, { provider, model: '', allow_text: false, allow_images: false }])}>Add another model</button>

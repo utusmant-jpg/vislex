@@ -1,85 +1,296 @@
-import { useEffect, useRef, useState } from 'react';
-import { Sparkles, ArrowUp, Square, Play, ChevronDown, LoaderCircle, Settings2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowUp, BookOpen, ChevronDown, CircleDot, FilePenLine, Film, Flag, Layers, ListChecks,
+  LoaderCircle, MessageSquareQuote, Play, Scale, ScanLine, Search, Settings2, Sparkles, Square, Wrench,
+} from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
-import { api, citationParts, native } from '../bridge';
-import { configuredProfiles, profileKey, providerNames } from '../aiProfiles';
-import type { Snapshot, Selection, Action } from '../types';
+import { api, native } from '../bridge';
+import { configuredProfiles, profileKey } from '../aiProfiles';
+import type { Action, AIProfile, Snapshot, Selection, Task } from '../types';
+import { Markdown } from '../markdown';
+import { CopyButton, ModelPicker, StatusPill, Tooltip, formatClock, useNow } from '../ui';
+import { getViewerContext } from '../viewerContext';
 
+// Keep unsaved chat drafts in memory only; never put case content in browser storage.
+const chatDrafts = new Map<string, string>();
+const modelKey = (caseId: string | undefined, conversationId: string | null) => `vislex-model:${caseId}:${conversationId ?? 'new'}`;
 
-function CitedText({ text, onSource }: { text: string; onSource: (id: string, locator?: string) => void }) {
-  return <div className="answer-text">{text.split(/(evidence:[a-zA-Z0-9-]+#(?:L\d+-L\d+|image|artifact:[a-zA-Z0-9-]+))/g).map((part, i) => {
-    const citation = citationParts(part);
-    return citation ? <button key={i} className="citation" title={part} onClick={() => onSource(citation.sourceId, citation.locator)}>{citation.locator === 'image' ? 'Image' : citation.locator.startsWith('artifact:') ? 'View source' : citation.locator}</button> : <span key={i}>{part.split(/(\*\*[^*]+\*\*)/g).map((segment,j)=>segment.startsWith('**')&&segment.endsWith('**')?<strong key={j}>{segment.slice(2,-2)}</strong>:segment)}</span>;
-  })}</div>;
+type TeamMember = { id: string; role: string; phase: string; provider: string; model: string; status: string; step: number; answer: string; error: string };
+
+function actionIcon(name: string) {
+  if (/finish_task/.test(name)) return <Flag size={13} />;
+  if (/^read|text|page|transcript/.test(name)) return <BookOpen size={13} />;
+  if (/search/.test(name)) return <Search size={13} />;
+  if (/video|frame|media|sound|audio|diariz/.test(name)) return <Film size={13} />;
+  if (/record|write|note|draft|work_product/.test(name)) return <FilePenLine size={13} />;
+  if (/hypothes|clock|fit/.test(name)) return <Scale size={13} />;
+  if (/delegate|team|open_source/.test(name)) return <Layers size={13} />;
+  if (/scan|ocr|prepare|render/.test(name)) return <ScanLine size={13} />;
+  return <Wrench size={13} />;
 }
+
+function friendlyAction(name: string) {
+  return name.replaceAll('_', ' ').replace(/^./, character => character.toUpperCase());
+}
+
+function taskState(turn: Task): 'running' | 'paused' | 'complete' | 'failed' | 'unreviewed' {
+  if (turn.status === 'running') return 'running';
+  if (turn.status === 'paused') return 'paused';
+  if (turn.error || turn.status === 'failed') return 'failed';
+  if (turn.status === 'complete') return 'complete';
+  return 'unreviewed';
+}
+
+/** Per-turn activity: every message keeps its receipt ledger, not just the latest. */
+function TurnActivity({ turn, onSource, live }: { turn: Task; onSource: (id: string, locator?: string) => void; live: string | null }) {
+  const [open, setOpen] = useState(false);
+  const [actions, setActions] = useState<Action[] | null>(null);
+  const [team, setTeam] = useState<TeamMember[]>([]);
+  const [teamError, setTeamError] = useState('');
+  const running = turn.status === 'running';
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    const load = () => {
+      api<Action[]>('actions', { task_id: turn.id })
+        .then(value => { if (active) setActions(value); })
+        .catch(reason => { if (active) setActions([{ id: 'activity-error', name: 'Activity unavailable', input: '', output: String(reason), status: 'failed', created_at: new Date().toISOString() }]); });
+      if (native) api<TeamMember[]>('team_status', { task_id: turn.id })
+        .then(value => { if (active) setTeam(value); })
+        .catch(reason => { if (active) setTeamError(String(reason)); });
+    };
+    load();
+    const timer = running ? setInterval(load, 2500) : undefined;
+    return () => { active = false; if (timer) clearInterval(timer); };
+  }, [open, turn.id, turn.step, turn.status, running]);
+  const failures = actions?.filter(action => action.status === 'failed').length ?? 0;
+  const latest = actions?.at(-1)?.name;
+  return <div className="turn-activity">
+    <button className={`activity-toggle ${open ? 'open' : ''} ${running ? 'working' : ''}`} aria-expanded={open} onClick={() => setOpen(value => !value)}>
+      {running ? <LoaderCircle size={13} className="spin" /> : <ListChecks size={13} />}
+      <span>{running ? (latest ? friendlyAction(latest) : 'Considering the evidence…') : `${actions?.length ?? '—'} actions${failures ? ` · ${failures} failed` : ''}`}</span>
+      <ChevronDown size={12} />
+    </button>
+    {open ? <>
+      {live ? <div className="activity-live"><LoaderCircle size={12} className="spin" /><span>{live}</span></div> : null}
+      {teamError ? <p className="small danger-text" role="alert">Team status unavailable: {teamError}</p> : null}
+      {team.length ? <div className="team-cards">
+        <p className="small muted">Agent team · {team.filter(member => member.status === 'complete').length}/{team.length} assignments complete. Separate working contexts — not independent corroboration or human approval.</p>
+        {team.map(member => <details className="team-card" key={member.id}>
+          <summary>
+            <StatusPill state={member.status === 'complete' ? 'complete' : member.status === 'failed' ? 'failed' : 'running'} label={member.status.replaceAll('_', ' ')} small />
+            <strong>{member.role}</strong>
+            <span className="team-model">{member.model}</span>
+          </summary>
+          <p className="small muted">{member.provider.replaceAll('"', '')} · {member.phase.replaceAll('_', ' ')} · step {member.step}</p>
+          {member.error ? <p className="small danger-text" role="alert">{member.error}</p> : null}
+          {member.answer ? <Markdown text={member.answer} onSource={onSource} /> : <p className="small muted">No completed proposal yet.</p>}
+        </details>)}
+      </div> : null}
+      <ol className="activity-timeline">
+        {(actions ?? []).map(action => <li className={`timeline-row status-${action.status}`} key={action.id}>
+          <details>
+            <summary>
+              <span className="timeline-icon">{actionIcon(action.name)}</span>
+              <span className="timeline-name">{friendlyAction(action.name)}</span>
+              <span className="timeline-state">{action.status === 'complete' ? '✓' : action.status === 'failed' ? '✕' : '…'}</span>
+            </summary>
+            <div className="timeline-receipt">
+              <pre>{action.output}</pre>
+              <div className="timeline-receipt-meta"><code>Receipt {action.id}</code><CopyButton text={action.output} label="Copy receipt" small /></div>
+            </div>
+          </details>
+        </li>)}
+        {!actions ? <li className="timeline-row"><span className="timeline-icon"><LoaderCircle size={13} className="spin" /></span><span className="timeline-name">Loading activity…</span></li> : null}
+        {actions && !actions.length ? <li className="timeline-row"><span className="timeline-icon"><CircleDot size={13} /></span><span className="timeline-name">No recorded actions.</span></li> : null}
+      </ol>
+      {running ? <RunStatus turn={turn} /> : null}
+    </> : null}
+  </div>;
+}
+
+function RunStatus({ turn }: { turn: Task }) {
+  const now = useNow(true);
+  const elapsed = Math.max(0, Math.floor((now - Date.parse(turn.created_at)) / 1000));
+  return <div className="run-status" role="status">
+    {formatClock(elapsed)} elapsed · step {turn.step} · {(turn.input_tokens + turn.output_tokens).toLocaleString()} tokens reported
+    {elapsed > 60 ? ' · Still working. You can stop this run below.' : ''}
+  </div>;
+}
+
+function starterPrompts(snapshot: Snapshot | null): string[] {
+  if (!snapshot?.sources.length) {
+    return ['Build a timeline from the evidence', 'Find contradictions across sources', 'Review the videos and summarize key moments'];
+  }
+  const recordings = snapshot.sources.filter(source => ['video', 'audio'].includes(source.kind)).length;
+  const documents = snapshot.sources.filter(source => ['pdf', 'text', 'other'].includes(source.kind)).length;
+  const starters = [`Build a timeline from the ${snapshot.sources.length} sources`];
+  starters.push(recordings > 0 ? `Review the ${recordingText(recordings)} and summarize the key moments` : 'Find contradictions across the sources');
+  starters.push(documents > 0 ? 'Summarize the documents and list the disputed statements' : 'What evidence is missing or unverified in this case?');
+  return starters;
+}
+
+function recordingText(count: number) { return `${count} recording${count > 1 ? 's' : ''}`; }
+
 export default function AgentPanel({ snapshot, selection, refresh, run, onSource, onSettings, conversationId, onConversation }: { snapshot: Snapshot | null; selection: Selection; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; onSource: (id: string, locator?: string) => void; onSettings: () => void; conversationId: string | null; onConversation: (id: string) => void }) {
   const [prompt, setPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
-  const availableModels = snapshot ? configuredProfiles(snapshot).filter(p => p.allow_text) : [];
-  const selectedProfile = availableModels.find(p => profileKey(p) === selectedModel) ?? availableModels[0];
-  useEffect(() => { setSelectedModel(sessionStorage.getItem(`vislex-model:${snapshot?.id}:${conversationId}`) ?? ''); }, [snapshot?.id, conversationId]);
+  const availableModels = useMemo(() => snapshot ? configuredProfiles(snapshot).filter(profile => profile.allow_text) : [], [snapshot]);
+  const selectedProfile: AIProfile | undefined = availableModels.find(profile => profileKey(profile) === selectedModel) ?? availableModels[0];
   const [sending, setSending] = useState(false);
-  const [live,setLive]=useState<{task:string;transmission:string;text:string;activity:string;characters:number}|null>(null);
-  const [clock, setClock] = useState(Date.now());
-  const [actions, setActions] = useState<Action[]>([]);
-  const [team, setTeam] = useState<{id:string;role:string;phase:string;provider:string;model:string;status:string;step:number;answer:string;error:string}[]>([]);
-  const [teamError, setTeamError] = useState('');
-  const [showActions, setShowActions] = useState(false);
+  const [live, setLive] = useState<{ task: string; transmission: string; text: string; activity: string; characters: number } | null>(null);
+  const [skipContext, setSkipContext] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const following = useRef(true);
-  const turns = (snapshot?.tasks ?? []).filter(t => (t.conversation_id ?? t.id) === conversationId).slice().reverse();
+  const [showJump, setShowJump] = useState(false);
+  const turns = (snapshot?.tasks ?? []).filter(task => (task.conversation_id ?? task.id) === conversationId).slice().reverse();
   const task = turns.at(-1);
-  const running = snapshot?.tasks.find(t => t.status === 'running');
+  const running = snapshot?.tasks.find(candidate => candidate.status === 'running');
   const automaticRunning = running?.id === snapshot?.automatic_analysis?.review_task && !!running;
   const chatBlocked = !!running && !automaticRunning;
-  useEffect(()=>{if(!native)return;let active=true;const cleanup=listen<{case_id:string;task_id:string;transmission_id:string;delta:{text?:string;activity?:string;characters?:number}}>('agent-progress',({payload:p})=>{if(!active||p.case_id!==snapshot?.id)return;setLive(old=>{const previous=old?.transmission===p.transmission_id?old:{task:p.task_id,transmission:p.transmission_id,text:'',activity:'Receiving response',characters:0};return {...previous,text:(previous.text+(p.delta.text??'')).slice(-64000),activity:p.delta.activity?.replaceAll('_',' ')??previous.activity,characters:previous.characters+(p.delta.characters??0)};});});return()=>{active=false;void cleanup.then(unlisten=>unlisten());};},[snapshot?.id]);
-  useEffect(()=>{if(!running)return;const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[running?.id]);
-  useEffect(() => { setActions([]); setShowActions(false); following.current = true; setPrompt(sessionStorage.getItem(`vislex-draft:${snapshot?.id}:${conversationId}`) ?? ''); }, [snapshot?.id, conversationId]);
+
+  useEffect(() => { setSelectedModel(sessionStorage.getItem(modelKey(snapshot?.id, conversationId)) ?? ''); }, [snapshot?.id, conversationId]);
   useEffect(() => {
+    if (!native) return;
     let active = true;
-    if (task && showActions) api<Action[]>('actions', { task_id: task.id }).then(a => { if (active) setActions(a); }).catch(e => {if(active)setActions([{id:'activity-error',name:'Activity unavailable',input:'',output:String(e),status:'failed',created_at:new Date().toISOString()}]);});
-    else setActions([]);
-    return () => { active = false; };
-  }, [task?.id, task?.step, task?.status, showActions]);
+    const cleanup = listen<{ case_id: string; task_id: string; transmission_id: string; delta: { text?: string; activity?: string; characters?: number } }>('agent-progress', ({ payload: event }) => {
+      if (!active || event.case_id !== snapshot?.id) return;
+      setLive(previous => {
+        const base = previous?.transmission === event.transmission_id ? previous : { task: event.task_id, transmission: event.transmission_id, text: '', activity: 'Receiving response', characters: 0 };
+        return { ...base, text: (base.text + (event.delta.text ?? '')).slice(-64000), activity: event.delta.activity?.replaceAll('_', ' ') ?? base.activity, characters: base.characters + (event.delta.characters ?? 0) };
+      });
+    });
+    return () => { active = false; void cleanup.then(unlisten => unlisten()); };
+  }, [snapshot?.id]);
   useEffect(() => {
-    let active = true; setTeamError('');
-    if (task && native && showActions) api<typeof team>('team_status', { task_id: task.id }).then(v => { if (active) setTeam(v); }).catch(e => { if (active) setTeamError(String(e)); });
-    else setTeam([]);
-    return () => { active = false; };
-  }, [task?.id, task?.step, showActions]);
-  useEffect(() => { if (following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [task?.id, task?.answer, task?.status, actions.length]);
-  function draft(value: string) {setPrompt(value); sessionStorage.setItem(`vislex-draft:${snapshot?.id}:${conversationId}`, value);}
-  function submit() { if (sending || chatBlocked || !prompt.trim() || !native || !snapshot || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile) return; setSending(true); run(async () => {
-    try {
-      const result = await api<{ task_id: string; conversation_id: string }>('start_task', { prompt, provider: selectedProfile!.provider, model: selectedProfile!.model, parent_task_id: task?.id ?? null, viewer_context: selection ? { ...selection, locator: selection.type==='source' && snapshot?.sources.find(s=>s.id===selection.id)?.kind==='pdf' ? `page:${document.querySelector('.pdf-navigation')?.textContent?.match(/Page (\d+)/)?.[1] ?? 1}` : selection.locator, time_seconds: selection.type==='source' ? document.querySelector<HTMLMediaElement>('.main-panel video, .main-panel audio')?.currentTime ?? null : null } : null });
-      draft(''); following.current = true; onConversation(result.conversation_id ?? result.task_id); await refresh();
-    } finally {setSending(false);}
-  }); }
-  const latestAction=actions.at(-1)?.name.replaceAll('_',' ');
+    setLive(null);
+    following.current = true;
+    setShowJump(false);
+    setSkipContext(false);
+    setPrompt(chatDrafts.get(`${snapshot?.id}:${conversationId}`) ?? '');
+  }, [snapshot?.id, conversationId]);
+  useEffect(() => {
+    const focus = () => { composer.current?.focus(); };
+    const draftEvent = (event: Event) => { const detail = (event as CustomEvent<{ text?: string }>).detail; if (detail?.text) setPrompt(detail.text); composer.current?.focus(); };
+    window.addEventListener('vislex:focus-composer', focus);
+    window.addEventListener('vislex:draft-prompt', draftEvent);
+    return () => { window.removeEventListener('vislex:focus-composer', focus); window.removeEventListener('vislex:draft-prompt', draftEvent); };
+  }, []);
+  useEffect(() => { if (following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [turns.length, task?.answer, task?.status]);
+  useEffect(() => { setSkipContext(false); }, [selection?.id, selection?.locator]);
+
+  function draft(value: string) {
+    setPrompt(value);
+    chatDrafts.set(`${snapshot?.id}:${conversationId}`, value);
+  }
+
+  function submit() {
+    if (sending || chatBlocked || !prompt.trim() || !native || !snapshot || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile) return;
+    setSending(true);
+    run(async () => {
+      try {
+        const viewed = !skipContext && selection && getViewerContext()?.sourceId === selection.id ? getViewerContext() : null;
+        const result = await api<{ task_id: string; conversation_id: string }>('start_task', {
+          prompt,
+          provider: selectedProfile!.provider,
+          model: selectedProfile!.model,
+          parent_task_id: task?.id ?? null,
+          viewer_context: selection ? {
+            ...selection,
+            locator: viewed?.page ? `page:${viewed.page}` : selection.type === 'source' && viewed?.lineStart ? `L${viewed.lineStart}` : selection.locator,
+            time_seconds: viewed?.timeSeconds ?? null,
+          } : null,
+        });
+        draft('');
+        following.current = true;
+        onConversation(result.conversation_id ?? result.task_id);
+        await refresh();
+      } finally { setSending(false); }
+    });
+  }
+
+  const followUps = task?.status === 'complete' && !task.error ? (task.progress?.next_steps ?? []).filter(Boolean).slice(0, 3) : [];
+  const starters = starterPrompts(snapshot);
+  const contextName = selection
+    ? selection.type === 'source'
+      ? snapshot?.sources.find(source => source.id === selection.id)?.name
+      : snapshot?.records.find(record => record.id === selection.id)?.title
+    : null;
+  const contextPage = selection && getViewerContext()?.sourceId === selection.id ? getViewerContext()?.page : null;
+
   return <section className="agent-panel">
-    <div className="panel-heading"><span className="chat-heading" title={turns[0]?.title??turns[0]?.prompt}>{turns[0]?.title ?? turns[0]?.prompt.slice(0, 65) ?? 'New chat'}</span><div className="spacer"/><button className="icon-button" aria-label="Agent settings" title="Agent settings" onClick={onSettings}><Settings2 size={16}/></button></div>
-    <div className="agent-scroll" ref={scroll} onScroll={() => {const e=scroll.current;if(e) following.current=e.scrollHeight-e.scrollTop-e.clientHeight<100;}}>
+    <div className="panel-heading">
+      <span className="chat-heading" title={turns[0]?.title ?? turns[0]?.prompt}>{turns[0]?.title ?? turns[0]?.prompt.slice(0, 65) ?? 'New chat'}</span>
+      <div className="spacer" />
+      <Tooltip text="Agent &amp; model settings"><button className="icon-button" aria-label="Agent settings" onClick={onSettings}><Settings2 size={16} /></button></Tooltip>
+    </div>
+    <div className="agent-scroll" ref={scroll} onScroll={() => {
+      const element = scroll.current;
+      if (!element) return;
+      following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+      setShowJump(!following.current && turns.length > 0);
+    }}>
       <div className="conversation-content">
-      {turns.length ? turns.map(turn => <article className="conversation-turn" key={turn.id}>
-        <div className="user-message">{turn.prompt}</div>
-        {turn.id === task?.id ? <>
-          <button className={`task-state ${turn.status === 'running' ? 'working' : ''}`} aria-expanded={showActions} onClick={() => setShowActions(v => !v)}>{turn.status === 'running' ? <LoaderCircle size={14} className="spin"/> : <span>{turn.status==='complete'?'✓':'⚠'}</span>}<span>{turn.status === 'running' ? latestAction ?? 'Considering the evidence…' : turn.status === 'complete' ? 'Activity' : turn.status}</span><ChevronDown size={13}/></button>
-          {showActions && teamError ? <p role="alert">Team status unavailable: {teamError}</p> : null}
-          {showActions && team.length ? <details className="team-panel"><summary>Agent team · {team.filter(a => a.status === 'complete').length}/{team.length} assignments complete</summary><p className="small muted">Separate working contexts. These proposals are not independent corroboration or human approval.</p>{team.map(a => <details key={a.id}><summary>{a.role} · {a.status} · {a.model}</summary><p className="small muted">{a.provider.replaceAll('"', '')} · {a.phase} · step {a.step}</p>{a.error ? <p role="alert">{a.error}</p> : null}{a.answer ? <CitedText text={a.answer} onSource={onSource}/> : <p>No completed proposal yet.</p>}</details>)}</details> : null}
-          {showActions ? <div className="activity">{actions.map(a => <details key={a.id}><summary><span>{a.status==='failed'?'⚠':'✓'}</span><span>{a.name.replaceAll('_', ' ')} · {a.status}</span></summary><pre>{a.output}</pre><small>Receipt: {a.id}</small></details>)}</div> : null}
-        </> : null}
-        {showActions && turn.status==='running'?<div className="run-status" role="status">{Math.max(0,Math.floor((clock-Date.parse(turn.created_at))/1000))}s elapsed · step {turn.step} · {(turn.input_tokens+turn.output_tokens).toLocaleString()} tokens reported · {actions.filter(a=>a.status==='failed').length} failed actions{clock-Date.parse(turn.created_at)>60000?' · Still working. You can stop this run below.':''}</div>:null}
-        {showActions && turn.status==='running'&&live?.task===turn.id?<div className="live-draft"><p className="run-status">{live.activity} · {live.characters} tool characters received</p>{live.text?<><small>Live draft — not yet citation-validated</small><pre>{live.text}</pre></>:null}</div>:null}
-        {turn.answer ? <CitedText text={turn.answer} onSource={onSource}/> : null}
-        {turn.error ? <div className="notice error" role="alert">{turn.error}<br/><small>Receipt: {turn.id}</small></div> : null}
-        {turn.status === 'paused' && !running ? <button className="quiet" onClick={() => run(async () => {await api('resume_task', {task_id:turn.id});await refresh();})}><Play size={12}/>Resume work</button> : null}
-      </article>) : <div className="agent-welcome"><div className="vislex-glyph"><Sparkles size={26}/></div><h1>What would you like<br/>to uncover?</h1><p>{snapshot ? `Investigate ${snapshot.name}, compare sources, or build your case.` : 'Open a case to bring your evidence and conversations together.'}</p><div className="starter-prompts">{['Build a timeline from the evidence', 'Find contradictions across sources', 'Review the videos and summarize key moments'].map(p => <button key={p} onClick={() => draft(p)}>{p}<ArrowUp size={14}/></button>)}</div></div>}
+        {turns.length ? turns.map(turn => <article className="conversation-turn" key={turn.id}>
+          <div className="user-message">
+            {turn.prompt}
+            {turn.status === 'running' && turn.id === running?.id ? <LoaderCircle size={12} className="spin user-message-running" /> : null}
+          </div>
+          <TurnActivity turn={turn} onSource={onSource} live={turn.status === 'running' && live?.task === turn.id ? `${live.activity} · ${live.characters.toLocaleString()} characters received` : null} />
+          {turn.status === 'running' && live?.task === turn.id && live.text ? <div className="live-answer">
+            <p className="live-answer-caption">Live draft — not yet citation-validated</p>
+            <Markdown text={live.text} onSource={onSource} caret />
+          </div> : null}
+          {turn.answer ? <>
+            <Markdown className="answer" text={turn.answer} onSource={onSource} />
+            <div className="message-meta">
+              <StatusPill state="unreviewed" label="AI assessment" small />
+              <span className="meta-item">{(turn.input_tokens + turn.output_tokens).toLocaleString()} tokens</span>
+              <div className="spacer" />
+              <CopyButton text={turn.answer} label="Copy answer" small />
+            </div>
+          </> : null}
+          {turn.error ? <div className="notice error" role="alert">{turn.error}<br /><small>Receipt: {turn.id}</small></div> : null}
+          {turn.status === 'paused' && !running ? <button className="quiet resume-button" onClick={() => run(async () => { await api('resume_task', { task_id: turn.id }); await refresh(); })}><Play size={12} />Resume work</button> : null}
+          {turn.id === task?.id && turn.status === 'complete' && followUps.length ? <div className="follow-ups">
+            <span className="follow-up-label"><MessageSquareQuote size={13} />Suggested next checks</span>
+            {followUps.map(step => <button key={step} className="follow-up" onClick={() => { draft(`Perform this next check: ${step}`); composer.current?.focus(); }}>{step}</button>)}
+          </div> : null}
+        </article>) : <div className="agent-welcome">
+          <div className="vislex-glyph"><Sparkles size={26} /></div>
+          <h1>What would you like<br />to uncover?</h1>
+          <p>{snapshot ? `Investigate ${snapshot.name}, compare sources, or build your case.` : 'Open a case to bring your evidence and conversations together.'}</p>
+          <div className="starter-prompts">{starters.map(starter => <button key={starter} onClick={() => { draft(starter); composer.current?.focus(); }}>{starter}<ArrowUp size={14} /></button>)}</div>
+        </div>}
       </div>
     </div>
+    {showJump ? <button className="jump-latest" aria-label="Jump to latest message" onClick={() => { following.current = true; if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; setShowJump(false); }}>Latest ↓</button> : null}
     <div className="composer-area">
       {snapshot && (snapshot.settings.offline || !snapshot.settings.allow_text || !availableModels.length) ? <button className="offline-notice" onClick={onSettings}>Set up or enable AI in settings</button> : null}
-      <div className="composer">{selection?<div className="viewer-context" title="The agent receives this open file and its current playback position"><span>Viewing</span>{selection.type==='source'?snapshot?.sources.find(s=>s.id===selection.id)?.name:snapshot?.records.find(r=>r.id===selection.id)?.title}</div>:null}<textarea aria-label="Agent task" placeholder={task ? 'Follow up, challenge a finding, or ask something else…' : 'Ask VisLex to investigate your case…'} value={prompt} onChange={e => draft(e.target.value)} onKeyDown={e => {if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();submit();}}}/>
-      <div className="composer-bottom"><select className="chat-model-select" aria-label="Chat model" disabled={chatBlocked || sending || !availableModels.length} value={selectedProfile ? profileKey(selectedProfile) : ''} onChange={e => { setSelectedModel(e.target.value); sessionStorage.setItem(`vislex-model:${snapshot?.id}:${conversationId}`, e.target.value); }}>{!availableModels.length ? <option value="">Configure AI models</option> : Object.entries(providerNames).map(([provider, name]) => <optgroup label={name} key={provider}>{availableModels.filter(p => p.provider === provider).map(p => <option key={profileKey(p)} value={profileKey(p)}>{p.model}</option>)}</optgroup>)}</select><div className="spacer"/>{running && (!automaticRunning || !prompt.trim()) ? <button className="send stop" aria-label="Stop investigation" onClick={() => run(async () => {await api('stop_task',{task_id:running.id});await refresh();})}><Square size={15}/></button> : <button className="send" aria-label="Send message" disabled={sending||!prompt.trim()||!snapshot||!native||snapshot.settings.offline||!snapshot.settings.allow_text||!selectedProfile} onClick={submit}><ArrowUp size={19}/></button>}</div></div>
+      <div className="composer">
+        {contextName ? <div className="viewer-context" title="The agent receives this open file, its page and playback position">
+          <span>Viewing</span><strong>{contextName}</strong>
+          {contextPage ? <span>p.{contextPage}</span> : null}
+          <button className="icon-button icon-button-sm" aria-label="Do not attach this file to the next message" onClick={() => setSkipContext(true)} disabled={skipContext}>✕</button>
+        </div> : null}
+        {skipContext && contextName ? <p className="small muted context-off">This file will not be attached to your next message.</p> : null}
+        <textarea ref={composer} aria-label="Agent task" placeholder={task ? 'Follow up, challenge a finding, or ask something else…' : 'Ask VisLex to investigate your case…'} value={prompt} onChange={event => draft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
+        <div className="composer-bottom">
+          <ModelPicker
+            snapshot={snapshot}
+            selected={selectedProfile}
+            onSelect={profile => { setSelectedModel(profileKey(profile)); sessionStorage.setItem(modelKey(snapshot?.id, conversationId), profileKey(profile)); }}
+            onManage={onSettings}
+            disabled={chatBlocked || sending || !availableModels.length}
+          />
+          <div className="spacer" />
+          {running && (!automaticRunning || !prompt.trim())
+            ? <Tooltip text="Stop the current investigation"><button className="send stop" aria-label="Stop investigation" onClick={() => run(async () => { await api('stop_task', { task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
+            : <Tooltip text={chatBlocked ? 'Waiting for the current investigation to finish' : 'Send message (Enter)'}><button className="send" aria-label="Send message" disabled={sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile} onClick={submit}><ArrowUp size={18} /></button></Tooltip>}
+        </div>
+      </div>
+      <p className="composer-foot">VisLex cites evidence for what it claims · Enter to send · Shift+Enter for a new line</p>
     </div>
   </section>;
 }

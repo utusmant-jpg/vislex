@@ -11,7 +11,7 @@ export default function FullTranscript({ sourceId, run, refresh, onSeek, current
   useEffect(() => {
     if (!native) return;
     let active = true; let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => { try { const next = await api<State | null>('full_transcription_status', { source_id: sourceId }); if (!active) return; setState(next); setError(''); timer = setTimeout(() => { void poll(); }, 2000); } catch (e) { if (active) setError(String(e)); } };
+    const poll = async () => { try { const next = await api<State | null>('full_transcription_status', { source_id: sourceId }); if (!active) return; setState(next); setError(''); } catch (e) { if (active) setError(String(e)); } finally { if (active) timer = setTimeout(() => { void poll(); }, 2000); } };
     void poll(); return () => { active = false; clearTimeout(timer); };
   }, [sourceId, version]);
   const running = state?.status === 'running' || state?.status === 'queued'; const progress = state?.progress;
