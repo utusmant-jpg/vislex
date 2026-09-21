@@ -2,7 +2,15 @@
 
 A Windows desktop evidence workspace with immutable source copies, local viewers, versioned working records, and case-scoped AI tool execution with optional agent teams.
 
-**Status: VisLex 0.2.1. Professional-release acceptance gates remain outstanding.** The application runs and processes real files; the browser preview uses synthetic data only. The full requested plan remains the release target. See [implementation status](docs/IMPLEMENTATION.md) for delivered capabilities, limits, and remaining work.
+**Status: VisLex investigation preview — the current development build; earlier 0.2.1 and V4 packages remain available. Professional-release acceptance gates remain outstanding.** The application runs and processes real files; the browser preview uses synthetic data only. The full requested plan remains the release target. See [evidence-desk implementation status](docs/EVIDENCE-DESK-IMPLEMENTATION.md) for delivered capabilities, limits, and remaining work.
+
+## Investigation workbench preview
+
+The current upgrade preview is packaged at `artifacts/VisLex Investigation Preview/VisLex.exe`. Open **Investigation workbench** for discrepancies, competing explanations, changed findings, accepted-clock replay, coverage and legal work-product launchers. Case search includes local English semantic retrieval; the transcript panel offers tiny/small speech profiles and local anonymous speaker-turn proposals. Jobs can recover staged processing and interrupted speech checkpoints. PDF/image viewers include reviewed flattened redaction, and saved records export fresh DOCX/PDF drafts.
+
+Direct Gemini media needs its separate Settings opt-in and supports originals up to 12 MiB. Offline dossier packages include cited whole originals and are not sanitized disclosure packages. Public-authority retrieval does not imply treatment validation. See the precise implementation boundaries in [the implementation ledger](docs/EVIDENCE-DESK-IMPLEMENTATION.md).
+
+The [benchmark harness](benchmarks/README.md) captures actual task outputs for independent adjudication and computes paired incident-level scores. Included synthetic scores test the scorer only. No Harvey comparison has been measured. Native synthetic acceptance is repeatable with `powershell -ExecutionPolicy Bypass -File scripts/native-acceptance.ps1` after building the desktop app and worker.
 
 See [VisLex 0.2.1 interface update](docs/VISLEX-0.2.1.md) for the Linear palette, compact case/chat navigation, source tabs and agent-controlled viewer.
 
@@ -18,7 +26,7 @@ Reproduce validation with `scripts/verify-v4.ps1 -IncludePackagedWorker`. Build 
 
 ## Run the application
 
-The packaged app is in `artifacts/VisLex 0.2.1/`. Run `VisLex.exe` from that folder and keep its `resources` folder beside it. The app requires Windows 11 and the Microsoft Edge WebView2 runtime. It is unsigned. This build was exercised on Windows with x64 binaries; a clean Windows 11 x64 installation and independent security review remain release gates.
+The original 0.2.1 packaged app is in `artifacts/VisLex 0.2.1/`; the current investigation preview is packaged at `artifacts/VisLex Investigation Preview/`. Run `VisLex.exe` from a package folder and keep its `resources` folder beside it. The app requires Windows 11 and the Microsoft Edge WebView2 runtime. It is unsigned. This build was exercised on Windows with x64 binaries; a clean Windows 11 x64 installation and independent security review remain release gates.
 
 Create a case in a local, non-synchronized folder. Import files with **Import evidence**. Original bytes are copied, hashed, and kept read-only; duplicate supplies retain separate occurrence records. Use **Process source** to extract supported documents, create image previews, or sample video. PDF **Render page locally** produces a source-linked visual derivative. Audio/video **Transcribe interval** uses the bundled tiny model without an API call.
 
@@ -28,7 +36,7 @@ Create a working file, edit it, and **Save revision**. **History** restores an o
 
 ## Enable the agent
 
-Cases start offline. In Settings, choose a provider, store its API key, and enter a model identifier supporting that provider's native tool protocol (and images when needed). Optional input/output rates are estimates. Keys go to Windows Credential Manager. Enable text transmission and, if required, image transmission; then disable offline mode. No hosted file storage or remote tools are used.
+AI is configured app-wide, not per case. Open **Settings → AI providers & agents**, paste a provider API key (OpenAI, Anthropic, Gemini or xAI), click **Save key & load models**, then choose the models to enable; preferences apply to cases when they are opened. Keys live in Windows Credential Manager and are not stored in cases, backups, the renderer or worker environment. No hosted file storage or remote tools are used.
 
 Every desktop task uses autonomous investigation with all unrestricted case sources and eligible working records. Supply a question or task and start; no mode or access selector is required. Investigate can extract documents, render PDF pages, crop photographs, sample/revisit video, transcribe selected audio intervals, and create or update cited working records. The coordinator retains internal read-only/edit-scoped contracts for tests and future integrations; the desktop always starts an investigation. Action receipts and revisions are visible.
 
@@ -80,12 +88,3 @@ Image and frame tools trigger a fresh visual-description pass containing the cur
 The earlier automatic-analysis build is at `artifacts/VisLex automatic analysis/VisLex.exe`. In Settings, paste a company API key, click **Save key & load models**, choose its model, and save. Other configured providers remain available in the chat model dropdown. Choose **Agent decides when to delegate** to allow scoped parallel assignments.
 
 Opening a case or importing files/folders queues local document extraction, PDF/image OCR, media inventory and full-audio transcription automatically. AI review follows when a model/key is configured. Preparation counts are separate from AI review, and failures remain visible. AI is enabled once configured; there are no dollar-limit settings. This is an unsigned development build, and complete/accurate recognition of all video frames or document structures is not established.
-
-
-### Investigation workbench preview
-
-The current upgrade preview is packaged at `artifacts/VisLex Investigation Preview/VisLex.exe`. Open **Investigation workbench** for discrepancies, competing explanations, changed findings, accepted-clock replay, coverage and legal work-product launchers. Case search includes local English semantic retrieval; the transcript panel offers tiny/small speech profiles and local anonymous speaker-turn proposals. Jobs can recover staged processing and interrupted speech checkpoints. PDF/image viewers include reviewed flattened redaction, and saved records export fresh DOCX/PDF drafts.
-
-Direct Gemini media needs its separate Settings opt-in and supports originals up to 12 MiB. Offline dossier packages include cited whole originals and are not sanitized disclosure packages. Public-authority retrieval does not imply treatment validation. See the precise implementation boundaries in [the implementation ledger](docs/EVIDENCE-DESK-IMPLEMENTATION.md).
-
-The [benchmark harness](benchmarks/README.md) captures actual task outputs for independent adjudication and computes paired incident-level scores. Included synthetic scores test the scorer only. No Harvey comparison has been measured. Native synthetic acceptance is repeatable with `powershell -ExecutionPolicy Bypass -File scripts/native-acceptance.ps1` after building the desktop app and worker.

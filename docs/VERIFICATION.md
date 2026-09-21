@@ -1,3 +1,5 @@
+> **Superseded — September 21, 2026.** See docs/EVIDENCE-DESK-IMPLEMENTATION.md and docs/V4-IMPLEMENTATION.md for current capabilities. Retained as a historical record of the 0.1.x/0.2.x acceptance sessions.
+
 # Verification record
 
 Development validation, September 20, 2026. These are implementation checks, not professional-release acceptance or model-quality certification.

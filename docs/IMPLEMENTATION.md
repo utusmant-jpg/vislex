@@ -1,3 +1,5 @@
+> **Superseded — September 21, 2026.** See docs/EVIDENCE-DESK-IMPLEMENTATION.md and docs/V4-IMPLEMENTATION.md for current capabilities. Retained as a historical record of the 0.1.x/0.2.x acceptance sessions.
+
 # Implementation status and continuation plan
 
 The requested seven-milestone plan is the public-release target. This repository implements an initial vertical slice across milestones 0–3 plus selected media and backup functionality. No milestone is represented as fully accepted.
