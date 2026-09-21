@@ -1,0 +1,66 @@
+// Synthetic-only native smoke run through the real Tauri bridge, no database edits or provider calls.
+(async () => {
+  const invoke=async(action,args={})=>{try{return await window.__TAURI_INTERNALS__.invoke('command',{action,args});}catch(e){throw new Error(action+': '+String(e));}};
+  const root=__WORKSPACE__;
+  const run=Date.now().toString();
+  await invoke('create_case',{path:root+'/artifacts/acceptance-'+run,name:'Synthetic native acceptance '+run});
+  const imported=await invoke('import_files',{paths:['statement.pdf','statement.txt','photograph.png','variable-timing.mp4','notes.docx','table.xlsx'].map(n=>root+'/fixtures/generated/'+n),production:'Synthetic acceptance'});
+  if(imported.items.some(i=>i.status!=='imported'))throw new Error('Fixture import failed');
+  const snapshot=await invoke('snapshot');
+  const pdf=snapshot.sources.find(s=>s.kind==='pdf');const photo=snapshot.sources.find(s=>s.kind==='image');const video=snapshot.sources.find(s=>s.kind==='video');
+  const process=invoke('process_source',{source_id:pdf.id});const latencies=[];
+  for(let i=0;i<5;i++){const t=performance.now();await invoke('snapshot');latencies.push(performance.now()-t);}
+  await process;
+  const documents=[];
+  for(const name of ['notes.docx','table.xlsx']) {
+    const source=snapshot.sources.find(s=>s.name===name);
+    const first=await invoke('process_source',{source_id:source.id});
+    const second=await invoke('process_source',{source_id:source.id});
+    const text=await invoke('read_text',{source_id:source.id,start:1,count:200});
+    if(!second.reused || first.extraction_locator!==second.extraction_locator || !text.total_lines)throw new Error('Document extraction/cache failed: '+name);
+    documents.push({name,total_lines:text.total_lines,reused:second.reused});
+  }
+  await invoke('save_settings',{settings:{...snapshot.settings,offline:false,allow_text:true,model:'synthetic'}});
+  const inventoryTask=await invoke('start_task',{prompt:'how many files we have?'});
+  const inventorySnapshot=await invoke('snapshot');
+  const inventory=inventorySnapshot.tasks.find(t=>t.id===inventoryTask.task_id);
+  if(inventory?.status!=='complete' || inventory.answer!=='You have 6 original files in this case.' || inventory.input_tokens || inventory.output_tokens)throw new Error('Inventory did not finish without model calls');
+  await invoke('queue_video_discovery',{source_id:video.id,interval:1});
+  const discoveryLatency=[];
+  for(let i=0;i<120;i++) {
+    const t=performance.now();await invoke('snapshot');discoveryLatency.push(performance.now()-t);
+    const status=await invoke('video_discovery_status',{source_id:video.id});
+    if(status.jobs.some(j=>j.status==='failed'))throw new Error('Discovery failed: '+JSON.stringify(status));
+    if(status.jobs.length>=2&&status.jobs.every(j=>j.status==='complete'))break;
+    if(i===119)throw new Error('Discovery did not finish');
+    await new Promise(resolve=>setTimeout(resolve,500));
+  }
+  const discovery=[];
+  for(const kind of ['video_ocr','video_overview']) {
+    const result=await invoke('browse_video_discovery',{source_id:video.id,kind,start:0,end:100,offset:0});
+    if(!result.samples.length||!Number.isFinite(result.samples[0].metadata.pts))throw new Error('Missing timestamped discovery samples');
+    discovery.push({kind,samples:result.samples.length,pts:result.samples[0].metadata.pts});
+  }
+  const search=await invoke('hybrid_search',{query:'witness account'});if(!search.results.length)throw new Error('No semantic results');
+  // Automatic local transcription can change the case generation. Wait for it before testing an exact-revision export.
+  for(let i=0;i<240;i++){const current=await invoke('snapshot');if(!current.jobs.some(j=>j.kind==='full_audio'&&['running','queued'].includes(j.status)))break;if(i===239)throw new Error('Automatic transcripts did not settle');await new Promise(resolve=>setTimeout(resolve,500));}
+  const record=await invoke('write_record',{title:'Synthetic native draft',kind:'report',content:'Synthetic caf\u00e9 draft. Evidence remains unreviewed.',source_ids:[pdf.id]});
+  const exports=[];
+  for(const ext of ['docx','pdf'])exports.push(await invoke('export_word',{record_id:record.id,path:root+'/artifacts/acceptance-'+run+'.'+ext}));
+  const redaction=await invoke('prepare_redaction',{source_id:photo.id,boxes:[{page:1,x:0,y:0,width:100,height:30}]});
+  const derivative=redaction.published.find(p=>p.metadata.mime==='application/pdf');
+  let denied=false;try{await invoke('export_redaction',{artifact_id:derivative.artifact_id,path:root+'/artifacts/unreviewed-'+run+'.pdf'});}catch{denied=true;}
+  if(!denied)throw new Error('Unreviewed redaction export was allowed');
+  const proxy=await invoke('playback_proxy',{source_id:video.id});const info=await invoke('artifact_info',{artifact_id:proxy.artifact_id});
+  if(info.metadata.player_origin_seconds!==0)throw new Error('Playback lacks explicit origin');
+  const waitFor=async(predicate,label)=>{for(let i=0;i<100;i++){const found=predicate();if(found)return found;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('UI did not show '+label);};
+  const button=label=>[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===label);
+  const chat=await waitFor(()=>button('how many files we have?'),'inventory conversation');chat.click();
+  await waitFor(()=>document.querySelector('.answer-text')?.textContent.includes('You have 6 original files in this case.'),'direct inventory answer');
+  const tools=[...document.querySelectorAll('summary')].find(s=>s.textContent==='Case tools & files');if(tools&&!tools.parentElement.open)tools.click();
+  const evidence=await waitFor(()=>button('Evidence (6)'),'evidence library');evidence.click();
+  const doc=await waitFor(()=>[...document.querySelectorAll('.tree-item')].find(b=>b.textContent.includes('notes.docx')),'DOCX library entry');doc.click();
+  await waitFor(()=>document.querySelector('.document-page .text-lines')?.textContent.length>10,'DOCX preview');
+  if(document.querySelector('.saved-progress,.question-dossier,.context-note'))throw new Error('Internal review panels leaked into normal chat');
+  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.sources.length,snapshot_latency_ms:latencies,semantic_results:search.results.length,remaining_passages:search.remaining_passages,exports,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
+})()

@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>VisLex synthetic dossier UI test</title></head><body>
+<div id="root"></div><script type="module">
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import '/src/styles.css';
+window.isTauri=true;
+const state={dossier:{revision:1,scope:'Compare the report with the available recording. Synthetic UI fixture only.',checks:[{id:'report',description:'Read the witness account',state:'done',reason:'',receipts:['synthetic-receipt']},{id:'video',description:'Resolve the recording clock offset',state:'blocked',reason:'No independent anchor is available.',receipts:[]}],claims:[{proposition:'The report describes three knocks.',assessment:'timing_uncertainty',supporting:['evidence:synthetic-report#L1-L1'],contrary:['evidence:synthetic-recording#artifact:synthetic-frame'],uncertainty:'The sound and visual event are not aligned.',next_check:'Locate a shared clock anchor.'}]},stale:false,completion_stale:false,completion:{outcome:'partial',gaps:['Clock alignment remains unresolved.'],created_at:'2026-09-20'},human_reviews:[null],coverage_note:'Receipts establish source inspection calls, not exhaustive coverage or the truth of a claim.'};
+window.__TAURI_INTERNALS__={invoke:async(command,{action,args})=>{if(command!=='command')throw Error('Unexpected command');if(action==='read_dossier')return structuredClone(state);if(action==='review_dossier_claim'){state.human_reviews[args.claim_index]={decision:args.decision,note:args.note,stale:false};return structuredClone(state);}throw Error('Unexpected action: '+action);}};
+const {default:QuestionDossier}=await import('/src/components/QuestionDossier.tsx');
+createRoot(document.getElementById('root')).render(React.createElement('main',{style:{maxWidth:800,margin:'30px auto',padding:24}},React.createElement('h1',null,'Synthetic question dossier'),React.createElement('p',null,'Browser UI test. No real evidence, database, or provider calls.'),React.createElement(QuestionDossier,{taskId:'synthetic',step:1,status:'complete',evidenceVersion:'fixture-1',onSource:(id,locator)=>{document.getElementById('opened-source').textContent=`Opened ${id} ${locator}`;}}),React.createElement('p',{id:'opened-source',role:'status'})));
+</script></body></html>

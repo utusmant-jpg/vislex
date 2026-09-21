@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "systems": [
+    {
+      "id": "vislex",
+      "configuration": "Invented scorer inputs; no product was run",
+      "runs": [
+        {
+          "incident_id": "incident-a",
+          "repeat": 1,
+          "status": "complete",
+          "adjudicator": "synthetic fixture author; not actual review",
+          "assertions": [
+            {
+              "id": "a1",
+              "fact_id": "sequence",
+              "supported": true,
+              "attribution_correct": true,
+              "contradiction": false,
+              "contradiction_correct": false
+            },
+            {
+              "id": "a2",
+              "fact_id": "attribution",
+              "supported": true,
+              "attribution_correct": true,
+              "contradiction": false,
+              "contradiction_correct": false
+            }
+          ],
+          "coverage_honest": true,
+          "runtime_seconds": 10,
+          "review_seconds": 30,
+          "cost_usd": 0
+        },
+        {
+          "incident_id": "incident-b",
+          "repeat": 1,
+          "status": "complete",
+          "adjudicator": "synthetic fixture author; not actual review",
+          "assertions": [
+            {
+              "id": "a1",
+              "fact_id": "sequence",
+              "supported": true,
+              "attribution_correct": true,
+              "contradiction": false,
+              "contradiction_correct": false
+            },
+            {
+              "id": "a2",
+              "fact_id": "attribution",
+              "supported": true,
+              "attribution_correct": true,
+              "contradiction": false,
+              "contradiction_correct": false
+            }
+          ],
+          "coverage_honest": true,
+          "runtime_seconds": 10,
+          "review_seconds": 30,
+          "cost_usd": 0
+        }
+      ]
+    },
+    {
+      "id": "baseline",
+      "configuration": "Invented scorer inputs; no product was run",
+      "runs": [
+        {
+          "incident_id": "incident-a",
+          "repeat": 1,
+          "status": "complete",
+          "adjudicator": "synthetic fixture author; not actual review",
+          "assertions": [
+            {
+              "id": "a1",
+              "fact_id": "sequence",
+              "supported": true,
+              "attribution_correct": true,
+              "contradiction": false,
+              "contradiction_correct": false
+            },
+            {
+              "id": "a2",
+              "fact_id": "attribution",
+              "supported": true,
+              "attribution_correct": false,
+              "contradiction": false,
+              "contradiction_correct": false
+            }
+          ],
+          "coverage_honest": true,
+          "runtime_seconds": 10,
+          "review_seconds": 60,
+          "cost_usd": 0
+        },
+        {
+          "incident_id": "incident-b",
+          "repeat": 1,
+          "status": "complete",
+          "adjudicator": "synthetic fixture author; not actual review",
+          "assertions": [
+            {
+              "id": "a1",
+              "fact_id": "sequence",
+              "supported": true,
+              "attribution_correct": true,
+              "contradiction": false,
+              "contradiction_correct": false
+            },
+            {
+              "id": "a2",
+              "fact_id": "attribution",
+              "supported": true,
+              "attribution_correct": false,
+              "contradiction": false,
+              "contradiction_correct": false
+            }
+          ],
+          "coverage_honest": true,
+          "runtime_seconds": 10,
+          "review_seconds": 60,
+          "cost_usd": 0
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "name": "Scorer-only synthetic example",
+  "synthetic": true,
+  "split": "development",
+  "incidents": [
+    {
+      "id": "incident-a",
+      "facts": [
+        {
+          "id": "sequence",
+          "description": "First contact occurs before the door closes."
+        },
+        {
+          "id": "attribution",
+          "description": "Camera B supplies the second independent view."
+        }
+      ]
+    },
+    {
+      "id": "incident-b",
+      "facts": [
+        {
+          "id": "sequence",
+          "description": "First contact occurs before the door closes."
+        },
+        {
+          "id": "attribution",
+          "description": "Camera B supplies the second independent view."
+        }
+      ]
+    }
+  ]
+}
