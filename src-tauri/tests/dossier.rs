@@ -344,3 +344,38 @@ fn inventory_completion_needs_no_content_citation_or_review() {
     assert!(agent::is_file_count_question("How many files we have?"));
     assert!(!agent::is_file_count_question("How many files prove the suspect entered?"));
 }
+
+#[test]
+fn authority_publish_ingests_bytes_with_provenance_and_indexing() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut case=evidence_desk::case::Case::create(&dir.path().join("auth.ledcase"),"Authority case").unwrap();
+    case.save_settings(evidence_desk::case::Settings{offline:false,allow_text:false,allow_images:false,model:String::new(),case_budget:0.,input_per_million:0.,output_per_million:0.}).unwrap();
+    let html=b"<html><head><style>body{}</style></head><body><p>The record refers to a holding about nominal damages.</p><script>steal()</script></body></html>";
+    let download=evidence_desk::authority::Download{url:"https://www.govinfo.gov/content/pkg/test/html/test.htm".into(),bytes:html.to_vec(),mime:"text/html".into(),retrieved_at:"2026-09-21T00:00:00Z".into()};
+    let value=evidence_desk::authority::publish(&mut case,download,"Test authority holding","United States","2026-09-01").unwrap();
+    let source=value["source_id"].as_str().unwrap().to_string();
+    // Bytes preserved and hash-identical to the downloaded original.
+    let path=case.source_path(&source).unwrap();
+    assert_eq!(sha256_hex_impl(&path),case.source(&source).unwrap().sha256);
+    // Fresh HTML authority is indexed and searchable through structural extraction.
+    let found=case.search("nominal",0).unwrap();
+    assert_eq!(found["results"].as_array().unwrap().len(),1);
+    assert!(!case.read_text(&source,1,5).unwrap()["text"].as_str().unwrap().contains("steal()"));
+    // Provenance: URL, retrieval time and original hash retained on the authority object.
+    let object=evidence_desk::evidence::read(&case,value["authority"]["id"].as_str().unwrap(),None).unwrap();
+    let content:serde_json::Value=serde_json::from_str(object["content"].as_str().unwrap()).unwrap();
+    assert_eq!(content["url"],"https://www.govinfo.gov/content/pkg/test/html/test.htm");
+    assert_eq!(content["retrieved_at"],"2026-09-21T00:00:00Z");
+    assert_eq!(content["original_source_id"],source);
+    assert_eq!(object["source_ids"][0],source);
+    // Importing the case database as user evidence still fails (recorded as a failed item).
+    let blocked=case.import_files(&[case.root.join("case.sqlite3").to_string_lossy().into()],"Bad").unwrap();
+    assert_eq!(blocked["items"][0]["status"],"failed");
+    assert!(blocked["items"][0]["detail"].to_string().contains("case internals"));
+}
+fn sha256_hex_impl(path:&std::path::Path)->String {
+    use sha2::{Digest,Sha256};
+    let mut file=std::fs::File::open(path).unwrap();let mut hash=Sha256::new();let mut buffer=[0u8;65536];
+    loop{let n=std::io::Read::read(&mut file,&mut buffer).unwrap();if n==0{break;}hash.update(&buffer[..n]);}
+    format!("{:x}",hash.finalize())
+}

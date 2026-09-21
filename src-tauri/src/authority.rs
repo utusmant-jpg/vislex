@@ -3,7 +3,9 @@ use crate::case::{Case, now};
 use anyhow::{ensure, Context, Result};
 use serde_json::{json,Value};
 use rusqlite::params;
+use std::io::Write;
 pub struct Download {pub url:String,pub bytes:Vec<u8>,pub mime:String,pub retrieved_at:String}
+
 pub fn validate_url(raw:&str)->Result<reqwest::Url> {
     ensure!(raw.len()<=4000,"URL too long");let url=reqwest::Url::parse(raw)?;
     ensure!(url.scheme()=="https" && url.username().is_empty() && url.password().is_none() && url.port().is_none(),"Use a public HTTPS URL without credentials or a custom port");
@@ -28,23 +30,44 @@ pub fn html_text(html:&str)->Result<String> {
     for (entity,value) in [("&nbsp;"," "),("&lt;","<"),("&gt;",">"),("&quot;","\""),("&#39;","'"),("&amp;","&")] {clean=clean.replace(entity,value);}
     Ok(clean.lines().map(str::trim).filter(|line|!line.is_empty()).collect::<Vec<_>>().join("\n"))
 }
+/// Trusted ingest for bytes already retrieved by this adapter. The bytes come from
+/// a validated public HTTPS response held in memory, so they are staged directly
+/// for the case publisher; this narrow path never accepts an external filesystem
+/// path, and the user-facing import guard still rejects importing files from
+/// inside the active case.
+fn ingest_authority_bytes(case:&mut Case,download:&Download,suffix:&str)->Result<Value> {
+    let prepared=crate::case::PreparedImport::from_verified_bytes(
+        &case.root,
+        &download.bytes,
+        &format!("Public authority.{suffix}"),
+        &format!("public-authority:{}",download.url),
+    )?;
+    let batch=crate::case::id();
+    let item=case.publish_import(prepared,"Public authority retrieval",&batch);
+    let (status,detail)=match &item{Ok(v)=>("imported",v.to_string()),Err(e)=>("failed",e.to_string())};
+    case.db.execute("INSERT INTO imports VALUES(?,?,?,?,?,?)",params![crate::case::id(),download.url,batch,status,detail,now()])?;
+    case.audit("import_batch",json!({"batch":batch,"items":[json!({"path":download.url,"status":status,"detail":detail})]}))?;
+    item
+}
 pub fn publish(case:&mut Case,download:Download,title:&str,jurisdiction:&str,relevant_date:&str)->Result<Value> {
     ensure!(!case.settings()?.offline,"Offline mode enabled");
     ensure!(!title.trim().is_empty()&&title.len()<=250&&!jurisdiction.trim().is_empty()&&jurisdiction.len()<=200,"Supply title and jurisdiction");
     chrono::NaiveDate::parse_from_str(relevant_date,"%Y-%m-%d").context("Use YYYY-MM-DD for the legally relevant date")?;
     let suffix=if download.mime=="application/pdf"{"pdf"}else if download.mime=="text/html"{"html"}else{"txt"};
-    let directory=tempfile::tempdir_in(case.root.join("staging"))?;let path=directory.path().join(format!("Public authority.{suffix}"));std::fs::write(&path,&download.bytes)?;
-    let imported=case.import_files(&[path.to_string_lossy().into_owned()],"Public authority retrieval")?;
+    let imported=ingest_authority_bytes(case,&download,suffix)?;
     // Identity comes from the immutable downloaded bytes, not a URL or a model-supplied citation.
     let hash=crate::case::digest(&download.bytes);
-    let source:String=case.db.query_row("SELECT id FROM sources WHERE sha256=?",[hash],|r|r.get(0))?;
+    let source:String=case.db.query_row("SELECT id FROM sources WHERE sha256=?",[hash],|r| r.get(0))?;
     ensure!(!case.source(&source)?.restricted,"Matching source is restricted");
     if download.mime=="text/html" {
         let raw=std::str::from_utf8(&download.bytes).context("Non-UTF8 authority HTML; import and inspect manually")?;
         let text=html_text(raw)?;
+        // The importer already created an empty FTS row for this non-text kind;
+        // replace it so the structural extraction is actually searchable.
         case.db.execute("INSERT OR IGNORE INTO extracts(source_id,text,method) VALUES(?,?,'Public HTML structural text extraction; verify against saved original')",params![source,text])?;
-        let indexed:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM source_fts WHERE source_id=?)",[&source],|r|r.get(0))?;
-        if !indexed {case.db.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)",params![source,title,text])?;}
+        case.db.execute("UPDATE extracts SET text=?,method='Public HTML structural text extraction; verify against saved original' WHERE source_id=? AND text=''",params![text,source])?;
+        case.db.execute("DELETE FROM source_fts WHERE source_id=?",[&source])?;
+        case.db.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)",params![source,title,text])?;
     }
     let content=json!({"url":download.url,"jurisdiction":jurisdiction,"relevant_date":relevant_date,"retrieved_at":download.retrieved_at,"treatment_status":"not_checked","proposition_support":"not_assessed","original_source_id":source,"mime":download.mime,"limitations":["Retrieval does not verify current validity, subsequent treatment or support for a legal proposition.","Relevant date is the requested research date, not proof this document was in force then."]});
     let object=crate::evidence::write(case,crate::evidence::ObjectInput{id:None,base_revision:0,kind:"authority".into(),title:title.into(),content:content.to_string(),source_ids:vec![source.clone()],locators:vec![],dependencies:vec![],start_seconds:None,end_seconds:None},"public_source_adapter")?;

@@ -1001,6 +1001,26 @@ pub fn safe_relative(path: &Path) -> bool {
 
 /// Prepared outside the database writer lock. Fields remain private to the importer.
 pub struct PreparedImport {path:PathBuf,stage:PathBuf,size:u64,name:String,sha:String}
+impl PreparedImport {
+    /// Trusted-adapter ingest: stage already-verified in-memory bytes for the case
+    /// publisher. Only adapters that themselves produced these bytes from a validated
+    /// external source (public-authority retrieval) may use this constructor; it never
+    /// accepts an external filesystem path, so the user-facing guard against importing
+    /// files from inside the active case is not bypassed.
+    pub fn from_verified_bytes(root:&Path,bytes:&[u8],name:&str,origin:&str)->Result<Self> {
+        let stage=root.join("staging").join(id());
+        let staged=(||->Result<()>{
+            let mut file=OpenOptions::new().write(true).create_new(true).open(&stage)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(e)=staged {let _=fs::remove_file(&stage);return Err(e);}
+        Ok(Self{path:PathBuf::from(origin),stage,size:bytes.len() as u64,name:name.into(),sha:digest(bytes)})
+    }
+    /// Remove the staged copy if publication did not consume it.
+    pub fn discard(&self) { let _=fs::remove_file(&self.stage); }
+}
 pub fn prepare_import(root:&Path,path:&Path)->Result<PreparedImport> {
         ensure!(
             !fs::symlink_metadata(path)?.file_type().is_symlink(),
