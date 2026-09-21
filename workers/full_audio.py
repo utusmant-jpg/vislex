@@ -1,18 +1,22 @@
 """Bounded-memory, all-track transcription. Invoked only inside the worker sandbox."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
 
 
-def transcribe(job: Path, source: Path) -> dict:
+def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
     import av
     import numpy as np
     from faster_whisper import WhisperModel
 
-    model_root = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) / 'models' / 'tiny'
+    if model_name not in ('tiny', 'small'):
+        raise ValueError('Unsupported local speech profile')
+    model_root = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) / 'models' / model_name
     model = WhisperModel(str(model_root).removeprefix('\\\\?\\'), device='cpu', compute_type='int8', cpu_threads=4, num_workers=1, local_files_only=True)
     with av.open(str(source)) as container:
+        container_origin_seconds = (container.start_time or 0) / av.time_base
         tracks = [{'index': t.index, 'time_base': str(t.time_base), 'start_time': t.start_time,
                    'origin_seconds': float((t.start_time or 0) * t.time_base),
                    'estimated_seconds': float(t.duration * t.time_base) if t.duration else (container.duration or 0) / av.time_base}
@@ -42,26 +46,44 @@ def transcribe(job: Path, source: Path) -> dict:
                 return
             decoded_seconds += float(covered[:core_length].sum() / rate)
             gap_seconds += float((~covered[:core_length]).sum() / rate)
-            if covered[:length].any() and np.any(audio[:length]):
-                segments, info = model.transcribe(audio[:length], language=language, beam_size=3,
-                                                 vad_filter=False, word_timestamps=True, condition_on_previous_text=False)
-                if language is None and info.language_probability >= .7:
-                    language = info.language
-                for segment in segments:
-                    words = [w for w in segment.words or [] if (w.start + w.end) / 2 < core_length / rate]
-                    if not words:
-                        continue
-                    a, b = window_start + words[0].start, window_start + words[-1].end
-                    pages.append({'locator': f'track:{descriptor["index"]}:seconds:{a:.3f}-{b:.3f}',
-                                  'start': a, 'end': b, 'track': descriptor['index'],
-                                  'text': ''.join(w.word for w in words).strip(),
-                                  'language': info.language, 'language_probability': info.language_probability,
-                                  'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob,
-                                  'method': 'faster-whisper-tiny int8; unverified machine transcript',
-                                  'words': [{'start': window_start + w.start, 'end': window_start + w.end,
-                                             'word': w.word, 'probability': w.probability} for w in words]})
-                    if len(pages) > 100000 or sum(len(p['text']) for p in pages) > 8_000_000:
-                        raise ValueError('Full transcript exceeds the published output limit')
+            key = hashlib.sha256(audio[:length].tobytes() + json.dumps([model_name, descriptor, window_start, core_length, length, language], sort_keys=True).encode()).hexdigest()
+            cache = job / f'chunk-{key}.json'
+            chunk_pages = []
+            if cache.is_file():
+                cached = json.loads(cache.read_text(encoding='utf-8'))
+                if cached.get('key') != key:
+                    raise ValueError('Invalid transcription checkpoint')
+                chunk_pages, language = cached['pages'], cached['language']
+            else:
+                if covered[:length].any() and np.any(audio[:length]):
+                    segments, info = model.transcribe(audio[:length], language=language, beam_size=3,
+                                                     vad_filter=False, word_timestamps=True, condition_on_previous_text=False)
+                    if language is None and info.language_probability >= .7:
+                        language = info.language
+                    for segment in segments:
+                        words = [w for w in segment.words or [] if (w.start + w.end) / 2 < core_length / rate]
+                        if not words:
+                            continue
+                        a, b = window_start + words[0].start, window_start + words[-1].end
+                        chunk_pages.append({'locator': f'track:{descriptor["index"]}:seconds:{a:.3f}-{b:.3f}',
+                                      'start': a, 'end': b, 'track': descriptor['index'],
+                                      'text': ''.join(w.word for w in words).strip(),
+                                      'language': info.language, 'language_probability': info.language_probability,
+                                      'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob,
+                                      'method': f'faster-whisper-{model_name} int8; unverified machine transcript',
+                                      'words': [{'start': window_start + w.start, 'end': window_start + w.end,
+                                                 'word': w.word, 'probability': w.probability} for w in words]})
+                        if len(chunk_pages) > 100000 or sum(len(p['text']) for p in chunk_pages) > 8_000_000:
+                            raise ValueError('Full transcript exceeds the published output limit')
+                temporary = cache.with_suffix('.next')
+                with temporary.open('w', encoding='utf-8') as output:
+                    json.dump({'key': key, 'pages': chunk_pages, 'language': language}, output)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, cache)
+            pages.extend(chunk_pages)
+            if len(pages) > 100000 or sum(len(p['text']) for p in pages) > 8_000_000:
+                raise ValueError('Full transcript exceeds the published output limit')
             chunks += 1
             progress({'state': 'transcribing', 'track': descriptor['index'], 'track_number': track_number + 1,
                       'track_count': len(tracks), 'processed_seconds': min(end, window_start + core),
@@ -114,7 +136,8 @@ def transcribe(job: Path, source: Path) -> dict:
     progress({'state': 'complete', 'track_count': len(tracks), 'segments': len(pages)})
     return {'version': 1, 'status': 'complete', 'pages': pages, 'previews': [],
             'metadata': {'scope': 'all_audio_tracks_to_decoder_eof', 'tracks': coverage,
-                         'audio_track_count': len(tracks), 'vad': False, 'model': 'faster-whisper-tiny',
+                         'container_origin_seconds': container_origin_seconds,
+                         'audio_track_count': len(tracks), 'vad': False, 'model': f'faster-whisper-{model_name}',
                          'sample_rate': rate, 'chunk_seconds': core, 'lookahead_seconds': context,
                          'no_audio_tracks': not tracks},
             'limitations': ['Unreviewed machine transcription; verify names, numbers, faint speech and language against the original.',

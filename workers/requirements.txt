@@ -6,3 +6,11 @@ openpyxl==3.1.5
 av==16.1.0
 faster-whisper==1.2.1
 pypdfium2==5.6.0
+rapidocr-onnxruntime==1.4.4
+
+reportlab==5.0.1
+
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8
+
+scenedetect==0.7.1

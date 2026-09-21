@@ -36,12 +36,38 @@ def process(job: Path, request: dict) -> dict:
     notes: list[str] = []
     metadata: dict = {}
     previews: list[dict] = []
-    if kind == 'sound_events':
+    if kind in ('video_ocr', 'video_overview'):
+        from video_discovery import discover
+        return discover(job, request)
+    if kind == 'diarization':
+        from diarization import diarize
+        return diarize(job, request)
+    if kind == 'embeddings':
+        from embeddings import embed
+        return embed(job, request)
+    if kind == 'document_export':
+        from document_export import export
+        return export(job, request)
+    elif kind == 'redaction':
+        from redaction import redact
+        return redact(job, request)
+    elif kind == 'media_inventory':
+        import av
+        with av.open(str(source)) as container:
+            streams = []
+            for stream in container.streams:
+                descriptor = {'index': stream.index, 'type': stream.type, 'time_base': str(stream.time_base), 'start_pts': str(stream.start_time) if stream.start_time is not None else None, 'duration_pts': str(stream.duration) if stream.duration is not None else None, 'duration_seconds': float(stream.duration * stream.time_base) if stream.duration is not None and stream.time_base else None, 'metadata': dict(stream.metadata)}
+                streams.append(descriptor)
+                pages.append({'locator': f'stream:{stream.index}', 'text': json.dumps(descriptor), 'method': 'container inventory; not content inspection'})
+            metadata = {'streams': streams, 'container_origin_seconds': (container.start_time or 0) / av.time_base, 'container_duration_seconds': container.duration / av.time_base if container.duration is not None else None, 'container_metadata': dict(container.metadata), 'coverage': {'inventoried': True, 'model_inspected': False}}
+        notes = ['Container metadata is not proof of capture time. Transcription and visual inspection have separate coverage.']
+        return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': metadata, 'limitations': notes, 'previews': previews}
+    elif kind == 'sound_events':
         from sound_events import scan
         return scan(source, request)
     if kind == 'full_audio':
         from full_audio import transcribe
-        return transcribe(job, source)
+        return transcribe(job, source, request.get('asr_model', 'tiny'))
     if kind == 'probe':
         import socket
         metadata['appcontainer'] = is_appcontainer()
@@ -100,10 +126,13 @@ def process(job: Path, request: dict) -> dict:
             for output in [target, *audio_targets.values()]:
                 for encoded in output.encode():
                     outgoing.mux(encoded)
-        metadata = {'kind': 'playback', 'video_frames': frames, 'audio_tracks': len(audio_targets), 'original_preserved': True}
+        metadata = {'kind': 'playback', 'source_origin_seconds': float(origin), 'player_origin_seconds': 0.0, 'video_frames': frames, 'audio_tracks': len(audio_targets), 'original_preserved': True}
         previews.append({'path': 'playback.mp4', 'mime': 'video/mp4', **metadata})
         notes = ['H.264/AAC playback derivative. Use original decoded frames for exact-frame citations.', 'The first video track and all audio tracks are included; browser track selection depends on the installed viewer.']
     elif kind == 'audio':
+        model_name = request.get('asr_model', 'tiny')
+        if model_name not in ('tiny', 'small'):
+            raise ValueError('Unsupported local speech profile')
         import av
         import numpy as np
         from faster_whisper import WhisperModel
@@ -148,8 +177,8 @@ def process(job: Path, request: dict) -> dict:
                         covered[a:b] = True
             if not covered.any():
                 raise ValueError('No decodable audio in requested interval')
-            metadata = {'track_index': track.index, 'audio_tracks': [{'index': s.index, 'time_base': str(s.time_base), 'start_time': s.start_time} for s in tracks], 'requested_interval': [start, end], 'origin_seconds': origin, 'decoded_seconds': float(covered.sum()/16000), 'gap_seconds': float((~covered).sum()/16000), 'vad': False, 'model': 'faster-whisper-tiny', 'compute_type': 'int8', 'sample_rate': 16000, 'channels': 'derived mono'}
-        model_root = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) / 'models' / 'tiny'
+            metadata = {'track_index': track.index, 'audio_tracks': [{'index': s.index, 'time_base': str(s.time_base), 'start_time': s.start_time} for s in tracks], 'requested_interval': [start, end], 'origin_seconds': origin, 'decoded_seconds': float(covered.sum()/16000), 'gap_seconds': float((~covered).sum()/16000), 'vad': False, 'model': f'faster-whisper-{model_name}', 'compute_type': 'int8', 'sample_rate': 16000, 'channels': 'derived mono'}
+        model_root = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) / 'models' / model_name
         if not (model_root / 'model.bin').exists():
             raise ValueError('Local transcription model is not installed')
         # CTranslate2 appends forward-slash paths; Windows verbatim-path prefixes reject those.
@@ -159,8 +188,8 @@ def process(job: Path, request: dict) -> dict:
         metadata['language'] = info.language
         metadata['language_probability'] = info.language_probability
         for segment in segments:
-            pages.append({'locator': f'track:{metadata["track_index"]}:seconds:{start+segment.start:.3f}-{start+segment.end:.3f}', 'text': segment.text, 'method': 'faster-whisper-tiny int8; unverified machine transcript', 'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob, 'words': [{'start': start+w.start, 'end': start+w.end, 'word': w.word, 'probability': w.probability} for w in segment.words or []]})
-        notes = ['Unverified machine transcription using the tiny multilingual model; check names, numbers, and faint speech against original audio.', 'Only the selected audio track and interval were decoded. Other tracks remain unprocessed.', 'VAD is disabled. Decoder gaps are accounted separately and zero-filled for timing; silence does not establish absence of events.', 'Transcription is not direct audio understanding, speaker identity, or legal interpretation.']
+            pages.append({'locator': f'track:{metadata["track_index"]}:seconds:{start+segment.start:.3f}-{start+segment.end:.3f}', 'text': segment.text, 'method': f'faster-whisper-{model_name} int8; unverified machine transcript', 'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob, 'words': [{'start': start+w.start, 'end': start+w.end, 'word': w.word, 'probability': w.probability} for w in segment.words or []]})
+        notes = ['Unverified machine transcription using the selected local multilingual model; check names, numbers, and faint speech against original audio.', 'Only the selected audio track and interval were decoded. Other tracks remain unprocessed.', 'VAD is disabled. Decoder gaps are accounted separately and zero-filled for timing; silence does not establish absence of events.', 'Transcription is not direct audio understanding, speaker identity, or legal interpretation.']
     elif kind == 'video':
         import av
         start, end = float(request.get('start', 0)), float(request.get('end', 10))
@@ -227,7 +256,16 @@ def process(job: Path, request: dict) -> dict:
             pages.append({'locator': f'page:{number}', 'text': text, 'method': 'pypdf native text'})
             if sum(len(p['text']) for p in pages) > MAX_TEXT:
                 raise ValueError('Extracted text limit reached; no complete extraction published')
-        notes = ['Native text only; image regions and handwriting have not been OCR-processed.', 'Attachments, annotations, and visual layout require separate review.']
+        if request.get('operation') == 'automatic':
+            from automatic_ocr import pdf_pages
+            for unit in pdf_pages(source):
+                pages.append(unit)
+                if sum(len(p['text']) for p in pages) > MAX_TEXT:
+                    raise ValueError('OCR text limit reached; no complete extraction published')
+            metadata['coverage'] = {'native_pages': len(reader.pages), 'ocr_pages': len(reader.pages), 'model_inspected': False}
+            notes = ['Native text and OCR remain separate units. OCR may misread text; raw scores are not probabilities.', 'Every physical page was rendered for OCR. Handwriting, annotations, attachments and hidden structures require review.']
+        else:
+            notes = ['Native text only; image regions and handwriting have not been OCR-processed.', 'Attachments, annotations, and visual layout require separate review.']
     elif kind == 'image':
         from PIL import Image, ImageOps
         Image.MAX_IMAGE_PIXELS = 60_000_000
@@ -242,16 +280,42 @@ def process(job: Path, request: dict) -> dict:
                 metadata['crop'] = [x, y, width, height]
             oriented.convert('RGB').save(job / 'preview.jpg', quality=92)
             previews.append({'path': 'preview.jpg', **metadata})
-        notes = ['Preview uses EXIF orientation. Original bytes and metadata are preserved.', 'No OCR, identity attribution, or visual understanding is implied. Multipage images require page-by-page review.']
+        if request.get('operation') == 'automatic':
+            from automatic_ocr import image_pages
+            pages.extend(image_pages(source))
+            metadata['coverage'] = {'ocr_frames': len(pages), 'image_frames': metadata['frames'], 'model_inspected': False}
+            notes = ['All image frames were passed through local OCR. Raw scores are not probabilities; handwriting and small text can be missed.', 'OCR is not visual scene understanding or identity attribution. Preview displays the first frame.']
+        else:
+            notes = ['Preview uses EXIF orientation. Original bytes and metadata are preserved.', 'No OCR, identity attribution, or visual understanding is implied. Multipage images require page-by-page review.']
     elif kind == 'docx':
         from docx import Document
         document = Document(source)
-        for n, paragraph in enumerate(document.paragraphs, 1):
-            pages.append({'locator': f'paragraph:{n}', 'text': paragraph.text, 'method': 'python-docx'})
-        for n, table in enumerate(document.tables, 1):
-            for row, cells in enumerate(table.rows, 1):
-                pages.append({'locator': f'table:{n}:row:{row}', 'text': '\t'.join(c.text for c in cells.cells), 'method': 'python-docx table'})
+        from docx.text.paragraph import Paragraph
+        from docx.table import Table
+        # Preserve paragraph/table order in the source document.
+        for n, element in enumerate(document.element.body, 1):
+            if element.tag.endswith('}p'):
+                paragraph = Paragraph(element, document)
+                pages.append({'locator': f'block:{n}:paragraph', 'text': paragraph.text, 'method': 'python-docx'})
+            elif element.tag.endswith('}tbl'):
+                for row, cells in enumerate(Table(element, document).rows, 1):
+                    pages.append({'locator': f'block:{n}:table:row:{row}', 'text': '\t'.join(c.text for c in cells.cells), 'method': 'python-docx table'})
         notes = ['Tracked revisions, comments, headers, footnotes, and embedded attachments are not extracted by this adapter. No page layout is implied.']
+    elif kind in ('pptx', 'odt'):
+        import zipfile
+        import xml.etree.ElementTree as ET
+        import re
+        with zipfile.ZipFile(source) as package:
+            names = ([n for n in package.namelist() if re.fullmatch(r'ppt/slides/slide[0-9]+\.xml', n)] if kind == 'pptx' else ['content.xml'])
+            names.sort(key=lambda n: int(re.search(r'slide([0-9]+)', n).group(1)) if kind == 'pptx' else 0)
+            if sum(package.getinfo(n).file_size for n in names) > 32 * 1024 * 1024:
+                raise ValueError('Document XML exceeds extraction limit')
+            for name in names:
+                root = ET.fromstring(package.read(name))
+                units = [node for node in root.iter() if node.tag in ('{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p', '{urn:oasis:names:tc:opendocument:xmlns:text:1.0}h', '{http://schemas.openxmlformats.org/drawingml/2006/main}p')]
+                for index, node in enumerate(units, 1):
+                    pages.append({'locator': f'{name}:paragraph:{index}', 'text': ''.join(node.itertext()), 'method': 'document-xml'})
+        notes = ['Text preview only; slide layout, images, comments, embedded files and animations are not rendered. Original file is preserved.']
     elif kind == 'xlsx':
         from openpyxl import load_workbook
         formulas_file, cached_file = source.open('rb'), source.open('rb')
