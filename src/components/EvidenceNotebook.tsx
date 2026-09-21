@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
-import { api, citationParts, native } from '../bridge';
+import { useEffect, useState } from 'react';
+import { api, native } from '../bridge';
 import type { Snapshot } from '../types';
+import { CitationChip, StatusPill } from '../ui';
 import SoundDiscovery from './SoundDiscovery';
 
 type EvidenceObject = { id: string; revision: number; kind: string; title: string; content: string; source_ids: string[]; locators: string[]; review: string; stale: boolean; actor: string; start_seconds: number | null; end_seconds: number | null; dependencies?: { id: string; revision: number }[] };
@@ -10,7 +10,6 @@ type Fit = { status: string; scale: number; offset_seconds: number; uncertainty_
 const kinds = ['track', 'observation', 'statement', 'hypothesis', 'claim', 'event', 'entity', 'clock', 'issue', 'authority', 'note', 'issue_matrix', 'discovery', 'contract_review', 'deposition', 'draft', 'exhibit_list'];
 
 export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snapshot: Snapshot; onClose: () => void; onSource: (id: string, locator?: string) => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
   const [page, setPage] = useState<Page>({ objects: [], next_offset: null });
   const [offset, setOffset] = useState(0);
   const [kind, setKind] = useState('');
@@ -23,7 +22,6 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
   const [anchorsText, setAnchorsText] = useState('');
   const [fit, setFit] = useState<Fit | null>(null);
   const [fitAnchors, setFitAnchors] = useState<unknown[]>([]);
-  useEffect(() => { dialog.current?.showModal(); }, []);
   useEffect(() => {
     let active = true;
     if (!native) { setError('Structured evidence storage requires the Windows desktop app.'); return; }
@@ -46,8 +44,8 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
     });
     const result = await api<Fit>('fit_clock', { anchors }); setFit(result); setFitAnchors(anchors);
   }
-  return <dialog ref={dialog} className="modal evidence-notebook" onCancel={onClose}>
-    <div className="modal-heading"><div><div className="eyebrow">CASE EVIDENCE</div><h2>Findings & clock proposals</h2></div><button className="icon-button" aria-label="Close evidence notebook" onClick={onClose}><X size={20}/></button></div>
+  return <section className="workspace-view evidence-notebook" aria-label="Findings and clock proposals">
+    <div className="workspace-header"><div><div className="eyebrow">FINDINGS</div><h2>Findings &amp; clock proposals</h2></div><div className="spacer"/><button className="secondary" onClick={onClose}>Back to chat</button></div>
     <p className="small muted">Statements, observations and hypotheses remain separate. A valid citation identifies a location; human review and factual support remain separate judgments.</p>
     {error ? <p className="notice error" role="alert">{error}</p> : null}
     <div className="input-row"><label>Kind<select value={kind} onChange={e => { setKind(e.target.value); setOffset(0); }}><option value="">All kinds</option>{kinds.map(k => <option key={k}>{k}</option>)}</select></label><button className="secondary" disabled={busy || !native} onClick={create}>New object</button><button className="secondary" disabled={busy || !native} onClick={() => setRefresh(v => v + 1)}>Refresh</button></div>
@@ -64,7 +62,7 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
       <label>Exact source citations (one per line)<textarea rows={2} value={editing.locators.join('\n')} onChange={e => change({ locators: e.target.value.split('\n').filter(Boolean) })} placeholder="evidence:SOURCE-ID#L1-L3"/></label>
       <div className="input-row"><button type="submit" className="primary" disabled={busy}>Save revision</button><button type="button" className="secondary" disabled={busy} onClick={() => setEditing(null)}>Close editor</button></div>
     </form> : null}
-    <div className="object-list">{page.objects.map(o => <details key={`${o.id}:${o.revision}`}><summary><strong>{o.title}</strong> · {o.kind} · r{o.revision} · {o.stale ? 'STALE — recheck dependencies' : o.review}</summary><p className="small muted">{o.actor} · {o.id}</p><pre>{o.content}</pre><div className="input-row">{o.locators.map((citation, i) => <button key={i} className="citation" onClick={() => { const c = citationParts(citation); if (c) { onSource(c.sourceId, c.locator); onClose(); } }}>{citation}</button>)}</div><div className="input-row"><button className="secondary" disabled={busy} onClick={() => { setDependencyPreviews([]); setEditing(o); }}>Revise</button>{['accepted', 'rejected', 'unreviewed'].map(review => <button key={review} className="quiet" disabled={busy || o.stale || o.review === review} onClick={() => void action(async () => { await api('evidence_review', { id: o.id, revision: o.revision, review }); setRefresh(v => v + 1); })}>{review === 'accepted' ? 'Accept revision' : review === 'rejected' ? 'Reject revision' : 'Clear review'}</button>)}</div></details>)}</div>
+    <div className="object-list">{page.objects.map(o => <details key={`${o.id}:${o.revision}`} className="object-card"><summary><strong>{o.title}</strong><span className="badge">{o.kind}</span><span className="mono small muted">r{o.revision}</span>{o.stale ? <StatusPill state="stale" label="Recheck dependencies" small /> : o.review === 'accepted' ? <StatusPill state="accepted" label="Accepted" small /> : o.review === 'rejected' ? <StatusPill state="failed" label="Rejected" small /> : <StatusPill state="unreviewed" label="Unreviewed" small />}</summary><p className="small muted">{o.actor} · {o.id}</p><pre>{o.content}</pre>{o.locators.length ? <div className="input-row">{o.locators.map((citation, i) => <CitationChip key={i} value={citation} onOpen={(id, locator) => { onSource(id, locator); onClose(); }} />)}</div> : null}<div className="input-row"><button className="secondary" disabled={busy} onClick={() => { setDependencyPreviews([]); setEditing(o); }}>Revise</button>{['accepted', 'rejected', 'unreviewed'].map(review => <button key={review} className="quiet" disabled={busy || o.stale || o.review === review} onClick={() => void action(async () => { await api('evidence_review', { id: o.id, revision: o.revision, review }); setRefresh(v => v + 1); })}>{review === 'accepted' ? 'Accept revision' : review === 'rejected' ? 'Reject revision' : 'Clear review'}</button>)}</div></details>)}</div>
     {!page.objects.length ? <p>No objects on this page. Create one or ask the investigator to save structured findings.</p> : null}
     <div className="input-row"><button className="secondary" disabled={offset === 0} onClick={() => setOffset(n => Math.max(0, n - 50))}>Previous</button><span>Page {Math.floor(offset / 50) + 1}</span><button className="secondary" disabled={page.next_offset === null} onClick={() => setOffset(page.next_offset ?? 0)}>Next</button></div>
     <SoundDiscovery snapshot={snapshot} onSource={id => { onSource(id); onClose(); }}/>
@@ -74,5 +72,5 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
       <button className="secondary" disabled={busy || !anchorsText.trim() || !native} onClick={() => void action(calculate)}>Calculate fit</button>
       {fit ? <div><p><strong>{fit.status.replaceAll('_', ' ')}</strong> · {fit.drift_estimated ? 'drift estimated' : 'offset only'}</p><p>Incident seconds = {fit.scale.toPrecision(10)} × source seconds + {fit.offset_seconds.toFixed(6)}. Diagnostic uncertainty: ±{fit.uncertainty_seconds.toFixed(6)} s. Valid source range: {fit.valid_source_range.join(' – ')} s.</p><table><thead><tr><th>Anchor</th><th>Use</th><th>Residual (s)</th><th>Check</th></tr></thead><tbody>{fit.residuals.map((r, i) => <tr key={i}><td>{i + 1}</td><td>{r.held_out ? 'Held out' : 'Fit'}</td><td>{r.residual_seconds.toFixed(6)}</td><td>{r.within_tolerance ? 'Within tolerance' : 'Failed'}</td></tr>)}</tbody></table>{fit.limitations.map(l => <p className="small muted" key={l}>{l}</p>)}<button className="secondary" disabled={busy || !source} onClick={() => void action(async () => { await api('evidence_write', { object: { id: null, base_revision: 0, kind: 'clock', title: `Clock proposal · ${snapshot.sources.find(s => s.id === source)?.name}`, content: JSON.stringify({ clock_domain: "container_relative", anchors: fitAnchors, fit }, null, 2), source_ids: [source], locators: [], dependencies: [], start_seconds: null, end_seconds: null } }); setRefresh(v => v + 1); })}>Save unreviewed proposal</button></div> : null}
     </details>
-  </dialog>;
+  </section>;
 }

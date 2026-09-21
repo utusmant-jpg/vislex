@@ -1,7 +1,6 @@
 // Block-level markdown renderer with VisLex citation chips inline. Hand-rolled so the
 // whole app stays dependency-free and offline; covers the constructs the investigator
 // actually emits: headings, lists, tables, fenced code, quotes, emphasis, citations.
-import type { ReactNode } from 'react';
 import { citationParts } from './bridge';
 import { CitationChip } from './ui';
 
@@ -138,5 +137,3 @@ export function Markdown({ text, onSource, caret, className }: { text: string; o
     {caret && !blocks.length ? <p><span className="stream-caret" aria-hidden="true" /></p> : null}
   </div>;
 }
-
-export function markdownSummary(text: ReactNode): string { return String(text); }

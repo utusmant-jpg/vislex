@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, citationParts, native } from '../bridge';
+import { CitationChip, StatusPill } from '../ui';
 
 type Claim = { proposition: string; assessment: string; supporting: string[]; contrary: string[]; uncertainty: string; next_check: string };
 type DossierView = {
@@ -28,7 +29,7 @@ export default function QuestionDossier({ taskId, step, status, evidenceVersion,
   function citations(values: string[]) {
     return values.length ? values.map((value, index) => {
       const citation = citationParts(value);
-      return citation ? <button type="button" key={`${value}:${index}`} className="citation" title={value} onClick={() => onSource(citation.sourceId, citation.locator)}>Open evidence {index + 1}</button> : <span key={`${value}:${index}`}>{value}</span>;
+      return citation ? <CitationChip key={`${value}:${index}`} value={value} onOpen={onSource} /> : <span key={`${value}:${index}`}>{value}</span>;
     }) : <span className="muted">None recorded</span>;
   }
   async function review(index: number, decision: string) {
@@ -45,7 +46,7 @@ export default function QuestionDossier({ taskId, step, status, evidenceVersion,
       {error ? <p role="alert">Could not load this dossier: {error}</p> : null}
       {native && !view && !error ? <p role="status">Loading evidence checks…</p> : null}
       {view ? <>
-        <p className="dossier-state">{view.stale || view.completion_stale ? 'Evidence changed — recheck required' : view.completion?.outcome === 'declared_checks_complete' ? 'Declared checks complete · AI assessment' : view.completion?.outcome === 'partial' ? 'Partial investigation' : 'Unreviewed investigation'}</p>
+        <div className="dossier-state">{view.stale || view.completion_stale ? <StatusPill state="stale" label="Evidence changed — recheck required"/> : view.completion?.outcome === 'declared_checks_complete' ? <StatusPill state="complete" label="Declared checks complete · AI assessment"/> : view.completion?.outcome === 'partial' ? <StatusPill state="needs-attention" label="Partial investigation"/> : <StatusPill state="unreviewed" label="Unreviewed investigation"/>}</div>
         <p className="small muted">{view.coverage_note} No human approval is implied.</p>
         {view.dossier ? <>
           <h3>Declared scope</h3><p>{view.dossier.scope}</p>

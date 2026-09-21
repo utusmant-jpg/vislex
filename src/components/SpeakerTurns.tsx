@@ -1,23 +1,106 @@
-import {useEffect,useState} from 'react';
-import {api} from '../bridge';
-type Turn={start:number;end:number;speaker:string};
-type Annotations={revision:number;labels:Record<string,string>;turns:Record<string,string[]>};
-type Result={metadata:{turns:Turn[];track_index:number;origin_seconds:number;container_origin_seconds:number;gap_seconds:number};extraction_locator:string;limitations:string[]};
-export default function SpeakerTurns({sourceId,onSeek,defaultTrack}:{sourceId:string;defaultTrack?:number;onSeek:(seconds:number)=>void}){
- const [start,setStart]=useState(0),[end,setEnd]=useState(60),[track,setTrack]=useState(0),[offset,setOffset]=useState(0);
- useEffect(()=>{if(defaultTrack!==undefined)setTrack(defaultTrack);},[defaultTrack]);
- const [result,setResult]=useState<Result|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
- const [annotations,setAnnotations]=useState<Annotations>({revision:0,labels:{},turns:{}}),[filter,setFilter]=useState(''),[saved,setSaved]=useState(''),[annotationsReady,setAnnotationsReady]=useState(false);
- const artifact=result?.extraction_locator.split('#artifact:')[1];
- useEffect(()=>{let live=true;setAnnotationsReady(false);setAnnotations({revision:0,labels:{},turns:{}});setSaved('');if(artifact)void api<Annotations>('speaker_annotations',{source_id:sourceId,artifact_id:artifact}).then(v=>{if(live){setAnnotations(v);setAnnotationsReady(true);}}).catch(e=>{if(live)setError(String(e));});return()=>{live=false;};},[sourceId,artifact]);
- const speakers=Array.from(new Set(result?.metadata.turns.map(t=>t.speaker)??[]));
- const assignments=(t:Turn,i:number)=>annotations.turns[String(i)]??[t.speaker];
- const visible=result?.metadata.turns.map((turn,index)=>({turn,index})).filter(({turn,index})=>!filter||assignments(turn,index).includes(filter))??[];
- async function save(){if(!artifact)return;setBusy(true);setError('');setSaved('');try{const next=await api<Annotations>('save_speaker_annotations',{source_id:sourceId,artifact_id:artifact,...annotations});setAnnotations(next);setSaved('Corrections saved. Identity remains unverified.');}catch(e){setError(String(e));}finally{setBusy(false);}}
+import { useEffect, useMemo, useState } from 'react';
+import { UserRound } from 'lucide-react';
+import { api } from '../bridge';
+import { Tooltip } from '../ui';
 
- useEffect(()=>{let active=true;setResult(null);setOffset(0);setFilter('');void api<{kind:string;status:string;result:string}[]>('processing_status',{source_id:sourceId}).then(jobs=>{const last=jobs.find(j=>j.kind==='diarization'&&j.status==='complete');if(active&&last)setResult(JSON.parse(last.result));}).catch(e=>{if(active)setError(String(e));});return()=>{active=false;};},[sourceId]);
- async function analyze(){setBusy(true);setError('');try{setResult(await api<Result>('diarize_source',{source_id:sourceId,start,end,track}));setOffset(0);}catch(e){setError(String(e));}finally{setBusy(false);}}
- return <details className="speaker-turns"><summary>Anonymous speaker turns</summary><p className="small muted">Local speaker clusters are navigation proposals. Labels may split or merge voices and never establish a person's identity. Each run has its own labels.</p><div className="input-row"><label>Audio track index<input type="number" min="0" value={track} onChange={e=>setTrack(Number(e.target.value))}/></label><label>Start (track seconds)<input type="number" min="0" value={start} onChange={e=>setStart(Number(e.target.value))}/></label><label>End (track seconds)<input type="number" min="0" value={end} onChange={e=>setEnd(Number(e.target.value))}/></label><button disabled={busy||end<=start||end-start>600} onClick={()=>void analyze()}>{busy?'Analyzing voices…':'Propose speaker turns'}</button></div>{error?<p role="alert">{error}</p>:null}{result?<><p>{result.metadata.turns.length} proposed turns · {result.metadata.gap_seconds.toFixed(2)} seconds undecoded within requested interval</p><label>Filter speaker<select value={filter} onChange={e=>{setFilter(e.target.value);setOffset(0);}}><option value="">All turns</option>{speakers.map(s=><option key={s} value={s}>{annotations.labels[s]??s}</option>)}</select></label>
- {visible.slice(offset,offset+100).map(({turn:t,index:i})=>{const position=t.start+result.metadata.origin_seconds-result.metadata.container_origin_seconds;const assigned=assignments(t,i);return <div key={i}><button className="transcript-line" disabled={position<0} onClick={()=>onSeek(position)}>{assigned.length?assigned.map(s=>annotations.labels[s]??s).join(' + '):'Unknown speaker'} · track {result.metadata.track_index} · {t.start.toFixed(3)}–{t.end.toFixed(3)} s · unreviewed</button><details><summary>Correct speaker assignment</summary><p className="small muted">Select multiple voices for overlap, or clear all for unknown. Original machine turn and transcript stay unchanged.</p>{speakers.map(s=><label key={s}><input type="checkbox" disabled={!annotationsReady} checked={assigned.includes(s)} onChange={e=>{const next=e.target.checked?[...assigned,s]:assigned.filter(v=>v!==s);setAnnotations(a=>({...a,turns:{...a.turns,[String(i)]:next}}));setSaved('');}}/>{annotations.labels[s]??s} </label>)}</details></div>;})}
- <details><summary>Edit display labels</summary>{speakers.map(s=><label key={s}>{s}<input disabled={!annotationsReady} maxLength={120} value={annotations.labels[s]??s} onChange={e=>{const label=e.target.value;setAnnotations(a=>({...a,labels:{...a.labels,[s]:label}}));setSaved('');}}/></label>)}<p className="small muted">A display label does not authenticate a person's identity and does not carry to another run.</p></details><button disabled={busy||!annotationsReady} onClick={()=>void save()}>Save corrections</button>{saved?<p role="status">{saved}</p>:null}<div className="input-row"><button disabled={!offset} onClick={()=>setOffset(v=>Math.max(0,v-100))}>Previous turns</button><button disabled={offset+100>=visible.length} onClick={()=>setOffset(v=>v+100)}>Next turns</button></div><code>{result.extraction_locator}</code>{result.limitations.map(l=><p className="small muted" key={l}>{l}</p>)}</>:null}</details>;
+type Turn = { start: number; end: number; speaker: string };
+type Annotations = { revision: number; labels: Record<string, string>; turns: Record<string, string[]> };
+type Result = { metadata: { turns: Turn[]; track_index: number; origin_seconds: number; container_origin_seconds: number; gap_seconds: number }; extraction_locator: string; limitations: string[] };
+
+export default function SpeakerTurns({ sourceId, onSeek, defaultTrack }: { sourceId: string; defaultTrack?: number; onSeek: (seconds: number) => void }) {
+  const [start, setStart] = useState(0);
+  const [end, setEnd] = useState(60);
+  const [track, setTrack] = useState(0);
+  const [offset, setOffset] = useState(0);
+  useEffect(() => { if (defaultTrack !== undefined) setTrack(defaultTrack); }, [defaultTrack]);
+  const [result, setResult] = useState<Result | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [annotations, setAnnotations] = useState<Annotations>({ revision: 0, labels: {}, turns: {} });
+  const [filter, setFilter] = useState('');
+  const [saved, setSaved] = useState('');
+  const [annotationsReady, setAnnotationsReady] = useState(false);
+  const artifact = result?.extraction_locator.split('#artifact:')[1];
+  useEffect(() => {
+    let live = true;
+    setAnnotationsReady(false); setAnnotations({ revision: 0, labels: {}, turns: {} }); setSaved('');
+    if (artifact) void api<Annotations>('speaker_annotations', { source_id: sourceId, artifact_id: artifact }).then(value => { if (live) { setAnnotations(value); setAnnotationsReady(true); } }).catch(e => { if (live) setError(String(e)); });
+    return () => { live = false; };
+  }, [sourceId, artifact]);
+  const speakers = useMemo(() => Array.from(new Set(result?.metadata.turns.map(turn => turn.speaker) ?? [])), [result]);
+  const label = (speaker: string) => annotations.labels[speaker] ?? speaker;
+  const assignments = (turn: Turn, index: number) => annotations.turns[String(index)] ?? [turn.speaker];
+  const visible = result?.metadata.turns.map((turn, index) => ({ turn, index })).filter(({ turn, index }) => !filter || assignments(turn, index).includes(filter)) ?? [];
+  async function save() {
+    if (!artifact) return;
+    setBusy(true); setError(''); setSaved('');
+    try {
+      const next = await api<Annotations>('save_speaker_annotations', { source_id: sourceId, artifact_id: artifact, ...annotations });
+      setAnnotations(next);
+      setSaved('Corrections saved. Identity remains unverified.');
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+  useEffect(() => {
+    let active = true; setResult(null); setOffset(0); setFilter('');
+    void api<{ kind: string; status: string; result: string }[]>('processing_status', { source_id: sourceId }).then(jobs => {
+      const last = jobs.find(job => job.kind === 'diarization' && job.status === 'complete');
+      if (active && last) setResult(JSON.parse(last.result));
+    }).catch(e => { if (active) setError(String(e)); });
+    return () => { active = false; };
+  }, [sourceId]);
+  async function analyze() {
+    setBusy(true); setError('');
+    try { setResult(await api<Result>('diarize_source', { source_id: sourceId, start, end, track })); setOffset(0); }
+    catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+  const laneRange = result ? (() => {
+    const turns = result.metadata.turns;
+    const from = turns.length ? turns[0].start : 0;
+    const to = turns.length ? turns[turns.length - 1].end : 1;
+    return { from, to: to > from ? to : from + 1 };
+  })() : null;
+  return <details className="speaker-turns"><summary><UserRound size={13} />Anonymous speaker turns</summary>
+    <p className="small muted">Local speaker clusters are navigation proposals. Labels may split or merge voices and never establish a person's identity. Each run has its own labels.</p>
+    <div className="input-row"><label>Audio track<input type="number" min={0} value={track} onChange={event => setTrack(Number(event.target.value))} /></label><label>Start (s)<input type="number" min={0} value={start} onChange={event => setStart(Number(event.target.value))} /></label><label>End (s)<input type="number" min={1} value={end} onChange={event => setEnd(Number(event.target.value))} /></label><button className="secondary" disabled={busy || end <= start || end - start > 600} onClick={() => void analyze()}>{busy ? 'Analyzing voices…' : 'Propose speaker turns'}</button></div>
+    {error ? <p role="alert" className="danger-text">{error}</p> : null}
+    {result && laneRange ? <>
+      <p className="small">{result.metadata.turns.length} proposed turns · {result.metadata.gap_seconds.toFixed(2)} seconds undecoded within requested interval</p>
+      <div className="speaker-lanes" role="img" aria-label={`Speaker lanes from ${laneRange.from.toFixed(1)} to ${laneRange.to.toFixed(1)} seconds`}>
+        {speakers.map((speaker, laneIndex) => <div className="speaker-lane" key={speaker}>
+          <span className="speaker-lane-label" title={label(speaker)}>{label(speaker)}</span>
+          <div className="speaker-lane-track" data-lane={laneIndex % 6}>
+            {result.metadata.turns.map((turn, index) => (assignments(turn, index).includes(speaker)
+              ? <Tooltip key={index} text={`${label(speaker)} · ${turn.start.toFixed(2)}–${turn.end.toFixed(2)} s`}>
+                  <button
+                    className="speaker-segment"
+                    style={{ left: `${((turn.start - laneRange.from) / (laneRange.to - laneRange.from)) * 100}%`, width: `${Math.max(0.5, ((turn.end - turn.start) / (laneRange.to - laneRange.from)) * 100)}%` }}
+                    aria-label={`${label(speaker)} from ${turn.start.toFixed(2)} to ${turn.end.toFixed(2)} seconds`}
+                    onClick={() => { const position = turn.start + result.metadata.origin_seconds - result.metadata.container_origin_seconds; if (position >= 0) onSeek(position); }} />
+                </Tooltip>
+              : null))}
+          </div>
+        </div>)}
+      </div>
+      <div className="input-row"><label>Filter speaker<select value={filter} onChange={event => { setFilter(event.target.value); setOffset(0); }}><option value="">All turns</option>{speakers.map(speaker => <option key={speaker} value={speaker}>{label(speaker)}</option>)}</select></label></div>
+      {visible.slice(offset, offset + 100).map(({ turn, index }) => {
+        const position = turn.start + result.metadata.origin_seconds - result.metadata.container_origin_seconds;
+        const assigned = assignments(turn, index);
+        return <div className="turn-row" key={index}>
+          <button className="transcript-line caption-row" disabled={position < 0} onClick={() => onSeek(position)}>
+            <span className="caption-time mono">{turn.start.toFixed(2)}–{turn.end.toFixed(2)}</span>
+            <span className="caption-text">{assigned.length ? assigned.map(speaker => label(speaker)).join(' + ') : 'Unknown speaker'} · track {result.metadata.track_index} · unreviewed</span>
+          </button>
+          <details className="turn-assign"><summary>Correct</summary>
+            <p className="small muted">Select multiple voices for overlap, or clear all for unknown. Original machine turn and transcript stay unchanged.</p>
+            {speakers.map(speaker => <label key={speaker}><input type="checkbox" disabled={!annotationsReady} checked={assigned.includes(speaker)} onChange={event => { const next = event.target.checked ? [...assigned, speaker] : assigned.filter(value => value !== speaker); setAnnotations(current => ({ ...current, turns: { ...current.turns, [String(index)]: next } })); setSaved(''); }} />{label(speaker)}</label>)}
+          </details>
+        </div>;
+      })}
+      <details className="turn-labels"><summary>Edit display labels</summary>{speakers.map(speaker => <label key={speaker}>{speaker}<input disabled={!annotationsReady} maxLength={120} value={annotations.labels[speaker] ?? speaker} onChange={event => { const text = event.target.value; setAnnotations(current => ({ ...current, labels: { ...current.labels, [speaker]: text } })); setSaved(''); }} /></label>)}<p className="small muted">A display label does not authenticate a person's identity and does not carry to another run.</p></details>
+      <div className="input-row"><button className="secondary" disabled={busy || !annotationsReady} onClick={() => void save()}>Save corrections</button>{saved ? <p role="status" className="small success-text">{saved}</p> : null}</div>
+      <div className="input-row"><button className="quiet" disabled={!offset} onClick={() => setOffset(value => Math.max(0, value - 100))}>Previous turns</button><button className="quiet" disabled={offset + 100 >= visible.length} onClick={() => setOffset(value => value + 100)}>Next turns</button></div>
+      <code className="small muted">{result.extraction_locator}</code>
+      {result.limitations.map(limitation => <p className="small muted" key={limitation}>{limitation}</p>)}
+    </> : null}
+  </details>;
 }

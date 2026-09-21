@@ -1,5 +1,20 @@
 # VisLex Redesign Plan — "World-class, evidence-grade"
 
+> **Implementation status (2026-09-21):** Phases 0–4 are implemented and verified
+> (tsc + vitest 13/13 + production build green; browser QA in both themes).
+> Shipped: token system with dark/light themes (`styles.css` rewritten, ~960 lines, no
+> stacked themes), rail navigation with five workspaces, status bar, chat with markdown +
+> citation chips + hover previews + per-turn activity timeline + model picker popover +
+> follow-up chips, PDF continuous scroll, image pan/zoom, custom media transport with
+> filmstrip/A-B loop/frame-step/keyboard, transcript search + follow, speaker lanes,
+> drag-to-draw redaction (review gate intact), Workbench/Findings as workspaces,
+> settings sheet, unified command palette, onboarding hero, drag-and-drop import,
+> toast system with Undo, context menus, tooltips, skeletons, motion catalog,
+> `ui.tsx` primitives, `markdown.tsx` renderer, `viewerContext.ts` store (DOM scraping
+> removed). Known deferred: waveform lane in the transport (needs a bounded backend
+> probe), team & review mode exposure (blocked on the forced `auto/standard` save),
+> virtualized lists, Windows UIA pass.
+
 Complete UI/UX redesign plan for the VisLex desktop app, produced from a full read of the
 frontend (`src/`), the Rust coordinator (`src-tauri/src/`), the Python workers, and every
 design/planning doc in the repo. It covers every screen and component — shell, chat, model

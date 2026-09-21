@@ -122,9 +122,11 @@ function starterPrompts(snapshot: Snapshot | null): string[] {
   if (!snapshot?.sources.length) {
     return ['Build a timeline from the evidence', 'Find contradictions across sources', 'Review the videos and summarize key moments'];
   }
+  const count = snapshot.sources.length;
+  const sourceWord = count === 1 ? 'source' : 'sources';
   const recordings = snapshot.sources.filter(source => ['video', 'audio'].includes(source.kind)).length;
   const documents = snapshot.sources.filter(source => ['pdf', 'text', 'other'].includes(source.kind)).length;
-  const starters = [`Build a timeline from the ${snapshot.sources.length} sources`];
+  const starters = [`Build a timeline from the ${count} ${sourceWord}`];
   starters.push(recordings > 0 ? `Review the ${recordingText(recordings)} and summarize the key moments` : 'Find contradictions across the sources');
   starters.push(documents > 0 ? 'Summarize the documents and list the disputed statements' : 'What evidence is missing or unverified in this case?');
   return starters;
