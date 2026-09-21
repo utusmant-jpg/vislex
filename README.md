@@ -73,3 +73,19 @@ Cited investigations receive an evidence-support review prompt before completion
 Long investigations keep full tool receipts locally and expose explicit retrieval for abbreviated older results and images. GPT-5 reasoning models use high effort and additional output-token headroom, following the [OpenAI reasoning guide](https://developers.openai.com/api/docs/guides/reasoning). Model capability and transcript accuracy still constrain conclusions.
 
 Image and frame tools trigger a fresh visual-description pass containing the current images with source, page and decoder metadata, excluding earlier case conclusions. Its observations return to the investigation as unreviewed evidence interpretations. This is designed to expose narrative anchoring; it does not certify scene descriptions or OCR accuracy.
+
+
+### Automatic analysis build
+
+The earlier automatic-analysis build is at `artifacts/VisLex automatic analysis/VisLex.exe`. In Settings, paste a company API key, click **Save key & load models**, choose its model, and save. Other configured providers remain available in the chat model dropdown. Choose **Agent decides when to delegate** to allow scoped parallel assignments.
+
+Opening a case or importing files/folders queues local document extraction, PDF/image OCR, media inventory and full-audio transcription automatically. AI review follows when a model/key is configured. Preparation counts are separate from AI review, and failures remain visible. AI is enabled once configured; there are no dollar-limit settings. This is an unsigned development build, and complete/accurate recognition of all video frames or document structures is not established.
+
+
+### Investigation workbench preview
+
+The current upgrade preview is packaged at `artifacts/VisLex Investigation Preview/VisLex.exe`. Open **Investigation workbench** for discrepancies, competing explanations, changed findings, accepted-clock replay, coverage and legal work-product launchers. Case search includes local English semantic retrieval; the transcript panel offers tiny/small speech profiles and local anonymous speaker-turn proposals. Jobs can recover staged processing and interrupted speech checkpoints. PDF/image viewers include reviewed flattened redaction, and saved records export fresh DOCX/PDF drafts.
+
+Direct Gemini media needs its separate Settings opt-in and supports originals up to 12 MiB. Offline dossier packages include cited whole originals and are not sanitized disclosure packages. Public-authority retrieval does not imply treatment validation. See the precise implementation boundaries in [the implementation ledger](docs/EVIDENCE-DESK-IMPLEMENTATION.md).
+
+The [benchmark harness](benchmarks/README.md) captures actual task outputs for independent adjudication and computes paired incident-level scores. Included synthetic scores test the scorer only. No Harvey comparison has been measured. Native synthetic acceptance is repeatable with `powershell -ExecutionPolicy Bypass -File scripts/native-acceptance.ps1` after building the desktop app and worker.
