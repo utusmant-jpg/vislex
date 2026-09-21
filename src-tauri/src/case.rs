@@ -34,6 +34,37 @@ pub fn file_hash(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
+/// Cached verification hash for immutable case content.
+/// Originals and published artifacts are content-addressed and set read-only, so
+/// (canonical path, length, mtime) identifies bytes already verified this session;
+/// any replacement or in-place change alters length or mtime and forces a fresh
+/// full hash. Keeps playback ranges, citation validation and cache reuse from
+/// re-hashing multi-gigabyte originals on every request.
+pub fn file_hash_cached(path: &Path) -> Result<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, String)>>> =
+        OnceLock::new();
+    let metadata = fs::metadata(path)?;
+    let modified = metadata.modified()?;
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((len, stamp, hash)) = guard.get(&key) {
+            if *len == metadata.len() && *stamp == modified {
+                return Ok(hash.clone());
+            }
+        }
+    }
+    let hash = file_hash(path)?;
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= 4096 {
+            guard.clear();
+        }
+        guard.insert(key, (metadata.len(), modified, hash.clone()));
+    }
+    Ok(hash)
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Source {
@@ -176,7 +207,7 @@ impl Case {
         let db = Connection::open(root.join("case.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 4, "This case requires a newer application");
+        ensure!(version <= 5, "This case requires a newer application");
         if create {
             db.execute_batch(SCHEMA)?;
         } else {
@@ -195,9 +226,10 @@ impl Case {
             db.backup(rusqlite::DatabaseName::Main, root.join("pre-migration-v2.sqlite3"), None)?;
         }
         db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_tasks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),conversation_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hidden_conversations(id TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS conversation_lookup ON conversation_tasks(conversation_id);")?;
-        if version < 4 {
+        if version < 5 {
             if !create {
-                db.backup(rusqlite::DatabaseName::Main, root.join("pre-migration-v3.sqlite3"), None)?;
+                let snapshot = if version < 4 { "pre-migration-v3.sqlite3" } else { "pre-migration-v4.sqlite3" };
+                db.backup(rusqlite::DatabaseName::Main, root.join(snapshot), None)?;
             }
             crate::evidence::migrate(&db)?;
         }
@@ -365,7 +397,7 @@ impl Case {
         let s = self.source(source_id)?;
         let path = self.source_path(source_id)?;
         ensure!(
-            file_hash(&path)? == s.sha256,
+            file_hash_cached(&path)? == s.sha256,
             "Original bytes changed: integrity check failed"
         );
         Ok(path)
@@ -536,6 +568,8 @@ impl Case {
         if query.trim().is_empty() {
             return Ok(json!({"results":[],"total":0}));
         }
+        // Quote terms so raw punctuation and FTS operators cannot break the MATCH query.
+        let query = query.split_whitespace().take(12).map(|t| format!("\"{}\"", t.replace('"', "\"\""))).collect::<Vec<_>>().join(" OR ");
         let mut stmt=self.db.prepare("SELECT source_id,name,snippet(source_fts,2,'[',']',' … ',24),bm25(source_fts) FROM source_fts WHERE source_fts MATCH ? ORDER BY bm25(source_fts) LIMIT 51 OFFSET ?")?;
         let rows=stmt.query_map(params![query,offset],|r|Ok(json!({"source_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"excerpt":r.get::<_,String>(2)?,"score":r.get::<_,f64>(3)?})))?;
         let mut results: Vec<_> = rows.collect::<std::result::Result<_, _>>()?;
@@ -565,9 +599,30 @@ impl Case {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
     pub fn record(&self, record_id: &str) -> Result<Record> {
-        self.records()?
-            .into_iter()
-            .find(|r| r.id == record_id)
+        self.db
+            .query_row(
+                "SELECT id,title,kind,content,revision,actor,review,protected,stale,updated_at,dependencies FROM records WHERE id=?",
+                [record_id],
+                |r| {
+                    let actor: String = r.get(5)?;
+                    let kind: String = r.get(2)?;
+                    let processor_transcript = actor=="processor" && kind=="transcript";
+                    Ok(Record {
+                        id: r.get(0)?,
+                        title: r.get(1)?,
+                        kind,
+                        content: r.get(3)?,
+                        revision: r.get(4)?,
+                        actor,
+                        review: r.get(6)?,
+                        protected: r.get(7)?,
+                        stale: if processor_transcript { false } else { r.get(8)? },
+                        updated_at: r.get(9)?,
+                        dependencies: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
+                    })
+                },
+            )
+            .optional()?
             .context("Working record not found")
     }
     #[allow(clippy::too_many_arguments)]
@@ -732,6 +787,7 @@ impl Case {
                 };
                 ensure!(self.db.execute("UPDATE sources SET name=? WHERE id=?", params![name,target])? == 1, "Source not found");
                 self.db.execute("UPDATE source_fts SET name=? WHERE source_id=?", params![name,target])?;
+                self.db.execute("UPDATE passage_fts SET title=? WHERE kind='source' AND object_id=?", params![name,target])?;
             },
             "chat" => {
                 let exists: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE COALESCE((SELECT conversation_id FROM conversation_tasks WHERE task_id=tasks.id),id)=?)", [target], |r| r.get(0))?;
@@ -791,7 +847,38 @@ impl Case {
                 files.push(json!({"file":entry.file_name().to_string_lossy(),"source_id":source,"sha256":hash}));
             }
         }
-        let receipt = json!({"reclaimed_bytes":reclaimed,"files":files});
+        // Terminal jobs (complete or cancelled) no longer offer recovery through
+        // resume() and their staged copies are dead weight; reclaim their private
+        // directories. Failed and interrupted jobs are retained for explicit resume.
+        let terminal_jobs: Vec<String> = {
+            let mut stmt=self.db.prepare("SELECT id FROM processing_jobs WHERE status IN ('complete','cancelled')")?;
+            let rows=stmt.query_map([],|r|r.get(0))?;
+            rows.collect::<std::result::Result<Vec<_>,_>>()?
+        };
+        let mut directories = Vec::new();
+        for job_id in terminal_jobs {
+            let Some(relative)=self.meta(&format!("processing_staging:{job_id}"))? else { continue };
+            if !safe_relative(Path::new(&relative)) { continue; }
+            let (Ok(path),Ok(staging_root))=(self.root.join(&relative).canonicalize(),self.root.join("staging").canonicalize()) else { continue; };
+            if !path.starts_with(staging_root) { continue; }
+            let Ok(metadata)=fs::symlink_metadata(&path) else { continue; };
+            if !metadata.is_dir() || metadata.file_type().is_symlink() { continue; }
+            let mut directory_bytes = 0u64;
+            let mut stack = vec![path.clone()];
+            while let Some(directory) = stack.pop() {
+                for entry in fs::read_dir(&directory)? {
+                    let entry = entry?;
+                    let entry_metadata = fs::symlink_metadata(entry.path())?;
+                    if entry_metadata.is_dir() { stack.push(entry.path()); }
+                    else if entry_metadata.is_file() { directory_bytes += entry_metadata.len(); }
+                }
+            }
+            fs::remove_dir_all(&path)?;
+            self.db.execute("DELETE FROM meta WHERE key=?", params![format!("processing_staging:{job_id}")])?;
+            reclaimed += directory_bytes;
+            directories.push(json!({"job":job_id,"directory":relative,"bytes":directory_bytes}));
+        }
+        let receipt = json!({"reclaimed_bytes":reclaimed,"files":files,"job_directories":directories});
         self.audit("verified_staging_duplicates_reclaimed",receipt.clone())?;
         Ok(receipt)
     }

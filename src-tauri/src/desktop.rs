@@ -56,7 +56,7 @@ fn key_entry() -> anyhow::Result<keyring::Entry> { provider_key_entry(crate::pro
 
 async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<Value, String> {
     if action=="fetch_public_authority" {
-        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),url))})();
+        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),url))})();
         let (case_id,url)=prepared.map_err(|e|e.to_string())?;
         let download=crate::authority::retrieve(&url).await.map_err(|e|e.to_string())?;
         let value=with_case(&app,&case_id,|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
@@ -84,23 +84,23 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
 fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result<Value> {
 
     if action=="hybrid_search" {
-        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;let case=guard.as_ref().context("Open a case first")?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),crate::semantic::prepare(case,text(&args,"query")?,scope)?)};
+        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),crate::semantic::prepare(case,text(&args,"query")?,scope)?)};
         let result=crate::semantic::run(&job)?;
         return with_case(app,&case_id,|case|crate::semantic::publish(case,&job,result));
     }
     if action=="export_word" {
-        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;let case=guard.as_ref().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_document(case,text(&args,"record_id")?,Path::new(text(&args,"path")?))?)};
+        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_document(case,text(&args,"record_id")?,Path::new(text(&args,"path")?))?)};
         crate::exports::run_document(&job)?;
         return with_case(app,&case_id,|case|crate::exports::publish_document(case,&job));
     }
     if action=="resume_transcription" {
-        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::transcription::resume(case,text(&args,"job_id")?)?)};
+        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::transcription::resume(case,text(&args,"job_id")?)?)};
         let output=crate::transcription::run(&job);
         let value=with_case(app,&case_id,|case|match output {Ok(v)=>crate::transcription::publish(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
         let _=app.emit("case-changed",());return value;
     }
     if action=="resume_processing" {
-        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock poisoned"))?;let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::processing::resume(case,text(&args,"job_id")?)?)};
+        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::processing::resume(case,text(&args,"job_id")?)?)};
         let output=crate::processing::run_prepared(&job);
         let result=with_case(app,&case_id,|case|crate::processing::publish_prepared(case,&job,output));
         let _=app.emit("case-changed",());return result;
@@ -119,7 +119,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     if ["process_source","render_page","transcribe_source","scan_sound_events","prepare_redaction","diarize_source"].contains(&action) {
         let (case_id,job)={
             let state=app.state::<AppState>();
-            let mut guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;
+            let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let case=guard.as_mut().context("Open a case first")?;
             let source=text(&args,"source_id")?;
             if action=="scan_sound_events" {anyhow::ensure!(!case.source(source)?.restricted,"Restricted source");}
@@ -173,7 +173,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let job={
 
-            let mut guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;
+            let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
 
             let c=guard.as_mut().ok_or_else(||anyhow::anyhow!("Open a case first"))?;
 
@@ -193,7 +193,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let result=crate::processing::run_playback(&job);
 
-        let mut guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case lock failed"))?;
+        let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
 
         let c=guard.as_mut().ok_or_else(||anyhow::anyhow!("Case closed during playback processing"))?;
 
@@ -206,16 +206,39 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return result;
 
     }
+    if action=="backup" {
+        let destination=PathBuf::from(text(&args,"path")?);
+        let (case_id,plan)={
+            let state=app.state::<AppState>();
+            let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+            let c=guard.as_mut().context("Open a case first")?;
+            (c.meta("id")?.unwrap_or_default(),backup::prepare_backup(c,&destination,text(&args,"password")?)?)
+        };
+        // Archive hashing, tarring and encryption run without the case lock so chat,
+        // viewing and cancellation stay responsive during a large backup.
+        backup::write_archive(&plan,&destination,text(&args,"password")?)?;
+        let value=with_case(app,&case_id,|c|backup::finish_backup(c,&plan));
+        let _=app.emit("case-changed",());
+        return value;
+    }
+    if action=="export_dossier_bundle" {
+        let destination=PathBuf::from(text(&args,"path")?);
+        let (case_id,plan)={
+            let state=app.state::<AppState>();
+            let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+            let c=guard.as_mut().context("Open a case first")?;
+            (c.meta("id")?.unwrap_or_default(),crate::exports::prepare_dossier_bundle(c,text(&args,"task_id")?,&destination)?)
+        };
+        // Copying cited originals into the package runs without the case lock.
+        let staged=crate::exports::write_dossier_bundle(&plan,&destination);
+        let value=with_case(app,&case_id,|c|crate::exports::publish_dossier_bundle(c,&plan,staged,&destination));
+        let _=app.emit("case-changed",());
+        return value;
+    }
 
     let state = app.state::<AppState>();
 
-    let mut guard = state
-
-        .case
-
-        .lock()
-
-        .map_err(|_| anyhow::anyhow!("Case lock failed"))?;
+    let mut guard = state.case.lock().unwrap_or_else(|e|e.into_inner());
 
     if ["create_case", "open_case", "restore_case", "close_case"].contains(&action) {
         anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the current import before switching cases");
@@ -307,16 +330,6 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "cancel_processing" => {crate::processing::cancel(c,text(&args,"job_id")?)?;Value::Null},
         "storage_usage" => c.storage_usage()?,
         "reclaim_staging" => {anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the import before reclaiming staging");c.reclaim_staging()?},
-
-        "import_files" => c.import_files(
-
-            &serde_json::from_value::<Vec<String>>(args["paths"].clone())?,
-
-            args["production"].as_str().unwrap_or("Unassigned"),
-
-        )?,
-
-        "import_folder" => c.import_folder(Path::new(text(&args, "path")?), args["production"].as_str().unwrap_or("Folder import"))?,
 
         "rename" => { c.rename(text(&args,"kind")?, args["id"].as_str().unwrap_or(""), text(&args,"name")?)?; Value::Null },
 
@@ -586,17 +599,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         }
 
-        "backup" => {
-
-            backup::backup(c, Path::new(text(&args, "path")?), text(&args, "password")?)?;
-
-            json!({"saved":true})
-
-        }
-
         "review_redaction" => crate::exports::review_redaction(c,text(&args,"artifact_id")?,&serde_json::from_value::<Vec<u64>>(args["pages"].clone())?,text(&args,"note")?)?,
         "export_redaction" => crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?,
-        "export_dossier_bundle" => crate::exports::dossier_bundle(c,text(&args,"task_id")?,Path::new(text(&args,"path")?))?,
         "export_record" => {
 
             c.export_record(text(&args, "record_id")?, Path::new(text(&args, "path")?))?;
@@ -724,7 +728,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     if ![
 
         "snapshot",
-        "ai_config", "direct_media_permission", "investigation_workbench", "coverage_map", "incident_replay", "processing_recovery", "team_status", "read_dossier", "read_coverage", "evidence_list", "evidence_read", "evidence_search", "fit_clock", "read_conversation",
+        "ai_config", "direct_media_permission", "investigation_workbench", "coverage_map", "incident_replay", "processing_recovery", "team_status", "read_dossier", "read_coverage", "evidence_list", "evidence_read", "evidence_search", "fit_clock",
 
         "full_transcription_status",
 
@@ -769,13 +773,7 @@ fn with_case<T>(
 
     let state = app.state::<AppState>();
 
-    let mut lock = state
-
-        .case
-
-        .lock()
-
-        .map_err(|_| anyhow::anyhow!("Case lock failed"))?;
+    let mut lock = state.case.lock().unwrap_or_else(|e|e.into_inner());
 
     let c = lock
 
@@ -986,13 +984,7 @@ pub fn run() {
 
                 let state = ctx.app_handle().state::<AppState>();
 
-                let guard = state
-
-                    .case
-
-                    .lock()
-
-                    .map_err(|_| anyhow::anyhow!("Case unavailable"))?;
+                let guard = state.case.lock().unwrap_or_else(|e|e.into_inner());
 
                 let c = guard
 
@@ -1218,7 +1210,7 @@ fn import_background(app:&tauri::AppHandle,action:&str,args:Value)->anyhow::Resu
     anyhow::ensure!(state.importing.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).is_ok(),"An import is already active");
     struct Lease<'a>(&'a AtomicBool);impl Drop for Lease<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
     let _lease=Lease(&state.importing);
-    let (root,case_id)={let guard=state.case.lock().map_err(|_|anyhow::anyhow!("Case unavailable"))?;let case=guard.as_ref().context("Open a case first")?;(case.root.clone(),case.meta("id")?.unwrap_or_default())};
+    let (root,case_id)={let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;(case.root.clone(),case.meta("id")?.unwrap_or_default())};
     let (paths,skipped)=if action=="import_folder" {crate::case::folder_paths(&root,Path::new(text(&args,"path")?))?}else{(serde_json::from_value::<Vec<String>>(args["paths"].clone())?,vec![])};
     anyhow::ensure!(paths.len()<=10000,"Import at most 10,000 files per batch");
     let production=args["production"].as_str().unwrap_or("Imported evidence");

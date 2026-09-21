@@ -27,7 +27,12 @@ pub fn migrate(db: &rusqlite::Connection) -> Result<()> {
     CREATE TRIGGER IF NOT EXISTS passage_record_update AFTER UPDATE OF content,title ON records BEGIN DELETE FROM passage_fts WHERE kind='record' AND object_id=new.id; INSERT INTO passage_fts(kind,object_id,title,content) VALUES('record',new.id,new.title,new.content); END;
     INSERT INTO passage_fts(kind,object_id,title,content) SELECT 'source',e.source_id,s.name,e.text FROM extracts e JOIN sources s ON s.id=e.source_id WHERE NOT EXISTS(SELECT 1 FROM passage_fts f WHERE f.kind='source' AND f.object_id=e.source_id);
     INSERT INTO passage_fts(kind,object_id,title,content) SELECT 'record',r.id,r.title,r.content FROM records r WHERE NOT EXISTS(SELECT 1 FROM passage_fts f WHERE f.kind='record' AND f.object_id=r.id);
-    PRAGMA user_version=4;
+    CREATE INDEX IF NOT EXISTS actions_task ON actions(task_id);
+    CREATE INDEX IF NOT EXISTS transmissions_task ON transmissions(task_id);
+    CREATE INDEX IF NOT EXISTS occurrences_source ON occurrences(source_id);
+    CREATE INDEX IF NOT EXISTS processing_jobs_source ON processing_jobs(source_id);
+    CREATE INDEX IF NOT EXISTS artifacts_source ON artifacts(source_id);
+    PRAGMA user_version=5;
     COMMIT;
     "#)?;
     Ok(())

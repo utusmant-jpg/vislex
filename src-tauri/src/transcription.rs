@@ -1,4 +1,4 @@
-use crate::case::{digest, file_hash, id, now, Case, Source};
+use crate::case::{digest, file_hash, file_hash_cached, id, now, Case, Source};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -119,7 +119,7 @@ pub fn resume(case:&mut Case,job_id:&str)->Result<Job> {
     ensure!(staging.starts_with(case.root.join("staging").canonicalize()?)&&!staging.join("cancel.request").exists(),"Invalid or cancelled checkpoint");
     let manifest:Value=serde_json::from_slice(&fs::read(staging.join("manifest.json"))?)?;
     let source=case.source(&sid)?;let worker=crate::processing::worker_path()?;
-    ensure!(!source.restricted&&manifest["job_id"]==job_id&&manifest["source_id"]==sid&&manifest["source_sha256"]==source.sha256&&manifest["worker_sha256"]==file_hash(&worker)?,"Checkpoint provenance changed; create a new transcription");
+    ensure!(!source.restricted&&manifest["job_id"]==job_id&&manifest["source_id"]==sid&&manifest["source_sha256"]==source.sha256&&manifest["worker_sha256"]==file_hash_cached(&worker)?,"Checkpoint provenance changed; create a new transcription");
     let asr_model=manifest["asr_model"].as_str().context("Missing checkpoint model")?.to_string();
     case.db.execute("UPDATE processing_jobs SET status='running',error='' WHERE id=?",[job_id])?;
     case.audit("transcription_resumed",json!({"job":job_id,"asr_model":asr_model}))?;

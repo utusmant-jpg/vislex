@@ -1,4 +1,4 @@
-use crate::case::{digest, file_hash, id, now, Case};
+use crate::case::{digest, file_hash, file_hash_cached, id, now, Case};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -108,9 +108,9 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     request["asr_model"] = json!(case.meta("asr_profile")?.unwrap_or_else(||"tiny".into()));
     request["version"] = json!(1);
     request["kind"] = json!(kind);
-    let worker_hash=file_hash(&worker)?;
+    let worker_hash=file_hash_cached(&worker)?;
     let cache_key=format!("processor_cache:{}",digest(json!([source.id,source.sha256,worker_hash,request]).to_string().as_bytes()));
-    if kind!="redaction" {
+    if kind!="redaction" && kind!="video_ocr" && kind!="video_overview" {
         if let Some(raw)=case.meta(&cache_key)? {
             if let Ok(mut cached)=serde_json::from_str::<Value>(&raw) {
                 let mut locators=vec![cached["extraction_locator"].as_str().unwrap_or("").to_string()];
@@ -121,7 +121,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         }
     }
     fs::write(staging.path().join("request.json"), request.to_string())?;
-    let manifest=json!({"version":1,"job_id":job_id,"source_id":source.id,"source_sha256":source.sha256,"kind":kind,"request":request,"worker_sha256":file_hash(&worker)?});
+    let manifest=json!({"version":1,"job_id":job_id,"source_id":source.id,"source_sha256":source.sha256,"kind":kind,"request":request,"worker_sha256":worker_hash});
     let mut manifest_file=fs::File::create(staging.path().join("manifest.json"))?;
     std::io::Write::write_all(&mut manifest_file,manifest.to_string().as_bytes())?;manifest_file.sync_all()?;
     case.db.execute(
@@ -132,13 +132,13 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     Ok(PreparedJob {job_id,source,source_path,kind:kind.into(),worker,staging,request,cached:None})
 }
 pub fn run_prepared(job:&PreparedJob)->Result<Value> {
-    if let Some(cached)=&job.cached {ensure!(file_hash(&job.source_path)?==job.source.sha256,"Source changed since extraction");return Ok(cached.clone());}
+    if let Some(cached)=&job.cached {ensure!(file_hash_cached(&job.source_path)?==job.source.sha256,"Source changed since extraction");return Ok(cached.clone());}
     let manifest:Value=serde_json::from_slice(&fs::read(job.staging.path().join("manifest.json"))?)?;
-    ensure!(manifest["worker_sha256"].as_str()==Some(file_hash(&job.worker)?.as_str()),"Worker changed; create a fresh job instead of reusing old provenance");
+    ensure!(manifest["worker_sha256"].as_str()==Some(file_hash_cached(&job.worker)?.as_str()),"Worker changed; create a fresh job instead of reusing old provenance");
     if job.staging.path().join("result.json").is_file() && !job.staging.path().join("cancel.request").exists() {
         let path=job.staging.path().join("result.json");ensure!(path.metadata()?.len()<=16*1024*1024,"Worker output too large");
         let result:Value=serde_json::from_slice(&fs::read(path)?)?;
-        if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
+        if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash_cached(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
     }
     copy_input(&job.source_path,job.staging.path(),&job.source.sha256)?;
     #[cfg(windows)]
@@ -373,7 +373,9 @@ pub fn publish_prepared(case:&mut Case,job:&PreparedJob,output:Result<Value>)->R
     match execute {
         Ok(value)=>{
             case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![value.to_string(),job_id])?;
-            if kind!="redaction" {let cache_key=format!("processor_cache:{}",digest(json!([source.id,source.sha256,file_hash(worker)?,request]).to_string().as_bytes()));case.set_meta(&cache_key,&value.to_string())?;}
+            // Chunked discovery results are bounded by their own job rows and samples;
+            // caching every 60 s chunk in meta would grow the database without reuse.
+            if !["redaction","video_ocr","video_overview"].contains(&kind) {let cache_key=format!("processor_cache:{}",digest(json!([source.id,source.sha256,file_hash_cached(worker)?,request]).to_string().as_bytes()));case.set_meta(&cache_key,&value.to_string())?;}
             case.audit("source_processed",json!({"source":source_id,"job":job_id,"kind":kind,"request":request}))?;
             case.db.execute_batch("RELEASE publish_processor")?;
             // Registered derivatives are authoritative now. Release the duplicate staged original.
@@ -415,7 +417,7 @@ pub fn artifact(case: &Case, artifact_id: &str) -> Result<(String, String, PathB
                 .is_ok_and(|root| path.starts_with(root)),
         "Artifact outside case"
     );
-    ensure!(file_hash(&path)? == hash, "Artifact integrity check failed");
+    ensure!(file_hash_cached(&path)? == hash, "Artifact integrity check failed");
     Ok((source, mime, path, serde_json::from_str(&metadata)?))
 }
 /// Prepare playback under the case lock, run outside it, and publish under it again.
@@ -441,7 +443,9 @@ pub fn run_playback(job: &PlaybackJob) -> Result<Value> {
     copy_input(&job.input_path,job.directory.path(),&job.expected_hash)?;
     #[cfg(windows)]
     crate::sandbox::run_worker(&worker_path()?,job.directory.path(),Duration::from_secs(3600))?;
-    let result:Value=serde_json::from_slice(&fs::read(job.directory.path().join("result.json"))?)?;
+    let result_path=job.directory.path().join("result.json");
+    ensure!(result_path.metadata()?.len()<=16*1024*1024,"Worker output too large");
+    let result:Value=serde_json::from_slice(&fs::read(&result_path)?)?;
     ensure!(result["status"]=="complete","{}",result["error"].as_str().unwrap_or("Playback conversion failed"));
     Ok(result)
 }

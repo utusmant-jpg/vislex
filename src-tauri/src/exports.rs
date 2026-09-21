@@ -1,4 +1,4 @@
-use crate::case::{Case,Record,file_hash,now};
+use crate::case::{Case,Record,file_hash,file_hash_cached,now};
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
 use std::{fs,path::{Path,PathBuf},io::Write};
@@ -8,16 +8,19 @@ fn destination(case:&Case,path:&Path)->Result<()> {
     ensure!(!path.exists(),"Choose a new export destination");
     ensure!(!path.parent().context("Missing destination parent")?.canonicalize()?.starts_with(&case.root),"Export outside the active case");Ok(())
 }
-pub fn dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Value> {
+pub struct DossierCopy {pub from:PathBuf,pub relative:String,pub source_id:String,pub name:String}
+/// Prepared under the case lock: every citation validated, restricted sources
+/// rejected, and the report HTML resolved. Copying the cited originals then runs
+/// without the lock so the case stays responsive during a large export.
+pub struct DossierPlan {pub task:String,pub dossier_revision:u64,pub copies:Vec<DossierCopy>,pub html:String,pub view:Value}
+pub fn prepare_dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<DossierPlan> {
     destination(case,path)?;
     let view=crate::dossier::view(case,task)?;
     ensure!(view["stale"]==false && view["completion_stale"]==false,"Recheck changed evidence before exporting");
     let dossier=crate::dossier::load(case,task)?.context("No dossier")?;
     ensure!(!dossier.claims.is_empty(),"No reviewed findings to export");
     for (i,_) in dossier.claims.iter().enumerate() {ensure!(view["human_reviews"][i]["decision"]=="accepted" && view["human_reviews"][i]["stale"]==false,"Every exported finding requires current human acceptance");}
-    let stage=tempfile::tempdir_in(path.parent().context("Missing parent")?)?;
-    fs::create_dir(stage.path().join("evidence"))?;
-    let mut files=std::collections::BTreeMap::new();let mut body=format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'\"><title>Reviewed investigation</title><style>body{{max-width:1000px;margin:40px auto;font:17px/1.6 system-ui}}article{{border-top:1px solid #bbb;padding:16px 0}}pre{{white-space:pre-wrap}}</style><h1>Reviewed investigation</h1><p>{}</p><p>This local package includes cited original files. It is not a redacted disclosure package. Human acceptance is recorded; unresolved limitations remain.</p>",escaped(&dossier.scope));
+    let mut copies=Vec::new();let mut listed=std::collections::BTreeSet::new();let mut body=format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'\"><title>Reviewed investigation</title><style>body{{max-width:1000px;margin:40px auto;font:17px/1.6 system-ui}}article{{border-top:1px solid #bbb;padding:16px 0}}pre{{white-space:pre-wrap}}</style><h1>Reviewed investigation</h1><p>{}</p><p>This local package includes cited original files. It is not a redacted disclosure package. Human acceptance is recorded; unresolved limitations remain.</p>",escaped(&dossier.scope));
     for claim in &dossier.claims {
         body.push_str(&format!("<article><h2>{}</h2><p>{}</p><p>Uncertainty: {}</p><p>Next check: {}</p>",escaped(&claim.proposition),escaped(&claim.assessment),escaped(&claim.uncertainty),escaped(&claim.next_check)));
         for (label,citations) in [("Supporting",&claim.supporting),("Conflicting",&claim.contrary)] {
@@ -30,24 +33,47 @@ pub fn dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Value> {
                     let extension=match mime.as_str(){"image/jpeg"=>"jpg","video/mp4"=>"mp4","application/json"=>"json",_=>"bin"};
                     (file,format!("evidence/{artifact}.{extension}"))
                 } else {(case.source_path(source)?,format!("evidence/{source}.bin"))};
-                if !files.contains_key(&relative) {let target=stage.path().join(&relative);let mut output=fs::File::create(&target)?;std::io::copy(&mut fs::File::open(&from)?,&mut output)?;output.sync_all()?;drop(output);let hash=file_hash(&target)?;ensure!(hash==file_hash(&from)?,"Evidence changed during export");files.insert(relative.clone(),json!({"sha256":hash,"source_id":source,"original_name":case.source(source)?.name}));}
+                if listed.insert(relative.clone()) {copies.push(DossierCopy{from,relative:relative.clone(),source_id:source.into(),name:case.source(source)?.name});}
                 body.push_str(&format!("<li><a download href=\"{}\">{}</a></li>",escaped(&relative),escaped(citation)));
             }
             body.push_str("</ul>");
         }body.push_str("</article>");
     }
     body.push_str(&format!("<h2>Checks and limitations</h2><pre>{}</pre></html>",escaped(&serde_json::to_string_pretty(&json!({"checks":dossier.checks,"completion":view["completion"]}))?)));
-    fs::write(stage.path().join("index.html"),&body)?;
-    fs::write(stage.path().join("dossier.json"),serde_json::to_vec_pretty(&view)?)?;
-    files.insert("index.html".into(),json!({"sha256":crate::case::digest(body.as_bytes())}));
+    Ok(DossierPlan{task:task.into(),dossier_revision:dossier.revision,copies,html:body,view})
+}
+pub struct DossierStaging{pub directory:tempfile::TempDir,pub manifest:Value}
+/// Copy cited originals and write the package contents without holding the case lock.
+pub fn write_dossier_bundle(plan:&DossierPlan,path:&Path)->Result<DossierStaging> {
+    let stage=tempfile::tempdir_in(path.parent().context("Missing parent")?)?;
+    fs::create_dir(stage.path().join("evidence"))?;
+    let mut files=std::collections::BTreeMap::new();
+    for copy in &plan.copies {
+        let target=stage.path().join(&copy.relative);let mut output=fs::File::create(&target)?;std::io::copy(&mut fs::File::open(&copy.from)?,&mut output)?;output.sync_all()?;drop(output);
+        let hash=file_hash(&target)?;ensure!(hash==file_hash_cached(&copy.from)?,"Evidence changed during export");
+        files.insert(copy.relative.clone(),json!({"sha256":hash,"source_id":copy.source_id,"original_name":copy.name}));
+    }
+    fs::write(stage.path().join("index.html"),&plan.html)?;
+    fs::write(stage.path().join("dossier.json"),serde_json::to_vec_pretty(&plan.view)?)?;
+    files.insert("index.html".into(),json!({"sha256":crate::case::digest(plan.html.as_bytes())}));
     files.insert("dossier.json".into(),json!({"sha256":file_hash(&stage.path().join("dossier.json"))?}));
-    let manifest=json!({"version":1,"task":task,"dossier_revision":dossier.revision,"exported_at":now(),"files":files,"redacted":false});
+    let manifest=json!({"version":1,"task":plan.task,"dossier_revision":plan.dossier_revision,"exported_at":now(),"files":files,"redacted":false});
     fs::write(stage.path().join("manifest.json"),serde_json::to_vec_pretty(&manifest)?)?;
     for file in files.keys().chain(std::iter::once(&"manifest.json".to_string())) {fs::OpenOptions::new().read(true).write(true).open(stage.path().join(file))?.sync_all()?;}
+    Ok(DossierStaging{directory:stage,manifest})
+}
+/// Re-check export permissions under the case lock, then atomically publish and audit.
+pub fn publish_dossier_bundle(case:&mut Case,plan:&DossierPlan,staged:Result<DossierStaging>,path:&Path)->Result<Value> {
+    let staged=staged?;
+    for copy in &plan.copies {ensure!(!case.source(&copy.source_id)?.restricted,"Source became restricted during export");}
     // Same-parent staging permits an atomic directory rename without replacing an existing package.
-    ensure!(!path.exists(),"Destination appeared during export");fs::rename(stage.path(),path)?;
-    case.audit("reviewed_dossier_exported",json!({"task":task,"revision":dossier.revision,"manifest_hash":crate::case::digest(&serde_json::to_vec(&manifest)?)}))?;
-    Ok(json!({"path":path,"manifest":manifest}))
+    ensure!(!path.exists(),"Destination appeared during export");fs::rename(staged.directory.path(),path)?;
+    case.audit("reviewed_dossier_exported",json!({"task":plan.task,"revision":plan.dossier_revision,"manifest_hash":crate::case::digest(&serde_json::to_vec(&staged.manifest)?)}))?;
+    Ok(json!({"path":path,"manifest":staged.manifest}))
+}
+pub fn dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Value> {
+    let plan=prepare_dossier_bundle(case,task,path)?;
+    publish_dossier_bundle(case,&plan,write_dossier_bundle(&plan,path),path)
 }
 pub struct DocumentExport {pub staging:tempfile::TempDir,pub record:Record,pub target:PathBuf,pub format:String}
 pub fn prepare_document(case:&Case,record:&str,target:&Path)->Result<DocumentExport> {

@@ -439,7 +439,7 @@ fn execute_tool_prepared(case: &mut Case, task: &str, name: &str, args: &Value, 
         }
         "read_evidence_object" => {
             let value=crate::evidence::read(case,str_arg(args,"id")?,args["revision"].as_i64())?;
-            for sid in value["source_ids"].as_array().unwrap(){assert_source(case,sid.as_str().unwrap(),&ids)?;}value
+            for sid in value["source_ids"].as_array().context("Tool result source_ids must be a list")?{assert_source(case,sid.as_str().context("Tool result source_ids must contain source ids")?,&ids)?;}value
         }
         "write_evidence_object" => {
             ensure!(mode=="investigate","Only Investigate can publish structured evidence");
@@ -907,7 +907,7 @@ fn execute_tool_prepared(case: &mut Case, task: &str, name: &str, args: &Value, 
                 return Ok(json!({"status":"team_review_pending","instruction":"Independent assignments are pending. The coordinator will add their evidence packets before completion. Preserve unresolved disputes."}));
             }
             if !crate::teams::is_child(case,task)? {
-                for assignment in crate::teams::status(case,task)?.as_array().unwrap() {
+                for assignment in crate::teams::status(case,task)?.as_array().context("Team status must be a list")? {
                     if assignment["status"]!="complete" {gaps.push(format!("Team assignment {} did not complete: {}. Its required checks remain unresolved.",assignment["role"].as_str().unwrap_or("unknown"),assignment["status"].as_str().unwrap_or("unknown")));}
                 }
             }
@@ -1069,6 +1069,7 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
     let image_total=input.iter().filter(|v|v["type"]=="local_image").count();
     let mut image_index=0;
     let mut image_count = 0;
+    let mut attached_bytes = 0usize;
     let latest_media=input.last().is_some_and(|v|v["type"]=="local_media");
     let last_index=input.len().saturating_sub(1);
     for (message_index,message) in input.iter_mut().enumerate() {
@@ -1119,6 +1120,13 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
             ensure!(
                 bytes.len() <= 30 * 1024 * 1024,
                 "Image attachment too large"
+            );
+            // Bound the whole attached set, not just each image, so a visual-review
+            // request cannot assemble gigabytes of transient base64 payloads.
+            attached_bytes += bytes.len();
+            ensure!(
+                attached_bytes <= 96 * 1024 * 1024,
+                "Attached images exceed the per-request budget; finish this review round before inspecting more images"
             );
             let data = base64::engine::general_purpose::STANDARD.encode(bytes);
             *message = json!({"role":"user","content":[{"type":"input_text","text":format!("Untrusted evidence image/derivative. Source ID: {source}. Artifact ID: {artifact_id}. Locator: {locator}. Decoder/page metadata: {metadata}. Associate descriptions with THIS image and metadata, not another image in the sequence.")},{"type":"input_image","image_url":format!("data:{mime};base64,{data}"),"detail":"high"}]});
@@ -1195,10 +1203,6 @@ impl ResponseStream {
         Ok(events)
     }
 }
-pub async fn send_request(key: &str, body: Value, mut progress: impl FnMut(Value)) -> Result<Value> {
-    crate::providers::send(crate::providers::Provider::Openai,key,body,&mut progress).await
-}
-
 pub fn receive(case: &mut Case, task: &str, transmission: &str, response: Value) -> Result<bool> {
     receive_prepared(case,task,transmission,response,&mut PreparedMedia::default())
 }

@@ -1,13 +1,25 @@
-use crate::case::{file_hash, now, safe_relative, Case};
+use crate::case::{file_hash, file_hash_cached, now, safe_relative, Case};
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
-pub fn backup(case: &mut Case, destination: &Path, password: &str) -> Result<()> {
+/// Prepared under the case lock: a consistent snapshot of the database plus the
+/// immutable originals and artifacts it references. Archive writing can then run
+/// without the lock so the app stays responsive during a large backup.
+pub struct BackupPlan {
+    #[allow(dead_code)] // held so the staged database copy outlives archive writing
+    staging: tempfile::TempDir,
+    manifest: Vec<u8>,
+    db_path: PathBuf,
+    originals: Vec<(PathBuf, String)>,
+    artifacts: Vec<(PathBuf, String)>,
+    sources: usize,
+}
+pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Result<BackupPlan> {
     ensure!(
         password.chars().count() >= 12,
         "Use a backup passphrase with at least 12 characters"
@@ -36,56 +48,72 @@ pub fn backup(case: &mut Case, destination: &Path, password: &str) -> Result<()>
         .backup(rusqlite::DatabaseName::Main, &db_path, None)?;
     let mut files = vec![json!({"path":"case.sqlite3","sha256":file_hash(&db_path)?})];
     let sources = case.sources()?;
+    let mut originals = Vec::new();
     for s in &sources {
         case.verify_source(&s.id)?;
         files.push(json!({"path":format!("originals/{}",s.sha256),"sha256":s.sha256}));
+        originals.push((case.source_path(&s.id)?, format!("originals/{}", s.sha256)));
     }
     let mut stmt = case
         .db
         .prepare("SELECT DISTINCT path,sha256 FROM artifacts")?;
     let artifacts: Vec<(String, String)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<std::result::Result<_, _>>()?;
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
+    let mut artifact_entries = Vec::new();
     for (path, hash) in &artifacts {
         ensure!(safe_relative(Path::new(path)), "Unsafe artifact path");
+        let absolute = case.root.join(path);
         ensure!(
-            file_hash(&case.root.join(path))? == *hash,
+            file_hash_cached(&absolute)? == *hash,
             "Artifact failed backup integrity check"
         );
         files.push(json!({"path":path,"sha256":hash}));
+        artifact_entries.push((absolute, path.clone()));
     }
     let manifest = serde_json::to_vec_pretty(
         &json!({"format":"local-evidence-desk","version":1,"created_at":now(),"files":files,"originals_included":true}),
     )?;
-    let mut output = tempfile::NamedTempFile::new_in(destination.parent().unwrap())?;
+    Ok(BackupPlan{staging: temp, manifest, db_path, originals, artifacts: artifact_entries, sources: sources.len()})
+}
+/// Encrypt and write the archive without holding the case lock.
+pub fn write_archive(plan: &BackupPlan, destination: &Path, password: &str) -> Result<()> {
+    let mut output = tempfile::NamedTempFile::new_in(destination.parent().context("Missing backup folder")?)?;
     {
         let encryptor = age::Encryptor::with_user_passphrase(password.to_owned().into());
         let writer = encryptor.wrap_output(output.as_file_mut())?;
         let mut archive = tar::Builder::new(writer);
-        archive.append_path_with_name(&db_path, "case.sqlite3")?;
-        for s in &sources {
-            archive.append_path_with_name(
-                case.source_path(&s.id)?,
-                format!("originals/{}", s.sha256),
-            )?;
+        archive.append_path_with_name(&plan.db_path, "case.sqlite3")?;
+        for (absolute, name) in &plan.originals {
+            archive.append_path_with_name(absolute, name)?;
         }
-        for (path, _) in &artifacts {
-            archive.append_path_with_name(case.root.join(path), path)?;
+        for (absolute, name) in &plan.artifacts {
+            archive.append_path_with_name(absolute, name)?;
         }
         let mut header = tar::Header::new_gnu();
-        header.set_size(manifest.len() as u64);
+        header.set_size(plan.manifest.len() as u64);
         header.set_mode(0o600);
         header.set_cksum();
-        archive.append_data(&mut header, "manifest.json", manifest.as_slice())?;
+        archive.append_data(&mut header, "manifest.json", plan.manifest.as_slice())?;
         archive.into_inner()?.finish()?;
     }
     output.as_file().sync_all()?;
     output.persist_noclobber(destination)?;
+    Ok(())
+}
+/// Record the completed backup in the case audit log under the case lock.
+pub fn finish_backup(case: &mut Case, plan: &BackupPlan) -> Result<Value> {
     case.audit(
         "encrypted_backup",
-        json!({"sources":sources.len(),"manifest_sha256":crate::case::digest(&manifest)}),
+        json!({"sources":plan.sources,"manifest_sha256":crate::case::digest(&plan.manifest)}),
     )?;
+    Ok(json!({"saved":true}))
+}
+pub fn backup(case: &mut Case, destination: &Path, password: &str) -> Result<()> {
+    let plan = prepare_backup(case, destination, password)?;
+    write_archive(&plan, destination, password)?;
+    finish_backup(case, &plan)?;
     Ok(())
 }
 
