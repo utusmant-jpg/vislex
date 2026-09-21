@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Frontend build
+        run: npm ci
+      - name: tsc + vite build
+        run: npm run build
+      - name: Frontend tests
+        run: npm test
+
+      - name: Rust desktop check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --features desktop
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Worker suites need the locked Python dependencies (OCR, diarization, media codecs).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install worker dependencies
+        run: pip install -r workers/requirements.lock.txt
+      - name: Worker tests
+        run:
+          python -m unittest discover -s workers -p "test_*.py"
+      - name: Benchmark scorer tests
+        run:
+          python -m unittest discover -s benchmarks -p "test_*.py"

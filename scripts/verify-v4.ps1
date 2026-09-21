@@ -8,7 +8,11 @@ $v4Checks = @(
     @{ Name = 'frontend-tests'; Command = 'npm.cmd'; Arguments = @('test') },
     @{ Name = 'desktop-check'; Command = 'cargo'; Arguments = @('check','--manifest-path','src-tauri/Cargo.toml','--features','desktop') },
     @{ Name = 'rust-tests'; Command = 'cargo'; Arguments = @('test','--manifest-path','src-tauri/Cargo.toml') },
-    @{ Name = 'sound-tests'; Command = (Join-Path $v4Root '.venv-worker/Scripts/python.exe'); Arguments = @('-m','unittest','discover','-s','workers','-p','test_sound_events.py') }
+    @{ Name = 'sound-tests'; Command = (Join-Path $v4Root '.venv-worker/Scripts/python.exe'); Arguments = @('-m','unittest','discover','-s','workers','-p','test_sound_events.py') },
+    @{ Name = 'worker-result-tests'; Command = (Join-Path $v4Root '.venv-worker/Scripts/python.exe'); Arguments = @('-m','unittest','discover','-s','workers','-p','test_result_safety.py') },
+    @{ Name = 'document-format-tests'; Command = (Join-Path $v4Root '.venv-worker/Scripts/python.exe'); Arguments = @('-m','unittest','discover','-s','workers','-p','test_document_formats.py') },
+    @{ Name = 'video-discovery-tests'; Command = (Join-Path $v4Root '.venv-worker/Scripts/python.exe'); Arguments = @('-m','unittest','discover','-s','workers','-p','test_video_discovery.py') },
+    @{ Name = 'benchmark-tests'; Command = (Join-Path $v4Root '.venv-worker/Scripts/python.exe'); Arguments = @('-m','unittest','discover','-s','benchmarks','-p','test_*.py') }
 )
 if ($IncludePackagedWorker) {
     $v4Checks += @{ Name = 'packaged-worker'; Command = 'cargo'; Arguments = @('test','--manifest-path','src-tauri/Cargo.toml','--test','sandbox','--','--include-ignored') }
