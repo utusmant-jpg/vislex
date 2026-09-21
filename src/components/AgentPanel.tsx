@@ -9,7 +9,7 @@ import { configuredProfiles, profileKey } from '../aiProfiles';
 import type { Action, AIProfile, Snapshot, Selection, Task } from '../types';
 import { Markdown } from '../markdown';
 import { CopyButton, ModelPicker, StatusPill, Tooltip, formatClock, useNow } from '../ui';
-import { getViewerContext } from '../viewerContext';
+import { buildViewerAttachment, getViewerContext } from '../viewerContext';
 
 // Keep unsaved chat drafts in memory only; never put case content in browser storage.
 const chatDrafts = new Map<string, string>();
@@ -192,17 +192,13 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     setSending(true);
     run(async () => {
       try {
-        const viewed = !skipContext && selection && getViewerContext()?.sourceId === selection.id ? getViewerContext() : null;
+        const viewerContext = buildViewerAttachment(selection, getViewerContext(), skipContext);
         const result = await api<{ task_id: string; conversation_id: string }>('start_task', {
           prompt,
           provider: selectedProfile!.provider,
           model: selectedProfile!.model,
           parent_task_id: task?.id ?? null,
-          viewer_context: selection ? {
-            ...selection,
-            locator: viewed?.page ? `page:${viewed.page}` : selection.type === 'source' && viewed?.lineStart ? `L${viewed.lineStart}` : selection.locator,
-            time_seconds: viewed?.timeSeconds ?? null,
-          } : null,
+          viewer_context: viewerContext,
         });
         draft('');
         following.current = true;

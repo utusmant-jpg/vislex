@@ -564,6 +564,21 @@ fn current_view_is_visible_to_agent_without_expanding_scope() {
     assert!(agent::attach_viewer_context(&mut c,&task,&json!({"type":"source","id":"different-case"})).is_err());
 }
 
+#[test]
+fn suppressed_viewer_context_attaches_nothing_to_the_message() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"What is on my right?","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    // The frontend "do not attach this file" state sends a null viewer_context.
+    agent::attach_viewer_context(&mut c,&task,&serde_json::Value::Null).unwrap();
+    let history:String=c.db.query_row("SELECT history FROM tasks WHERE id=?",[&task],|r|r.get(0)).unwrap();
+    assert!(!history.contains("Workspace view at submission"));
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert!(!request.body["input"].to_string().contains("Workspace view at submission"));
+    // The source remains inside the case's authorized investigation scope.
+    let (sources,records)=agent::case_scope(&c).unwrap();
+    assert!(sources.contains(&sid)&&records.is_empty());
+}
+
 
 #[test]
 fn recursive_import_preserves_nested_occurrences_and_skips_case_internals() {
