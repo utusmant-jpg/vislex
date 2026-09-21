@@ -379,3 +379,67 @@ fn sha256_hex_impl(path:&std::path::Path)->String {
     loop{let n=std::io::Read::read(&mut file,&mut buffer).unwrap();if n==0{break;}hash.update(&buffer[..n]);}
     format!("{:x}",hash.finalize())
 }
+
+#[test]
+fn export_prepared_against_changed_evidence_state_fails_at_publish() {
+    let (dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    dossier::human_review(&mut c,&t,1,0,"accepted","Synthetic review").unwrap();
+    let path=dir.path().join("late-evidence");
+    let prepared=evidence_desk::exports::prepare_dossier_bundle(&mut c,&t,&path).unwrap();
+    // New evidence arrives between prepare and publish: the export must fail,
+    // not silently publish a package prepared against the older state.
+    let extra=dir.path().join("late.txt");
+    std::fs::write(&extra,"contrary late evidence").unwrap();
+    c.import_files(&[extra.to_string_lossy().into()],"Late production").unwrap();
+    let staged=evidence_desk::exports::write_dossier_bundle(&prepared,&path);
+    let error=match evidence_desk::exports::publish_dossier_bundle(&mut c,&prepared,staged,&path){Err(e)=>e.to_string(),Ok(_)=>panic!("stale export unexpectedly published")};
+    assert!(error.contains("Evidence changed during export"),"{error}");
+    assert!(!path.exists());
+    c.verify_audit().unwrap();
+}
+
+#[test]
+fn export_prepared_against_changed_finding_review_fails_at_publish() {
+    let (dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    dossier::human_review(&mut c,&t,1,0,"accepted","Synthetic review").unwrap();
+    let path=dir.path().join("late-review");
+    let prepared=evidence_desk::exports::prepare_dossier_bundle(&mut c,&t,&path).unwrap();
+    // The human withdraws acceptance while the package is being written.
+    dossier::human_review(&mut c,&t,1,0,"needs_review","Reconsidering").unwrap();
+    let staged=evidence_desk::exports::write_dossier_bundle(&prepared,&path);
+    let error=match evidence_desk::exports::publish_dossier_bundle(&mut c,&prepared,staged,&path){Err(e)=>e.to_string(),Ok(_)=>panic!("withdrawn review unexpectedly published")};
+    assert!(error.contains("current human acceptance"),"{error}");
+    assert!(!path.exists());
+}
+
+#[test]
+fn export_prepared_against_older_dossier_revision_fails_at_publish() {
+    let (dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    dossier::human_review(&mut c,&t,1,0,"accepted","Synthetic review").unwrap();
+    let path=dir.path().join("late-revision");
+    let prepared=evidence_desk::exports::prepare_dossier_bundle(&mut c,&t,&path).unwrap();
+    // The dossier itself is revised (new claim) after preparation.
+    let mut revised=plan(&s);revised["revision"]=json!(1);
+    revised["claims"].as_array_mut().unwrap().push(json!({"proposition":"A second observation.","assessment":"insufficient_evidence","supporting":[],"contrary":[],"uncertainty":"None yet.","next_check":"Inspect more."}));
+    dossier::save(&mut c,&t,&revised).unwrap();
+    let staged=evidence_desk::exports::write_dossier_bundle(&prepared,&path);
+    let error=match evidence_desk::exports::publish_dossier_bundle(&mut c,&prepared,staged,&path){Err(e)=>e.to_string(),Ok(_)=>panic!("older revision unexpectedly published")};
+    assert!(error.contains("Dossier changed during export"),"{error}");
+    assert!(!path.exists());
+}
+
+#[test]
+fn document_export_pins_dependency_hashes_until_publication() {
+    let (dir,mut c,s,_t)=setup();
+    let record=c.write_record(None,0,"Draft memo","report","Draft body","human","initial",None,vec![s.clone()]).unwrap();
+    let target=dir.path().join("memo.docx");
+    let job=evidence_desk::exports::prepare_document(&c,&record.id,&target).unwrap();
+    // A revision lands between preparation and publication.
+    c.write_record(Some(&record.id),1,"Draft memo","report","Revised body","human","update",None,vec![s]).unwrap();
+    assert!(evidence_desk::exports::publish_document(&mut c,&job).is_err());
+    assert!(!target.exists());
+    c.verify_audit().unwrap();
+}

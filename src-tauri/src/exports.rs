@@ -8,7 +8,7 @@ fn destination(case:&Case,path:&Path)->Result<()> {
     ensure!(!path.exists(),"Choose a new export destination");
     ensure!(!path.parent().context("Missing destination parent")?.canonicalize()?.starts_with(&case.root),"Export outside the active case");Ok(())
 }
-pub struct DossierCopy {pub from:PathBuf,pub relative:String,pub source_id:String,pub name:String}
+pub struct DossierCopy {pub from:PathBuf,pub relative:String,pub source_id:String,pub name:String,pub artifact_id:Option<String>}
 /// Prepared under the case lock: every citation validated, restricted sources
 /// rejected, and the report HTML resolved. Copying the cited originals then runs
 /// without the lock so the case stays responsive during a large export.
@@ -28,12 +28,12 @@ pub fn prepare_dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Dossi
             for citation in citations {
                 let valid=case.validate_citation(citation)?;let source=valid["source_id"].as_str().context("Missing source")?;
                 ensure!(!case.source(source)?.restricted,"Restricted export dependency");case.verify_source(source)?;
-                let (from,relative)=if let Some((_,artifact))=citation.split_once("#artifact:") {
+                let (from,relative,artifact_id)=if let Some((_,artifact))=citation.split_once("#artifact:") {
                     let (_,mime,file,_)=crate::processing::artifact(case,artifact)?;
-                    let extension=match mime.as_str(){"image/jpeg"=>"jpg","video/mp4"=>"mp4","application/json"=>"json",_=>"bin"};
-                    (file,format!("evidence/{artifact}.{extension}"))
-                } else {(case.source_path(source)?,format!("evidence/{source}.bin"))};
-                if listed.insert(relative.clone()) {copies.push(DossierCopy{from,relative:relative.clone(),source_id:source.into(),name:case.source(source)?.name});}
+                    let extension=crate::artifact_registry::extension_for_mime(&mime).context("Unregistered export artifact format")?;
+                    (file,format!("evidence/{artifact}.{extension}"),Some(artifact.to_string()))
+                } else {(case.source_path(source)?,format!("evidence/{source}.bin"),None)};
+                if listed.insert(relative.clone()) {copies.push(DossierCopy{from,relative:relative.clone(),source_id:source.into(),name:case.source(source)?.name,artifact_id});}
                 body.push_str(&format!("<li><a download href=\"{}\">{}</a></li>",escaped(&relative),escaped(citation)));
             }
             body.push_str("</ul>");
@@ -62,10 +62,22 @@ pub fn write_dossier_bundle(plan:&DossierPlan,path:&Path)->Result<DossierStaging
     for file in files.keys().chain(std::iter::once(&"manifest.json".to_string())) {fs::OpenOptions::new().read(true).write(true).open(stage.path().join(file))?.sync_all()?;}
     Ok(DossierStaging{directory:stage,manifest})
 }
-/// Re-check export permissions under the case lock, then atomically publish and audit.
+/// Re-check the exact reviewed snapshot the plan was prepared against, then
+/// atomically publish and audit. An export prepared against one state must not
+/// silently complete after evidence, dossier revision, review decisions,
+/// currentness or restrictions changed.
 pub fn publish_dossier_bundle(case:&mut Case,plan:&DossierPlan,staged:Result<DossierStaging>,path:&Path)->Result<Value> {
     let staged=staged?;
-    for copy in &plan.copies {ensure!(!case.source(&copy.source_id)?.restricted,"Source became restricted during export");}
+    let view=crate::dossier::view(case,&plan.task)?;
+    ensure!(view["stale"]==false && view["completion_stale"]==false,"Evidence changed during export; recheck before publishing");
+    let dossier=crate::dossier::load(case,&plan.task)?.context("No dossier")?;
+    ensure!(dossier.revision==plan.dossier_revision,"Dossier changed during export; prepare the export again");
+    for (i,_) in dossier.claims.iter().enumerate() {ensure!(view["human_reviews"][i]["decision"]=="accepted" && view["human_reviews"][i]["stale"]==false,"Finding review changed during export; every exported finding requires current human acceptance");}
+    for copy in &plan.copies {
+        ensure!(!case.source(&copy.source_id)?.restricted,"Source became restricted during export");
+        case.verify_source(&copy.source_id)?;
+        if let Some(artifact)=&copy.artifact_id {crate::processing::artifact(case,artifact)?;}
+    }
     // Same-parent staging permits an atomic directory rename without replacing an existing package.
     ensure!(!path.exists(),"Destination appeared during export");fs::rename(staged.directory.path(),path)?;
     case.audit("reviewed_dossier_exported",json!({"task":plan.task,"revision":plan.dossier_revision,"manifest_hash":crate::case::digest(&serde_json::to_vec(&staged.manifest)?)}))?;
@@ -75,15 +87,18 @@ pub fn dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Value> {
     let plan=prepare_dossier_bundle(case,task,path)?;
     publish_dossier_bundle(case,&plan,write_dossier_bundle(&plan,path),path)
 }
-pub struct DocumentExport {pub staging:tempfile::TempDir,pub record:Record,pub target:PathBuf,pub format:String}
+pub struct DocumentExport {pub staging:tempfile::TempDir,pub record:Record,pub target:PathBuf,pub format:String,pub dependencies:Vec<(String,String)>}
 pub fn prepare_document(case:&Case,record:&str,target:&Path)->Result<DocumentExport> {
     destination(case,target)?;let record=case.record(record)?;
-    for source in &record.dependencies {ensure!(!case.source(source)?.restricted,"Restricted source dependency");}
+    // Pin the exact content hash of each restricted-checked dependency at
+    // preparation time so publication can revalidate it.
+    let mut dependencies=Vec::new();
+    for source in &record.dependencies {ensure!(!case.source(source)?.restricted,"Restricted source dependency");case.verify_source(source)?;dependencies.push((source.clone(),case.source(source)?.sha256));}
     let format=target.extension().and_then(|s|s.to_str()).unwrap_or("").to_lowercase();ensure!(["docx","pdf"].contains(&format.as_str()),"Use .docx or .pdf");
     let staging=tempfile::tempdir_in(case.root.join("staging"))?;
     let request=json!({"version":1,"kind":"document_export","format":format,"title":record.title,"content":record.content,"status":format!("DRAFT — {} — revision {} — stale: {}. Not a sanitized disclosure package.",record.review,record.revision,record.stale)});
     fs::write(staging.path().join("request.json"),request.to_string())?;
-    Ok(DocumentExport{staging,record,target:target.into(),format})
+    Ok(DocumentExport{staging,record,target:target.into(),format,dependencies})
 }
 pub fn run_document(job:&DocumentExport)->Result<()> {
     #[cfg(windows)]
@@ -95,7 +110,7 @@ pub fn run_document(job:&DocumentExport)->Result<()> {
 }
 pub fn publish_document(case:&mut Case,job:&DocumentExport)->Result<Value> {
     destination(case,&job.target)?;let current=case.record(&job.record.id)?;ensure!(current.revision==job.record.revision && current.stale==job.record.stale && current.review==job.record.review,"Draft or review status changed during export");
-    for source in &job.record.dependencies {ensure!(!case.source(source)?.restricted,"Source became restricted");}
+    for (source,pinned) in &job.dependencies {ensure!(!case.source(source)?.restricted,"Source became restricted");ensure!(case.source(source)?.sha256==*pinned,"Source dependency changed during export");case.verify_source(source)?;}
     let output=job.staging.path().join(format!("document.{}",job.format));
     ensure!(output.metadata()?.len()<=32*1024*1024,"Export too large");
     let mut staged=tempfile::NamedTempFile::new_in(job.target.parent().context("Missing parent")?)?;
