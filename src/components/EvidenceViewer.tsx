@@ -3,6 +3,8 @@ import { FileText, Image, Film, Volume2, ZoomIn, ZoomOut, RotateCw, ShieldCheck,
 import { api, evidenceUrl, formatBytes } from '../bridge';
 import type { Source, TextPage } from '../types';
 import FullTranscript from './FullTranscript';
+import RedactionPanel from './RedactionPanel';
+import VideoDiscovery from './VideoDiscovery';
 
 export function SourceIcon({ kind, size = 16 }: { kind: string; size?: number }) {
   const Icon = kind === 'image' ? Image : kind === 'video' ? Film : kind === 'audio' ? Volume2 : FileText;
@@ -11,11 +13,14 @@ export function SourceIcon({ kind, size = 16 }: { kind: string; size?: number })
 export default function EvidenceViewer({ source, locator, run, refresh }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
   const media = useRef<HTMLMediaElement | null>(null);
   const [currentTime,setCurrentTime]=useState(0);
+  const [pendingSeek,setPendingSeek]=useState<number|null>(null);
+  useEffect(()=>{if(pendingSeek!==null&&media.current?.readyState){media.current.currentTime=pendingSeek;setCurrentTime(pendingSeek);setPendingSeek(null);}},[pendingSeek]);
   const requestedTime=locator?.startsWith('time:') ? Number(locator.slice(5)) : null;
   const [page, setPage] = useState<TextPage | null>(null);
   const [error, setError] = useState(''); const [start, setStart] = useState(1);
   const [zoom, setZoom] = useState(1); const [rotation, setRotation] = useState(0);
   const [verified, setVerified] = useState(false);
+  const officeDocument = /\.(docx|xlsx|pptx|odt)$/i.test(source.name);
   const [showText, setShowText] = useState((source.kind === 'text' || source.kind === 'other' && source.status.startsWith('text')));
   const [limitations, setLimitations] = useState<string[]>([]);
   const [derived, setDerived] = useState<string | null>(null);
@@ -41,13 +46,12 @@ export default function EvidenceViewer({ source, locator, run, refresh }: { sour
     return ()=>{active=false;};
   },[source.id,pdfPage,locator]);
   useEffect(() => {
-    if(source.kind!=='other' || !/\.(docx|xlsx)$/i.test(source.name) || locator) return;
+    if(!officeDocument || locator) return;
     let active=true;
-    if(source.status.startsWith('text')) {setShowText(true);return;}
     setProcessing(true);
     api<{limitations:string[]}>('process_source',{source_id:source.id}).then(result=>{if(active){setShowText(true);setLimitations(result.limitations);void refresh();}}).catch(e=>{if(active)setError(String(e));}).finally(()=>{if(active)setProcessing(false);});
     return ()=>{active=false;};
-  },[source.id]);
+  },[source.id, locator]);
   useEffect(() => {
     let active = true; setArtifactText(null); setDerivedMime('');
     if (derived) api<{ mime: string; content: { pages?: { locator: string; text: string }[]; limitations?: string[] } | null }>('artifact_info', { artifact_id: derived }).then(info => {
@@ -79,11 +83,13 @@ export default function EvidenceViewer({ source, locator, run, refresh }: { sour
       {showText && page ? <article className="document-page"><h2>{source.name.replace(/^\d+ · /, '')}</h2><div className="doc-rule"/><div className="text-lines">{page.text.split('\n').map((line, i) => <div className="text-line" key={i}><span className="line-number">{start + i}</span><span>{line || '\u00a0'}</span></div>)}</div></article> : null}
       {artifactText !== null ? <article className="document-page"><h2>{source.name}</h2><pre className="artifact-text">{artifactText || 'No text segments were returned. This does not establish absence of speech.'}</pre><button onClick={() => { setDerived(null); setShowText(false); }}>Back to original</button></article> : null}
       {!showText && ((!derived && source.kind === 'image') || (derived && derivedMime === 'image/jpeg')) ? <div><img className="evidence-image" src={derived ? evidenceUrl(`artifact/${derived}`) : url} alt={`${derived ? 'Derived frame or crop' : 'Original evidence'}: ${source.name}`} style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }} onError={() => {if(derived){setError('Image preview failed.');return;}setProcessing(true);void api<{published:typeof frames}>('process_source',{source_id:source.id}).then(r=>{setDerived(r.published[0]?.artifact_id??null);}).catch(e=>setError(String(e))).finally(()=>setProcessing(false));}} />{derived && source.kind==='video' ? <button className="back-source quiet" onClick={() => setDerived(null)}>Back to recording</button> : null}</div> : null}
-      {!showText && !derived && source.kind === 'video' ? <video ref={node=>{media.current=node;}} onTimeUpdate={e=>setCurrentTime(e.currentTarget.currentTime)} onLoadedMetadata={()=>{if(requestedTime!=null&&Number.isFinite(requestedTime)&&media.current)media.current.currentTime=requestedTime;}} key={playbackUrl} src={needsProxy&&!playback ? undefined : playbackUrl} controls preload="metadata" onError={() => {if(!needsProxy)setNeedsProxy(true);else if(playback)setError('Playback derivative could not be decoded. Original frames remain available.');}} /> : null}
-      {!showText && !derived && source.kind === 'audio' ? <div className="audio-stage"><Volume2 size={56}/><h2>{source.name}</h2><audio ref={node=>{media.current=node;}} onTimeUpdate={e=>setCurrentTime(e.currentTarget.currentTime)} onLoadedMetadata={()=>{if(requestedTime!=null&&Number.isFinite(requestedTime)&&media.current)media.current.currentTime=requestedTime;}} src={url} controls preload="metadata" onError={() => setError('This audio format is not supported by the installed viewer.')} /></div> : null}
-      {!showText && !derived && source.kind === 'other' ? <div className="empty-content"><FileText size={40}/><h2>No preview available</h2><p>Ask VisLex to inspect this file.</p></div> : null}
+      {!showText && !derived && source.kind === 'video' ? <video ref={node=>{media.current=node;}} onTimeUpdate={e=>setCurrentTime(e.currentTarget.currentTime)} onLoadedMetadata={()=>{if(pendingSeek!==null&&media.current){media.current.currentTime=pendingSeek;setPendingSeek(null);}else if(requestedTime!=null&&Number.isFinite(requestedTime)&&media.current)media.current.currentTime=requestedTime;}} key={playbackUrl} src={needsProxy&&!playback ? undefined : playbackUrl} controls preload="metadata" onError={() => {if(!needsProxy)setNeedsProxy(true);else if(playback)setError('Playback derivative could not be decoded. Original frames remain available.');}} /> : null}
+      {!showText && !derived && source.kind === 'audio' ? <div className="audio-stage"><Volume2 size={56}/><h2>{source.name}</h2><audio ref={node=>{media.current=node;}} onTimeUpdate={e=>setCurrentTime(e.currentTarget.currentTime)} onLoadedMetadata={()=>{if(pendingSeek!==null&&media.current){media.current.currentTime=pendingSeek;setPendingSeek(null);}else if(requestedTime!=null&&Number.isFinite(requestedTime)&&media.current)media.current.currentTime=requestedTime;}} src={url} controls preload="metadata" onError={() => setError('This audio format is not supported by the installed viewer.')} /></div> : null}
+      {!showText && !derived && source.kind === 'other' && !processing ? <div className="empty-content"><FileText size={40}/><h2>{officeDocument ? "Document preview could not open" : "Original file preserved"}</h2><p>{officeDocument ? "See the error below, then reopen the file to retry extraction." : "This file format does not yet have an inline preview."}</p></div> : null}
     </div>
     {['video', 'audio'].includes(source.kind) ? <FullTranscript currentTime={currentTime} onSeek={time=>{if(media.current){media.current.currentTime=time;setCurrentTime(time);}}} sourceId={source.id} run={run} refresh={refresh}/> : null}
+    {source.kind==='video'&&!source.restricted?<VideoDiscovery key={source.id} sourceId={source.id} onFrame={id=>{setDerived(id);setShowText(false);}} onSeek={time=>{setDerived(null);setShowText(false);setPendingSeek(time);}}/>:null}
+    {['pdf','image'].includes(source.kind)&&!source.restricted?<RedactionPanel sourceId={source.id} kind={source.kind}/>:null}
     {frames.length ? <div className="frame-strip">{frames.map(f => <button key={f.artifact_id} onClick={() => { setDerived(f.artifact_id); setShowText(false); setError(''); }}><img src={evidenceUrl(`artifact/${f.artifact_id}`)} alt="Derived source preview"/><span>{f.metadata.source_relative_seconds?.toFixed(3) ?? 'Preview'}{f.metadata.pts !== undefined ? `s · PTS ${f.metadata.pts}` : ''}</span></button>)}</div> : null}
     {limitations.length ? <details className="processing-limitations"><summary>About this preview</summary>{limitations.map(l => <p key={l}>{l}</p>)}</details> : null}
     {page ? <div className="locator-bar"><button className="quiet" onClick={() => run(async () => { await navigator.clipboard.writeText(page.locator); })}><Copy size={13}/>Copy evidence link</button><code>L{page.start}–L{page.end} / {page.total_lines}</code><div className="spacer"/><button className="icon-button" aria-label="Previous lines" disabled={start === 1} onClick={() => setStart(s => Math.max(1, s - 200))}><ChevronLeft size={16}/></button><button className="icon-button" aria-label="Next lines" disabled={page.end >= page.total_lines} onClick={() => setStart(page.end + 1)}><ChevronRight size={16}/></button></div> : null}

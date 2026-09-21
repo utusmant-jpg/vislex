@@ -108,7 +108,7 @@ export function formatBytes(bytes: number) { if (bytes >= 1024 ** 3) return `${(
 
 export function citationParts(value: string): { sourceId: string; locator: string } | null {
 
-  const match = /^evidence:([a-zA-Z0-9-]+)#(L\d+-L\d+|image|artifact:[a-zA-Z0-9-]+)$/.exec(value);
+  const match = /^evidence:([a-zA-Z0-9-]+)#(L\d+-L\d+|image|media|artifact:[a-zA-Z0-9-]+)$/.exec(value);
 
   return match ? { sourceId: match[1], locator: match[2] } : null;
 

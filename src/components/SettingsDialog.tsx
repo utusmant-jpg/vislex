@@ -13,7 +13,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
   const dialog = useRef<HTMLDialogElement>(null);
   const mounted = useRef(true);
   const [settings] = useState<Settings>({ ...snapshot.settings, offline: false, allow_text: true, allow_images: true, case_budget: 0, input_per_million: 0, output_per_million: 0 });
-  const [config, setConfig] = useState<AIConfig>(snapshot.ai_config ?? defaultConfig);
+  const [config] = useState<AIConfig>(snapshot.ai_config ?? defaultConfig);
   const [profiles, setProfiles] = useState(() => initialProfiles(snapshot));
   const [primary, setPrimary] = useState(() => Math.max(0, initialProfiles(snapshot).findIndex(p => p.provider === (snapshot.ai_config ?? defaultConfig).provider && p.model === snapshot.settings.model)));
   const [error, setError] = useState('');
@@ -62,16 +62,16 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
           if (!status.configured) throw new Error(`Add an API key for ${providerNames[provider]}, or remove its selected model.`);
         }
       }
-      await api('save_ai_settings', { config: { ...config, provider: lead.provider, pool: profiles.filter((p, i) => i !== primary && p.model).map(p => ({ ...p, allow_text: true, allow_images: true })) }, settings: { ...settings, model: lead.model, allow_text: true, allow_images: true } });
+      await api('save_ai_settings', { config: { ...config, execution: 'auto', review: 'standard', provider: lead.provider, pool: profiles.filter((p, i) => i !== primary && p.model).map(p => ({ ...p, allow_text: true, allow_images: true })) }, settings: { ...settings, model: lead.model, allow_text: true, allow_images: true } });
       await refresh(); onClose();
     } catch (e) { if (mounted.current) setError(String(e)); }
     finally { if (mounted.current) setSaving(false); }
   }
   return <dialog ref={dialog} className="modal settings-modal" onCancel={e => { if (busy) e.preventDefault(); else onClose(); }}>
-    <div className="modal-heading"><div><div className="eyebrow">CASE SETTINGS</div><h2>AI providers & agents</h2></div><button className="icon-button" disabled={busy} aria-label="Close settings" onClick={onClose}><X size={20}/></button></div>
+    <div className="modal-heading"><div><div className="eyebrow">APP SETTINGS</div><h2>AI providers & agents</h2></div><button className="icon-button" disabled={busy} aria-label="Close settings" onClick={onClose}><X size={20}/></button></div>
     {!native ? <p className="notice">AI setup is available in the Windows desktop app. This browser is a preview.</p> : null}
     <fieldset disabled={saving} className="ai-setup-fields">
-    <p className="notice">AI is always enabled once a model is configured. All selected models can analyze case text and images. Add keys and choose models below.</p>
+    <p className="notice">Saved once for all cases. VisLex chooses when to delegate and which enabled tools to use. AI is always enabled once a model is configured. All selected models can analyze case text and images. Add keys and choose models below.</p>
     <p className="small muted">Keys are stored in Windows Credential Manager. Loading models contacts that company without sending case evidence.</p>
     {companies.map(provider => <fieldset key={provider} className="provider-card"><legend>{providerNames[provider]}</legend>
       <div className="input-row"><input aria-label={`${providerNames[provider]} API key`} type="password" autoComplete="off" value={keys[provider] ?? ''} disabled={loading[provider]} onChange={e => setKeys(s => ({ ...s, [provider]: e.target.value }))} placeholder={stored[provider] ? 'Key saved in Windows Credential Manager' : 'Paste API key'}/><button className="secondary" disabled={!native || loading[provider] || (!stored[provider] && !keys[provider]?.trim())} onClick={() => void loadModels(provider)}>{loading[provider] ? 'Loading…' : keys[provider]?.trim() ? 'Save key & load models' : 'Load models'}</button></div>
@@ -83,7 +83,6 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       <button className="quiet" disabled={profiles.length >= 16} onClick={() => setProfiles(ps => [...ps, { provider, model: '', allow_text: false, allow_images: false }])}>Add another model</button>
     </fieldset>)}
     <p className="small muted">Model lists come from your account. Listing alone does not verify tool or image support. Enabled providers remain available; agents send requests while doing assigned work.</p>
-    <div className="form-grid"><label>Agent execution<select value={config.execution} onChange={e => setConfig(c => ({ ...c, execution: e.target.value as AIConfig['execution'] }))}><option value="single">Single agent</option><option value="auto">Agent decides when to delegate</option><option value="parallel">Start a team, then allow delegation</option></select></label><label>Verification<select value={config.review} onChange={e => setConfig(c => ({ ...c, review: e.target.value as AIConfig['review'] }))}><option value="standard">Standard support review</option><option value="independent">Independent review</option><option value="challenge">Independent + challenge review</option></select></label></div>
     <p className="small muted">Up to three assignments run together, using one or several configured models. Agents choose scoped work and return evidence for the lead to check. Stop cancels the team. Additional agents can increase cost.</p>
 
     </fieldset>
