@@ -22,7 +22,7 @@
     },
     "R01": {
       "state": "verified",
-      "commit": "filled-at-commit",
+      "commit": "dff960a4d3ee58004e2dc2ddfa9374cb6c860406",
       "evidence": "src-tauri/tests/backup_artifacts.rs (6 new/extended tests); docs/implementation/BASELINE-2026-09-21.md",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; branch impl/wave1-repairs",
       "commands": [
