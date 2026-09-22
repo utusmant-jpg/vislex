@@ -357,6 +357,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "video_discovery_status" => crate::discovery::status(c,text(&args,"source_id")?)?,
         "browse_video_discovery" => crate::discovery::browse(c,text(&args,"source_id")?,args["kind"].as_str().unwrap_or("video_overview"),args["start"].as_f64().unwrap_or(0.),args["end"].as_f64().unwrap_or(1e12),args["offset"].as_u64().unwrap_or(0),args["query"].as_str().unwrap_or(""))?,
         "queue_video_discovery" => {let value=crate::discovery::enqueue(c,text(&args,"source_id")?,args["interval"].as_f64().unwrap_or(5.),true)?;kick_discovery(app.clone(),c.meta("id")?.unwrap_or_default());value},
+        "retry_video_discovery" => {let value=crate::discovery::retry_run(c,text(&args,"run_id")?)?;kick_discovery(app.clone(),c.meta("id")?.unwrap_or_default());value},
         "cancel_video_discovery" => crate::discovery::cancel(c,text(&args,"source_id")?)?,
         "cancel_processing" => {crate::processing::cancel(c,text(&args,"job_id")?)?;Value::Null},
         "storage_usage" => c.storage_usage()?,
@@ -647,6 +648,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "validate_citation" => c.validate_citation(text(&args, "citation")?)?,
 
         "actions" => c.actions(text(&args, "task_id")?)?,
+        "issue_history" => c.issue_history(text(&args,"receipt_id")?,args["offset"].as_u64().unwrap_or(0))?,
 
         "delete_conversation" => {
 
@@ -774,7 +776,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "search",
 
-        "actions",
+        "actions", "issue_history",
 
         "revisions",
 

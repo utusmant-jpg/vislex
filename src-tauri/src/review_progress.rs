@@ -46,7 +46,7 @@ pub fn ledger(case: &Case, task: &str, ids: &[String]) -> Result<Value> {
     let records = case.records()?;
     for source in case.sources()?.into_iter().filter(|s|ids.contains(&s.id)&&!s.restricted) {
         let transcripts:Vec<_>=records.iter().filter(|r|r.kind=="transcript"&&r.actor=="processor"&&r.dependencies.contains(&source.id)).map(|r|json!({"record_id":r.id,"revision":r.revision,"total_lines":r.content.lines().count(),"review":r.review})).collect();
-        source_rows.insert(source.id.clone(),json!({"source_id":source.id,"filename":source.name,"kind":source.kind,"sha256":source.sha256,"status":source.status,"full_transcripts":transcripts,"reads":[],"visual_observations":[]}));
+        source_rows.insert(source.id.clone(),json!({"source_id":source.id,"filename":source.name,"kind":source.kind,"sha256":source.sha256,"status":source.status,"full_transcripts":transcripts,"read_count":0,"reads":[],"visual_observation_count":0,"visual_observations":[]}));
     }
     let mut stmt=case.db.prepare("SELECT id,name,input,output,status FROM actions WHERE task_id=? ORDER BY created_at,rowid")?;
     let rows=stmt.query_map([task],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?)))?;
@@ -67,8 +67,13 @@ pub fn ledger(case: &Case, task: &str, ids: &[String]) -> Result<Value> {
             for source in targets {
                 if let Some(row)=source_rows.get_mut(&source) {
                     let read=json!({"tool":name,"arguments":args,"receipt":receipt,"start":result["start_line"].as_u64().or(result["start"].as_u64()),"end":result["end_line"].as_u64().or(result["end"].as_u64()),"next_start":result["next_start"],"next_offset":result["next_offset"]});
-                    let reads=row["reads"].as_array_mut().unwrap();
-                    if !reads.iter().any(|r|r["tool"]==read["tool"]&&r["arguments"]==read["arguments"]) {reads.push(read);}
+                    row["read_count"]=json!(row["read_count"].as_u64().unwrap_or(0)+1);
+                    let duplicate=row["reads"].as_array().unwrap().iter().any(|r|r["tool"]==read["tool"]&&r["arguments"]==read["arguments"]);
+                    if !duplicate {
+                        let reads=row["reads"].as_array_mut().unwrap();
+                        reads.push(read);
+                        if reads.len()>24 {reads.remove(0);}
+                    }
                 }
             }
         }
@@ -78,13 +83,15 @@ pub fn ledger(case: &Case, task: &str, ids: &[String]) -> Result<Value> {
                     if let Some(row)=observation["source_id"].as_str().and_then(|id|source_rows.get_mut(id)) {
                         let mut item=observation.clone();item["receipt"]=json!(receipt);
                         for field in ["description","visible_text","uncertainty"] {if let Some(text)=item[field].as_str(){item[field]=json!(text.chars().take(600).collect::<String>());}}
+                        row["visual_observation_count"]=json!(row["visual_observation_count"].as_u64().unwrap_or(0)+1);
                         let observations=row["visual_observations"].as_array_mut().unwrap();
-                        if observations.len()<24 {observations.push(item);}
+                        observations.push(item);
+                        if observations.len()>24 {observations.remove(0);}
                     }
                 }
             }
         }
         receipts.push(json!({"receipt":receipt,"tool":name,"arguments":args,"status":status,"error":result["error"]}));
     }
-    Ok(json!({"sources":source_rows.into_values().collect::<Vec<_>>(),"recent_receipts":receipts.iter().rev().take(12).collect::<Vec<_>>(),"actions":total,"retrievals_since_visual":since_visual,"meaning":"Read ranges record retrieval, not verification or exhaustive coverage. Audio tracks are not speaker identities. Visual observations are unreviewed AI descriptions of sampled frames only. Full exact results remain available via read_receipt. Do not reread whole transcripts merely because earlier context was compacted."}))
+    Ok(json!({"sources":source_rows.into_values().collect::<Vec<_>>(),"recent_receipts":receipts.iter().rev().take(12).collect::<Vec<_>>(),"actions":total,"retrievals_since_visual":since_visual,"meaning":"Per-source reads show the 24 most recent distinct retrievals; visual observations show the 24 most recent samples. Counts are completed actions, not unique coverage. This is not a complete coverage ledger. Read ranges record retrieval, not verification or exhaustive coverage. Audio tracks are not speaker identities. Visual observations are unreviewed AI descriptions of sampled frames only. Full exact results remain available via read_receipt. Do not reread whole transcripts merely because earlier context was compacted."}))
 }

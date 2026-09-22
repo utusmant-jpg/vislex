@@ -96,7 +96,27 @@ function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRestrict 
   </section>;
 }
 
-function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
+function IssueHistory({ issue }: { issue: NonNullable<Snapshot['issues']>[number] }) {
+  const [receipts, setReceipts] = useState<{id:string;created_at:string}[]>([]);
+  const [nextOffset, setNextOffset] = useState<number|null>(0);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    if (nextOffset === null || loading) return;
+    setLoading(true);
+    try {
+      const page = await api<{receipts:{id:string;created_at:string}[];next_offset:number|null}>('issue_history', { receipt_id: issue.latest_receipt, offset: nextOffset });
+      setReceipts(previous => [...previous, ...page.receipts]); setNextOffset(page.next_offset);
+    } finally { setLoading(false); }
+  };
+  return <details className="job-card" onToggle={event => { if (event.currentTarget.open && !receipts.length) void load(); }}>
+    <summary>{issue.name.replaceAll('_', ' ')} · {issue.count} previous failure{issue.count === 1 ? '' : 's'}</summary>
+    <p className="small danger-text">{issue.error}</p>
+    {receipts.map(receipt => <p className="small" key={receipt.id}><code>Receipt {receipt.id}</code> · {receipt.created_at}</p>)}
+    {nextOffset !== null && receipts.length ? <button className="quiet" disabled={loading} onClick={() => void load()}>More receipts</button> : null}
+  </details>;
+}
+
+export function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
   const [storage, setStorage] = useState<Record<string, number> | null>(null);
   const [reclaimed, setReclaimed] = useState<number | null>(null);
   useEffect(() => {
@@ -119,12 +139,16 @@ function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run: (fn: 
         {job.kind === 'full_audio' && ['failed', 'interrupted'].includes(job.status) ? <button className="quiet" onClick={() => run(async () => { await api('resume_transcription', { job_id: job.id }); await refresh(); })}>Resume saved chunks</button> : null}
         {job.kind === 'full_audio' ? <button className="quiet" onClick={() => run(async () => { await api(['running', 'queued'].includes(job.status) ? 'cancel_transcription' : 'transcribe_full', { source_id: job.source_id }); await refresh(); })}>{['running', 'queued'].includes(job.status) ? 'Cancel' : 'Retry'}</button> : null}
         {job.status === 'running' ? <button className="quiet" onClick={() => run(async () => { await api('cancel_processing', { job_id: job.id }); await refresh(); })}>Cancel</button> : null}
-        {['interrupted', 'failed'].includes(job.status) && job.kind !== 'auto_prepare' ? <button className="quiet" onClick={() => run(async () => { await api('resume_processing', { job_id: job.id }); await refresh(); })}>Recover saved job</button> : null}
+        {['interrupted', 'failed'].includes(job.status) && job.kind !== 'auto_prepare' && job.kind !== 'full_audio' ? <button className="quiet" onClick={() => run(async () => {
+          const runId = job.parent_run_id ?? (['video_ocr_index', 'video_overview_index'].includes(job.kind) ? job.id : null);
+          await (runId ? api('retry_video_discovery', { run_id: runId }) : api('resume_processing', { job_id: job.id }));
+          await refresh();
+        })}>{job.parent_run_id || ['video_ocr_index', 'video_overview_index'].includes(job.kind) ? 'Retry index from saved progress' : 'Recover saved job'}</button> : null}
       </div>
       <code>Receipt {job.id}</code>
     </article>) : <div className="empty-state"><ListChecks size={32} /><h3>No failed tools or unfinished jobs</h3><p>Background transcription, indexing and analysis runs appear here while they work.</p></div>}
     {supersededFailures.length ? <details className="job-card"><summary>Previous failures resolved by a later run ({supersededFailures.length})</summary>{supersededFailures.map(job => <article key={job.id}><strong>{job.name}</strong><p className="small muted">{job.kind} · {job.error}</p><code>Receipt {job.id}</code></article>)}</details> : null}
-    {snapshot.issues?.map(issue => <details className="job-card job-attention" key={issue.id}><summary>{issue.name.replaceAll('_', ' ')} · failed</summary><pre>{issue.error}</pre><code>Receipt {issue.id}</code></details>)}
+    {snapshot.issues?.length ? <details className="job-card"><summary>Previous AI tool errors ({snapshot.issues.length} group{snapshot.issues.length === 1 ? '' : 's'})</summary>{snapshot.issues.map(issue => <IssueHistory issue={issue} key={issue.latest_receipt} />)}</details> : null}
     {storage ? <div className="job-card">
       <div className="job-card-head"><strong>Case storage</strong><Tooltip text="Only abandoned import copies matching a verified original are removed. Job folders are retained."><button className="quiet" onClick={() => run(async () => { const receipt = await api<{ reclaimed_bytes: number }>('reclaim_staging'); setReclaimed(receipt.reclaimed_bytes); setStorage(await api<Record<string, number>>('storage_usage')); })}>Reclaim verified staging duplicates</button></Tooltip></div>
       {Object.entries(storage).map(([name, bytes]) => <p className="small" key={name}>{name}: {formatBytes(bytes)}</p>)}
@@ -295,7 +319,8 @@ export default function App() {
   const record = selection?.type === 'record' ? snapshot?.records.find(item => item.id === selection.id) : undefined;
   const suggestedName = suggestedMatterName(snapshot?.sources.map(item => item.name) ?? []);
   const pending = snapshot?.jobs?.filter(job => ['queued', 'running'].includes(job.status)) ?? [];
-  const needsAttention = (snapshot?.issues?.length ?? 0) + (snapshot?.jobs?.filter(job => !job.superseded && ['failed', 'interrupted'].includes(job.status)).length ?? 0);
+  const needsAttention = (snapshot?.jobs?.filter(job => !job.superseded && !job.parent_run_id && ['failed', 'interrupted'].includes(job.status)).length ?? 0)
+    + (snapshot?.tasks?.filter(task => task.status === 'paused' && !!task.error && task.id === snapshot.automatic_analysis?.review_task).length ?? 0);
   const selectSource = (id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); };
 
   async function importFiles() {

@@ -1032,10 +1032,10 @@ impl Case {
             [],
             |r| r.get(0),
         )?;
-        let mut jobs = self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,j.error,j.created_at,EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.status='complete' AND newer.rowid>j.rowid) FROM processing_jobs j JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC")?;
-        let jobs = jobs.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let mut issues = self.db.prepare("SELECT id,name,output,created_at FROM actions WHERE status='failed' ORDER BY created_at DESC")?;
-        let issues = issues.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"error":r.get::<_,String>(2)?,"created_at":r.get::<_,String>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut jobs = self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,j.error,j.created_at,EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.status='complete' AND newer.rowid>j.rowid),(SELECT parent.id FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id) ORDER BY parent.rowid DESC LIMIT 1) FROM processing_jobs j JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC")?;
+        let jobs = jobs.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?,"parent_run_id":r.get::<_,Option<String>>(8)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut issues = self.db.prepare("SELECT a.task_id,a.name,a.output,COUNT(*),(SELECT last.id FROM actions last WHERE last.status='failed' AND last.task_id=a.task_id AND last.name=a.name AND last.output=a.output ORDER BY last.rowid DESC LIMIT 1),MAX(a.created_at) FROM actions a WHERE a.status='failed' GROUP BY a.task_id,a.name,a.output ORDER BY MAX(a.rowid) DESC LIMIT 100")?;
+        let issues = issues.query_map([], |r| {let output=serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or(Value::Null);Ok(json!({"task_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"error":output["error"].as_str().unwrap_or("Tool failed; open the receipt for details"),"count":r.get::<_,i64>(3)?,"latest_receipt":r.get::<_,String>(4)?,"created_at":r.get::<_,String>(5)?}))})?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(
             json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.records()?,"settings":self.settings()?,"tasks":tasks,"budget_committed":spent,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
         )
@@ -1044,6 +1044,16 @@ impl Case {
         let mut stmt=self.db.prepare("SELECT id,name,input,output,status,created_at FROM actions WHERE task_id=? ORDER BY created_at")?;
         let rows=stmt.query_map([task],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"input":r.get::<_,String>(2)?,"output":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"created_at":r.get::<_,String>(5)?})))?;
         Ok(json!(rows.collect::<std::result::Result<Vec<_>, _>>()?))
+    }
+    pub fn issue_history(&self, receipt: &str, offset: u64) -> Result<Value> {
+        let (task,name,output):(String,String,String)=self.db.query_row(
+            "SELECT task_id,name,output FROM actions WHERE id=? AND status='failed'",
+            [receipt],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+        )?;
+        let mut stmt=self.db.prepare("SELECT id,created_at FROM actions WHERE task_id=? AND name=? AND output=? AND status='failed' ORDER BY rowid DESC LIMIT 51 OFFSET ?")?;
+        let mut rows=stmt.query_map(rusqlite::params![task,name,output,offset.min(i64::MAX as u64) as i64],|r|Ok(json!({"id":r.get::<_,String>(0)?,"created_at":r.get::<_,String>(1)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=rows.len()>50;rows.truncate(50);
+        Ok(json!({"receipts":rows,"next_offset":if more{Some(offset+50)}else{None}}))
     }
     pub fn validate_citation(&self, citation: &str) -> Result<Value> {
         let rest = citation

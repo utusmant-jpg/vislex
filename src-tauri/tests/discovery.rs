@@ -34,14 +34,52 @@ fn independent_search_pagination_recovery_and_revisions() {
     assert!(discovery::search(&c,&[s.clone()],&["exit".into()]).unwrap().is_empty());
 }
 #[test]
-fn pending_discovery_does_not_block_review_or_restart_completed_review() {
+fn automatic_review_waits_for_discovery_and_restarts_when_inputs_change() {
     let (_dir,mut c,s)=setup();discovery::enqueue(&mut c,&s,5.,false).unwrap();
     c.db.execute("INSERT INTO extracts(source_id,text,method) VALUES(?,'prepared','fixture')",[&s]).unwrap();
     let mut settings=c.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.model="synthetic".into();c.save_settings(settings).unwrap();
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE kind IN ('video_ocr_index','video_overview_index')",[]).unwrap();
     let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
     c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
     assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
+    c.db.execute("INSERT INTO processing_jobs VALUES('new-discovery',?,'video_overview_index','complete','{}','','now')",[&s]).unwrap();
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_some());
     let tools=agent::tools("ask");assert!(tools.iter().any(|t|t["name"]=="browse_video_overview"));
+}
+#[test]
+fn failed_discovery_run_retries_from_published_cursor_without_replaying_chunks() {
+    let (_dir,mut c,s)=setup();let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let run=queued["jobs"][0].as_str().unwrap();
+    chunk(&mut c,&s,run,0.,"first chunk",false);
+    c.db.execute("UPDATE processing_jobs SET status='failed',error='Synthetic resource failure' WHERE id=?",[run]).unwrap();
+    let result=discovery::retry_run(&mut c,run).unwrap();
+    assert_eq!(result["next_start"],60.);
+    let status:String=c.db.query_row("SELECT status FROM processing_jobs WHERE id=?",[run],|r|r.get(0)).unwrap();
+    assert_eq!(status,"queued");
+    chunk(&mut c,&s,run,60.,"second chunk",true);
+    assert_eq!(discovery::search(&c,&[s.clone()],&["first".into()]).unwrap().len(),1);
+    assert_eq!(discovery::search(&c,&[s.clone()],&["second".into()]).unwrap().len(),1);
+    assert!(discovery::retry_run(&mut c,run).is_err());
+}
+#[test]
+fn transient_resource_failure_retries_twice_then_stays_visible() {
+    let (_dir,mut c,s)=setup();let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let run=queued["jobs"][0].as_str().unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE kind='video_overview_index'",[]).unwrap();
+    for attempt in 1..=3 {
+        let job=discovery::next(&mut c).unwrap().unwrap();
+        assert_eq!(job.run_id,run);
+        discovery::publish(&mut c,&job,Err(anyhow::anyhow!("Synthetic resource exhaustion (os error 1450)"))).unwrap();
+        let (status,raw):(String,String)=c.db.query_row("SELECT status,result FROM processing_jobs WHERE id=?",[run],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let state:Value=serde_json::from_str(&raw).unwrap();
+        assert_eq!(state["next_start"],0.);
+        if attempt<3 {
+            assert_eq!(status,"queued");assert_eq!(state["resource_retries"],attempt);
+            let mut ready=state;ready["retry_after_epoch"]=json!(0);
+            c.db.execute("UPDATE processing_jobs SET result=? WHERE id=?",rusqlite::params![ready.to_string(),run]).unwrap();
+        } else {assert_eq!(status,"failed");}
+    }
 }
 #[test]
 fn agent_search_includes_video_text_and_keeps_scoping() {

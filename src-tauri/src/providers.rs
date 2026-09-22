@@ -491,12 +491,7 @@ pub async fn send(
             match event["type"].as_str().unwrap_or("") {
                 "response.completed" => return Ok(event["response"].clone()),
                 "response.failed" | "response.incomplete" | "error" => {
-                    let detail = event["response"]["error"]["message"]
-                        .as_str()
-                        .or_else(|| event["error"]["message"].as_str())
-                        .or_else(|| event["message"].as_str())
-                        .unwrap_or("no provider detail supplied");
-                    bail!("Provider stopped before completing the response: {detail}")
+                    bail!("Provider stopped before completing the response: {}", stream_failure_detail(&event))
                 }
                 "response.output_text.delta" => progress(json!({"text":event["delta"]})),
                 "response.output_item.added" if event["item"]["type"] == "function_call" => {
@@ -510,6 +505,21 @@ pub async fn send(
         }
     }
     bail!("Provider stream ended without completion; no final result published")
+}
+
+/// Provider stream errors may contain arbitrary text. Only known completion
+/// reasons and a bounded provider error message are suitable for the UI.
+pub fn stream_failure_detail(event: &Value) -> String {
+    let reason = event["response"]["incomplete_details"]["reason"]
+        .as_str()
+        .filter(|reason| ["max_output_tokens", "content_filter", "max_context_length"].contains(reason));
+    if let Some(reason) = reason { return format!("Incomplete response: {reason}"); }
+    let message = event["response"]["error"]["message"]
+        .as_str()
+        .or_else(|| event["error"]["message"].as_str())
+        .or_else(|| event["message"].as_str())
+        .unwrap_or("no provider detail supplied");
+    message.chars().take(400).collect()
 }
 
 /// Resolve only explicitly approved models; callers cannot elevate modality permissions.

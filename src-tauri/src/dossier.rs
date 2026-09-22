@@ -242,6 +242,11 @@ pub fn review_candidate(case: &mut Case, task: &str, args: &Value) -> Result<Val
         json!({"status":"assessments_recorded","stamp":stamp,"review":"Machine assessment, not proof or human approval"}),
     )
 }
+pub const INSPECTION_TOOLS: &[&str] = &[
+    "read_text", "read_artifact", "read_record", "inspect_image",
+    "inspect_document_pages", "inspect_video_interval",
+    "transcribe_audio_interval", "discover_sound_events",
+];
 fn validate_locator(case: &Case, locator: &str, scope: &[String]) -> Result<()> {
     let result = case.validate_citation(locator)?;
     let source = result["source_id"].as_str().context("Missing source")?;
@@ -288,22 +293,11 @@ pub fn save(case: &mut Case, task: &str, value: &Value) -> Result<Value> {
         );
         ensure!(
             scope.contains(&check.source_id) && !case.source(&check.source_id)?.restricted,
-            "Check source outside permitted scope"
+            "Check {} names a source outside permitted scope",check.id
         );
-        ensure!(
-            [
-                "read_text",
-                "read_artifact",
-                "read_record",
-                "inspect_image",
-                "inspect_document_pages",
-                "inspect_video_interval",
-                "transcribe_audio_interval",
-                "discover_sound_events"
-            ]
-            .contains(&check.tool.as_str()),
-            "Check must name a source inspection tool"
-        );
+        ensure!(INSPECTION_TOOLS.contains(&check.tool.as_str()),
+            "Check {} uses unsupported tool {}. Choose one inspection tool from: {}",
+            check.id,check.tool,INSPECTION_TOOLS.join(", "));
         if check.state == "blocked" {
             ensure!(
                 !check.reason.trim().is_empty(),
@@ -332,7 +326,7 @@ pub fn save(case: &mut Case, task: &str, value: &Value) -> Result<Value> {
             for receipt in &check.receipts {
                 let input: Option<String> = case.db.query_row("SELECT input FROM actions WHERE id=? AND task_id=? AND name=? AND status='complete'", params![receipt,task,check.tool], |r|r.get(0)).optional()?;
                 let input: Value = serde_json::from_str(
-                    &input.context("Inspection receipt missing or from another task/tool")?,
+                    &input.context(format!("Check {} receipt {} is missing or belongs to another task/tool; use a completed {} receipt from this task",check.id,receipt,check.tool))?,
                 )?;
                 if check.tool == "read_record" {
                     let record = case.record(
@@ -396,7 +390,7 @@ pub fn save(case: &mut Case, task: &str, value: &Value) -> Result<Value> {
             );
         }
         for citation in claim.supporting.iter().chain(&claim.contrary) {
-            validate_locator(case, citation, &scope)?;
+            validate_locator(case, citation, &scope).with_context(||format!("Claim {} has invalid evidence locator {}",claim.id,citation.chars().take(180).collect::<String>()))?;
         }
     }
     next.revision += 1;

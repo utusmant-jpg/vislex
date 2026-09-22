@@ -77,6 +77,23 @@ fn sid_string(sid: PSID) -> Result<String> {
 static ACL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static WORKER_SLOTS: (std::sync::Mutex<usize>, std::sync::Condvar) =
     (std::sync::Mutex::new(0), std::sync::Condvar::new());
+static HEAVY_SLOT: (std::sync::Mutex<bool>, std::sync::Condvar) =
+    (std::sync::Mutex::new(false), std::sync::Condvar::new());
+struct HeavyPermit;
+impl HeavyPermit {
+    fn acquire() -> Self {
+        let (lock,wake)=&HEAVY_SLOT;
+        let mut active=lock.lock().unwrap_or_else(|e|e.into_inner());
+        while *active {active=wake.wait(active).unwrap_or_else(|e|e.into_inner());}
+        *active=true;Self
+    }
+}
+impl Drop for HeavyPermit {
+    fn drop(&mut self) {
+        let (lock,wake)=&HEAVY_SLOT;
+        *lock.lock().unwrap_or_else(|e|e.into_inner())=false;wake.notify_one();
+    }
+}
 struct WorkerPermit;
 impl WorkerPermit {
     fn acquire() -> Self {
@@ -152,6 +169,12 @@ fn quote(arg: &str) -> String {
 /// Launches one packaged worker, with no network capabilities, no inherited handles,
 /// 2 GiB memory, at most one process, and a wall-clock limit. Closing the Job kills it.
 pub fn run_worker(executable: &Path, job: &Path, timeout: Duration) -> Result<()> {
+    // Decode/OCR/ASR workers can each approach the per-process 2 GiB limit.
+    // Reserve their shared slot before a general worker slot so a waiting
+    // video job does not prevent a lightweight document job from starting.
+    let request=std::fs::read(job.join("request.json")).ok().and_then(|raw|serde_json::from_slice::<serde_json::Value>(&raw).ok());
+    let heavy=request.as_ref().is_none_or(|value| ["video_ocr","video_overview","full_audio","video","audio","diarization"].contains(&value["kind"].as_str().unwrap_or("")));
+    let _heavy=heavy.then(HeavyPermit::acquire);
     let _permit=WorkerPermit::acquire();
     ensure!(
         executable.is_absolute() && executable.is_file(),

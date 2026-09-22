@@ -181,6 +181,13 @@ fn provider_rejects_orphans_truncation_and_url_models() {
     assert!(providers::encode(Provider::Gemini, &request).is_err());
 }
 #[test]
+fn provider_incomplete_reason_is_bounded_and_actionable() {
+    let event=json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}});
+    assert_eq!(providers::stream_failure_detail(&event),"Incomplete response: max_output_tokens");
+    let unknown=json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"arbitrary private text"}}});
+    assert_eq!(providers::stream_failure_detail(&unknown),"no provider detail supplied");
+}
+#[test]
 fn each_provider_can_complete_a_synthetic_single_provider_task() {
     for provider in [
         Provider::Openai,

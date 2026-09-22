@@ -442,6 +442,25 @@ fn cited_answers_require_review_and_are_saved_for_followups() {
 }
 
 #[test]
+fn snapshot_groups_failed_tools_and_links_discovery_child_to_parent() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Synthetic review","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    for index in 0..3 {
+        let id=format!("issue-{index}");
+        c.db.execute("INSERT INTO actions VALUES(?,?,'save_dossier','{}','{\"error\":\"Invalid check tool\"}','failed',?)",rusqlite::params![id,task,evidence_desk::case::now()]).unwrap();
+    }
+    c.db.execute("INSERT INTO processing_jobs VALUES('parent',?,'video_ocr_index','failed',?,'resource error',?)",rusqlite::params![sid,json!({"active_job":"child"}).to_string(),evidence_desk::case::now()]).unwrap();
+    c.db.execute("INSERT INTO processing_jobs VALUES('child',?,'video_ocr','failed','{}','resource error',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    let snapshot=c.snapshot().unwrap();
+    assert_eq!(snapshot["issues"].as_array().unwrap().len(),1);
+    assert_eq!(snapshot["issues"][0]["count"],3);
+    let latest=snapshot["issues"][0]["latest_receipt"].as_str().unwrap();
+    assert_eq!(c.issue_history(latest,0).unwrap()["receipts"].as_array().unwrap().len(),3);
+    let child=snapshot["jobs"].as_array().unwrap().iter().find(|job|job["id"]=="child").unwrap();
+    assert_eq!(child["parent_run_id"],"parent");
+}
+
+#[test]
 fn older_visual_inputs_remain_revisitable_without_resending_all_images() {
     let (dir, mut c, _) = setup(); enable(&mut c);
     let image=dir.path().join("image.png");
@@ -735,6 +754,32 @@ fn repeated_successful_reads_checkpoint_then_synthesize_instead_of_crashing() {
     assert_eq!(c.snapshot().unwrap()["tasks"][0]["status"],"complete");
 }
 #[test]
+fn two_identical_failed_tools_force_a_qualified_finish() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Summarize available evidence","investigate",vec![sid],vec![],0.).unwrap();
+    let invalid=json!({"source_id":"missing-source","start":1,"count":10});
+    assert!(deliver_tool(&mut c,&task,"read_text",invalid.clone()));
+    assert!(deliver_tool(&mut c,&task,"read_text",invalid));
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert_eq!(request.body["tool_choice"]["name"],"finish_task");
+}
+#[test]
+fn durable_ledger_bounds_old_reads_but_keeps_counts_and_recent_receipts() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Review the source","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    for index in 1..=30 {
+        c.db.execute("INSERT INTO actions VALUES(?,?,?,?,?,'complete',?)",rusqlite::params![
+            format!("read-{index}"),task,"read_text",json!({"source_id":sid,"start":index,"count":1}).to_string(),
+            json!({"start_line":index,"end_line":index}).to_string(),format!("2026-09-22T00:00:{index:02}Z")
+        ]).unwrap();
+    }
+    let ledger=evidence_desk::review_progress::ledger(&c,&task,&[sid]).unwrap();
+    assert_eq!(ledger["sources"][0]["read_count"],30);
+    assert_eq!(ledger["sources"][0]["reads"].as_array().unwrap().len(),24);
+    assert_eq!(ledger["sources"][0]["reads"][0]["receipt"],"read-7");
+    assert_eq!(ledger["sources"][0]["reads"][23]["receipt"],"read-30");
+}
+#[test]
 fn checkpoints_preserve_attribution_and_progress_across_pause_and_reopen() {
     let (_dir,mut c,sid)=setup();enable(&mut c);
     let task=agent::start(&mut c,"review","investigate",vec![sid.clone()],vec![],0.).unwrap();
@@ -893,6 +938,8 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
     assert!(c.meta("auto_review_fingerprint").unwrap().is_some());
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_completed'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
     let reviewed_ids=evidence_desk::agent::case_scope(&c).unwrap().0;
     assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_some());

@@ -78,7 +78,7 @@ fn review_input_stamp(case:&Case,source_ids:&[String])->Result<String> {
 pub fn start_review(case:&mut Case)->Result<Option<String>> {
     let settings=case.settings()?;
     if settings.offline || !settings.allow_text || settings.model.is_empty() {return Ok(None);}
-    let busy:i64=case.db.query_row("SELECT (SELECT count(*) FROM tasks WHERE status='running')+(SELECT count(*) FROM processing_jobs WHERE status IN ('queued','running') AND kind IN ('auto_prepare','full_audio'))",[],|r|r.get(0))?;
+    let busy:i64=case.db.query_row("SELECT (SELECT count(*) FROM tasks WHERE status='running')+(SELECT count(*) FROM processing_jobs WHERE status IN ('queued','running') AND kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index'))",[],|r|r.get(0))?;
     if busy>0 {return Ok(None);}
     let (sources,records)=agent::case_scope(case)?;
     if sources.is_empty(){return Ok(None);}
@@ -97,9 +97,11 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
                 // completion-only rule.
                 let dispatched=case.meta(&format!("auto_review_inventory:{task}"))?.or_else(||case.meta("auto_review_fingerprint").ok().flatten());
                 if dispatched.as_deref()==Some(fingerprint.as_str()) {
-                    case.set_meta("auto_review_fingerprint",&fingerprint)?;
+                    if case.meta("auto_review_fingerprint")?.as_deref()!=Some(fingerprint.as_str()) {
+                        case.set_meta("auto_review_fingerprint",&fingerprint)?;
+                        case.audit("automatic_case_review_completed",json!({"task":task,"inventory":fingerprint}))?;
+                    }
                     case.set_meta("auto_review_state","complete")?;
-                    case.audit("automatic_case_review_completed",json!({"task":task,"inventory":fingerprint}))?;
                     return Ok(None);
                 }
                 // Completed against an older inventory that has since changed:
@@ -123,7 +125,7 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
         }
     }
     if case.meta("auto_review_fingerprint")?.as_deref()==Some(&fingerprint){return Ok(None);}
-    let prompt="Automatically analyze this entire case inventory using available preparation. Some indexes and transcripts may still be pending: disclose them, inspect discovery status, use completed chunks, and do not wait in a polling loop. Use search_passages for visible text and browse_video_overview for silent-action leads before detailed interval inspection. Enumerate every source and its processing results. Read every supported document and OCR unit, inspect every image, and review all recording transcripts. For video, obtain each recording's full duration and inspect consecutive visual windows spanning that duration, then inspect material or ambiguous events more densely. Use parallel assignments when enabled, including the same model. Do not rely on speech to discover silent actions. Compare facts across reports, images and recordings; build a cited chronology with source-relative times and clock uncertainty. Save reusable findings. Use existing prepared artifacts and completed transcripts; do not repeat completed extraction. Track each file and modality explicitly. Report uninspected intervals, sampling density, OCR errors, unsupported structures and failures. Sampled frames never establish exhaustive visual inspection. Return an inventory/coverage table, supported findings, contradictions and remaining gaps. Never claim full review if any file, page or interval remains uninspected.";
+    let prompt="Automatically analyze this entire case inventory using completed preparation. If a processor failed, name that gap and use available results. Enumerate every source and processing result. Read every supported document and OCR unit, inspect every image, and review all recording transcripts. For video, obtain each recording's full duration and inspect at least one frame in every consecutive 20-second bin, plus scene-change frames and denser intervals around possible events. Track each bin by source and source-relative time; mark decode failures or bins not visually inspected. Use existing discovery frames and prepared artifacts before requesting new extraction. Do not rely on speech to discover silent actions. Compare facts across reports, images and recordings; build a cited chronology with clock uncertainty. Save reusable findings. Sampled frames never establish continuous perception or human review. Return coverage, supported findings, contradictions and remaining gaps. Finish with an honest partial report if any file, page or interval remains uninspected.";
     let task=agent::start(case,prompt,"investigate",sources,records,0.)?;
     case.set_meta("auto_review_state","running")?;
     case.set_meta(&format!("auto_review_inventory:{task}"),&fingerprint)?;

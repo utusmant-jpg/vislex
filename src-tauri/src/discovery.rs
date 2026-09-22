@@ -38,12 +38,36 @@ pub fn enqueue_missing(case:&mut Case)->Result<()> {
     }
     Ok(())
 }
+/// Retry one failed discovery run from its last published chunk. A new child
+/// processor job is created by `next`, then published through `store_chunk`.
+pub fn retry_run(case:&mut Case,run_id:&str)->Result<Value> {
+    let (source,kind,status,raw):(String,String,String,String)=case.db.query_row(
+        "SELECT source_id,kind,status,result FROM processing_jobs WHERE id=?",
+        [run_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
+    )?;
+    permitted(case,&source)?;
+    ensure!(["video_ocr_index","video_overview_index"].contains(&kind.as_str()),"Choose a discovery index run");
+    ensure!(["failed","interrupted"].contains(&status.as_str()),"Discovery run is not failed or interrupted");
+    let mut config:Value=serde_json::from_str(&raw)?;
+    let start=config["next_start"].as_f64().context("Missing discovery checkpoint")?;
+    ensure!(start.is_finite()&&start>=0.,"Invalid discovery checkpoint");
+    if let Some(old_hash)=config["worker_sha256"].as_str() {
+        let worker=processing::worker_path()?;
+        ensure!(old_hash==crate::case::file_hash(&worker)?,"Worker changed; start a new index revision");
+    }
+    config["active_job"]=Value::Null;
+    config["retry_after_epoch"]=Value::Null;
+    config["resource_retries"]=json!(0);
+    case.db.execute("UPDATE processing_jobs SET status='queued',result=?,error='' WHERE id=?",params![config.to_string(),run_id])?;
+    case.audit("discovery_run_retried",json!({"run":run_id,"source":source,"kind":kind,"next_start":start}))?;
+    Ok(json!({"run_id":run_id,"status":"queued","next_start":start}))
+}
 pub struct Job {pub run_id:String,pub start:f64,pub processor:processing::PreparedJob}
 pub fn next(case:&mut Case)->Result<Option<Job>> {
     initialize(case)?;
     let busy:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs WHERE status='running' AND kind IN ('video_ocr_index','video_overview_index','video','audio','diarization'))",[],|r|r.get(0))?;
     if busy {return Ok(None)}
-    let row:Option<(String,String,String,String)>=case.db.query_row("SELECT j.id,j.source_id,j.kind,j.result FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index') AND s.restricted=0 ORDER BY CASE j.kind WHEN 'video_ocr_index' THEN 0 ELSE 1 END,j.created_at,j.id LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+    let row:Option<(String,String,String,String)>=case.db.query_row("SELECT j.id,j.source_id,j.kind,j.result FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index') AND s.restricted=0 AND COALESCE(CAST(json_extract(j.result,'$.retry_after_epoch') AS INTEGER),0)<=CAST(strftime('%s','now') AS INTEGER) ORDER BY CAST(json_extract(j.result,'$.next_start') AS REAL),j.created_at,j.id LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     let Some((run_id,source,kind,raw))=row else{return Ok(None)};
     let mut config:Value=serde_json::from_str(&raw)?;
     let worker=processing::worker_path()?;let hash=crate::case::file_hash(&worker)?;
@@ -64,7 +88,22 @@ pub fn publish(case:&mut Case,job:&Job,result:Result<Value>)->Result<()> {
     let result=processing::publish_prepared(case,&job.processor,result);
     match result {
         Ok(value)=>{store_chunk(case,&job.run_id,&job.processor.source.id,&job.processor.kind,job.start,&value)?;},
-        Err(e)=>{case.db.execute("UPDATE processing_jobs SET status='failed',error=? WHERE id=?",params![e.to_string(),job.run_id])?;}
+        Err(e)=>{
+            let raw:String=case.db.query_row("SELECT result FROM processing_jobs WHERE id=?",[&job.run_id],|r|r.get(0))?;
+            let mut config:Value=serde_json::from_str(&raw)?;
+            config["last_failed_job"]=json!(job.processor.job_id);
+            let retries=config["resource_retries"].as_u64().unwrap_or(0);
+            if e.to_string().contains("os error 1450") && retries<2 {
+                let delay=if retries==0 {5}else{30};
+                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+                config["resource_retries"]=json!(retries+1);
+                config["retry_after_epoch"]=json!(now+delay);
+                config["active_job"]=Value::Null;
+                case.db.execute("UPDATE processing_jobs SET status='queued',result=?,error=? WHERE id=?",params![config.to_string(),format!("Windows resource error 1450; retry {}/2 after {delay}s",retries+1),job.run_id])?;
+            } else {
+                case.db.execute("UPDATE processing_jobs SET status='failed',result=?,error=? WHERE id=?",params![config.to_string(),e.to_string(),job.run_id])?;
+            }
+        }
     }
     Ok(())
 }
@@ -86,7 +125,7 @@ pub fn store_chunk(case:&mut Case,run:&str,source:&str,kind:&str,start:f64,value
         tx.execute("INSERT INTO discovery_samples VALUES(?,?,?,?,?,?,?)",params![run,source,kind,seconds,artifact,meta.to_string(),meta["ocr"]["text"].as_str().unwrap_or("")])?;
     }
     tx.execute("INSERT INTO discovery_chunks VALUES(?,?,?)",params![run,start,value.to_string()])?;
-    config["next_start"]=json!(start+60.);config["active_job"]=Value::Null;
+    config["next_start"]=json!(start+60.);config["active_job"]=Value::Null;config["retry_after_epoch"]=Value::Null;config["resource_retries"]=json!(0);
     config["last_chunk"]=value["metadata"].clone();
     let warning=value["metadata"]["failures"].as_array().is_some_and(|a|!a.is_empty()) || value["metadata"]["missing_pts_frames"].as_u64().unwrap_or(0)>0;
     config["has_gaps"]=json!(config["has_gaps"].as_bool().unwrap_or(false)||warning);

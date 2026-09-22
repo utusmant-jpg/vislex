@@ -1,4 +1,12 @@
 use evidence_desk::{agent, case::Case, dossier};
+
+#[test]
+fn dossier_tool_schema_uses_the_runtime_inspection_enum() {
+    let tools=agent::tools("investigate");
+    let save=tools.iter().find(|tool|tool["name"]=="save_dossier").unwrap();
+    assert_eq!(save["parameters"]["properties"]["checks"]["items"]["properties"]["tool"]["enum"],
+        json!(dossier::INSPECTION_TOOLS));
+}
 use serde_json::{json, Value};
 fn setup() -> (tempfile::TempDir, Case, String, String) {
     let dir = tempfile::tempdir().unwrap();
