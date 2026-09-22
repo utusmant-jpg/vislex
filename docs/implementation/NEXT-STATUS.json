@@ -224,6 +224,13 @@
       "scripts/native-acceptance.js UI steps were stale against the redesigned UI (committed in 9916bb9) and could never pass: exact-text button match hit the relative-time label now rendered inside chat buttons, '.answer-text' was renamed '.answer', and the 'Evidence (6)'/'Case tools & files' sidebar controls became rail + evidence-library views. Updated selectors with equal-strength assertions (exact chat title attribute, exact library-name text, exact aria-label); no assertions weakened."
     ],
     "unrun_checks": "scripts/native-acceptance.ps1 end-to-end not run as-is (its agent-browser eval step hangs with unpinned npx agent-browser 0.38.1 in this environment; the same .js journey was driven over raw CDP instead); release-build journey, CI runner, and human visual checks still NOT RUN; OCR accuracy on real-world footage unmeasured (fixtures only).",
-    "note": "Cross-cutting machine evidence, not a task state change: no task was moved to verified by this record. Supersedes the 'packaged-worker suite / native acceptance NOT RUN' lines recorded per-task earlier, which were true at their recording time."
+    "note": "Cross-cutting machine evidence, not a task state change: no task was moved to verified by this record. Supersedes the 'packaged-worker suite / native acceptance NOT RUN' lines recorded per-task earlier, which were true at their recording time.",
+    "dev_build": {
+      "path": "artifacts/VisLex 0.3.0-dev2/VisLex.exe",
+      "sha256": "782cabf62775164dd67e26f7b82c774183d007ccec6eef4fc49f513875b78026",
+      "built_from": "commit 3d60361 (tauri build --debug --features desktop --no-bundle + scripts/package-development.ps1 -OutputName 'VisLex 0.3.0-dev2'); frontend rebuilt from source at package time",
+      "tested": "Full native acceptance journey run against this exact exe (launched from its own folder with VISLEX_TEST_MODE=1, driven over raw CDP): 6 fixtures imported, video_ocr 4 samples + video_overview 4 samples complete via the bundle-internal packaged worker, semantic search 30 results, transcripts settled, DOCX/PDF exports hashed, unreviewed redaction export denied, playback origin explicit, chat answer + DOCX preview rendered, provider_calls 0. exe sha256 re-verified byte-identical after the run. Result: artifacts/native-acceptance-automated.json; screenshot artifacts/native-acceptance-dev2.png.",
+      "note": "Debug-profile build: VISLEX_TEST_MODE bypass applies (debug_assertions). Not a release build; release journey still untested."
+    }
   }
 }
