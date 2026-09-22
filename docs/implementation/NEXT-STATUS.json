@@ -37,7 +37,7 @@
     },
     "R02": {
       "state": "implemented",
-      "commit": "filled-at-commit",
+      "commit": "981ea720da849251db4c79eb3cfcd17696dc2149",
       "evidence": "src-tauri/tests/extract_revisions.rs (4 new tests); src/bridge.test.ts, src/markdown.test.ts, src/citationLocator.test.ts (shared grammar fixtures); red-first shown by reverting evidence.rs (test pinned_citation_cannot_validate... FAILED pre-fix)",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
       "commands": [
