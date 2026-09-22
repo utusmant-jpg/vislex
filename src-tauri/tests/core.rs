@@ -764,6 +764,23 @@ fn two_identical_failed_tools_force_a_qualified_finish() {
     assert_eq!(request.body["tool_choice"]["name"],"finish_task");
 }
 #[test]
+fn repeated_final_validation_failure_keeps_saved_partial_visible() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Review the source","investigate",vec![sid],vec![],0.).unwrap();
+    assert!(deliver_tool(&mut c,&task,"checkpoint_review",json!({"summary":"A saved partial observation","citations":[],"gaps":["A source remains unverified"],"next_steps":[]})));
+    let invalid=json!({"answer":"Unsupported final claim","citations":["evidence:missing#L1-L1"],"gaps":[]});
+    for attempt in 0..2 {
+        let prepared=agent::prepare_request(&mut c,&task).unwrap();
+        let response=json!({"status":"completed","usage":{},"output":[{"type":"function_call","call_id":format!("invalid-final-{attempt}"),"name":"finish_task","arguments":invalid.to_string()}]});
+        let received=agent::receive(&mut c,&task,&prepared.transmission,response);
+        if attempt==0 {assert!(received.unwrap());} else {assert!(received.is_err());}
+    }
+    let answer:String=c.db.query_row("SELECT answer FROM tasks WHERE id=?",[&task],|r|r.get(0)).unwrap();
+    assert!(answer.contains("A saved partial observation"));
+    assert!(answer.contains("A source remains unverified"));
+    assert!(!answer.contains("Unsupported final claim"));
+}
+#[test]
 fn durable_ledger_bounds_old_reads_but_keeps_counts_and_recent_receipts() {
     let (_dir,mut c,sid)=setup();enable(&mut c);
     let task=agent::start(&mut c,"Review the source","investigate",vec![sid.clone()],vec![],0.).unwrap();

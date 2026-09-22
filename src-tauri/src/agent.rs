@@ -1390,6 +1390,12 @@ pub fn receive_prepared(case: &mut Case, task: &str, transmission: &str, respons
             "SELECT EXISTS(SELECT 1 FROM actions WHERE task_id=? AND name='finish_task' AND status='failed' GROUP BY input HAVING COUNT(*)>=2)",
             [task],|r|r.get(0))?;
         if name=="finish_task" && status=="failed" && repeated_finish_failure {
+            let saved=crate::review_progress::load(case,task)?;
+            if !saved.summary.trim().is_empty() {
+                let mut partial=format!("Saved partial findings:\n{}",saved.summary.trim());
+                if !saved.gaps.is_empty() {partial.push_str("\n\nOpen issues:\n");for gap in saved.gaps {partial.push_str("- ");partial.push_str(&gap);partial.push('\n');}}
+                case.db.execute("UPDATE tasks SET answer=?,updated_at=? WHERE id=?",params![partial,now(),task])?;
+            }
             bail!("Final answer validation repeatedly failed. Saved partial findings and evidence receipts are preserved; review the failed citation receipts before resuming.");
         }
 
