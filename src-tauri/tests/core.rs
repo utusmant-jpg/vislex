@@ -496,6 +496,45 @@ fn conversation_followups_preserve_prior_turns_and_receipts() {
     let snapshot=c.snapshot().unwrap();
     assert!(snapshot["tasks"].as_array().unwrap().iter().all(|t|t["conversation_id"]==first));
 }
+#[test]
+fn independent_chats_can_run_together_and_followups_use_bounded_continuity() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let first=agent::start(&mut c,"First independent question","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    agent::continue_conversation(&mut c,&first,None).unwrap();
+    let second=agent::start(&mut c,"Second independent question","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    agent::continue_conversation(&mut c,&second,None).unwrap();
+    assert_ne!(first,second);
+    assert_eq!(c.snapshot().unwrap()["tasks"].as_array().unwrap().iter().filter(|task|task["status"]=="running").count(),2);
+    c.db.execute("UPDATE tasks SET status='complete',answer='First cited answer' WHERE id=?",[&first]).unwrap();
+    let old_result="repeated extracted text ".repeat(10000);
+    c.db.execute("UPDATE tasks SET history=? WHERE id=?",rusqlite::params![json!([{"type":"function_call_output","call_id":"old_call","output":old_result}]).to_string(),first]).unwrap();
+    let followup=agent::start(&mut c,"Challenge the first answer","investigate",vec![sid],vec![],0.).unwrap();
+    agent::continue_conversation(&mut c,&followup,Some(&first)).unwrap();
+    let request=agent::prepare_request(&mut c,&followup).unwrap();
+    let wire=request.body["input"].to_string();
+    assert!(wire.contains("First cited answer"));
+    assert!(!wire.contains("repeated extracted text"));
+    assert!(wire.len()<30000);
+    let recovered=agent::execute_tool(&mut c,&followup,"read_tool_result",&json!({"call_id":"old_call","offset":0,"count":100})).unwrap();
+    assert!(recovered["text"].as_str().unwrap().starts_with("repeated extracted text"));
+}
+#[test]
+fn chats_wait_for_file_preparation_but_failures_release_the_gate() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    c.db.execute("INSERT INTO processing_jobs VALUES('preparing',?,'auto_prepare','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());
+    c.db.execute("UPDATE processing_jobs SET status='failed',error='Synthetic processor failure' WHERE id='preparing'",[]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
+    c.db.execute("INSERT INTO processing_jobs VALUES('recovered',?,'auto_prepare','complete','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none(),"Historical failed jobs do not release a later active gate");
+    let review=agent::start(&mut c,"Synthetic automatic review","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    c.set_meta("auto_review_task",&review).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());
+    agent::pause(&mut c,&review,"Synthetic review error").unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
+    c.db.execute("INSERT INTO processing_jobs VALUES('fresh',?,'full_audio','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());
+}
 
 #[test]
 fn large_conversation_keeps_saved_history_and_valid_tool_pairs() {
@@ -849,10 +888,17 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
     assert!(c.meta("auto_review_fingerprint").unwrap().is_some());
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
+    let reviewed_ids=evidence_desk::agent::case_scope(&c).unwrap().0;
+    assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_some());
+    c.publish_extract(&reviewed_ids[0],"Revised synthetic extraction", "test",true).unwrap();
+    assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_none(),"Changed extraction must invalidate reusable AI context");
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"planned");
     // New evidence changes the inventory: a fresh review is planned.
     let extra=std::path::PathBuf::from(c.root.parent().unwrap().join("extra.txt"));
     std::fs::write(&extra,"new material").unwrap();
     c.import_files(&[extra.to_string_lossy().into()],"Late").unwrap();
+    let changed_ids=evidence_desk::agent::case_scope(&c).unwrap().0;
+    assert!(evidence_desk::automatic::completed_review_context(&c,&changed_ids).unwrap().is_none());
     let next=evidence_desk::automatic::start_review(&mut c).unwrap();
     assert!(next.is_some()&&next!=Some(task));
     c.verify_audit().unwrap();

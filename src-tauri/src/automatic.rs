@@ -56,6 +56,25 @@ pub fn publish(case:&mut Case,job:&Job,result:Result<Value>)->Result<()> {
 /// itself once the user's chat turn is finished. Any other pause (user stop,
 /// application interruption, provider error) stays down until explicitly resumed.
 pub const CHAT_PREEMPTION: &str = "Paused for your chat; automatic analysis will continue afterwards";
+fn review_input_stamp(case:&Case,source_ids:&[String])->Result<String> {
+    let allowed:std::collections::HashSet<&str>=source_ids.iter().map(String::as_str).collect();
+    let mut revisions=std::collections::HashMap::new();
+    let mut statement=case.db.prepare("SELECT source_id,revision FROM extracts")?;
+    for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))? {let (id,revision)=row?;revisions.insert(id,revision);}
+    let mut latest:std::collections::HashMap<String,std::collections::BTreeMap<String,String>>=std::collections::HashMap::new();
+    let mut statement=case.db.prepare("SELECT source_id,kind,id FROM processing_jobs WHERE status='complete' AND kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') ORDER BY rowid DESC")?;
+    for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))? {
+        let (source,kind,job)=row?;
+        if allowed.contains(source.as_str()) {latest.entry(source).or_default().entry(kind).or_insert(job);}
+    }
+    let mut inputs=Vec::with_capacity(source_ids.len());
+    for source in case.sources()?.into_iter().filter(|source|allowed.contains(source.id.as_str())) {
+        inputs.push(format!("{}:{}:{}:{}",source.id,source.sha256,revisions.get(&source.id).copied().unwrap_or(0),serde_json::to_string(&latest.get(&source.id))?));
+    }
+    anyhow::ensure!(inputs.len()==source_ids.len(),"Automatic review inventory changed");
+    inputs.sort();
+    Ok(digest(inputs.join("\n").as_bytes()))
+}
 pub fn start_review(case:&mut Case)->Result<Option<String>> {
     let settings=case.settings()?;
     if settings.offline || !settings.allow_text || settings.model.is_empty() {return Ok(None);}
@@ -65,8 +84,7 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
     if sources.is_empty(){return Ok(None);}
     let usable:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM sources s WHERE s.restricted=0 AND (EXISTS(SELECT 1 FROM extracts e WHERE e.source_id=s.id) OR EXISTS(SELECT 1 FROM processing_jobs j WHERE j.source_id=s.id AND j.status='complete')))",[],|r|r.get(0))?;
     if !usable {return Ok(None);}
-    let mut hashes:Vec<_>=sources.iter().map(|s|case.source(s).map(|v|format!("{}:{}",v.id,v.sha256))).collect::<Result<_>>()?;hashes.sort();
-    let fingerprint=digest(hashes.join("\n").as_bytes());
+    let fingerprint=review_input_stamp(case,&sources)?;
     // Reconcile the persisted state machine against the live task first: a
     // created task never counts as completed analysis. Only observed successful
     // completion writes the completion fingerprint.
@@ -135,9 +153,34 @@ pub fn status(case:&Case)->Result<Value> {
         Some("paused")=>"paused",
         Some("complete")=>{
             let dispatched=task.as_ref().and_then(|task|case.meta(&format!("auto_review_inventory:{task}")).ok().flatten().or_else(||case.meta("auto_review_fingerprint").ok().flatten()));
-            if dispatched.is_some() {"complete"} else {"planned"}
+            let current=case.sources().and_then(|sources|review_input_stamp(case,&sources.into_iter().filter(|source|!source.restricted).map(|source|source.id).collect::<Vec<_>>())).ok();
+            if dispatched.is_some() && dispatched==current {"complete"} else {"planned"}
         }
         _=>"planned",
     };
     Ok(json!({"files":counts.0,"prepared":counts.1,"pending":counts.2,"failed":counts.3,"review_task":task,"review_state":review_state,"note":"Preparation, OCR, transcription and AI review have separate coverage. AI review states: planned/running/paused/failed/complete; the completion fingerprint is written only after observed successful completion, so a created task never counts as completed analysis."}))
+}
+/// Interactive chats wait for the initial file preparation and automatic review.
+/// A failed processor or review leaves a visible gap, so users can investigate it.
+pub fn chat_pause_reason(case:&Case)->Result<Option<&'static str>> {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return Ok(None);}
+    let failed:i64=case.db.query_row("SELECT count(*) FROM processing_jobs j WHERE j.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') AND j.status IN ('failed','interrupted') AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.status='complete' AND newer.rowid>j.rowid)",[],|r|r.get(0))?;
+    if failed>0 {return Ok(None);}
+    let pending:i64=case.db.query_row("SELECT count(*) FROM processing_jobs j WHERE j.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') AND j.status IN ('queued','running') AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.status='complete' AND newer.rowid>j.rowid)",[],|r|r.get(0))?;
+    if pending>0 {return Ok(Some("Files are still being prepared. Chat will be available when processing finishes or reports an error."));}
+    if let Some(task)=case.meta("auto_review_task")? {
+        let running:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=? AND status='running')",[task],|r|r.get(0))?;
+        if running {return Ok(Some("Automatic case review is still running. Chat will be available when it finishes or reports an error."));}
+    }
+    Ok(None)
+}
+pub fn completed_review_context(case:&Case,source_ids:&[String])->Result<Option<Value>> {
+    let Some(task)=case.meta("auto_review_task")? else {return Ok(None)};
+    let Some((status,answer))=case.db.query_row("SELECT status,answer FROM tasks WHERE id=?",[&task],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()? else {return Ok(None)};
+    if status!="complete" {return Ok(None);}
+    let fingerprint=review_input_stamp(case,source_ids)?;
+    if case.meta(&format!("auto_review_inventory:{task}"))?.as_deref()!=Some(fingerprint.as_str()) {return Ok(None);}
+    let progress=crate::review_progress::load(case,&task)?;
+    Ok(Some(json!({"task_id":task,"answer_unreviewed":answer.chars().take(4000).collect::<String>(),"saved_summary":progress.summary.chars().take(2000).collect::<String>(),"gaps":progress.gaps,"meaning":"Prior AI analysis is a lead with citations to recheck, not human-reviewed proof. Read saved records and current sources before making factual claims."})))
 }

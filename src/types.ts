@@ -13,7 +13,7 @@ export type Task = { progress?: {summary:string;citations:string[];gaps:string[]
 
 export type Job = {superseded?:boolean;id:string;source_id:string;name:string;kind:string;status:string;error:string;created_at:string};
 
-export type Snapshot = { automatic_analysis?: { files: number; prepared: number; pending: number; failed: number; review_task: string | null; note: string }; ai_config?: AIConfig; jobs?: Job[]; issues?: {id:string;name:string;error:string;created_at:string}[]; viewer_request?: {id:string;source_id:string;time_seconds?:number|null;page?:number|null}|null; id: string; name: string; root: string; generation: number; sources: Source[]; records: WorkingRecord[]; settings: Settings; tasks: Task[]; budget_committed: number };
+export type Snapshot = { automatic_analysis?: { files: number; prepared: number; pending: number; failed: number; review_task: string | null; review_state: string; note: string }; ai_config?: AIConfig; jobs?: Job[]; issues?: {id:string;name:string;error:string;created_at:string}[]; viewer_request?: {id:string;source_id:string;time_seconds?:number|null;page?:number|null}|null; id: string; name: string; root: string; generation: number; sources: Source[]; records: WorkingRecord[]; settings: Settings; tasks: Task[]; budget_committed: number };
 
 export type Revision = { revision: number; title: string; content: string; actor: string; review: string; reason: string; task_id: string | null; created_at: string };
 
@@ -24,4 +24,3 @@ export type TextPage = { text: string; start: number; end: number; total_lines: 
 export type Action = { id: string; name: string; input: string; output: string; status: string; created_at: string };
 
 export type SearchResult = { source_id: string; name: string; excerpt: string };
-

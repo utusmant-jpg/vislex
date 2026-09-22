@@ -657,6 +657,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "start_task" => {
+            if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let selected = if let (Some(provider), Some(model)) = (args.get("provider"), args["model"].as_str()) {
                 crate::providers::select_profile(c, serde_json::from_value(provider.clone())?, model)?
@@ -670,7 +671,6 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 .map_err(|_| anyhow::anyhow!("Save an API key in Settings first"))?;
 
             }
-            crate::automatic::preempt_for_chat(c)?;
             let (source_ids, record_ids) = agent::case_scope(c)?;
 
             let task = agent::start(
@@ -730,6 +730,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "resume_task" => {
+            if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let task = text(&args, "task_id")?.to_string();
 
