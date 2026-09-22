@@ -90,7 +90,7 @@
     },
     "R07": {
       "state": "implemented",
-      "commit": "filled-at-commit",
+      "commit": "45cfd5c5fe4a3c6fc350bd4566509906cb727089",
       "evidence": "src-tauri/tests/core.rs (same-size/same-mtime tamper caught by strong check; backup refuses metadata-preserving tamper; case-open clears stale cache; export prepare refuses tamper; artifact reads reject tamper) + src-tauri/tests/dossier.rs (replaced-review-receipt export refusal)",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; filetime 0.2 dev-dependency added (lockfile updated offline)",
       "commands": [
