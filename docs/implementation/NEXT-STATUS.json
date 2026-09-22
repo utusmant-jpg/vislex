@@ -157,6 +157,36 @@
     "R23": {
       "state": "pending"
     },
+    "CHAT-FIX": {
+      "state": "implemented",
+      "evidence": "src-tauri/src/agent.rs (review_candidate candidate.blocks items given the finish_task block shape; list_sources.details made nullable+required), src-tauri/src/providers.rs (provider_rejection surfaces bounded provider error bodies on HTTP failures in send and list_models; stream failure events include the provider message), src-tauri/tests/master_v4.rs (tool_schemas_satisfy_openai_strict_mode, review_candidate_candidate_blocks_match_finish_task_block_shape)",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; branch impl/wave1-repairs",
+      "commands": [
+        "live replay of the exact app wire body (dumped through agent::start -> prepare_request -> providers::encode from a synthetic case) against https://api.openai.com/v1/responses with the user's stored key -> pre-fix HTTP 400 {error.message: Invalid schema for function 'review_candidate': In context=('properties','candidate','properties','blocks','type','0','items'), 'additionalProperties' is required to be supplied and to be false.}; post-fix HTTP 200 with response.completed",
+        "minimal OpenAI probes (bare/stream/store/reasoning/strict tools with minimum,maximum,minItems,type-union schemas) all HTTP 200, isolating the two schema violations",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 145 passed, 0 failed, 22 ignored (2 new schema guards)",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0; npm test -> 26 passed; npm run build -> exit 0; cargo clippy --tests -> no new warnings in changed code"
+      ],
+      "reviewer": "self-review (no separate reviewer agent available this session, stated limitation); diagnosis was empirical: failure replayed byte-exact from the real code path, fix replayed to HTTP 200, strict-mode rules encoded as a permanent schema-walking test over every agent tool plus the visual-review tool",
+      "unrun_checks": "xAI and Anthropic/Gemini live chat runs NOT re-attempted post-fix (xAI team out of credits per provider body; Gemini untested in this session); no UI interaction test (Rust-side fix)",
+      "note": "User-reported all-provider chat failure with working key validation and model pull. Root cause for OpenAI: every chat posted the full strict:true tool set to /v1/responses; review_candidate.candidate.blocks items was {type:object} without additionalProperties:false (OpenAI strict rejects the whole request), and list_sources.details was a non-required property (strict requires all properties required) which would have been the next 400. Both predate R03's recorded unrun_check 'no live provider run of the new tool schemas'. xAI 403 is a provider-side account condition (team out of credits) that the old generic error text hid; provider error messages are now surfaced bounded (4xx/5xx bodies are account/quota/schema diagnostics, never evidence content; successful response bodies remain unlogged). Model gpt-5.6-luna was never at fault."
+    },
+    "VIDEO-OCR-FIX": {
+      "state": "implemented",
+      "evidence": "workers/worker.py video_ocr/video_overview dispatch (already correct at HEAD); rebuilt frozen bundle src-tauri/resources/worker/evidence-worker via scripts/build-worker.ps1; src-tauri/tests/worker_video_e2e.rs (worker_runs_video_ocr_in_appcontainer, uses committed fixtures/generated/variable-timing.mp4)",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; Python worker venv (.venv-worker) with PyInstaller; branch impl/wave1-repairs",
+      "commands": [
+        "user case DB (yug.ledcase) shows every video_overview processing job failed with error 'Unsupported processor kind' while full_audio jobs completed",
+        "root cause: evidence-worker.exe was built 2026-09-20 19:47; the worker.py video_ocr/video_overview branch was committed 2026-09-21 18:11 (593305d); the app bundle artifacts/VisLex 0.3.0-dev (rebuilt 2026-09-22 15:57) packaged the stale Sep 20 exe, so discovery fell through to the old dispatch's else-raise",
+        "pipeline verified on the user's real recording: video_discovery.discover over a 14 MB mp4 (0-10 s, interval 5) -> 2 frames sampled, zero failures, RapidOCR 1.4.4 read the banner text with 0.96-0.99 raw scores",
+        "scripts/build-worker.ps1 -> exit 0, new exe 13,653,770 bytes 2026-09-22 16:48; exe refuses to run outside AppContainer as designed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test worker_video_e2e -> exit 0 (real worker, real AppContainer, committed fixture, OCR payload per frame)",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 145 passed, 0 failed, 22 ignored"
+      ],
+      "reviewer": "self-review (no separate reviewer agent available this session, stated limitation); fix is a build artifact refresh, no worker source change needed",
+      "unrun_checks": "full native acceptance and packaged journey NOT RUN; the user's existing failed discovery runs stay failed by design - recovery needs an explicit retry (VideoDiscovery 'Build / resume indexes' or queue_video_discovery), which computes a new index revision from the new worker hash",
+      "note": "The video OCR error persisted after the worker code was fixed because the frozen PyInstaller evidence-worker.exe ships separately from app code and was never rebuilt; scripts/build-worker.ps1 must be run before packaging when workers/ changes. The new permanent e2e test runs the packaged worker through sandbox::run_worker so a stale bundle now fails CI instead of the user's cases."
+    },
     "CASE-DELETE": {
       "state": "implemented",
       "evidence": "src-tauri/tests/core.rs delete_case_requires_free_lock_exact_confirmation_and_removes_everything, delete_case_refuses_folders_that_are_not_cases; src-tauri/src/case.rs delete_case; src-tauri/src/desktop.rs delete_case dispatch branch; src/App.tsx Delete case menu item + typed-confirmation dialog; README.md case-management paragraph",

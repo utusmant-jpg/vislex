@@ -45,6 +45,87 @@ fn body(input: Value) -> Value {
 }
 
 #[test]
+fn tool_schemas_satisfy_openai_strict_mode() {
+    // Every tool ships with strict:true, and the Responses API rejects the whole
+    // chat request when any object schema omits additionalProperties:false or
+    // lists a property outside required. This guard keeps one malformed tool
+    // schema from disabling chat on every model.
+    fn check(schema: &Value, path: &str) {
+        let types = match &schema["type"] {
+            Value::String(kind) => vec![kind.clone()],
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|value| value.as_str().map(String::from))
+                .collect(),
+            _ => vec![],
+        };
+        let object_like = types.iter().any(|kind| kind == "object")
+            || schema.get("properties").is_some()
+            || schema.get("additionalProperties").is_some();
+        if object_like {
+            assert_eq!(
+                schema["additionalProperties"],
+                json!(false),
+                "object schema at {path} must set additionalProperties:false"
+            );
+            let required: Vec<String> = schema["required"]
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(props) = schema["properties"].as_object() {
+                for name in props.keys() {
+                    assert!(
+                        required.contains(name),
+                        "property {path}.{name} must be listed in required"
+                    );
+                }
+            }
+        }
+        if let Some(items) = schema.get("items") {
+            check(items, &format!("{path}.items"));
+        }
+        if let Some(props) = schema.get("properties").and_then(|props| props.as_object()) {
+            for (name, sub) in props {
+                check(sub, &format!("{path}.{name}"));
+            }
+        }
+    }
+    for tool in agent::tools("investigate") {
+        assert_eq!(
+            tool["strict"],
+            json!(true),
+            "tool {} must keep strict argument validation",
+            tool["name"]
+        );
+        check(&tool["parameters"], &format!("tool {}", tool["name"]));
+    }
+    check(&agent::visual_review_tool()["parameters"], "visual review tool");
+}
+
+#[test]
+fn review_candidate_candidate_blocks_match_finish_task_block_shape() {
+    // The candidate echoed back by finish_task is fed to review_candidate; its
+    // blocks schema must accept the same structured blocks.
+    let candidate = agent::tools("investigate")
+        .into_iter()
+        .find(|tool| tool["name"] == "review_candidate")
+        .unwrap();
+    let finish = agent::tools("investigate")
+        .into_iter()
+        .find(|tool| tool["name"] == "finish_task")
+        .unwrap();
+    assert_eq!(
+        candidate["parameters"]["properties"]["candidate"]["properties"]["blocks"]["items"],
+        finish["parameters"]["properties"]["blocks"]["items"]
+    );
+}
+
+#[test]
 fn providers_preserve_native_tool_pairs_and_signatures() {
     let input = json!([{"role":"user","content":"Inspect the report"},{"type":"function_call","call_id":"c1","name":"read_text","arguments":"{}"},{"type":"function_call_output","call_id":"c1","output":"source text"}]);
     let claude = providers::encode(Provider::Anthropic, &body(input.clone())).unwrap();

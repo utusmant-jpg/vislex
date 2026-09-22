@@ -412,6 +412,36 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
     )
 }
 
+/// Extract the provider's own bounded rejection reason from a 4xx/5xx body.
+/// Error bodies carry account, quota and schema diagnostics — never evidence
+/// content — so surfacing the parsed message keeps failures diagnosable
+/// without logging a successful response body.
+async fn provider_rejection(response: &mut reqwest::Response) -> String {
+    let mut bytes = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() >= 64 * 1024 {
+            break;
+        }
+    }
+    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let message = value["error"]["message"]
+        .as_str()
+        .or_else(|| value["error"].as_str())
+        .or_else(|| value["message"].as_str())
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(|m| {
+            let mut detail = m.chars().take(400).collect::<String>();
+            if m.chars().count() > 400 {
+                detail.push('…');
+            }
+            format!("Provider says: {detail}")
+        })
+        .unwrap_or_else(|| "Provider supplied no readable error detail.".into());
+    format!("Check model, credentials, permissions and quota. {message}")
+}
+
 pub async fn send(
     provider: Provider,
     key: &str,
@@ -433,7 +463,15 @@ pub async fn send(
         _ => request.bearer_auth(key),
     };
     let mut response = request.send().await?;
-    ensure!(response.status().is_success(),"{} returned HTTP {}. Check model, credentials, permissions and quota. Response body is not logged.",provider.name(),response.status().as_u16());
+    if !response.status().is_success() {
+        let detail = provider_rejection(&mut response).await;
+        bail!(
+            "{} returned HTTP {}. {}",
+            provider.name(),
+            response.status().as_u16(),
+            detail
+        );
+    }
     if !matches!(provider, Provider::Openai | Provider::Xai) {
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await? {
@@ -453,7 +491,12 @@ pub async fn send(
             match event["type"].as_str().unwrap_or("") {
                 "response.completed" => return Ok(event["response"].clone()),
                 "response.failed" | "response.incomplete" | "error" => {
-                    bail!("Provider stopped before completing the response")
+                    let detail = event["response"]["error"]["message"]
+                        .as_str()
+                        .or_else(|| event["error"]["message"].as_str())
+                        .or_else(|| event["message"].as_str())
+                        .unwrap_or("no provider detail supplied");
+                    bail!("Provider stopped before completing the response: {detail}")
                 }
                 "response.output_text.delta" => progress(json!({"text":event["delta"]})),
                 "response.output_item.added" if event["item"]["type"] == "function_call" => {
@@ -522,7 +565,10 @@ pub async fn list_models(provider: Provider, key: &str) -> Result<Vec<ModelOptio
         };
         if !cursor.is_empty() {request=request.query(&[(if provider==Provider::Gemini {"pageToken"}else{"after_id"},&cursor)]);}
         let mut response=request.send().await.context("Could not reach the model catalogue; check your network and retry")?;
-        ensure!(response.status().is_success(),"{} model list returned HTTP {}. Check the saved API key and account access.",provider.name(),response.status().as_u16());
+        if !response.status().is_success() {
+            let detail = provider_rejection(&mut response).await;
+            bail!("{} model list returned HTTP {}. {}",provider.name(),response.status().as_u16(),detail);
+        }
         let mut bytes=Vec::new();
         while let Some(chunk)=response.chunk().await? {ensure!(bytes.len()+chunk.len()<=4*1024*1024,"Model catalogue is too large");bytes.extend_from_slice(&chunk);}
         let value:Value=serde_json::from_slice(&bytes)?;
