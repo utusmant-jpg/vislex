@@ -325,32 +325,21 @@ pub fn publish_prepared(case:&mut Case,job:&PreparedJob,output:Result<Value>)->R
         result["extraction_locator"] = json!(format!(
             "evidence:{source_id}#artifact:{extraction_artifact}"
         ));
-        let indexed: bool = case.db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM extracts WHERE source_id=?)",
-            [source_id],
-            |r| r.get(0),
-        )?;
-        if !combined.is_empty() && !indexed && !["sound_events","redaction","diarization","video_ocr","video_overview"].contains(&kind) {
-            let tx = case.db.savepoint()?;
-            tx.execute(
-                "INSERT INTO extracts(source_id,text,method) VALUES(?,?,?)",
-                params![
-                    source_id,
-                    combined,
-                    format!("Sandboxed {kind}; see processing limitations")
-                ],
+        if !combined.is_empty() && !["sound_events","redaction","diarization","video_ocr","video_overview"].contains(&kind) {
+            // Every extraction appends an immutable revision; it becomes the
+            // active searchable text only when no extraction is active yet
+            // (full-recording transcription supersedes partials separately).
+            let indexed: bool = case.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM extracts WHERE source_id=?)",
+                [source_id],
+                |r| r.get(0),
             )?;
-            tx.execute("DELETE FROM source_fts WHERE source_id=?", [source_id])?;
-            tx.execute(
-                "INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)",
-                params![source_id, source.name, combined],
+            case.publish_extract(
+                source_id,
+                &combined,
+                &format!("Sandboxed {kind}; see processing limitations"),
+                !indexed,
             )?;
-            tx.execute("UPDATE records SET stale=1 WHERE actor<>'processor' OR kind<>'transcript'", [])?;
-            tx.execute(
-                "UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'",
-                [],
-            )?;
-            tx.commit()?;
         }
         case.db.execute(
             "UPDATE sources SET status=? WHERE id=?",

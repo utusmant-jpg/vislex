@@ -63,10 +63,12 @@ pub fn publish(case:&mut Case,download:Download,title:&str,jurisdiction:&str,rel
         let text=html_text(raw)?;
         // The importer already created an empty FTS row for this non-text kind;
         // replace it so the structural extraction is actually searchable.
-        case.db.execute("INSERT OR IGNORE INTO extracts(source_id,text,method) VALUES(?,?,'Public HTML structural text extraction; verify against saved original')",params![source,text])?;
-        case.db.execute("UPDATE extracts SET text=?,method='Public HTML structural text extraction; verify against saved original' WHERE source_id=? AND text=''",params![text,source])?;
-        case.db.execute("DELETE FROM source_fts WHERE source_id=?",[&source])?;
-        case.db.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)",params![source,title,text])?;
+        let needs_activation: bool = case.db.query_row(
+            "SELECT COALESCE((SELECT text='' FROM extracts WHERE source_id=?),1)",
+            [&source],
+            |r| r.get(0),
+        )?;
+        case.publish_extract(&source,&text,"Public HTML structural text extraction; verify against saved original",needs_activation)?;
     }
     let content=json!({"url":download.url,"jurisdiction":jurisdiction,"relevant_date":relevant_date,"retrieved_at":download.retrieved_at,"treatment_status":"not_checked","proposition_support":"not_assessed","original_source_id":source,"mime":download.mime,"limitations":["Retrieval does not verify current validity, subsequent treatment or support for a legal proposition.","Relevant date is the requested research date, not proof this document was in force then."]});
     let object=crate::evidence::write(case,crate::evidence::ObjectInput{id:None,base_revision:0,kind:"authority".into(),title:title.into(),content:content.to_string(),source_ids:vec![source.clone()],locators:vec![],dependencies:vec![],start_seconds:None,end_seconds:None},"public_source_adapter")?;

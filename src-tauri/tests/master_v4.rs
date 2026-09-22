@@ -244,8 +244,14 @@ fn migration_backs_up_and_reopening_does_not_duplicate_search() {
     assert_eq!(
         c.db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        5
+        6
     );
+    // Schema 6 backfills the active extraction as an immutable revision row.
+    let backfilled: i64 = c
+        .db
+        .query_row("SELECT COUNT(*) FROM extract_revisions WHERE source_id=?", [&sid], |r| r.get(0))
+        .unwrap();
+    assert_eq!(backfilled, 1);
     assert_eq!(
         evidence::search(&c, "knocks", 0).unwrap()["results"]
             .as_array()
@@ -265,7 +271,7 @@ fn schema_v5_upgrade_snaps_v4_and_adds_lookup_indexes() {
     assert_eq!(
         c.db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        5
+        6
     );
     for index in ["actions_task","transmissions_task","occurrences_source","processing_jobs_source","artifacts_source"] {
         let present: bool = c

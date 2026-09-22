@@ -85,9 +85,14 @@ impl EvidenceLocator {
                 line_start,
                 line_end,
             } => {
+                let recorded: bool = case.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM extract_revisions WHERE source_id=? AND revision=?)",
+                    params![source_id, extraction_revision],
+                    |r| r.get(0),
+                )?;
                 ensure!(
-                    *extraction_revision == 1 && *line_start > 0 && line_end >= line_start,
-                    "Invalid text location"
+                    recorded && *extraction_revision >= 1 && *line_start > 0 && line_end >= line_start,
+                    "Unknown extraction revision or invalid text location"
                 );
                 case.validate_citation(&format!("evidence:{source_id}#L{line_start}-L{line_end}"))?;
             }

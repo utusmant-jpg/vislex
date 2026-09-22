@@ -356,6 +356,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         )?,
 
+        "extract_history" => c.extract_history(text(&args,"source_id")?)?,
+
+        "read_extract_revision" => c.read_text_revision(text(&args,"source_id")?,args["revision"].as_i64().context("Missing revision")?,args["start"].as_u64().unwrap_or(1) as usize,args["count"].as_u64().unwrap_or(200) as usize)?,
+
         "set_asr_profile" => {let model=text(&args,"model")?;anyhow::ensure!(["tiny","small"].contains(&model),"Unsupported local speech model");let worker=crate::processing::worker_path()?;anyhow::ensure!(worker.parent().context("Missing worker folder")?.join("_internal/models").join(model).join("model.bin").is_file(),"This speech model is not installed in the packaged worker");c.set_meta("asr_profile",model)?;c.audit("asr_profile_selected",json!({"model":model}))?;Value::Null},
         "transcribe_full" => {
 
@@ -739,7 +743,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "artifact_info",
 
-        "read_text",
+        "read_text", "extract_history", "read_extract_revision",
 
         "search",
 

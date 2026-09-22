@@ -207,7 +207,7 @@ impl Case {
         let db = Connection::open(root.join("case.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 5, "This case requires a newer application");
+        ensure!(version <= 6, "This case requires a newer application");
         if create {
             db.execute_batch(SCHEMA)?;
         } else {
@@ -232,6 +232,22 @@ impl Case {
                 db.backup(rusqlite::DatabaseName::Main, root.join(snapshot), None)?;
             }
             crate::evidence::migrate(&db)?;
+        }
+        if version < 6 {
+            // Immutable extraction revision history (schema 6). The extracts row
+            // remains the single ACTIVE extraction for compatibility; every
+            // publication appends a revision row first.
+            if !create && version >= 2 {
+                db.backup(rusqlite::DatabaseName::Main, root.join("pre-migration-v5.sqlite3"), None)?;
+            }
+            db.execute_batch(
+                "BEGIN;
+                CREATE TABLE IF NOT EXISTS extract_revisions(source_id TEXT NOT NULL REFERENCES sources(id),revision INTEGER NOT NULL,text TEXT NOT NULL,method TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(source_id,revision));
+                INSERT OR IGNORE INTO extract_revisions(source_id,revision,text,method,created_at)
+                    SELECT e.source_id,e.revision,e.text,e.method,s.created_at FROM extracts e JOIN sources s ON s.id=e.source_id;
+                PRAGMA user_version=6;
+                COMMIT;",
+            )?;
         }
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;",
@@ -402,6 +418,68 @@ impl Case {
         );
         Ok(path)
     }
+    /// Append an immutable extraction revision. Never activates or reindexes.
+    pub fn record_extract_revision(&self, source_id: &str, text: &str, method: &str) -> Result<i64> {
+        let revision: i64 = self.db.query_row(
+            "SELECT COALESCE(MAX(revision),0)+1 FROM extract_revisions WHERE source_id=?",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        self.db.execute(
+            "INSERT INTO extract_revisions VALUES(?,?,?,?,?)",
+            params![source_id, revision, text, method, now()],
+        )?;
+        Ok(revision)
+    }
+    /// Record a new immutable extraction revision and optionally make it the
+    /// ACTIVE searchable extraction (the extracts row plus both FTS indexes).
+    /// Activation bumps the case generation and marks dependent records stale so
+    /// downstream work cannot silently rely on the previous wording. Returns the
+    /// new revision number; callers decide supersession policy.
+    pub fn publish_extract(&mut self, source_id: &str, text: &str, method: &str, activate: bool) -> Result<i64> {
+        let name = self.source(source_id)?.name;
+        let revision = self.record_extract_revision(source_id, text, method)?;
+        if activate {
+            let tx = self.db.savepoint()?;
+            tx.execute(
+                "INSERT INTO extracts(source_id,text,revision,method) VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET text=excluded.text,revision=excluded.revision,method=excluded.method",
+                params![source_id, text, revision, method],
+            )?;
+            tx.execute("DELETE FROM source_fts WHERE source_id=?", [source_id])?;
+            tx.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)", params![source_id, name, text])?;
+            tx.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'", [])?;
+            tx.execute("UPDATE records SET stale=1 WHERE actor<>'processor' OR kind<>'transcript'", [])?;
+            tx.commit()?;
+        }
+        Ok(revision)
+    }
+    /// Immutable extraction history for a source, newest first.
+    pub fn extract_history(&self, source_id: &str) -> Result<Value> {
+        self.source(source_id)?;
+        let mut stmt = self.db.prepare(
+            "SELECT revision,method,created_at,length(text) FROM extract_revisions WHERE source_id=? ORDER BY revision DESC",
+        )?;
+        let rows = stmt.query_map([source_id], |r| {
+            Ok(json!({"revision":r.get::<_,i64>(0)?,"method":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?,"characters":r.get::<_,i64>(3)?}))
+        })?;
+        let revisions = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        let active: Option<i64> = self.db.query_row("SELECT revision FROM extracts WHERE source_id=?", [source_id], |r| r.get(0)).optional()?;
+        Ok(json!({"source_id":source_id,"active_revision":active,"revisions":revisions}))
+    }
+    /// Read lines of a historical extraction revision (immutable wording).
+    pub fn read_text_revision(&self, source_id: &str, revision: i64, start: usize, count: usize) -> Result<Value> {
+        self.source(source_id)?;
+        let text: String = self.db.query_row(
+            "SELECT text FROM extract_revisions WHERE source_id=? AND revision=?",
+            params![source_id, revision],
+            |r| r.get(0),
+        ).optional()?.context("Unknown extraction revision")?;
+        ensure!(start >= 1 && count > 0 && count <= 200, "Request 1–200 lines starting at line 1 or later");
+        let lines: Vec<_> = text.lines().collect();
+        ensure!(start <= lines.len().max(1), "Line outside revision");
+        let end = (start - 1 + count).min(lines.len());
+        Ok(json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].join("\n"),"historical":true}))
+    }
     pub fn import_files(&mut self, paths: &[String], production: &str) -> Result<Value> {
         ensure!(
             paths.len() <= 10000,
@@ -502,6 +580,10 @@ impl Case {
                     "INSERT INTO extracts(source_id,text,method) VALUES(?,?,'UTF-8 native text')",
                     params![source_id, text],
                 )?;
+                tx.execute(
+                    "INSERT INTO extract_revisions VALUES(?,?,?,?,?)",
+                    params![source_id, 1, text, "UTF-8 native text", now()],
+                )?;
             }
             tx.execute(
                 "INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)",
@@ -543,12 +625,12 @@ impl Case {
     }
     pub fn read_text(&self, source_id: &str, start: usize, count: usize) -> Result<Value> {
         self.verify_source(source_id)?;
-        let text: String = self
+        let (text, revision): (String, i64) = self
             .db
             .query_row(
-                "SELECT text FROM extracts WHERE source_id=?",
+                "SELECT text,revision FROM extracts WHERE source_id=?",
                 [source_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
             .context("No text extraction exists. Source is preserved; processing is pending.")?;
@@ -560,7 +642,7 @@ impl Case {
         ensure!(start <= lines.len().max(1), "Line outside source");
         let end = (start - 1 + count).min(lines.len());
         Ok(
-            json!({"source_id":source_id,"revision":1,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"locator":format!("evidence:{source_id}#L{start}-L{end}"),"truncated_long_lines":lines[start-1..end].iter().any(|s|s.chars().count()>2000)}),
+            json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"locator":format!("evidence:{source_id}#L{start}-L{end}"),"truncated_long_lines":lines[start-1..end].iter().any(|s|s.chars().count()>2000)}),
         )
     }
     pub fn search(&self, query: &str, offset: usize) -> Result<Value> {

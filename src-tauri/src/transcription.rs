@@ -294,20 +294,10 @@ pub fn publish(case: &mut Case, job: &Job, value: Value) -> Result<Value> {
             None,
             vec![job.source.id.clone()],
         )?;
-        let indexed: bool = case.db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM extracts WHERE source_id=?)",
-            [&job.source.id],
-            |r| r.get(0),
-        )?;
-        if !indexed {
-            case.db.execute("INSERT INTO extracts(source_id,text,method) VALUES(?,?,'Full local machine transcription; unreviewed')",params![job.source.id,text])?;
-            case.db
-                .execute("DELETE FROM source_fts WHERE source_id=?", [&job.source.id])?;
-            case.db.execute(
-                "INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)",
-                params![job.source.id, job.source.name, text],
-            )?;
-        }
+        // A completed full-recording transcription supersedes any older partial
+        // extraction: it always becomes the active searchable text, and the
+        // previous wording remains retrievable as an immutable revision.
+        case.publish_extract(&job.source.id, &text, "Full local machine transcription; unreviewed", true)?;
         case.db.execute(
             "UPDATE sources SET status=? WHERE id=?",
             params![
