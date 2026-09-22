@@ -288,6 +288,8 @@
       "commit": "37896dc",
       "followup_commit": "66d822d (same-source processor transcript changes invalidate automatic review; focused core regression passed)",
       "failure_state_commit": "9646465 (provider-paused automatic review reports failed; user stop/chat preemption remain paused; focused core regression passed)",
+      "partial_progress_commit": "f67ed97 (after two identical failed final submissions, saved checkpoint summary and gaps remain visible; unsupported failed final wording is discarded; focused core regression passed)",
+      "visual_coverage_commit": "4d0b2e1 (automatic task forces batches of registered discovery frames, one chosen per 20-second bin plus scene boundaries; only successful visual-observation receipts count; version 1 per-source coverage reports missing bins, scene counts, EOF and discovery gaps; synthetic production-path selection and provenance checks passed)",
       "environment": "Windows x64; packaged VisLex 0.3.0-dev4 remains running on the live case; code changes tested in the repository only",
       "evidence": "src-tauri/tests/discovery.rs, src-tauri/tests/core.rs, src-tauri/tests/dossier.rs, src-tauri/tests/master_v4.rs, src/App.test.tsx",
       "commands": [
@@ -298,7 +300,7 @@
         "git diff --cached --check -> exit 0"
       ],
       "implemented_scope": "Automatic review waits for discovery; failed discovery parent resumes from its published cursor and a linked child routes to that recovery; Windows resource error 1450 gets two delayed retries; memory-heavy workers serialize; Jobs groups old tool errors and counts active attention; dossier schema matches runtime inspection values; two identical failed tool submissions force a qualified finish; provider incomplete reason is allowlisted; automatic completion audit is idempotent; agent ledger bounds old read/visual detail with exact receipts retained.",
-      "unrun_checks": "No new packaged build or native interaction journey against these changes. Encrypted live-case backup and controlled restart await backup verification. No full-duration deterministic visual coverage ledger yet; no measured post-change token/latency/memory improvement; no synthetic medium/large tier run. R05 and R08-R23 remain subject to their own acceptance gates.",
+      "unrun_checks": "No new packaged build or native interaction journey against these changes. Encrypted live-case backup and controlled restart await backup verification. The deterministic visual-bin ledger has only synthetic checks, no full-duration packaged/live run; document-page and text-unit coverage remain unfinished. No measured post-change token/latency/memory improvement; no synthetic medium/large tier run. R05 and R08-R23 remain subject to their own acceptance gates.",
       "reviewer": "Self-review and focused production-path tests; no separate reviewer or live provider run. The terminal observed on this desktop is a separate Class Assistant cmd process launched by Explorer; running VisLex.exe has GUI subsystem and its worker uses CREATE_NO_WINDOW, so the reported terminal association remains unconfirmed.",
       "note": "Implemented slice, not release verification or legal-accuracy certification. The running case and old packaged executable were not modified or restarted."
     },
