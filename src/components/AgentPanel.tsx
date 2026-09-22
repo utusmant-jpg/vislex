@@ -247,7 +247,6 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           {turn.answer ? <>
             <Markdown className="answer" text={turn.answer} onSource={onSource} />
             <div className="message-meta">
-              <StatusPill state="unreviewed" label="AI assessment" small />
               <span className="meta-item">{(turn.input_tokens + turn.output_tokens).toLocaleString()} tokens</span>
               <div className="spacer" />
               <CopyButton text={turn.answer} label="Copy answer" small />

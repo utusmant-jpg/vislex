@@ -5,7 +5,7 @@ import AgentPanel from './AgentPanel';
 import type { Snapshot, Task } from '../types';
 
 const api = vi.hoisted(() => vi.fn());
-vi.mock('../bridge', () => ({ api, native: true }));
+vi.mock('../bridge', () => ({ api, native: true, citationParts: () => null }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => undefined }));
 
 function task(id: string, conversation: string): Task {
@@ -44,5 +44,12 @@ describe('chat composer interaction', () => {
     expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);
     view.rerender(<AgentPanel snapshot={snapshot([], [{ ...job, status: 'failed', error: 'Synthetic error' }])} selection={null} conversationId={null} refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('shows a completed answer without a repeated AI assessment badge', () => {
+    const completed = { ...task('answered', 'current-chat'), status: 'complete', answer: 'The report describes three knocks.' };
+    panel(snapshot([completed]), 'current-chat');
+    expect(screen.getByText('The report describes three knocks.')).toBeTruthy();
+    expect(screen.queryByText('AI assessment')).toBeNull();
   });
 });

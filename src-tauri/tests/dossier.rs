@@ -98,7 +98,10 @@ fn citation_free_completion_is_explicitly_unreviewed() {
     let answer: String =
         c.db.query_row("SELECT answer FROM tasks WHERE id=?", [&t], |r| r.get(0))
             .unwrap();
-    assert!(answer.contains("does not establish an evidentiary finding"));
+    assert_eq!(answer,"A definitive claim without evidence");
+    let completion=dossier::view(&c,&t).unwrap()["completion"].clone();
+    assert_eq!(completion["outcome"],"unreviewed");
+    assert!(completion["gaps"].as_array().unwrap().iter().any(|gap|gap.as_str().unwrap_or("").contains("No source citations supplied")));
     assert!(c.records().unwrap().is_empty());
 }
 #[test]

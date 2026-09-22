@@ -436,6 +436,9 @@ fn cited_answers_require_review_and_are_saved_for_followups() {
     let records=c.records().unwrap();assert_eq!(records.len(),1);assert_eq!(records[0].review,"unreviewed");assert_eq!(records[0].actor,"agent");
     assert!(records[0].content.contains("Not independently corroborated"));
     let snapshot=c.snapshot().unwrap();assert_eq!(snapshot["tasks"][0]["input_tokens"],200);
+    let reply=snapshot["tasks"][0]["answer"].as_str().unwrap();
+    assert!(reply.contains("The witness reports a blue bag."));
+    assert!(!reply.contains("Gaps and limitations")&&!reply.contains("AI-generated")&&!reply.contains("Not independently corroborated"),"Routine review details belong in the saved record, not every chat reply");
 }
 
 #[test]
@@ -769,7 +772,10 @@ fn visual_requests_are_steered_to_frames_after_text_retrieval_and_disclose_gaps(
     deliver_tool(&mut c,&task,"checkpoint_review",json!({"summary":"Text read; visual question remains unanswered.","citations":[],"gaps":["No frames inspected"],"next_steps":["Inspect relevant frames"]}));
     let next=agent::prepare_request(&mut c,&task).unwrap();assert_eq!(next.body["tool_choice"]["name"],"inspect_video_interval");
     let final_result=agent::execute_tool(&mut c,&task,"finish_task",&json!({"answer":"Only text was available in this diagnostic.","citations":[],"gaps":[]})).unwrap();assert_eq!(final_result["status"],"complete");
-    assert!(c.snapshot().unwrap()["tasks"][0]["answer"].as_str().unwrap().contains("No frames visually inspected"));
+    let reply=c.snapshot().unwrap()["tasks"][0]["answer"].as_str().unwrap().to_string();
+    assert!(!reply.contains("Gaps and limitations")&&!reply.contains("No frames visually inspected"));
+    let completion:serde_json::Value=serde_json::from_str(&c.meta(&format!("completion:{task}")).unwrap().unwrap()).unwrap();
+    assert!(completion["gaps"].as_array().unwrap().iter().any(|gap|gap.as_str().unwrap_or("").contains("No frames visually inspected")),"The detailed issue remains available on request");
 }
 
 #[test]
