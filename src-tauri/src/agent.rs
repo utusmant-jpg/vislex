@@ -33,6 +33,7 @@ pub fn tools(mode: &str) -> Vec<Value> {
         tool("read_tool_result","Reopen a complete earlier tool result from this task when it has been abbreviated in API context. Uses the function call_id shown in the archive notice. Returns explicit character pagination without changing the original saved receipt.",json!({"call_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"count":{"type":"integer","minimum":1,"maximum":12000}}),vec!["call_id","offset","count"]),
         tool("inspect_artifact_image","Reopen an already-created frame, crop, or scanned page for visual inspection without reprocessing the original. Older images may be omitted from the current API context; use this tool to revisit them. Requires image permission and source ownership.",json!({"source_id":{"type":"string"},"artifact_id":{"type":"string"}}),vec!["source_id","artifact_id"]),
         tool("browse_video_overview","Browse paginated timestamped discovery thumbnails. Generation is not perception; use inspect_artifact_image to view selected frames, then inspect_video_interval to verify surrounding action.",json!({"source_id":{"type":"string"},"start_seconds":{"type":"number","minimum":0},"end_seconds":{"type":"number"},"offset":{"type":"integer","minimum":0}}),vec!["source_id","start_seconds","end_seconds","offset"]),
+        tool("inspect_automatic_video_batch","Attach the next saved video-discovery frames needed for automatic 20-second-bin and scene-boundary observation. Only available to the automatic task. Record what each image actually shows; samples do not prove intervening activity.",json!({}),vec![]),
         tool("read_speaker_annotations","Read versioned human corrections for an immutable speaker-turn artifact. Display labels are not verified person identities.",json!({"source_id":{"type":"string"},"artifact_id":{"type":"string"}}),vec!["source_id","artifact_id"]),
         tool("video_discovery_status","Read background visual index status and sampling gaps. Completed chunks are usable before the recording finishes.",json!({"source_id":{"type":"string"}}),vec!["source_id"]),
         tool("search_passages","Find matching lines with surrounding context across extracted sources AND saved working records/transcripts. Terms use OR, not implicit AND. Returns line positions, source or record IDs, and explicit pagination. Search short distinctive words, names, or action stems; transcript text may misrecognize them. Saved AI findings are leads, not independent evidence.",json!({"terms":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12},"offset":{"type":"integer","minimum":0}}),vec!["terms","offset"]),
@@ -528,6 +529,19 @@ fn execute_tool_prepared(case: &mut Case, task: &str, name: &str, args: &Value, 
             let (owner,mime,_,metadata)=crate::processing::artifact(case,artifact)?;
             ensure!(owner==source && mime=="image/jpeg","Artifact must be an image owned by this source");
             json!({"source_id":source,"artifact_id":artifact,"locator":format!("evidence:{source}#artifact:{artifact}"),"metadata":metadata,"status":"Image attached for visual inspection"})
+        }
+        "inspect_automatic_video_batch" => {
+            ensure!(settings.allow_images && case.meta(&format!("automatic_task:{task}"))?.as_deref()==Some("true"),"Automatic visual review or image permission is unavailable");
+            let frames=crate::automatic::next_visual_batch(case,task)?;
+            ensure!(!frames.is_empty(),"No saved discovery frames remain to inspect");
+            for frame in &frames {
+                let source=frame["source_id"].as_str().context("Missing batch source")?;
+                assert_source(case,source,&ids)?;
+                let artifact=frame["artifact_id"].as_str().context("Missing batch artifact")?;
+                let (owner,mime,_,_)=crate::processing::artifact(case,artifact)?;
+                ensure!(owner==source && mime=="image/jpeg","Batch frame provenance changed");
+            }
+            json!({"frames":frames,"status":"Frames attached for visual observation"})
         }
         "browse_video_overview" => {let source=str_arg(args,"source_id")?;assert_source(case,source,&ids)?;crate::discovery::browse(case,source,"video_overview",args["start_seconds"].as_f64().context("Missing start")?,args["end_seconds"].as_f64().context("Missing end")?,args["offset"].as_u64().unwrap_or(0),"")?},
         "read_speaker_annotations" => {let source=str_arg(args,"source_id")?;assert_source(case,source,&ids)?;crate::speaker_annotations::read(case,source,str_arg(args,"artifact_id")?)?},
@@ -1056,10 +1070,14 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
     let repeated_failed_submission:bool=case.db.query_row(
         "SELECT EXISTS(SELECT 1 FROM actions WHERE task_id=? AND status='failed' AND name!='finish_task' GROUP BY name,input HAVING COUNT(*)>=2)",
         [task],|r|r.get(0))?;
+    let repeated_visual_failure:bool=case.db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM actions WHERE task_id=? AND name='record_visual_observations' AND status='failed' GROUP BY input HAVING COUNT(*)>=2)",
+        [task],|r|r.get(0))?;
     let active_prompt:String=case.db.query_row("SELECT prompt FROM tasks WHERE id=?",[task],|r|r.get(0))?;
     let step:i64=case.db.query_row("SELECT step FROM tasks WHERE id=?",[task],|r|r.get(0))?;
     let mut input: Vec<Value> = serde_json::from_str(&history)?;
     let visual_review=input.last().is_some_and(|v|v["type"]=="local_image");
+    ensure!(!(visual_review && repeated_visual_failure),"Visual observation validation failed twice. Saved image receipts remain available; continue in a new task from the saved coverage state.");
     if visual_review {
         input=input.into_iter().rev().take_while(|v|v["type"]=="local_image").collect();
         input.reverse();
@@ -1204,8 +1222,10 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
     else {
         let asks_visual=["visually","keyframe","visual narrative","what can you see"].iter().any(|term|active_prompt.to_lowercase().contains(term));
         let missing_visual=ledger["sources"].as_array().is_some_and(|sources|sources.iter().any(|s|s["kind"]=="video"&&s["visual_observations"].as_array().is_some_and(Vec::is_empty)));
+        let automatic_frames=case.meta(&format!("automatic_task:{task}"))?.as_deref()==Some("true") && settings.allow_images && !crate::automatic::next_visual_batch(case,task)?.is_empty();
         let forced = if repeated_failed_submission || progress.duplicate_reads>=6 || progress.checkpoints_without_progress>=2 && progress.duplicate_reads>=4 {Some("finish_task")}
             else if needs_checkpoint {Some("checkpoint_review")}
+            else if automatic_frames {Some("inspect_automatic_video_batch")}
             else if asks_visual && missing_visual && settings.allow_images && mode!="ask" && ledger["retrievals_since_visual"].as_i64().unwrap_or(0)>=6 {Some("inspect_video_interval")}
             else {None};
         if let Some(name)=forced {
@@ -1213,6 +1233,7 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
             let directive=match name {
                 "checkpoint_review"=>"Save a concise source-cited partial result now, preserving useful findings, uncertain quotes, all unanswered parts and next steps. This prevents context loss; it is not a final answer. Do not invent findings from ledger metadata.",
                 "inspect_video_interval"=>"The requested visual review is still missing. Inspect a relevant source-relative interval from an as-yet-uninspected video in the ledger, using transcript clues. Do not keep rereading text instead of looking at frames.",
+                "inspect_automatic_video_batch"=>"Inspect this next bounded set of discovery frames, then record an individual honest visual observation for each image. Continue with further batches until no required saved frame remains. This is sampled coverage, not continuous viewing.",
                 _=>"Repeated retrieval has stopped adding evidence. Deliver the supported findings already gathered now, answer each requested part to the extent supported, and explicitly list incomplete visual/source coverage and uncertain machine quotations. Do not claim exhaustive review. Narrow unsupported assertions rather than loop.",
             };
             body["instructions"]=json!(format!("{instructions}\nCURRENT EXECUTION REQUIREMENT: {directive}"));
@@ -1349,12 +1370,12 @@ pub fn receive_prepared(case: &mut Case, task: &str, transmission: &str, respons
         if ["inspect_image", "inspect_artifact_image"].contains(&name) && status == "complete" {
             history.push(json!({"type":"local_image","source_id":args["source_id"],"artifact_id":result["artifact_id"]}));
         }
-        if ["inspect_video_interval", "inspect_document_page", "inspect_document_pages"].contains(&name)
+        if ["inspect_video_interval", "inspect_document_page", "inspect_document_pages", "inspect_automatic_video_batch"].contains(&name)
             && status == "complete"
         {
             if let Some(frames) = result["frames"].as_array() {
                 for frame in frames {
-                    history.push(json!({"type":"local_image","source_id":args["source_id"],"artifact_id":frame["artifact_id"]}));
+                    history.push(json!({"type":"local_image","source_id":if name=="inspect_automatic_video_batch" {&frame["source_id"]} else {&args["source_id"]},"artifact_id":frame["artifact_id"]}));
                 }
             }
         }

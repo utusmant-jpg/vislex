@@ -48,6 +48,36 @@ fn automatic_review_waits_for_discovery_and_restarts_when_inputs_change() {
     let tools=agent::tools("ask");assert!(tools.iter().any(|t|t["name"]=="browse_video_overview"));
 }
 #[test]
+fn automatic_video_batch_selects_each_twenty_second_bin_and_scene_change_once() {
+    let (_dir,mut c,s)=setup();
+    let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let run=queued["jobs"][1].as_str().unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",rusqlite::params![json!({"last_chunk":{"eof":true,"last_decoded_seconds":45.0},"has_gaps":false}).to_string(),run]).unwrap();
+    for (seconds,scene) in [(0.,false),(5.,false),(20.,false),(30.,true),(40.,false)] {
+        let artifact=format!("frame-{seconds:.0}");
+        let relative=format!("artifacts/{artifact}.jpg");
+        let path=c.root.join(&relative);std::fs::write(&path,b"synthetic jpeg fixture bytes").unwrap();
+        c.db.execute("INSERT INTO artifacts VALUES(?,?,?,'image/jpeg',?,?,?)",rusqlite::params![artifact,s,evidence_desk::case::file_hash(&path).unwrap(),relative,json!({"source_relative_seconds":seconds}).to_string(),"now"]).unwrap();
+        c.db.execute("INSERT INTO discovery_samples VALUES(?,?,?,?,?,?,?)",rusqlite::params![run,s,"video_overview",seconds,artifact,json!({"scene_boundary":scene}).to_string(),""]).unwrap();
+    }
+    let mut settings=c.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.allow_images=true;settings.model="synthetic".into();c.save_settings(settings).unwrap();
+    let task=agent::start(&mut c,"Automatic visual review","investigate",vec![s.clone()],vec![],0.).unwrap();
+    c.set_meta(&format!("automatic_task:{task}"),"true").unwrap();
+    assert_eq!(agent::prepare_request(&mut c,&task).unwrap().body["tool_choice"]["name"],"inspect_automatic_video_batch");
+    assert_eq!(agent::execute_tool(&mut c,&task,"inspect_automatic_video_batch",&json!({})).unwrap()["frames"].as_array().unwrap().len(),4);
+    let first=evidence_desk::automatic::next_visual_batch(&c,&task).unwrap();
+    let ids=first.iter().map(|frame|frame["artifact_id"].as_str().unwrap()).collect::<Vec<_>>();
+    assert_eq!(ids,vec!["frame-0","frame-20","frame-40","frame-30"]);
+    c.db.execute("INSERT INTO actions VALUES('observation',?,'record_visual_observations','{}',?,'complete','now')",rusqlite::params![task,json!({"observations":[{"artifact_id":"frame-0"},{"artifact_id":"frame-30"}]}).to_string()]).unwrap();
+    let remaining=evidence_desk::automatic::next_visual_batch(&c,&task).unwrap();
+    assert_eq!(remaining.iter().map(|frame|frame["artifact_id"].as_str().unwrap()).collect::<Vec<_>>(),vec!["frame-20","frame-40"]);
+    let partial=evidence_desk::automatic::visual_coverage(&c,&task).unwrap();
+    assert_eq!(partial["version"],1);assert_eq!(partial["complete"],false);
+    assert_eq!(partial["sources"][0]["missing_bins_first_100"],json!([2]));
+    c.db.execute("INSERT INTO actions VALUES('observation-2',?,'record_visual_observations','{}',?,'complete','now')",rusqlite::params![task,json!({"observations":[{"artifact_id":"frame-20"},{"artifact_id":"frame-40"}]}).to_string()]).unwrap();
+    assert_eq!(evidence_desk::automatic::visual_coverage(&c,&task).unwrap()["complete"],true);
+}
+#[test]
 fn failed_discovery_run_retries_from_published_cursor_without_replaying_chunks() {
     let (_dir,mut c,s)=setup();let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
     let run=queued["jobs"][0].as_str().unwrap();

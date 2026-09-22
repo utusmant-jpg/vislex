@@ -3,6 +3,79 @@ use crate::{case::{Case,id,now,digest},processing,agent};
 use anyhow::Result;
 use rusqlite::{params,OptionalExtension};
 use serde_json::{json,Value};
+use std::collections::{BTreeMap,HashSet};
+
+/// Frames still requiring model observation in the automatic review. Discovery
+/// thumbnails are selected once per 20-second bin plus every scene boundary;
+/// an inspection only counts after record_visual_observations succeeds.
+pub fn next_visual_batch(case:&Case,task:&str)->Result<Vec<Value>> {
+    crate::discovery::initialize(case)?;
+    let mut observed=HashSet::new();
+    let mut actions=case.db.prepare("SELECT output FROM actions WHERE task_id=? AND name='record_visual_observations' AND status='complete'")?;
+    for row in actions.query_map([task],|r|r.get::<_,String>(0))? {
+        let output:Value=serde_json::from_str(&row?)?;
+        if let Some(items)=output["observations"].as_array() {
+            for item in items {if let Some(id)=item["artifact_id"].as_str(){observed.insert(id.to_string());}}
+        }
+    }
+    let mut required=Vec::new();
+    for source in case.sources()?.into_iter().filter(|source|source.kind=="video"&&!source.restricted) {
+        let run:Option<String>=case.db.query_row("SELECT id FROM processing_jobs WHERE source_id=? AND kind='video_overview_index' AND status IN ('complete','failed','interrupted') ORDER BY rowid DESC LIMIT 1",[&source.id],|r|r.get(0)).optional()?;
+        let Some(run)=run else {continue};
+        let mut samples=case.db.prepare("SELECT artifact_id,seconds,metadata FROM discovery_samples WHERE run_id=? AND kind='video_overview' ORDER BY seconds,artifact_id")?;
+        let mut bins:BTreeMap<u64,Value>=BTreeMap::new();
+        let mut scenes=Vec::new();
+        for row in samples.query_map([&run],|r|Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?,r.get::<_,String>(2)?)))? {
+            let (artifact,seconds,raw)=row?;
+            if !seconds.is_finite()||seconds<0. {continue}
+            let metadata:Value=serde_json::from_str(&raw)?;
+            let frame=json!({"source_id":source.id,"artifact_id":artifact,"seconds":seconds,"run_id":run,"scene_boundary":metadata["scene_boundary"]==true});
+            bins.entry((seconds/20.).floor() as u64).or_insert_with(||frame.clone());
+            if metadata["scene_boundary"]==true {scenes.push(frame);}
+        }
+        required.extend(bins.into_values());
+        required.extend(scenes);
+    }
+    let mut seen=HashSet::new();
+    Ok(required.into_iter().filter(|frame|frame["artifact_id"].as_str().is_some_and(|id|seen.insert(id.to_string())&&!observed.contains(id))).take(24).collect())
+}
+/// Versioned, receipt-derived visual coverage. End time is the last decoded
+/// presentation timestamp, so it is an estimate of the recording's playable
+/// extent rather than a claim of continuous perception.
+pub fn visual_coverage(case:&Case,task:&str)->Result<Value> {
+    crate::discovery::initialize(case)?;
+    let mut observed=HashSet::new();
+    let mut actions=case.db.prepare("SELECT output FROM actions WHERE task_id=? AND name='record_visual_observations' AND status='complete'")?;
+    for row in actions.query_map([task],|r|r.get::<_,String>(0))? {
+        let output:Value=serde_json::from_str(&row?)?;
+        for item in output["observations"].as_array().into_iter().flatten() {
+            if let Some(id)=item["artifact_id"].as_str(){observed.insert(id.to_string());}
+        }
+    }
+    let mut sources=Vec::new();let mut all_complete=true;
+    for source in case.sources()?.into_iter().filter(|source|source.kind=="video"&&!source.restricted) {
+        let run:Option<(String,String,String)>=case.db.query_row("SELECT id,status,result FROM processing_jobs WHERE source_id=? AND kind='video_overview_index' ORDER BY rowid DESC LIMIT 1",[&source.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let Some((run,status,raw))=run else {all_complete=false;sources.push(json!({"source_id":source.id,"source_sha256":source.sha256,"state":"discovery_missing"}));continue};
+        let config:Value=serde_json::from_str(&raw)?;
+        let end=config["last_chunk"]["last_decoded_seconds"].as_f64();
+        let eof=config["last_chunk"]["eof"]==true && status=="complete";
+        let expected=end.filter(|end|end.is_finite()&&*end>=0.).map(|end|(end/20.).floor() as u64+1);
+        let mut bins=HashSet::new();let mut scene_total=0u64;let mut scene_observed=0u64;
+        let mut samples=case.db.prepare("SELECT artifact_id,seconds,metadata FROM discovery_samples WHERE run_id=? AND kind='video_overview'")?;
+        for row in samples.query_map([&run],|r|Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?,r.get::<_,String>(2)?)))? {
+            let (artifact,seconds,raw)=row?;
+            if !seconds.is_finite()||seconds<0. {continue}
+            let metadata:Value=serde_json::from_str(&raw)?;
+            if metadata["scene_boundary"]==true {scene_total+=1;if observed.contains(&artifact){scene_observed+=1;}}
+            if observed.contains(&artifact){bins.insert((seconds/20.).floor() as u64);}
+        }
+        let missing=expected.map(|count|(0..count).filter(|bin|!bins.contains(bin)).collect::<Vec<_>>()).unwrap_or_default();
+        let complete=eof && expected.is_some() && missing.is_empty() && scene_total==scene_observed && config["has_gaps"]!=true;
+        if !complete {all_complete=false;}
+        sources.push(json!({"source_id":source.id,"source_sha256":source.sha256,"discovery_run_id":run,"discovery_status":status,"last_decoded_seconds":end,"eof":eof,"expected_bins":expected,"observed_bins":bins.len(),"missing_bin_count":missing.len(),"missing_bins_first_100":missing.into_iter().take(100).collect::<Vec<_>>(),"scene_frames":scene_total,"scene_frames_observed":scene_observed,"discovery_has_gaps":config["has_gaps"]==true,"state":if complete{"sampled_bins_observed"}else{"partial"}}));
+    }
+    Ok(json!({"version":1,"task_id":task,"interval_seconds":20,"complete":all_complete,"sources":sources,"meaning":"Only recorded AI observations of sampled frames count. Last decoded time estimates playable extent; neither sampled-bin coverage nor scene-frame coverage proves continuous human review."}))
+}
 
 pub fn enqueue(case:&mut Case)->Result<()> {
     crate::discovery::enqueue_missing(case)?;
@@ -105,11 +178,14 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
                 // completion-only rule.
                 let dispatched=case.meta(&format!("auto_review_inventory:{task}"))?.or_else(||case.meta("auto_review_fingerprint").ok().flatten());
                 if dispatched.as_deref()==Some(fingerprint.as_str()) {
+                    let coverage=visual_coverage(case,&task)?;
+                    let complete=coverage["complete"]==true;
+                    case.set_meta(&format!("auto_visual_coverage:{task}"),&coverage.to_string())?;
                     if case.meta("auto_review_fingerprint")?.as_deref()!=Some(fingerprint.as_str()) {
                         case.set_meta("auto_review_fingerprint",&fingerprint)?;
-                        case.audit("automatic_case_review_completed",json!({"task":task,"inventory":fingerprint}))?;
+                        case.audit(if complete{"automatic_case_review_completed"}else{"automatic_case_review_partial"},json!({"task":task,"inventory":fingerprint,"visual_coverage":coverage}))?;
                     }
-                    case.set_meta("auto_review_state","complete")?;
+                    case.set_meta("auto_review_state",if complete{"complete"}else{"partial"})?;
                     return Ok(None);
                 }
                 // Completed against an older inventory that has since changed:
@@ -167,11 +243,14 @@ pub fn status(case:&Case)->Result<Value> {
         Some("complete")=>{
             let dispatched=task.as_ref().and_then(|task|case.meta(&format!("auto_review_inventory:{task}")).ok().flatten().or_else(||case.meta("auto_review_fingerprint").ok().flatten()));
             let current=case.sources().and_then(|sources|review_input_stamp(case,&sources.into_iter().filter(|source|!source.restricted).map(|source|source.id).collect::<Vec<_>>())).ok();
-            if dispatched.is_some() && dispatched==current {"complete"} else {"planned"}
+            if dispatched.is_some() && dispatched==current {
+                let coverage=task.as_ref().and_then(|task|case.meta(&format!("auto_visual_coverage:{task}")).ok().flatten()).and_then(|raw|serde_json::from_str::<Value>(&raw).ok()).or_else(||task.as_ref().and_then(|task|visual_coverage(case,task).ok()));
+                if coverage.as_ref().is_some_and(|coverage|coverage["complete"]==true) {"complete"} else {"partial"}
+            } else {"planned"}
         }
         _=>"planned",
     };
-    Ok(json!({"files":counts.0,"prepared":counts.1,"pending":counts.2,"failed":counts.3,"review_task":task,"review_state":review_state,"note":"Preparation, OCR, transcription and AI review have separate coverage. AI review states: planned/running/paused/failed/complete; the completion fingerprint is written only after observed successful completion, so a created task never counts as completed analysis."}))
+    Ok(json!({"files":counts.0,"prepared":counts.1,"pending":counts.2,"failed":counts.3,"review_task":task,"review_state":review_state,"note":"Preparation, OCR, transcription and AI review have separate coverage. A partial review finished with recorded gaps. Sampled visual bins never imply continuous or human review."}))
 }
 /// Interactive chats wait for the initial file preparation and automatic review.
 /// A failed processor or review leaves a visible gap, so users can investigate it.
