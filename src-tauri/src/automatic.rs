@@ -67,9 +67,17 @@ fn review_input_stamp(case:&Case,source_ids:&[String])->Result<String> {
         let (source,kind,job)=row?;
         if allowed.contains(source.as_str()) {latest.entry(source).or_default().entry(kind).or_insert(job);}
     }
+    let mut transcripts:std::collections::HashMap<String,Vec<String>>=std::collections::HashMap::new();
+    for record in case.records()?.into_iter().filter(|record|record.actor=="processor" && record.kind=="transcript") {
+        let stamp=format!("{}:{}:{}",record.id,record.revision,digest(record.content.as_bytes()));
+        for source in record.dependencies {
+            if allowed.contains(source.as_str()) {transcripts.entry(source).or_default().push(stamp.clone());}
+        }
+    }
     let mut inputs=Vec::with_capacity(source_ids.len());
     for source in case.sources()?.into_iter().filter(|source|allowed.contains(source.id.as_str())) {
-        inputs.push(format!("{}:{}:{}:{}",source.id,source.sha256,revisions.get(&source.id).copied().unwrap_or(0),serde_json::to_string(&latest.get(&source.id))?));
+        let mut source_transcripts=transcripts.remove(&source.id).unwrap_or_default();source_transcripts.sort();
+        inputs.push(format!("{}:{}:{}:{}:{}",source.id,source.sha256,revisions.get(&source.id).copied().unwrap_or(0),serde_json::to_string(&latest.get(&source.id))?,serde_json::to_string(&source_transcripts)?));
     }
     anyhow::ensure!(inputs.len()==source_ids.len(),"Automatic review inventory changed");
     inputs.sort();

@@ -943,6 +943,8 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
     let reviewed_ids=evidence_desk::agent::case_scope(&c).unwrap().0;
     assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_some());
+    c.write_record(None,0,"Late machine transcript","transcript","New synthetic words","processor","late processing",None,vec![reviewed_ids[0].clone()]).unwrap();
+    assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_none(),"New transcript on the same source must invalidate reusable AI context");
     c.publish_extract(&reviewed_ids[0],"Revised synthetic extraction", "test",true).unwrap();
     assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_none(),"Changed extraction must invalidate reusable AI context");
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"planned");
