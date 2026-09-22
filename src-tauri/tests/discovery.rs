@@ -63,7 +63,9 @@ fn automatic_video_batch_selects_each_twenty_second_bin_and_scene_change_once() 
     let mut settings=c.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.allow_images=true;settings.model="synthetic".into();c.save_settings(settings).unwrap();
     let task=agent::start(&mut c,"Automatic visual review","investigate",vec![s.clone()],vec![],0.).unwrap();
     c.set_meta(&format!("automatic_task:{task}"),"true").unwrap();
-    assert_eq!(agent::prepare_request(&mut c,&task).unwrap().body["tool_choice"]["name"],"inspect_automatic_video_batch");
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert_eq!(request.body["tool_choice"]["name"],"inspect_automatic_video_batch");
+    assert_eq!(request.body["tools"].as_array().unwrap().len(),1);
     assert_eq!(agent::execute_tool(&mut c,&task,"inspect_automatic_video_batch",&json!({})).unwrap()["frames"].as_array().unwrap().len(),4);
     let first=evidence_desk::automatic::next_visual_batch(&c,&task).unwrap();
     let ids=first.iter().map(|frame|frame["artifact_id"].as_str().unwrap()).collect::<Vec<_>>();

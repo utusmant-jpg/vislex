@@ -745,6 +745,11 @@ fn repeated_successful_reads_checkpoint_then_synthesize_instead_of_crashing() {
     assert!(deliver_tool(&mut c,&task,"checkpoint_review",checkpoint));
     let request=agent::prepare_request(&mut c,&task).unwrap();
     assert_eq!(request.body["tool_choice"]["name"],"finish_task");
+    assert_eq!(request.body["tools"].as_array().unwrap().len(),1);
+    let full_schema_bytes=serde_json::to_vec(&agent::tools("investigate")).unwrap().len();
+    let forced_schema_bytes=serde_json::to_vec(&request.body["tools"]).unwrap().len();
+    assert!(forced_schema_bytes<full_schema_bytes/4);
+    println!("full tool schema bytes: {full_schema_bytes}; forced tool schema bytes: {forced_schema_bytes}");
     assert!(request.body["input"].to_string().contains("blue bag"));
     assert!(request.body["input"].to_string().contains("Durable review ledger"));
     let args=json!({"answer":"The witness reports a blue bag.","citations":[format!("evidence:{sid}#L1-L1")],"gaps":["No independent corroboration"]});
