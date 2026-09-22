@@ -117,8 +117,20 @@ Statuses: PASS / FAIL / BLOCKED / NOT RUN.
 - `cargo test`: PASS 115/115 across 9 suites.
 - `cargo check --features desktop`: PASS, no warnings.
 - Sandbox suite (21 worker tests): NOT RUN — requires packaged worker build.
-- Worker/benchmark python suites: NOT RUN this session.
+- Worker/benchmark python suites: NOT RUN locally — see CI note below.
 - Live-provider tests: NOT RUN (synthetic responses only).
+
+## CI status: BLOCKED (external, pre-existing)
+
+GitHub Actions runs on `main` fail in ~4–5 seconds with zero executed steps
+and `runner_id: 0` (e.g. run 35667628778 on the docs-only commit `5fcff7d`,
+before any implementation work; run 35671380165 after). No checkout, build or
+test step ever starts — the Windows runner is not being provisioned for this
+private repository (Actions spending limit / Windows-runner billing is the
+usual cause). Resolving this requires the repository owner's account-level
+action; the workflow file itself is unchanged and sound. Until then, the
+authoritative verification for this work is the local Windows run above
+(same platform the workflow targets).
 
 ## Next dependency-ready work
 
