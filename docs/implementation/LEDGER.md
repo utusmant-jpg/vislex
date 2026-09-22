@@ -87,10 +87,34 @@ Statuses: PASS / FAIL / BLOCKED / NOT RUN.
   no duplicate; resume semantics; completion writes once; changed inventory
   plans a fresh review.
 
+### VL-008/009 — structural claim-support coverage — PASS (bounded scope)
+- Replaced the brittle verbatim-proposition gate in `dossier::completion` with
+  sentence-level structural coverage: material factual sentences must map to an
+  assessed claim (stopword-filtered content overlap) or cite dossier-mapped
+  evidence; otherwise they stay visibly qualified as gaps. Qualifier sentences
+  pass without mapping. Full structured-assertion-block compilation remains
+  future work; this delivers the plan's no-unrepresented-assertions invariant
+  without the verbatim gate.
+- Tests: 3 new coverage regressions (dossier suite 28/28).
+
+### VL-010 — extraction/full-transcript revision consistency — PASS
+- Defect: a completed full transcription inserted text only when no extract
+  existed (first-wins), so an older partial extraction permanently remained the
+  implied active searchable text.
+- Fix: schema 6 adds append-only `extract_revisions`; `publish_extract`
+  centralizes activation (extracts row = ACTIVE pointer, FTS refresh,
+  generation bump, dependent staleness). Full transcriptions always supersede;
+  partials never clobber an active full text; historical wording is retrievable
+  via `read_text_revision`/`extract_history` (+ desktop commands); `read_text`
+  reports the real active revision; text locators validate any recorded
+  revision; migration snapshots and backfills.
+- Tests: `extract_revisions.rs` (4) + migration expectations updated to v6.
+  All suites green (115 tests).
+
 ## Verification state at last commit
 
 - `npm run build`: PASS. `npm test`: PASS 20/20.
-- `cargo test`: PASS 108/108 across 8 suites.
+- `cargo test`: PASS 115/115 across 9 suites.
 - `cargo check --features desktop`: PASS, no warnings.
 - Sandbox suite (21 worker tests): NOT RUN — requires packaged worker build.
 - Worker/benchmark python suites: NOT RUN this session.
@@ -98,8 +122,10 @@ Statuses: PASS / FAIL / BLOCKED / NOT RUN.
 
 ## Next dependency-ready work
 
-1. VL-008/009 — structured factual-assertion support coverage (replace the
-   verbatim-proposition gate in dossier completion).
-2. VL-010 — extraction/full-transcript revision consistency (active index
-   revision; historical citations stay resolvable).
-3. Security/untrusted-rendering audit; performance baselines (VL-011+).
+1. Security/untrusted-rendering audit.
+2. Performance baselines before optimizing (VL-011 staging reuse needs
+   measurement first; sandbox suite must run with the packaged worker).
+3. VL-012 scheduler/cancellation; VL-022/023 background indexing;
+   VL-019-021 snapshot/pagination; VL-024 transcript segmentation.
+4. Full VL-008/009 structured-assertion-block compilation if deeper support
+   coverage is needed beyond the sentence-coverage gate.
