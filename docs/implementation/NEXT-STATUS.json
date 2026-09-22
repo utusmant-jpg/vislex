@@ -250,8 +250,16 @@
         "git diff --check -> exit 0"
       ],
       "reviewer": "Self-review only: checked per-chat task ownership, source-scope guards on archived turns, old failed-job supersession, review input revision binding, test-mode-only bypass, and immutable originals. No separate reviewer used.",
-      "unrun_checks": "Live provider timing/token measurements and a packaged Windows UI journey with two simultaneous network chats NOT RUN; hidden console confirmed by Windows subsystem compile, not by launching a new packaged exe. Native acceptance was not rerun against this commit. Performance improvement is architectural and test-bounded, not measured p95 or billing proof.",
-      "note": "New chats can run concurrently after active file preparation/automatic review settles; failures release the chat gate. Follow-ups carry a bounded prior answer/progress and retain exact history/receipts for on-demand retrieval. New chats receive only a current, bounded automatic review context keyed to source hashes, active extraction revisions, and latest completed preparation jobs. The former three unrelated full-answer summaries were removed. Debug Windows app uses the Windows subsystem to suppress its console. Extra historical work entries were moved from tasks to additional_work so the 26-task plan check works again. R05/R08/R16/R19 remain pending or implemented per their existing acceptance evidence; this work does not certify them."
+      "unrun_checks": "Live provider timing/token measurements and a packaged Windows UI journey with two simultaneous network chats NOT RUN; hidden console confirmed by Windows subsystem compile, not by launching a new packaged exe. Native acceptance was not rerun against this commit. Performance improvement is architectural and test-bounded, not measured p95 or billing proof. Packaged startup smoke attempt was rejected by automatic approval review (Start-Process hidden with temporary WebView CDP port), stated reason: blocked by policy; no live startup result.",
+      "note": "New chats can run concurrently after active file preparation/automatic review settles; failures release the chat gate. Follow-ups carry a bounded prior answer/progress and retain exact history/receipts for on-demand retrieval. New chats receive only a current, bounded automatic review context keyed to source hashes, active extraction revisions, and latest completed preparation jobs. The former three unrelated full-answer summaries were removed. Debug Windows app uses the Windows subsystem to suppress its console. Extra historical work entries were moved from tasks to additional_work so the 26-task plan check works again. R05/R08/R16/R19 remain pending or implemented per their existing acceptance evidence; this work does not certify them.",
+      "dev_build": {
+        "path": "artifacts/VisLex 0.3.0-dev3/VisLex.exe",
+        "sha256": "f3e887485756f9c47af3ec4c553e941894f040cd3207464db009d9efc3a93e25",
+        "bytes": 32002048,
+        "command": "npm exec tauri build -- --debug --features desktop --no-bundle; scripts/package-development.ps1 -OutputName VisLex 0.3.0-dev3 -> both exit 0",
+        "pe_subsystem": "2 (Windows GUI), checked directly from packaged PE optional header",
+        "startup": "NOT RUN: automatic approval review rejected Start-Process of packaged EXE with a hidden window and temporary WebView debugging port; rejection stated blocked by policy without further detail"
+      }
     }
   }
 }
