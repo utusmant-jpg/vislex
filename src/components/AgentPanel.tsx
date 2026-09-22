@@ -254,6 +254,11 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           </> : null}
           {turn.error ? <div className="notice error" role="alert">{turn.error}<br /><small>Receipt: {turn.id}</small></div> : null}
           {turn.status === 'paused' && !chatBlocked ? <button className="quiet resume-button" onClick={() => run(async () => { await api('resume_task', { task_id: turn.id }); await refresh(); })}><Play size={12} />Resume work</button> : null}
+          {turn.id === task?.id && turn.status === 'paused' && !!turn.error && !chatBlocked ? <button className="quiet resume-button" onClick={() => run(async () => {
+            const result = await api<{task_id:string;conversation_id:string}>('continue_paused_task', { task_id: turn.id });
+            onConversation(result.conversation_id);
+            await refresh();
+          })}>Continue in new task</button> : null}
           {turn.id === task?.id && turn.status === 'complete' && followUps.length ? <div className="follow-ups">
             <span className="follow-up-label"><MessageSquareQuote size={13} />Suggested next checks</span>
             {followUps.map(step => <button key={step} className="follow-up" onClick={() => { draft(`Perform this next check: ${step}`); composer.current?.focus(); }}>{step}</button>)}

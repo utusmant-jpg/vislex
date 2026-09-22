@@ -541,6 +541,22 @@ fn independent_chats_can_run_together_and_followups_use_bounded_continuity() {
     assert!(recovered["text"].as_str().unwrap().starts_with("repeated extracted text"));
 }
 #[test]
+fn paused_uncertain_task_continues_without_replaying_old_transmission() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let old=agent::start(&mut c,"Inspect the claim","investigate",vec![sid],vec![],0.).unwrap();
+    let conversation=agent::continue_conversation(&mut c,&old,None).unwrap();
+    assert!(deliver_tool(&mut c,&old,"checkpoint_review",json!({"summary":"Saved partial finding","citations":[],"gaps":["Check the original"],"next_steps":[]})));
+    c.db.execute("UPDATE transmissions SET status='uncertain' WHERE task_id=?",[&old]).unwrap();
+    agent::pause(&mut c,&old,"Provider response incomplete").unwrap();
+    assert!(agent::resume(&mut c,&old).is_err());
+    let (new,continued)=agent::continue_paused(&mut c,&old).unwrap();
+    assert_eq!(continued,conversation);assert_ne!(new,old);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM transmissions WHERE task_id=?",[&new],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(c.db.query_row("SELECT status FROM transmissions WHERE task_id=?",[&old],|r|r.get::<_,String>(0)).unwrap(),"uncertain");
+    let prepared=agent::prepare_request(&mut c,&new).unwrap();
+    assert!(prepared.body["input"].to_string().contains("Saved partial finding"));
+}
+#[test]
 fn chats_wait_for_file_preparation_but_failures_release_the_gate() {
     let (_dir,mut c,sid)=setup();enable(&mut c);
     c.db.execute("INSERT INTO processing_jobs VALUES('preparing',?,'auto_prepare','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();

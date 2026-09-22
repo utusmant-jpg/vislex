@@ -174,6 +174,24 @@ pub fn continue_conversation(case: &mut Case, task: &str, parent: Option<&str>) 
     case.db.execute("INSERT INTO conversation_tasks(task_id,conversation_id) VALUES(?,?)",params![task,conversation])?;
     Ok(conversation)
 }
+/// Start a new transmission chain from saved progress after a paused task.
+/// The old task, including any uncertain provider delivery, is never replayed.
+pub fn continue_paused(case:&mut Case,parent:&str)->Result<(String,String)> {
+    let (prompt,mode,status,scope,edit_scope,budget):(String,String,String,String,String,f64)=case.db.query_row(
+        "SELECT prompt,mode,status,scope,edit_scope,budget FROM tasks WHERE id=?",
+        [parent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))
+    )?;
+    ensure!(status=="paused","Only paused work can continue in a new task");
+    let profile=crate::providers::task_profile(case,parent)?;
+    crate::providers::check_permission(case,&profile)?;
+    let sources:Vec<String>=serde_json::from_str(&scope)?;
+    let records:Vec<String>=serde_json::from_str(&edit_scope)?;
+    let task=start(case,&prompt,&mode,sources,records,budget)?;
+    case.set_meta(&format!("task_profile:{task}"),&serde_json::to_string(&profile)?)?;
+    let conversation=continue_conversation(case,&task,Some(parent))?;
+    case.audit("task_continued_from_paused",json!({"new_task":task,"paused_task":parent,"old_transmissions_unchanged":true}))?;
+    Ok((task,conversation))
+}
 fn conversation_history(case:&Case,task:&str)->Result<Vec<Value>> {
     let mut turns=Vec::new();
     let mut current=task.to_string();

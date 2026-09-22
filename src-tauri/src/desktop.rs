@@ -754,6 +754,18 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         }
 
+        "continue_paused_task" => {
+            if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
+            let old=text(&args,"task_id")?;
+            let profile=crate::providers::task_profile(c,old)?;
+            provider_key_entry(profile.provider)?.get_password().map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
+            let (task,conversation)=agent::continue_paused(c,old)?;
+            let case_id=c.meta("id")?.unwrap_or_default();
+            let handle=app.clone();let tid=task.clone();
+            tauri::async_runtime::spawn(async move {run_agent(handle,case_id,tid).await;});
+            json!({"task_id":task,"conversation_id":conversation})
+        }
+
         _ => anyhow::bail!("Unknown application command"),
 
     };
