@@ -286,6 +286,8 @@
     "RELIABILITY-SLICE-2026-09-22": {
       "state": "implemented",
       "commit": "37896dc",
+      "followup_commit": "66d822d (same-source processor transcript changes invalidate automatic review; focused core regression passed)",
+      "failure_state_commit": "9646465 (provider-paused automatic review reports failed; user stop/chat preemption remain paused; focused core regression passed)",
       "environment": "Windows x64; packaged VisLex 0.3.0-dev4 remains running on the live case; code changes tested in the repository only",
       "evidence": "src-tauri/tests/discovery.rs, src-tauri/tests/core.rs, src-tauri/tests/dossier.rs, src-tauri/tests/master_v4.rs, src/App.test.tsx",
       "commands": [
