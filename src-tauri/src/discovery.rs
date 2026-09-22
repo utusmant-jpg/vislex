@@ -4,6 +4,16 @@ use anyhow::{ensure,Context,Result};
 use rusqlite::{params,OptionalExtension};
 use serde_json::{json,Value};
 
+#[cfg(windows)]
+fn resource_diagnostics()->Value {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx,MEMORYSTATUSEX};
+    let mut memory=MEMORYSTATUSEX::default();memory.dwLength=std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    if unsafe {GlobalMemoryStatusEx(&mut memory)}==0 {return json!({"memory_status":"unavailable"})}
+    json!({"memory_load_percent":memory.dwMemoryLoad,"physical_available_mib":memory.ullAvailPhys/(1024*1024),"pagefile_available_mib":memory.ullAvailPageFile/(1024*1024)})
+}
+#[cfg(not(windows))]
+fn resource_diagnostics()->Value {json!({"memory_status":"unavailable"})}
+
 pub fn initialize(case:&Case)->Result<()> {
     case.db.execute_batch("CREATE TABLE IF NOT EXISTS discovery_chunks(run_id TEXT NOT NULL,start REAL NOT NULL,result TEXT NOT NULL,PRIMARY KEY(run_id,start));
         CREATE TABLE IF NOT EXISTS discovery_samples(run_id TEXT NOT NULL,source_id TEXT NOT NULL,kind TEXT NOT NULL,seconds REAL NOT NULL,artifact_id TEXT NOT NULL,metadata TEXT NOT NULL,text TEXT NOT NULL,PRIMARY KEY(run_id,artifact_id));
@@ -93,15 +103,18 @@ pub fn publish(case:&mut Case,job:&Job,result:Result<Value>)->Result<()> {
             let mut config:Value=serde_json::from_str(&raw)?;
             config["last_failed_job"]=json!(job.processor.job_id);
             let retries=config["resource_retries"].as_u64().unwrap_or(0);
-            if e.to_string().contains("os error 1450") && retries<2 {
+            let resource_error=e.to_string().contains("os error 1450");
+            if resource_error {config["resource_diagnostics"]=resource_diagnostics();}
+            let diagnostic=if resource_error {format!("; available physical {} MiB, pagefile {} MiB",config["resource_diagnostics"]["physical_available_mib"].as_u64().map(|v|v.to_string()).unwrap_or_else(||"unknown".into()),config["resource_diagnostics"]["pagefile_available_mib"].as_u64().map(|v|v.to_string()).unwrap_or_else(||"unknown".into()))} else {String::new()};
+            if resource_error && retries<2 {
                 let delay=if retries==0 {5}else{30};
                 let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
                 config["resource_retries"]=json!(retries+1);
                 config["retry_after_epoch"]=json!(now+delay);
                 config["active_job"]=Value::Null;
-                case.db.execute("UPDATE processing_jobs SET status='queued',result=?,error=? WHERE id=?",params![config.to_string(),format!("Windows resource error 1450; retry {}/2 after {delay}s",retries+1),job.run_id])?;
+                case.db.execute("UPDATE processing_jobs SET status='queued',result=?,error=? WHERE id=?",params![config.to_string(),format!("Windows resource error 1450; retry {}/2 after {delay}s{diagnostic}",retries+1),job.run_id])?;
             } else {
-                case.db.execute("UPDATE processing_jobs SET status='failed',result=?,error=? WHERE id=?",params![config.to_string(),e.to_string(),job.run_id])?;
+                case.db.execute("UPDATE processing_jobs SET status='failed',result=?,error=? WHERE id=?",params![config.to_string(),format!("{e}{diagnostic}"),job.run_id])?;
             }
         }
     }

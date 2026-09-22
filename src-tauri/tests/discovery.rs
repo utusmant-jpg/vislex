@@ -104,6 +104,7 @@ fn transient_resource_failure_retries_twice_then_stays_visible() {
         let (status,raw):(String,String)=c.db.query_row("SELECT status,result FROM processing_jobs WHERE id=?",[run],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
         let state:Value=serde_json::from_str(&raw).unwrap();
         assert_eq!(state["next_start"],0.);
+        assert!(state["resource_diagnostics"].is_object());
         if attempt<3 {
             assert_eq!(status,"queued");assert_eq!(state["resource_retries"],attempt);
             let mut ready=state;ready["retry_after_epoch"]=json!(0);

@@ -1225,6 +1225,15 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
             let _=with_case(&app,&case_id,|c|crate::discovery::publish(c,&job,result));
             let _=app.emit("case-changed",());
         }
+        let task=with_case(&app,&case_id,|c| {
+            let provider=crate::providers::load(c)?.provider;
+            if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
+            crate::automatic::start_review(c)
+        });
+        if let Ok(Some(task))=task {
+            let _=app.emit("case-changed",());
+            tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});
+        }
     });
 }
 fn kick_automatic(app:tauri::AppHandle,case_id:String) {
