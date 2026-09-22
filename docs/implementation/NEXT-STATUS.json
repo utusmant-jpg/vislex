@@ -260,6 +260,28 @@
         "pe_subsystem": "2 (Windows GUI), checked directly from packaged PE optional header",
         "startup": "NOT RUN: automatic approval review rejected Start-Process of packaged EXE with a hidden window and temporary WebView debugging port; rejection stated blocked by policy without further detail"
       }
+    },
+    "CHAT-RESPONSE-2026-09-22": {
+      "state": "implemented",
+      "commit": "8f4767a",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; branch impl/wave1-repairs",
+      "evidence": "src-tauri/tests/core.rs cited_answers_require_review_and_are_saved_for_followups, visual_requests_are_steered_to_frames_after_text_retrieval_and_disclose_gaps; src-tauri/tests/dossier.rs citation_free_completion_is_explicitly_unreviewed; src/components/AgentPanel.test.tsx completed-answer interaction",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites passed; 21 packaged-worker tests ignored by default",
+        "npm test -> exit 0, 29 passed in 7 files",
+        "npm run build -> exit 0",
+        "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0",
+        "scripts/package-development.ps1 -OutputName VisLex 0.3.0-dev4 -> exit 0",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Self-review only; checked chat answer, saved report, dossier completion, and citation-free status remain distinct. The direct answer no longer gains blanket AI or gap boilerplate; exact unresolved checks stay in completion metadata and the saved working report.",
+      "unrun_checks": "Live provider wording and packaged UI interaction NOT RUN; automatic approval review previously rejected starting the packaged EXE for a smoke test. No timing measurement for response speed.",
+      "dev_build": {
+        "path": "artifacts/VisLex 0.3.0-dev4/VisLex.exe",
+        "sha256": "012a211adf148f048dc76ab48c5d5d27c8b17d0c11212bb93b366fee5e868e41",
+        "pe_subsystem": "2 (Windows GUI), checked from packaged PE header"
+      },
+      "note": "Chat shows the model answer directly and adds a compact source list only for citations omitted from the answer. Routine gaps and review diagnostics remain retrievable on request in the dossier/completion and saved report. The per-message AI assessment badge was removed. No claim of human certification is introduced; metadata and review gates remain."
     }
   }
 }
