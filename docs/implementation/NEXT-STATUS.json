@@ -203,5 +203,27 @@
       "note": "New user-requested feature outside the R-queue. Backend gates: exclusive case.lock must be free (case open in another instance is refused), typed case-name confirmation must match on-disk meta name, folder must contain case.sqlite3 with user_version<=6 and a meta id/name. Deleting the open case stops on running tasks/jobs and active imports, closes the case first, then removes the whole folder and returns a bytes/sources/records receipt. Frontend: case menu Delete case… (disabled without an open native case) and command-palette entry open a dialog warning that originals/working files/chats/review history/archives inside the case folder are erased irreversibly; the destructive button enables only when the typed name matches; on success the projects list, last-case pointer and conversation pointer are cleared and the app returns to onboarding. Exports/archives the user saved outside the case folder are intentionally untouched. Deletion runs while holding the app case mutex by design: renderer stays responsive (spawn_blocking), other case commands queue honestly behind the removal. Known non-goal: a backup/export streaming concurrently from another trigger has no tracked in-flight state and would fail with an IO error rather than corrupt other data.",
       "commit": "85f47aa7a6a24a3714b82451535b4730e6c9a04c"
     }
+  },
+  "packaged_worker_and_acceptance_evidence": {
+    "date": "2026-09-22",
+    "commit_under_test": "993911d",
+    "summary": "Packaged-worker test suite (the 22 formerly ignored Rust tests: 21 sandbox.rs + 1 discovery.rs) and the full native acceptance journey were run and pass on this machine; all bundled model weights verified against committed manifests.",
+    "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; Python 3.11.15 (.venv-worker); node 24.14.1",
+    "commands": [
+      "OCR model hash check: workers/ocr-model-manifest.json sha256 entries verified byte-identical in .venv-worker site-packages and in packaged worker src-tauri/resources/worker (6/6 OK)",
+      "python scripts/download-model.py [tiny|small|minilm] + scripts/download-diarization.py -> all 'pinned model verified'",
+      ".venv-worker python -m unittest discover -s workers -p 'test_*.py' -> exit 0, 17 tests (video discovery, OCR empty-vs-failure, document formats, result safety, sound events)",
+      "Direct worker run: video_discovery.discover(kind=video_ocr) on fixtures/generated/variable-timing.mp4 -> 4 samples at authored PTS 0.0/1.4/2.5/3.0s, real RapidOCR text read (SYNTHETIC FRAME / N ms; one typical misread 2500->2S00), 0 failures, eof=True",
+      "cargo test --locked --test discovery packaged_video_indexes -- --ignored -> 1 passed (packaged AppContainer worker indexes full fixture, both video_ocr and video_overview)",
+      "cargo test --locked --test sandbox -- --ignored -> 21 passed (packaged worker suite incl. automatic_ocr_and_media_inventory_publish_with_originals_preserved, video_samples_retain_actual_decoder_timestamps_and_survive_backup)",
+      "cargo test --locked -- --include-ignored -> 167 passed, 0 failed, 0 ignored (all 10 suites)",
+      "npm test -> exit 0, 26 passed",
+      "Native acceptance: debug desktop exe rebuilt from current tree (cargo build --features desktop), launched with CDP; scripts/native-acceptance.js executed in the live page (driver: raw CDP Runtime.evaluate, because agent-browser eval hangs in this environment) -> journey PASSED: 6 fixtures imported, video_ocr 4 samples + video_overview 4 samples both complete, semantic search 30 results, transcripts settled, docx/pdf exports hashed, unreviewed redaction export denied, playback origin explicit, chat answer + DOCX preview rendered, provider_calls 0. Result: artifacts/native-acceptance-automated.json + .png"
+    ],
+    "fixes": [
+      "scripts/native-acceptance.js UI steps were stale against the redesigned UI (committed in 9916bb9) and could never pass: exact-text button match hit the relative-time label now rendered inside chat buttons, '.answer-text' was renamed '.answer', and the 'Evidence (6)'/'Case tools & files' sidebar controls became rail + evidence-library views. Updated selectors with equal-strength assertions (exact chat title attribute, exact library-name text, exact aria-label); no assertions weakened."
+    ],
+    "unrun_checks": "scripts/native-acceptance.ps1 end-to-end not run as-is (its agent-browser eval step hangs with unpinned npx agent-browser 0.38.1 in this environment; the same .js journey was driven over raw CDP instead); release-build journey, CI runner, and human visual checks still NOT RUN; OCR accuracy on real-world footage unmeasured (fixtures only).",
+    "note": "Cross-cutting machine evidence, not a task state change: no task was moved to verified by this record. Supersedes the 'packaged-worker suite / native acceptance NOT RUN' lines recorded per-task earlier, which were true at their recording time."
   }
 }

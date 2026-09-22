@@ -54,12 +54,11 @@
   const proxy=await invoke('playback_proxy',{source_id:video.id});const info=await invoke('artifact_info',{artifact_id:proxy.artifact_id});
   if(info.metadata.player_origin_seconds!==0)throw new Error('Playback lacks explicit origin');
   const waitFor=async(predicate,label)=>{for(let i=0;i<100;i++){const found=predicate();if(found)return found;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('UI did not show '+label);};
-  const button=label=>[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===label);
-  const chat=await waitFor(()=>button('how many files we have?'),'inventory conversation');chat.click();
-  await waitFor(()=>document.querySelector('.answer-text')?.textContent.includes('You have 6 original files in this case.'),'direct inventory answer');
-  const tools=[...document.querySelectorAll('summary')].find(s=>s.textContent==='Case tools & files');if(tools&&!tools.parentElement.open)tools.click();
-  const evidence=await waitFor(()=>button('Evidence (6)'),'evidence library');evidence.click();
-  const doc=await waitFor(()=>[...document.querySelectorAll('.tree-item')].find(b=>b.textContent.includes('notes.docx')),'DOCX library entry');doc.click();
+  // Chat rows append a relative-time label inside the button, so match the exact tooltip title instead of concatenated text.
+  const chat=await waitFor(()=>[...document.querySelectorAll('button.chat-open')].find(b=>b.title==='how many files we have?'),'inventory conversation');chat.click();
+  await waitFor(()=>document.querySelector('.answer')?.textContent.includes('You have 6 original files in this case.'),'direct inventory answer');
+  const evidence=await waitFor(()=>[...document.querySelectorAll('button.rail-button')].find(b=>b.getAttribute('aria-label')==='Evidence'),'evidence workspace');evidence.click();
+  const doc=await waitFor(()=>[...document.querySelectorAll('button.library-row')].find(b=>b.querySelector('.library-name')?.textContent==='notes.docx'),'DOCX library entry');doc.click();
   await waitFor(()=>document.querySelector('.document-page .text-lines')?.textContent.length>10,'DOCX preview');
   if(document.querySelector('.saved-progress,.question-dossier,.context-note'))throw new Error('Internal review panels leaked into normal chat');
   return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.sources.length,snapshot_latency_ms:latencies,semantic_results:search.results.length,remaining_passages:search.remaining_passages,exports,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
