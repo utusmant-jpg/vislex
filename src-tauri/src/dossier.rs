@@ -389,6 +389,49 @@ pub fn human_review(
     case.db.execute_batch("RELEASE dossier_review")?;
     view(case, task)
 }
+/// Content words used for fuzzy claim/sentence correspondence (VL-008/009:
+/// structural coverage, not brittle verbatim containment). Common function
+/// words are dropped so correspondence reflects substance, not grammar.
+fn content_tokens(text: &str) -> std::collections::BTreeSet<String> {
+    const STOPWORDS: [&str; 46] = [
+        "the", "and", "that", "this", "these", "those", "with", "from", "were", "was",
+        "are", "have", "has", "had", "not", "but", "for", "per", "its", "his", "her",
+        "their", "been", "into", "upon", "about", "after", "before", "during", "while",
+        "which", "when", "where", "what", "who", "whose", "they", "them", "then", "than",
+        "there", "here", "very", "also", "given", "according",
+    ];
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| {
+            word.chars().count() >= 3
+                && word.chars().any(|c| c.is_alphabetic())
+                && !STOPWORDS.contains(&word.to_lowercase().as_str())
+        })
+        .map(|word| word.to_lowercase())
+        .collect()
+}
+/// Sentences that qualify scope or disclose uncertainty are not material new
+/// factual assertions and never require claim mapping.
+fn is_qualifier(sentence: &str) -> bool {
+    let lower = sentence.to_lowercase();
+    [
+        "caveat", "limitation", "uncertain", "not establish", "unverified",
+        "gap in coverage", "no independent", "machine transcript", "not direct listening",
+        "cannot confirm", "requires review", "next check", "unresolved", "does not verify",
+        "not reviewed", "unreviewed", "sampled", "coverage",
+    ]
+    .iter()
+    .any(|key| lower.contains(key))
+}
+fn citation_matches(sentence: &str, mapped: &std::collections::HashSet<String>) -> bool {
+    let pattern = regex::Regex::new(r"evidence:[A-Za-z0-9-]+#[A-Za-z0-9:_-]+").unwrap();
+    for found in pattern.find_iter(sentence) {
+        if mapped.contains(found.as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
     let dossier = load(case, task)?;
     let stamp = evidence_stamp(case, task)?;
@@ -420,14 +463,28 @@ pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
                 "No claim-level review is bound to this exact answer and evidence revision.".into(),
             );
         }
+        let answer_text = candidate["answer"].as_str().unwrap_or("");
+        let sentences: Vec<&str> = answer_text
+            .split(|c| c == '.' || c == '\n' || c == ';')
+            .map(str::trim)
+            .filter(|sentence| !sentence.is_empty())
+            .collect();
+        let mapped_citations: std::collections::HashSet<String> = d
+            .claims
+            .iter()
+            .flat_map(|claim| claim.supporting.iter().chain(&claim.contrary).cloned())
+            .collect();
         for claim in &d.claims {
-            if !candidate["answer"]
-                .as_str()
-                .unwrap_or("")
-                .contains(&claim.proposition)
-            {
+            let represented = {
+                let claim_tokens = content_tokens(&claim.proposition);
+                sentences.iter().any(|sentence| {
+                    let tokens = content_tokens(sentence);
+                    tokens.intersection(&claim_tokens).count() >= 2
+                })
+            };
+            if !represented {
                 gaps.push(format!(
-                    "Final answer does not contain the assessed proposition verbatim: {}",
+                    "Assessed claim is not reflected in the final answer: {}",
                     claim.proposition
                 ));
             }
@@ -440,6 +497,34 @@ pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
                         "Final source list omits dossier evidence: {citation}"
                     ));
                 }
+            }
+        }
+        // Structural coverage (VL-008/009): the final prose must not add material
+        // factual assertions that were never represented in the support-review
+        // structure. Sentences are matched against assessed claims by content
+        // correspondence or by a citation the dossier already mapped; sentences
+        // that only qualify scope or disclose uncertainty pass without mapping.
+        // Unmatched material sentences stay visibly qualified as gaps instead of
+        // being silently accepted or forcing verbatim proposition repetition.
+        for (index, sentence) in sentences.iter().enumerate() {
+            if is_qualifier(sentence) {
+                continue;
+            }
+            let tokens = content_tokens(sentence);
+            if tokens.len() < 3 {
+                continue;
+            }
+            let covered_by_claim = d.claims.iter().any(|claim| {
+                let claim_tokens = content_tokens(&claim.proposition);
+                let overlap = tokens.intersection(&claim_tokens).count();
+                overlap >= 2 && overlap as f64 / tokens.len() as f64 >= 0.5
+            });
+            if !covered_by_claim && !citation_matches(sentence, &mapped_citations) {
+                gaps.push(format!(
+                    "Final answer sentence {} is not represented in the assessed claim structure: {}",
+                    index + 1,
+                    sentence
+                ));
             }
         }
         for check in d.checks.iter().filter(|c| c.state != "done") {

@@ -443,3 +443,41 @@ fn document_export_pins_dependency_hashes_until_publication() {
     assert!(!target.exists());
     c.verify_audit().unwrap();
 }
+
+#[test]
+fn unrepresented_material_assertions_in_final_prose_stay_visibly_qualified() {
+    let (_dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    // The final prose adds a material factual assertion no assessed claim covers.
+    let candidate=json!({"answer":"According to the statement, the witness reported three knocks. Separately, a red sedan was parked outside the building during the whole evening.","citations":[format!("evidence:{s}#L1-L1")],"gaps":[]});
+    let completion=dossier::completion(&c,&t,&candidate).unwrap();
+    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+    assert!(gaps.contains("not represented in the assessed claim structure"),"{gaps}");
+    assert!(gaps.contains("red sedan"),"{gaps}");
+    // The paraphrased first sentence itself needs no verbatim repetition.
+    assert!(!gaps.contains("verbatim"),"{gaps}");
+}
+
+#[test]
+fn paraphrased_claims_and_qualifiers_do_not_require_verbatim_repetition() {
+    let (_dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    let candidate=json!({"answer":"Per the account given, three knocks were reported by the witness. The timing remains uncertain and this is machine-transcript text.","citations":[format!("evidence:{s}#L1-L1")],"gaps":[]});
+    let completion=dossier::completion(&c,&t,&candidate).unwrap();
+    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+    assert!(!gaps.contains("not reflected in the final answer"),"{gaps}");
+    assert!(!gaps.contains("not represented in the assessed claim structure"),"{gaps}");
+}
+
+#[test]
+fn sentences_citing_mapped_dossier_evidence_count_as_represented() {
+    let (_dir,mut c,s,t)=setup();
+    let mut p=plan(&s);
+    p["claims"].as_array_mut().unwrap().push(json!({"proposition":"A recording corroborates the knocks.","assessment":"supported_within_scope","supporting":[format!("evidence:{s}#L1-L1")],"contrary":[],"uncertainty":"None noted.","next_check":"Listen again."}));
+    dossier::save(&mut c,&t,&p).unwrap();
+    let citation=format!("evidence:{s}#L1-L1");
+    let candidate=json!({"answer":format!("The witness statement describes three knocks. A separate instrument log entry appears at {citation}."), "citations":[citation],"gaps":[]});
+    let completion=dossier::completion(&c,&t,&candidate).unwrap();
+    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+    assert!(!gaps.contains("not represented in the assessed claim structure"),"{gaps}");
+}
