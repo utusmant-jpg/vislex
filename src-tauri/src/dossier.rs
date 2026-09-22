@@ -1,5 +1,5 @@
 //! Durable question dossiers. Machine checks never confer human approval.
-use crate::case::{digest, now, Case};
+use crate::case::{digest, id, now, Case};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -484,7 +484,7 @@ pub fn human_review(
         ["accepted", "rejected", "needs_review"].contains(&decision) && note.len() <= 4000,
         "Invalid review decision"
     );
-    let review = json!({"decision":decision,"note":note,"actor":"human","revision":revision,"claim":index,"evidence_stamp":evidence_stamp(case,task)?,"created_at":now()});
+    let review = json!({"receipt":id(),"decision":decision,"note":note,"actor":"human","revision":revision,"claim":index,"evidence_stamp":evidence_stamp(case,task)?,"created_at":now()});
     case.db.execute_batch("SAVEPOINT dossier_review")?;
     let result = (|| -> Result<()> {
         case.set_meta(

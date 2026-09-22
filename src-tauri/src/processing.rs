@@ -1,4 +1,4 @@
-use crate::case::{digest, file_hash, file_hash_cached, id, now, Case};
+use crate::case::{digest, file_hash, file_hash_cached, file_hash_strong, id, now, Case};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -132,13 +132,13 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     Ok(PreparedJob {job_id,source,source_path,kind:kind.into(),worker,staging,request,cached:None})
 }
 pub fn run_prepared(job:&PreparedJob)->Result<Value> {
-    if let Some(cached)=&job.cached {ensure!(file_hash_cached(&job.source_path)?==job.source.sha256,"Source changed since extraction");return Ok(cached.clone());}
+    if let Some(cached)=&job.cached {ensure!(file_hash_strong(&job.source_path)?==job.source.sha256,"Source changed since extraction");return Ok(cached.clone());}
     let manifest:Value=serde_json::from_slice(&fs::read(job.staging.path().join("manifest.json"))?)?;
     ensure!(manifest["worker_sha256"].as_str()==Some(file_hash_cached(&job.worker)?.as_str()),"Worker changed; create a fresh job instead of reusing old provenance");
     if job.staging.path().join("result.json").is_file() && !job.staging.path().join("cancel.request").exists() {
         let path=job.staging.path().join("result.json");ensure!(path.metadata()?.len()<=16*1024*1024,"Worker output too large");
         let result:Value=serde_json::from_slice(&fs::read(path)?)?;
-        if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash_cached(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
+        if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash_strong(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
     }
     copy_input(&job.source_path,job.staging.path(),&job.source.sha256)?;
     #[cfg(windows)]
@@ -407,7 +407,7 @@ pub fn artifact(case: &Case, artifact_id: &str) -> Result<(String, String, PathB
                 .is_ok_and(|root| path.starts_with(root)),
         "Artifact outside case"
     );
-    ensure!(file_hash_cached(&path)? == hash, "Artifact integrity check failed");
+    ensure!(file_hash_strong(&path)? == hash, "Artifact integrity check failed");
     Ok((source, mime, path, serde_json::from_str(&metadata)?))
 }
 /// Prepare playback under the case lock, run outside it, and publish under it again.

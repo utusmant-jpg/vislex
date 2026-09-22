@@ -89,7 +89,18 @@
       "state": "pending"
     },
     "R07": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "filled-at-commit",
+      "evidence": "src-tauri/tests/core.rs (same-size/same-mtime tamper caught by strong check; backup refuses metadata-preserving tamper; case-open clears stale cache; export prepare refuses tamper; artifact reads reject tamper) + src-tauri/tests/dossier.rs (replaced-review-receipt export refusal)",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; filetime 0.2 dev-dependency added (lockfile updated offline)",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 140 passed, 0 failed, 22 ignored (all 10 suites)",
+        "npm test -> exit 0, 26 passed; npm run build -> exit 0",
+        "cargo clippy --tests -> no warnings in changed code"
+      ],
+      "reviewer": "adversarial review: FAIL first round (desktop verify command and processing gates not actually switched - aborted edit script; artifact publication surface cached-only; write-time export recheck self-referential; wall-clock receipt identity) - ALL fixed: desktop verify_source command strong with honest method/verified_at response, processing reuse/recovery/artifact gates strong, DossierCopy pins registered sha and publish strong-hashes the STAGED bytes against it, human-review receipts carry unique id pinned by exports; second-round review confirmed interactive callers (read_text, validate_citation, agent pre-gates, restore, worker provenance) are legitimately non-publication; known residuals: file_hash_strong hash->metadata TOCTOU poisons only the documented non-tamper-proof interactive cache; reclaim_staging cleanup path stays cached (non-publication); create/open asymmetry fixed",
+      "unrun_checks": "Windows junction/reparse adversarial fixtures NOT created (requires symlink privilege); hash-bytes/lock-duration measurements NOT taken (no measured baseline this session); packaged-worker suite, native acceptance, visual checks NOT RUN",
+      "note": "file_hash_cached documented as interactive/browsing (evades same-size+same-mtime edits by design); file_hash_strong = fresh full hash refreshing the shared cache, used by explicit Verify, backups, exports (incl. staged-bytes certification vs registered hashes), direct-media transmission, cached-artifact reuse/recovery and artifact reads; cache cleared on Case::open AND create."
     },
     "R08": {
       "state": "pending"

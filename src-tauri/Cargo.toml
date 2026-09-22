@@ -50,6 +50,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 tempfile = "3"
 age = "0.11"
 tar = "0.4"
+filetime = "0.2"
 
 # Preserve fast source integrity checks in the developer desktop build.
 [profile.dev.package.sha2]

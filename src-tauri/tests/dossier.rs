@@ -685,3 +685,23 @@ fn legacy_free_text_with_dossier_stays_visible_and_uncertified() {
     assert_eq!(completion["structured"],false);
     assert_ne!(completion["outcome"],"declared_checks_complete");
 }
+
+/// R07 — publication rechecks the IDENTITY of each accepted review receipt, so
+/// a review replaced between preparation and publication (reject then accept
+/// again, or a fresh acceptance of a changed state) cannot ride the export.
+#[test]
+fn export_refuses_replaced_review_receipt_between_prepare_and_publish() {
+    let (dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    dossier::human_review(&mut c,&t,1,0,"accepted","First acceptance").unwrap();
+    let path=dir.path().join("receipt-swap");
+    let prepared=evidence_desk::exports::prepare_dossier_bundle(&mut c,&t,&path).unwrap();
+    // The review is replaced by a NEW acceptance receipt after preparation.
+    dossier::human_review(&mut c,&t,1,0,"needs_review","Reconsidering").unwrap();
+    dossier::human_review(&mut c,&t,1,0,"accepted","Second acceptance").unwrap();
+    let staged=evidence_desk::exports::write_dossier_bundle(&prepared,&path);
+    let error=match evidence_desk::exports::publish_dossier_bundle(&mut c,&prepared,staged,&path){Err(e)=>e.to_string(),Ok(_)=>panic!("replaced review receipt unexpectedly published")};
+    assert!(error.contains("review was replaced"),"{error}");
+    assert!(!path.exists());
+    c.verify_audit().unwrap();
+}

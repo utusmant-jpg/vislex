@@ -34,22 +34,26 @@ pub fn file_hash(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
-/// Cached verification hash for immutable case content.
+/// Cached INTERACTIVE hash for immutable case content (R07).
 /// Originals and published artifacts are content-addressed and set read-only, so
 /// (canonical path, length, mtime) identifies bytes already verified this session;
 /// any replacement or in-place change alters length or mtime and forces a fresh
 /// full hash. Keeps playback ranges, citation validation and cache reuse from
-/// re-hashing multi-gigabyte originals on every request.
+/// re-hashing multi-gigabyte originals on every request. This is a browsing
+/// optimization, NOT strong verification: an in-place edit that preserves both
+/// length and mtime evades it. Protected publication and explicit user
+/// verification use `file_hash_strong`/`verify_source_strong` instead.
+type InteractiveCache = std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, String)>;
+fn interactive_cache() -> &'static std::sync::Mutex<InteractiveCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<InteractiveCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(InteractiveCache::new()))
+}
+
 pub fn file_hash_cached(path: &Path) -> Result<String> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, String)>>> =
-        OnceLock::new();
     let metadata = fs::metadata(path)?;
     let modified = metadata.modified()?;
     let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(guard) = cache.lock() {
+    if let Ok(guard) = interactive_cache().lock() {
         if let Some((len, stamp, hash)) = guard.get(&key) {
             if *len == metadata.len() && *stamp == modified {
                 return Ok(hash.clone());
@@ -57,13 +61,36 @@ pub fn file_hash_cached(path: &Path) -> Result<String> {
         }
     }
     let hash = file_hash(path)?;
-    if let Ok(mut guard) = cache.lock() {
+    if let Ok(mut guard) = interactive_cache().lock() {
         if guard.len() >= 4096 {
             guard.clear();
         }
         guard.insert(key, (metadata.len(), modified, hash.clone()));
     }
     Ok(hash)
+}
+
+/// Strong verification hash: always reads and hashes the full bytes, ignoring
+/// and refreshing the shared interactive cache so later interactive reads see
+/// the verified truth. Tamper-evident against same-length, mtime-preserving
+/// in-place edits that the interactive cache cannot detect.
+pub fn file_hash_strong(path: &Path) -> Result<String> {
+    let hash = file_hash(path)?;
+    let metadata = fs::metadata(path)?;
+    let modified = metadata.modified()?;
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(mut guard) = interactive_cache().lock() {
+        guard.insert(key, (metadata.len(), modified, hash.clone()));
+    }
+    Ok(hash)
+}
+
+/// Clear the interactive hash cache. Called when a case is opened so cached
+/// results never outlive the case session they were computed in.
+pub fn clear_file_hash_cache() {
+    if let Ok(mut guard) = interactive_cache().lock() {
+        guard.clear();
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -162,6 +189,7 @@ pub fn validate_local_root(path: &Path) -> Result<()> {
 
 impl Case {
     pub fn create(root: &Path, name: &str) -> Result<Self> {
+        clear_file_hash_cache();
         validate_local_root(root)?;
         ensure!(
             !name.trim().is_empty() && name.len() <= 200,
@@ -181,6 +209,7 @@ impl Case {
         Ok(c)
     }
     pub fn open(root: &Path) -> Result<Self> {
+        clear_file_hash_cache();
         validate_local_root(root)?;
         ensure!(
             root.join("case.sqlite3").is_file(),
@@ -409,12 +438,27 @@ impl Case {
         );
         Ok(path)
     }
+    /// Interactive verification: may reuse a session hash keyed by path, size
+    /// and mtime. Fast for browsing and citations; not tamper-proof against
+    /// same-size, mtime-preserving edits.
     pub fn verify_source(&self, source_id: &str) -> Result<PathBuf> {
         let s = self.source(source_id)?;
         let path = self.source_path(source_id)?;
         ensure!(
             file_hash_cached(&path)? == s.sha256,
             "Original bytes changed: integrity check failed"
+        );
+        Ok(path)
+    }
+    /// Strong verification: full fresh byte hash, never the interactive cache.
+    /// Used by explicit user verification and every protected publication path
+    /// (export, backup, artifact reuse, direct-media transmission).
+    pub fn verify_source_strong(&self, source_id: &str) -> Result<PathBuf> {
+        let s = self.source(source_id)?;
+        let path = self.source_path(source_id)?;
+        ensure!(
+            file_hash_strong(&path)? == s.sha256,
+            "Original bytes changed: strong integrity check failed"
         );
         Ok(path)
     }

@@ -505,9 +505,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "verify_source" => {
 
-            c.verify_source(text(&args, "source_id")?)?;
+            c.verify_source_strong(text(&args, "source_id")?)?;
 
-            json!({"verified":true})
+            json!({"verified":true,"method":"full-sha256-reread","verified_at":crate::case::now()})
 
         }
 

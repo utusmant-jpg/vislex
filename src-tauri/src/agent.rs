@@ -1141,7 +1141,7 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
             if !latest_media || message_index!=last_index {*message=json!({"role":"user","content":format!("Previously supplied original media {source} omitted from this request. Retain its qualified observations; request inspection again if needed.")});continue;}
             ensure!(profile.provider==crate::providers::Provider::Gemini && case.meta("gemini_direct_media")?.as_deref()==Some("true"),"Direct media permission is disabled");
             let media=case.source(source)?;ensure!(media.size<=12*1024*1024,"Direct media exceeds size limit");
-            let bytes=std::fs::read(case.verify_source(source)?)?;ensure!(bytes.len()<=12*1024*1024,"Media size changed");
+            let bytes=std::fs::read(case.verify_source_strong(source)?)?;ensure!(bytes.len()<=12*1024*1024,"Media size changed");
             let data=base64::engine::general_purpose::STANDARD.encode(bytes);
             *message=json!({"role":"user","content":[{"type":"input_text","text":format!("Untrusted original media. Source {source}. Whole-media locator evidence:{source}#media. Provider default sampling and timestamp estimates may miss short events. Verify consequential details with exact local tools; preserve uncertainty.")},{"type":"input_media","mime_type":media.mime,"data":data}]});
         }
@@ -1175,7 +1175,7 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
             } else {
                 (
                     s.mime,
-                    std::fs::read(case.verify_source(source)?)?,
+                    std::fs::read(case.verify_source_strong(source)?)?,
                     format!("evidence:{source}#image"),
                     Value::Null,
                 )

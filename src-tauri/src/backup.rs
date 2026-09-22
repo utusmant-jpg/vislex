@@ -1,4 +1,4 @@
-use crate::case::{file_hash, file_hash_cached, now, safe_relative, Case};
+use crate::case::{file_hash, file_hash_strong, now, safe_relative, Case};
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -67,7 +67,7 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
     let sources = case.sources()?;
     let mut originals = Vec::new();
     for s in &sources {
-        case.verify_source(&s.id)?;
+        case.verify_source_strong(&s.id)?;
         files.push(json!({"path":format!("originals/{}",s.sha256),"sha256":s.sha256}));
         originals.push((case.source_path(&s.id)?, format!("originals/{}", s.sha256)));
     }
@@ -99,7 +99,7 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
         );
         let absolute = case.root.join(path);
         ensure!(
-            file_hash_cached(&absolute)? == *hash,
+            file_hash_strong(&absolute)? == *hash,
             "Artifact failed backup integrity check"
         );
         files.push(json!({"path":path,"sha256":hash}));

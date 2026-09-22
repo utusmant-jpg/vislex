@@ -971,3 +971,141 @@ fn image_grant_without_text_grant_is_refused_by_apply_app_settings() {
     assert!(error.to_string().contains("grant text before images"), "{error}");
     assert!(!c.settings().unwrap().allow_images, "refused policy must not be partially applied");
 }
+
+/// R07 — an in-place edit that preserves length AND mtime evades the
+/// interactive cache by design (browsing speed), but strong verification
+/// catches it; after a strong check the cache holds the truthful bytes.
+#[test]
+fn strong_verification_rejects_same_size_same_mtime_tampering() {
+    let (dir, mut c, s) = setup();
+    let evidence = dir.path().join("cache.txt");
+    std::fs::write(&evidence, "verified payload bytes").unwrap();
+    c.import_files(&[evidence.to_string_lossy().into()], "A").unwrap();
+    let original = c.source_path(&s).unwrap();
+    // Warm the interactive cache.
+    c.verify_source(&s).unwrap();
+    // Tamper in place: same length, mtime restored exactly.
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&original).unwrap());
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&original, permissions).unwrap();
+    let bytes = std::fs::read(&original).unwrap();
+    let mut flipped = bytes.clone();
+    flipped[0] ^= 0xFF;
+    // pad/trim to identical length, then restore mtime
+    flipped.truncate(bytes.len());
+    if flipped.len() < bytes.len() { flipped.resize(bytes.len(), b'x'); }
+    std::fs::write(&original, &flipped).unwrap();
+    filetime::set_file_mtime(&original, preserved).unwrap();
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&original, permissions).unwrap();
+
+    // Interactive browsing stays fast and — documented — does NOT catch this
+    // when its cached entry survives (parallel tests may clear the shared
+    // cache; the strong check below is the load-bearing assertion).
+    let _ = c.verify_source(&s);
+    // Strong verification must reject the same-length, same-mtime replacement.
+    let error = c.verify_source_strong(&s).unwrap_err();
+    assert!(error.to_string().contains("strong integrity check"), "{error}");
+    // The strong check refreshed the cache with the truthful bytes, so even the
+    // cached path now refuses the tampered original.
+    assert!(c.verify_source(&s).is_err());
+}
+
+/// R07 — encrypted backup is an exact-snapshot promise: a metadata-preserving
+/// tamper must abort the backup even though interactive reads still serve.
+#[test]
+fn backup_refuses_metadata_preserving_tampering_with_strong_check() {
+    let (dir, mut c, s) = setup();
+    let archive = dir.path().join("tamper.age");
+    let _ = c.verify_source(&s); // warm the interactive cache where it survives
+    let original = c.source_path(&s).unwrap();
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&original).unwrap());
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&original, permissions).unwrap();
+    let mut bytes = std::fs::read(&original).unwrap();
+    bytes[0] ^= 0xFF;
+    std::fs::write(&original, &bytes).unwrap();
+    filetime::set_file_mtime(&original, preserved).unwrap();
+    let error = evidence_desk::backup::backup(&mut c, &archive, "tamper-pass-123").unwrap_err();
+    assert!(error.to_string().contains("strong integrity check"), "{error}");
+    assert!(!archive.exists(), "no archive may be written for tampered originals");
+}
+
+/// R07 — opening a case clears the interactive cache, so stale session hashes
+/// never outlive the case they were computed in.
+#[test]
+fn opening_a_case_clears_stale_interactive_hashes() {
+    let (dir, mut c, s) = setup();
+    let root = c.root.clone();
+    let _ = c.verify_source(&s);
+    let original = c.source_path(&s).unwrap();
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&original).unwrap());
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&original, permissions).unwrap();
+    let mut bytes = std::fs::read(&original).unwrap();
+    bytes[0] ^= 0xFF;
+    std::fs::write(&original, &bytes).unwrap();
+    filetime::set_file_mtime(&original, preserved).unwrap();
+    // Cache still trusts the stale entry when nothing else cleared it (other
+    // tests open cases in parallel, which clears the shared cache — the final
+    // assertion below holds either way).
+    let _ = c.verify_source(&s);
+    drop(c);
+    // ...a fresh session starts clean and catches the change.
+    let reopened = Case::open(&root).unwrap();
+    assert!(reopened.verify_source(&s).is_err(), "reopened session must not inherit stale interactive hashes");
+}
+
+/// R07 — document export preparation is a publication promise and uses strong
+/// verification; metadata-preserving tampering blocks it.
+#[test]
+fn export_preparation_refuses_metadata_preserving_tampering() {
+    let (dir, mut c, s) = setup();
+    let record = c.write_record(None, 0, "Memo", "note", "depends on source", "human", "initial", None, vec![s.clone()]).unwrap();
+    let _ = c.verify_source(&s);
+    let original = c.source_path(&s).unwrap();
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&original).unwrap());
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&original, permissions).unwrap();
+    let mut bytes = std::fs::read(&original).unwrap();
+    bytes[0] ^= 0xFF;
+    std::fs::write(&original, &bytes).unwrap();
+    filetime::set_file_mtime(&original, preserved).unwrap();
+    let target = dir.path().join("memo.docx");
+    assert!(evidence_desk::exports::prepare_document(&c, &record.id, &target).is_err(),
+        "export preparation must strongly verify source bytes");
+}
+
+/// R07 — artifact reads are the authority gate for derivatives that leave the
+/// case (exports, provider transmission): a metadata-preserving tamper of a
+/// registered artifact must be caught by a fresh full-hash check.
+#[test]
+fn artifact_reads_reject_metadata_preserving_tampering() {
+    let (dir, mut c, s) = setup();
+    let bytes = b"synthetic-artifact-payload";
+    let hash = evidence_desk::case::digest(bytes);
+    let relative = format!("artifacts/{hash}.json");
+    let target = c.root.join(&relative);
+    std::fs::write(&target, bytes).unwrap();
+    c.db.execute(
+        "INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)",
+        rusqlite::params![evidence_desk::case::id(), s, hash, "application/json", relative, "{}", evidence_desk::case::now()],
+    ).unwrap();
+    // Warm the interactive cache with a legitimate read.
+    evidence_desk::processing::artifact(&c, &evidence_desk::case::id()).ok();
+    let artifact_id: String = c.db.query_row("SELECT id FROM artifacts WHERE sha256=?", [&hash], |r| r.get(0)).unwrap();
+    let _ = evidence_desk::processing::artifact(&c, &artifact_id).unwrap();
+    // Tamper in place with preserved length and mtime.
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&target).unwrap());
+    let mut flipped = bytes.to_vec();
+    flipped[0] ^= 0xFF;
+    std::fs::write(&target, &flipped).unwrap();
+    filetime::set_file_mtime(&target, preserved).unwrap();
+    let error = evidence_desk::processing::artifact(&c, &artifact_id).unwrap_err();
+    assert!(error.to_string().contains("Artifact integrity check failed"), "{error}");
+}
