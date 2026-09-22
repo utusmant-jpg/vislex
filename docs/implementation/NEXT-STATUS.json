@@ -21,7 +21,19 @@
       "commit": "92d364a2c1a4e8302b03a6d66d5b25273043ff60"
     },
     "R01": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "filled-at-commit",
+      "evidence": "src-tauri/tests/backup_artifacts.rs (6 new/extended tests); docs/implementation/BASELINE-2026-09-21.md",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; branch impl/wave1-repairs",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test backup_artifacts -> exit 0, 10 passed (was 4; red-first: registered_transcripts_publish_backup_restore_round_trip FAILED pre-fix with 'The file exists. (os error 80)')",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test journey -> exit 0, 4 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 121 passed, 0 failed, 22 ignored",
+        "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --tests -> no warnings in changed files"
+      ],
+      "reviewer": "separate read-only adversarial review agent: PASS, 7 minor findings; findings 3,4,5 addressed in-code (artifact_formats type confusion closed, conflict test order-independent, anti-re-pin regression added); findings 1,2 (tampered-DB reserved names, case-renamed transcripts) fail closed at restore, not app-reachable; finding 6 (VISLEX_WORKER_PATH override debug-only) noted",
+      "unrun_checks": "packaged-worker sandbox suite (21 ignored), native acceptance, packaged Windows journey, visual checks NOT RUN (release blockers); reparse-point creation untested (needs symlink privilege)",
+      "note": "Real transcription::begin+publish via VISLEX_WORKER_PATH stand-in worker; publish -> backup -> restore -> reopen -> review -> second backup -> second restore verified with hash pinning and unique archive paths."
     },
     "R02": {
       "state": "pending"

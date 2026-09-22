@@ -16,7 +16,13 @@ pub struct BackupPlan {
     manifest: Vec<u8>,
     db_path: PathBuf,
     originals: Vec<(PathBuf, String)>,
+    /// Registered artifacts, including published transcript files registered by
+    /// `transcription::publish`. Each canonical path appears once.
     artifacts: Vec<(PathBuf, String)>,
+    /// `working/transcripts` files present on disk but not registered in the
+    /// artifacts table (recovery/unpublished data). Kept in the archive so no
+    /// case bytes are lost, but labeled so they are never mistaken for
+    /// registered evidence; the database remains the trust anchor.
     transcripts: Vec<(PathBuf, String)>,
     sources: usize,
 }
@@ -72,9 +78,25 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
+    // One canonical entry per normalized relative path, with the hash pinned to
+    // the registered value. Registered transcripts are already covered here;
+    // the directory scan below must never add a second copy of the same path.
+    let mut canonical: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let mut artifact_entries = Vec::new();
     for (path, hash) in &artifacts {
         ensure!(safe_relative(Path::new(path)), "Unsafe artifact path");
+        ensure!(
+            path != "case.sqlite3"
+                && path != "manifest.json"
+                && !path.starts_with("originals/"),
+            "Artifact registration claims a reserved archive path: {path}"
+        );
+        ensure!(
+            canonical
+                .insert(path.clone(), hash.clone())
+                .is_none_or(|existing| existing == *hash),
+            "Artifact registration has conflicting hashes for {path}"
+        );
         let absolute = case.root.join(path);
         ensure!(
             file_hash_cached(&absolute)? == *hash,
@@ -83,11 +105,14 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
         files.push(json!({"path":path,"sha256":hash}));
         artifact_entries.push((absolute, path.clone()));
     }
-    // Published transcript files are immutable case content: include them so the
-    // archive and its manifest inventory stay symmetric with restore.
+    // Unregistered transcript files are recovery data, not trusted evidence:
+    // included and hash-pinned so no case bytes are lost, labeled as
+    // unregistered in the manifest, and never treated as a second copy of a
+    // registered path.
     let mut transcripts = Vec::new();
     let transcript_dir = case.root.join("working/transcripts");
     if transcript_dir.is_dir() {
+        let mut scanned: Vec<(String, std::path::PathBuf)> = Vec::new();
         for entry in fs::read_dir(&transcript_dir)? {
             let entry = entry?;
             if !entry.metadata()?.is_file() {
@@ -99,8 +124,17 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
                 "Unexpected file in working/transcripts: {}",
                 entry.file_name().to_string_lossy()
             );
-            files.push(json!({"path":&relative,"sha256":file_hash(&entry.path())?}));
-            transcripts.push((entry.path(), relative));
+            scanned.push((relative, entry.path()));
+        }
+        scanned.sort();
+        for (relative, absolute) in scanned {
+            if canonical.contains_key(&relative) {
+                continue; // registered transcript already archived once above
+            }
+            let hash = file_hash(&absolute)?;
+            canonical.insert(relative.clone(), hash.clone());
+            files.push(json!({"path":&relative,"sha256":hash,"origin":"unregistered-recovery"}));
+            transcripts.push((absolute, relative));
         }
     }
     let manifest = serde_json::to_vec_pretty(
@@ -226,6 +260,17 @@ pub fn restore(archive_path: &Path, destination: &Path, password: &str) -> Resul
         manifest["format"] == "local-evidence-desk" && manifest["version"] == 1,
         "Unsupported backup format"
     );
+    // A manifest from a newer build may contain artifact formats this registry
+    // cannot validate; restoring it unverifiable would fail open. The field must
+    // be the exact integer version when present in any form; older manifests
+    // without the field are version 1 by definition.
+    if !manifest["artifact_formats"].is_null() {
+        let version = manifest["artifact_formats"].as_u64();
+        ensure!(
+            version == Some(u64::from(crate::artifact_registry::ARTIFACT_FORMAT_VERSION)),
+            "Unsupported artifact format version"
+        );
+    }
     let files = manifest["files"]
         .as_array()
         .context("Missing manifest files")?;
