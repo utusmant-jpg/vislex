@@ -6,7 +6,7 @@ type Claim = { proposition: string; assessment: string; supporting: string[]; co
 type DossierView = {
   dossier: { revision: number; scope: string; checks: { id: string; description: string; state: string; reason: string; receipts: string[] }[]; claims: Claim[] } | null;
   stale: boolean; completion_stale: boolean;
-  completion: { outcome: string; gaps: string[]; created_at: string } | null;
+  completion: { outcome: string; gaps: string[]; created_at: string; structured?: boolean; blocks?: { id: string; kind: string; text: string; claims: string[]; factual: boolean; review: string | null }[] } | null;
   human_reviews: ({ decision: string; note: string; stale: boolean } | null)[];
   coverage_note: string;
   coverage?: {contract: {mode:string;purpose:string} | null; units: {requirement:{source_id:string;stage:string;start:number;end:number};missing:[number,number][];complete:boolean}[]};
@@ -60,6 +60,7 @@ export default function QuestionDossier({ taskId, step, status, evidenceVersion,
             <div className="dossier-review-actions">{[['accepted', 'Accept finding'], ['needs_review', 'Needs review'], ['rejected', 'Reject finding']].map(([decision, label]) => <button type="button" className="quiet" key={decision} disabled={view.stale || reviewing !== null} onClick={() => void review(index, decision)}>{label}</button>)}</div>
           </details>) : <p>No structured findings recorded yet.</p>}
         </> : <p>No structured scope or findings were recorded for this answer. An ended run does not establish evidence coverage.</p>}
+        {view.completion?.blocks?.length ? <><h3>Answer blocks</h3><ul className="dossier-blocks">{view.completion.blocks.map(block => <li key={block.id}><strong>{block.kind.replaceAll('_', ' ')}:</strong> {block.text}{block.factual ? <small>{block.claims.length ? `bound to ${block.claims.join(', ')}` : 'no claim reference'} · {block.review === 'supported' ? 'support reviewed' : block.review === 'unsupported' ? 'support review: unsupported' : 'no bound review'}</small> : <small>non-factual · never certifies truth</small>}</li>)}</ul></> : null}
         {view.completion?.gaps.length ? <><h3>Gaps and limitations</h3><ul>{view.completion.gaps.map((gap, index) => <li key={index}>{gap}</li>)}</ul></> : null}
       </> : null}
       {native ? <button type="button" className="quiet" onClick={() => setRefresh(value => value + 1)}>Refresh currentness</button> : null}

@@ -19,12 +19,74 @@ pub struct Check {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claim {
+    /// Stable addressable identifier; empty only for dossiers saved before
+    /// structured publication existed (readable legacy data, never certifiable).
+    #[serde(default)]
+    pub id: String,
     pub proposition: String,
     pub assessment: String,
     pub supporting: Vec<String>,
     pub contrary: Vec<String>,
     pub uncertainty: String,
     pub next_check: String,
+}
+/// One unit of a structured final answer. Factual kinds (observation,
+/// attributed_statement, inference) must reference dossier claim ids; their
+/// wording is certified only through a block review bound to the exact
+/// candidate, never through word-matching heuristics.
+fn null_to_empty_strings<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<Vec<String>> = Option::deserialize(deserializer)?;
+    Ok(value.unwrap_or_default())
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Block {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+    #[serde(default, deserialize_with = "null_to_empty_strings")]
+    pub claims: Vec<String>,
+}
+pub fn block_kind_is_factual(kind: &str) -> bool {
+    ["observation", "attributed_statement", "inference"].contains(&kind)
+}
+pub fn valid_block_kind(kind: &str) -> bool {
+    [
+        "observation",
+        "attributed_statement",
+        "inference",
+        "hypothesis",
+        "limitation",
+        "next_action",
+    ]
+    .contains(&kind)
+}
+/// Accessible plain text derived from the same structured document, so the
+/// published wording and the certified structure cannot diverge.
+pub fn render_blocks(blocks: &[Block]) -> String {
+    const LABELS: [(&str, &str); 6] = [
+        ("observation", "Observation"),
+        ("attributed_statement", "Attributed statement"),
+        ("inference", "Inference"),
+        ("hypothesis", "Hypothesis"),
+        ("limitation", "Limitation"),
+        ("next_action", "Next action"),
+    ];
+    blocks
+        .iter()
+        .map(|block| {
+            let label = LABELS
+                .iter()
+                .find(|(kind, _)| *kind == block.kind)
+                .map(|(_, label)| *label)
+                .unwrap_or("Statement");
+            format!("[{label}] {}", block.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,6 +150,54 @@ pub fn review_candidate(case: &mut Case, task: &str, args: &Value) -> Result<Val
         case.meta(&format!("support_candidate:{task}"))?.as_deref() == Some(stamp.as_str()),
         "Submit this exact candidate through finish_task first"
     );
+    // Structured candidates: every factual block needs its own support review
+    // against this exact wording. Editing any block changes the stamp and
+    // invalidates the whole review — there is no wording-similarity carryover.
+    let blocks: Vec<Block> = candidate["blocks"]
+        .as_array()
+        .map(|blocks| serde_json::from_value(Value::Array(blocks.clone())))
+        .transpose()?
+        .unwrap_or_default();
+    let block_reviews = args["block_reviews"].as_array();
+    if !blocks.is_empty() {
+        let reviews = block_reviews.context("Structured candidates require a per-block support review")?;
+        let mut reviewed_ids = std::collections::HashSet::new();
+        for review in reviews {
+            let id = review["block_id"].as_str().context("Missing block id")?;
+            ensure!(
+                blocks.iter().any(|block| block.id == id) && reviewed_ids.insert(id),
+                "Unknown or duplicate block review"
+            );
+            let state = review["state"].as_str().unwrap_or("");
+            ensure!(["supported", "unsupported"].contains(&state), "Invalid block review state");
+            ensure!(
+                review["reason"].as_str().is_some_and(|s| !s.trim().is_empty()),
+                "Block review needs a source-based explanation"
+            );
+            if state == "supported" && block_kind_is_factual(
+                blocks.iter().find(|block| block.id == id).map(|b| b.kind.as_str()).unwrap_or(""),
+            ) {
+                ensure!(
+                    !blocks.iter().any(|block| block.id == id && block.claims.is_empty()),
+                    "A supported factual block must reference the assessed claims it restates"
+                );
+            }
+        }
+        for block in &blocks {
+            ensure!(
+                reviewed_ids.contains(block.id.as_str()),
+                "Every answer block needs a review: {}",
+                block.id
+            );
+            if !block_kind_is_factual(&block.kind) {
+                ensure!(
+                    block.claims.is_empty(),
+                    "Non-factual block {} cannot reference claims; only factual blocks carry assessed findings",
+                    block.id
+                );
+            }
+        }
+    }
     let assessments = args["assessments"]
         .as_array()
         .context("Missing claim assessments")?;
@@ -122,7 +232,7 @@ pub fn review_candidate(case: &mut Case, task: &str, args: &Value) -> Result<Val
             );
         }
     }
-    let review = json!({"stamp":stamp,"revision":d.revision,"assessments":assessments,"actor":"agent","created_at":now()});
+    let review = json!({"stamp":stamp,"revision":d.revision,"assessments":assessments,"block_reviews":block_reviews.unwrap_or(&Vec::new()),"actor":"agent","created_at":now()});
     case.set_meta(&format!("claim_review:{task}:{stamp}"), &review.to_string())?;
     case.audit(
         "candidate_claim_reviewed",
@@ -248,7 +358,12 @@ pub fn save(case: &mut Case, task: &str, value: &Value) -> Result<Value> {
             ensure!(next.checks.iter().any(|c|c.id==check.id && c.source_id==check.source_id && c.tool==check.tool && c.description==check.description), "Existing obligations cannot be removed or redefined; mark them blocked with a reason");
         }
     }
+    let mut claim_ids = std::collections::HashSet::new();
     for claim in &next.claims {
+        ensure!(
+            !claim.id.trim().is_empty() && claim_ids.insert(claim.id.clone()),
+            "Claims require unique stable IDs so answer blocks can reference them"
+        );
         ensure!(
             !claim.proposition.trim().is_empty(),
             "Claim needs a proposition"
@@ -389,48 +504,10 @@ pub fn human_review(
     case.db.execute_batch("RELEASE dossier_review")?;
     view(case, task)
 }
-/// Content words used for fuzzy claim/sentence correspondence (VL-008/009:
-/// structural coverage, not brittle verbatim containment). Common function
-/// words are dropped so correspondence reflects substance, not grammar.
-fn content_tokens(text: &str) -> std::collections::BTreeSet<String> {
-    const STOPWORDS: [&str; 46] = [
-        "the", "and", "that", "this", "these", "those", "with", "from", "were", "was",
-        "are", "have", "has", "had", "not", "but", "for", "per", "its", "his", "her",
-        "their", "been", "into", "upon", "about", "after", "before", "during", "while",
-        "which", "when", "where", "what", "who", "whose", "they", "them", "then", "than",
-        "there", "here", "very", "also", "given", "according",
-    ];
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| {
-            word.chars().count() >= 3
-                && word.chars().any(|c| c.is_alphabetic())
-                && !STOPWORDS.contains(&word.to_lowercase().as_str())
-        })
-        .map(|word| word.to_lowercase())
-        .collect()
-}
-/// Sentences that qualify scope or disclose uncertainty are not material new
-/// factual assertions and never require claim mapping.
-fn is_qualifier(sentence: &str) -> bool {
-    let lower = sentence.to_lowercase();
-    [
-        "caveat", "limitation", "uncertain", "not establish", "unverified",
-        "gap in coverage", "no independent", "machine transcript", "not direct listening",
-        "cannot confirm", "requires review", "next check", "unresolved", "does not verify",
-        "not reviewed", "unreviewed", "sampled", "coverage",
-    ]
-    .iter()
-    .any(|key| lower.contains(key))
-}
-fn citation_matches(sentence: &str, mapped: &std::collections::HashSet<String>) -> bool {
-    let pattern = regex::Regex::new(r"evidence:[A-Za-z0-9-]+#[A-Za-z0-9:_-]+").unwrap();
-    for found in pattern.find_iter(sentence) {
-        if mapped.contains(found.as_str()) {
-            return true;
-        }
-    }
-    false
-}
+/// Content-word heuristics were removed with VL-008/009 sentence matching
+/// (R03): matching words is not matching a factual proposition. Certification
+/// now requires structured answer blocks whose factual wording is bound, by an
+/// exact-candidate stamp, to per-block support reviews and assessed claims.
 
 pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
     let dossier = load(case, task)?;
@@ -443,8 +520,11 @@ pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
     let mut outcome = "unreviewed";
     if let Some(d) = dossier {
         let review_stamp = candidate_stamp(case, task, candidate)?;
-        if let Some(review) = case.meta(&format!("claim_review:{task}:{review_stamp}"))? {
-            let review: Value = serde_json::from_str(&review)?;
+        let review: Option<Value> = case
+            .meta(&format!("claim_review:{task}:{review_stamp}"))?
+            .map(|v| serde_json::from_str(&v))
+            .transpose()?;
+        if let Some(review) = &review {
             for assessment in review["assessments"]
                 .as_array()
                 .context("Invalid saved review")?
@@ -463,28 +543,112 @@ pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
                 "No claim-level review is bound to this exact answer and evidence revision.".into(),
             );
         }
-        let answer_text = candidate["answer"].as_str().unwrap_or("");
-        let sentences: Vec<&str> = answer_text
-            .split(|c| c == '.' || c == '\n' || c == ';')
-            .map(str::trim)
-            .filter(|sentence| !sentence.is_empty())
-            .collect();
-        let mapped_citations: std::collections::HashSet<String> = d
+        let blocks: Vec<Block> = candidate["blocks"]
+            .as_array()
+            .map(|blocks| serde_json::from_value(Value::Array(blocks.clone())))
+            .transpose()?
+            .unwrap_or_default();
+        // Legacy claims saved before structured publication have empty ids and
+        // are deliberately unaddressable: blocks cannot bind to them.
+        let claim_ids: std::collections::HashSet<&str> = d
             .claims
             .iter()
-            .flat_map(|claim| claim.supporting.iter().chain(&claim.contrary).cloned())
+            .map(|claim| claim.id.as_str())
+            .filter(|id| !id.is_empty())
             .collect();
-        for claim in &d.claims {
-            let represented = {
-                let claim_tokens = content_tokens(&claim.proposition);
-                sentences.iter().any(|sentence| {
-                    let tokens = content_tokens(sentence);
-                    tokens.intersection(&claim_tokens).count() >= 2
-                })
-            };
-            if !represented {
+        let block_reviews: std::collections::HashMap<String, &Value> = review
+            .as_ref()
+            .and_then(|review| review["block_reviews"].as_array())
+            .map(|reviews| {
+                reviews
+                    .iter()
+                    .filter_map(|review| {
+                        review["block_id"].as_str().map(|id| (id.to_string(), review))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let supported_block = |block: &Block| {
+            block_reviews
+                .get(&block.id)
+                .is_some_and(|review| review["state"] == "supported")
+        };
+        let mut block_status = Vec::new();
+        let mut all_blocks_reviewed = !blocks.is_empty();
+        let mut all_factual_blocks_bound = !blocks.is_empty();
+        let mut carries_factual_block = false;
+        for block in &blocks {
+            let factual = block_kind_is_factual(&block.kind);
+            let mut bound = true;
+            if factual {
+                carries_factual_block = true;
+                if block.claims.is_empty() {
+                    gaps.push(format!(
+                        "Factual block {} asserts evidentiary content without referencing an assessed claim: {}",
+                        block.id, block.text
+                    ));
+                    bound = false;
+                }
+                for claim_id in &block.claims {
+                    if claim_id.is_empty() || !claim_ids.contains(claim_id.as_str()) {
+                        gaps.push(format!(
+                            "Block {} references unknown dossier claim: {claim_id}",
+                            block.id
+                        ));
+                        bound = false;
+                    }
+                }
+                if bound && !supported_block(block) {
+                    gaps.push(format!(
+                        "Factual block {} lacks a support review bound to this exact wording; it cannot inherit an earlier review of different wording.",
+                        block.id
+                    ));
+                    all_blocks_reviewed = false;
+                }
+                if !bound {
+                    all_factual_blocks_bound = false;
+                }
+            } else if !block.claims.is_empty() {
                 gaps.push(format!(
-                    "Assessed claim is not reflected in the final answer: {}",
+                    "Non-factual block {} references claims; only factual blocks carry assessed findings.",
+                    block.id
+                ));
+                all_factual_blocks_bound = false;
+            } else if !supported_block(block) {
+                gaps.push(format!(
+                    "Block {} (kind {}) lacks a review confirming it is a genuine {} disclosure rather than an unreviewed assertion.",
+                    block.id, block.kind, block.kind
+                ));
+                all_blocks_reviewed = false;
+            }
+            block_status.push(json!({
+                "id":block.id,"kind":block.kind,"text":block.text,"claims":block.claims,
+                "factual":factual,
+                "review":block_reviews.get(&block.id).map(|review| review["state"].clone()).unwrap_or(Value::Null),
+            }));
+        }
+        if !blocks.is_empty() && !carries_factual_block {
+            gaps.push(
+                "The structured answer contains no factual blocks restating the assessed findings; hypotheses and limitations alone cannot certify completion.".into(),
+            );
+        }
+        if blocks.is_empty() && !d.claims.is_empty() {
+            gaps.push(
+                "The final answer is unstructured free text; certification requires claim-bound answer blocks reviewed against this exact candidate. Legacy free-text responses stay readable but are never certified.".into(),
+            );
+        }
+        // Every supported dossier claim must be carried by at least one block;
+        // a purely structural check, no wording similarity involved.
+        for claim in &d.claims {
+            if claim.assessment == "supported_within_scope"
+                && !claim.id.is_empty()
+                && !blocks.iter().any(|block| {
+                    block_kind_is_factual(&block.kind)
+                        && block.claims.iter().any(|id| id == &claim.id)
+                })
+            {
+                gaps.push(format!(
+                    "Assessed claim is not represented by any answer block: {}",
                     claim.proposition
                 ));
             }
@@ -497,34 +661,6 @@ pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
                         "Final source list omits dossier evidence: {citation}"
                     ));
                 }
-            }
-        }
-        // Structural coverage (VL-008/009): the final prose must not add material
-        // factual assertions that were never represented in the support-review
-        // structure. Sentences are matched against assessed claims by content
-        // correspondence or by a citation the dossier already mapped; sentences
-        // that only qualify scope or disclose uncertainty pass without mapping.
-        // Unmatched material sentences stay visibly qualified as gaps instead of
-        // being silently accepted or forcing verbatim proposition repetition.
-        for (index, sentence) in sentences.iter().enumerate() {
-            if is_qualifier(sentence) {
-                continue;
-            }
-            let tokens = content_tokens(sentence);
-            if tokens.len() < 3 {
-                continue;
-            }
-            let covered_by_claim = d.claims.iter().any(|claim| {
-                let claim_tokens = content_tokens(&claim.proposition);
-                let overlap = tokens.intersection(&claim_tokens).count();
-                overlap >= 2 && overlap as f64 / tokens.len() as f64 >= 0.5
-            });
-            if !covered_by_claim && !citation_matches(sentence, &mapped_citations) {
-                gaps.push(format!(
-                    "Final answer sentence {} is not represented in the assessed claim structure: {}",
-                    index + 1,
-                    sentence
-                ));
             }
         }
         for check in d.checks.iter().filter(|c| c.state != "done") {
@@ -545,6 +681,10 @@ pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
             gaps.push("Evidence changed since the dossier assessment; recheck its claims and inspection obligations.".into());
         }
         if !stale
+            && !blocks.is_empty()
+            && all_factual_blocks_bound
+            && all_blocks_reviewed
+            && carries_factual_block
             && gaps.is_empty()
             && !citations.is_empty()
             && !d.checks.is_empty()
@@ -557,9 +697,13 @@ pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
         } else {
             outcome = "partial";
         }
-    } else {
-        gaps.push("No structured investigation contract was supplied; scope completion and claim support are unverified.".into());
+        gaps.sort();
+        gaps.dedup();
+        return Ok(
+            json!({"outcome":outcome,"gaps":gaps,"blocks":block_status,"structured":!blocks.is_empty(),"draft_hash":digest(candidate.to_string().as_bytes()),"evidence_stamp":stamp,"review":"AI-generated / not human reviewed","created_at":now()}),
+        );
     }
+    gaps.push("No structured investigation contract was supplied; scope completion and claim support are unverified.".into());
     if citations.is_empty() {
         gaps.push("No source citations supplied; this response does not establish an evidentiary finding.".into());
         outcome = "unreviewed";
@@ -567,6 +711,6 @@ pub fn completion(case: &Case, task: &str, candidate: &Value) -> Result<Value> {
     gaps.sort();
     gaps.dedup();
     Ok(
-        json!({"outcome":outcome,"gaps":gaps,"draft_hash":digest(candidate.to_string().as_bytes()),"evidence_stamp":stamp,"review":"AI-generated / not human reviewed","created_at":now()}),
+        json!({"outcome":outcome,"gaps":gaps,"blocks":[],"structured":false,"draft_hash":digest(candidate.to_string().as_bytes()),"evidence_stamp":stamp,"review":"AI-generated / not human reviewed","created_at":now()}),
     )
 }

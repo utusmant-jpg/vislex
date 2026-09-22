@@ -52,7 +52,19 @@
       "note": "Grammar: evidence:SOURCE#R<rev>L<a>-L<b> pinned to immutable extract_revisions (bounds validated against that revision's own text); legacy #L kept and labeled active-text; read_text/read_text_revision emit pinned locators; wording survives supersession, restart, backup/restore (tested). Schema-5 fixture genuinely drops extract_revisions before migration."
     },
     "R03": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "filled-at-commit",
+      "evidence": "src-tauri/tests/dossier.rs (heuristic tests replaced by adversarial structured-publication suite: laundering, paraphrase, edited-wording negation/numeric/entity/decimal, mixed blocks, non-factual smuggling, hypothesis-only, legacy no-id, tool-schema round trip); heuristics content_tokens/is_qualifier/citation_matches deleted from dossier.rs",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 33 passed (was 28; 3 flawed-invariant tests replaced per plan rules, 8 adversarial added)",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 130 passed, 0 failed, 22 ignored",
+        "npm test -> exit 0, 26 passed; npm run build -> exit 0",
+        "cargo clippy --tests -> no new warnings in changed code"
+      ],
+      "reviewer": "first adversarial review: FAIL with empirical probes (save_dossier schema blocker, strict-mode optional convention, non-factual smuggling, hypothesis-only certification, legacy empty-id binding); ALL fixed in-code with pinning tests; second-round items: reviewer also verified stamp binding, rendered-text indirection, replay resistance and legacy readability as sound",
+      "unrun_checks": "no live provider run of the new tool schemas (strict-mode acceptance verified against the codebase's required+nullable convention only); packaged-worker suite, native acceptance, visual checks NOT RUN",
+      "note": "Certification now requires: structured blocks, every factual block claim-bound and block-review-supported against the exact candidate stamp, every block kind-disciplined and reviewed, every supported claim carried by a factual block, all claims supported, checks done, citations present, evidence current. Prose-only answers: visible 'unstructured free text' gap, never certified. Old completions/dossiers remain readable (serde default ids; empty ids unaddressable)."
     },
     "R04": {
       "state": "pending"

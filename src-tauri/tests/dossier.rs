@@ -31,8 +31,26 @@ fn setup() -> (tempfile::TempDir, Case, String, String) {
 fn candidate(source: &str) -> Value {
     json!({"answer":"The witness reports three knocks.","citations":[format!("evidence:{source}#L1-L1")],"gaps":[]})
 }
+/// A structured final candidate: factual block bound to the assessed claim.
+fn structured_candidate(source: &str) -> Value {
+    json!({
+        "answer":"[Attributed statement] The witness reports three knocks.",
+        "citations":[format!("evidence:{source}#L1-L1")],
+        "gaps":[],
+        "blocks":[{"id":"b1","kind":"attributed_statement","text":"The witness reports three knocks.","claims":["claim-knocks"]}]
+    })
+}
+fn structured_review(source: &str, revision: u64, text: &str) -> Value {
+    json!({
+        "revision":revision,
+        "candidate":{"answer":format!("[Attributed statement] {text}"),"citations":[format!("evidence:{source}#L1-L1")],"gaps":[],
+            "blocks":[{"id":"b1","kind":"attributed_statement","text":text,"claims":["claim-knocks"]}]},
+        "assessments":[{"claim_index":0,"state":"supported","reason":"The cited first line attributes the statement to the witness."}],
+        "block_reviews":[{"block_id":"b1","state":"supported","reason":"This exact wording restates the assessed claim per the cited line."}]
+    })
+}
 fn plan(source: &str) -> Value {
-    json!({"revision":0,"scope":"Inspect the witness account; independent recordings are unavailable.","checks":[{"id":"read-report","description":"Read the original account","source_id":source,"tool":"read_text","state":"open","receipts":[],"reason":""}],"claims":[{"proposition":"The witness reports three knocks.","assessment":"supported_within_scope","supporting":[format!("evidence:{source}#L1-L1")],"contrary":[],"uncertainty":"This is an attributed account, not independent proof.","next_check":"Find a recording."}]})
+    json!({"revision":0,"scope":"Inspect the witness account; independent recordings are unavailable.","checks":[{"id":"read-report","description":"Read the original account","source_id":source,"tool":"read_text","state":"open","receipts":[],"reason":""}],"claims":[{"id":"claim-knocks","proposition":"The witness reports three knocks.","assessment":"supported_within_scope","supporting":[format!("evidence:{source}#L1-L1")],"contrary":[],"uncertainty":"This is an attributed account, not independent proof.","next_check":"Find a recording."}]})
 }
 #[test]
 fn changed_draft_and_evidence_require_new_review() {
@@ -111,16 +129,16 @@ fn inspected_checks_persist_and_reopen_after_changed_evidence() {
     p["checks"][0]["state"] = json!("done");
     p["checks"][0]["receipts"] = json!(["receipt"]);
     dossier::save(&mut c, &t, &p).unwrap();
-    let a = candidate(&s);
+    let a = structured_candidate(&s);
     assert_eq!(
         agent::execute_tool(&mut c, &t, "finish_task", &a).unwrap()["status"],
         "review_required"
     );
-    dossier::review_candidate(&mut c,&t,&json!({"revision":1,"candidate":a,"assessments":[{"claim_index":0,"state":"supported","reason":"The cited first line attributes the statement to the witness."}]})).unwrap();
-    assert_eq!(
-        dossier::completion(&c, &t, &candidate(&s)).unwrap()["outcome"],
-        "declared_checks_complete"
-    );
+    dossier::review_candidate(&mut c,&t,&structured_review(&s,1,"The witness reports three knocks.")).unwrap();
+    let completion = dossier::completion(&c, &t, &structured_candidate(&s)).unwrap();
+    assert_eq!(completion["outcome"], "declared_checks_complete");
+    assert_eq!(completion["structured"], true);
+    assert_eq!(completion["blocks"][0]["review"], "supported");
     drop(c);
     let mut c = Case::open(&dir.path().join("case")).unwrap();
     assert_eq!(
@@ -133,7 +151,7 @@ fn inspected_checks_persist_and_reopen_after_changed_evidence() {
         .unwrap();
     assert_eq!(dossier::view(&c, &t).unwrap()["stale"], true);
     assert_eq!(
-        dossier::completion(&c, &t, &candidate(&s)).unwrap()["outcome"],
+        dossier::completion(&c, &t, &structured_candidate(&s)).unwrap()["outcome"],
         "partial"
     );
 }
@@ -423,7 +441,7 @@ fn export_prepared_against_older_dossier_revision_fails_at_publish() {
     let prepared=evidence_desk::exports::prepare_dossier_bundle(&mut c,&t,&path).unwrap();
     // The dossier itself is revised (new claim) after preparation.
     let mut revised=plan(&s);revised["revision"]=json!(1);
-    revised["claims"].as_array_mut().unwrap().push(json!({"proposition":"A second observation.","assessment":"insufficient_evidence","supporting":[],"contrary":[],"uncertainty":"None yet.","next_check":"Inspect more."}));
+    revised["claims"].as_array_mut().unwrap().push(json!({"id":"claim-second","proposition":"A second observation.","assessment":"insufficient_evidence","supporting":[],"contrary":[],"uncertainty":"None yet.","next_check":"Inspect more."}));
     dossier::save(&mut c,&t,&revised).unwrap();
     let staged=evidence_desk::exports::write_dossier_bundle(&prepared,&path);
     let error=match evidence_desk::exports::publish_dossier_bundle(&mut c,&prepared,staged,&path){Err(e)=>e.to_string(),Ok(_)=>panic!("older revision unexpectedly published")};
@@ -444,40 +462,226 @@ fn document_export_pins_dependency_hashes_until_publication() {
     c.verify_audit().unwrap();
 }
 
+/// R03 — an unbound factual assertion never certifies, no matter which mapped
+/// citation it carries inline. finish_task rejects it outright, and a direct
+/// completion() call reports the same failure as a visible gap.
 #[test]
-fn unrepresented_material_assertions_in_final_prose_stay_visibly_qualified() {
+fn inline_citations_do_not_launder_unbound_factual_assertions() {
     let (_dir,mut c,s,t)=setup();
     dossier::save(&mut c,&t,&plan(&s)).unwrap();
-    // The final prose adds a material factual assertion no assessed claim covers.
-    let candidate=json!({"answer":"According to the statement, the witness reported three knocks. Separately, a red sedan was parked outside the building during the whole evening.","citations":[format!("evidence:{s}#L1-L1")],"gaps":[]});
-    let completion=dossier::completion(&c,&t,&candidate).unwrap();
+    let citation=format!("evidence:{s}#L1-L1");
+    let laundered=json!({
+        "answer":"The witness statement describes three knocks.",
+        "citations":[citation],
+        "gaps":[],
+        "blocks":[{"id":"b1","kind":"observation","text":format!("A separate instrument log entry appears at {citation}."),"claims":[]}]
+    });
+    let error=agent::execute_tool(&mut c,&t,"finish_task",&laundered).unwrap_err();
+    assert!(error.to_string().contains("must reference the dossier claims"),"{error}");
+    // Defense in depth: even a hand-built candidate cannot certify through
+    // completion() with an unbound factual block.
+    let completion=dossier::completion(&c,&t,&laundered).unwrap();
     let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
-    assert!(gaps.contains("not represented in the assessed claim structure"),"{gaps}");
-    assert!(gaps.contains("red sedan"),"{gaps}");
-    // The paraphrased first sentence itself needs no verbatim repetition.
+    assert!(gaps.contains("without referencing an assessed claim"),"{gaps}");
+    assert_ne!(completion["outcome"],"declared_checks_complete");
+}
+
+/// R03 — legitimate paraphrase is certifiable through structure: a block whose
+/// wording differs from the claim proposition is accepted because its review is
+/// bound to that exact wording and the referenced assessed claim — no verbatim
+/// repetition and no synonym threshold involved.
+#[test]
+fn paraphrased_factual_blocks_certify_through_structured_review() {
+    let (_dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    let paraphrase="Per the account given, three knocking sounds were reported by the witness.";
+    let a=json!({
+        "answer":format!("[Attributed statement] {paraphrase}"),
+        "citations":[format!("evidence:{s}#L1-L1")],
+        "gaps":[],
+        "blocks":[{"id":"b1","kind":"attributed_statement","text":paraphrase,"claims":["claim-knocks"]}]
+    });
+    assert_eq!(agent::execute_tool(&mut c,&t,"finish_task",&a).unwrap()["status"],"review_required");
+    let review=json!({
+        "revision":1,
+        "candidate":a,
+        "assessments":[{"claim_index":0,"state":"supported","reason":"The cited first line attributes the statement to the witness."}],
+        "block_reviews":[{"block_id":"b1","state":"supported","reason":"Paraphrase restates the assessed claim per the cited line."}]
+    });
+    dossier::review_candidate(&mut c,&t,&review).unwrap();
+    let completion=dossier::completion(&c,&t,&review["candidate"]).unwrap();
+    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+    assert!(!gaps.contains("not represented"),"{gaps}");
     assert!(!gaps.contains("verbatim"),"{gaps}");
+    assert!(!gaps.contains("lacks a support review"),"{gaps}");
+    assert_eq!(completion["blocks"][0]["review"],"supported");
+    // The open inspection obligation still keeps the outcome partial; only the
+    // wording path is certified here.
+    assert_eq!(completion["outcome"],"partial");
+    assert!(gaps.contains("open: Read the original account"),"{gaps}");
 }
 
+/// R03 — edited factual wording never inherits an earlier review: negation,
+/// numeric, entity and decimal-time variants of a reviewed block all produce a
+/// different candidate stamp, so the bound review no longer applies.
 #[test]
-fn paraphrased_claims_and_qualifiers_do_not_require_verbatim_repetition() {
+fn edited_wording_never_inherits_the_bound_review() {
     let (_dir,mut c,s,t)=setup();
     dossier::save(&mut c,&t,&plan(&s)).unwrap();
-    let candidate=json!({"answer":"Per the account given, three knocks were reported by the witness. The timing remains uncertain and this is machine-transcript text.","citations":[format!("evidence:{s}#L1-L1")],"gaps":[]});
-    let completion=dossier::completion(&c,&t,&candidate).unwrap();
-    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
-    assert!(!gaps.contains("not reflected in the final answer"),"{gaps}");
-    assert!(!gaps.contains("not represented in the assessed claim structure"),"{gaps}");
+    let original="The witness reports three knocks.";
+    assert_eq!(agent::execute_tool(&mut c,&t,"finish_task",&structured_candidate(&s)).unwrap()["status"],"review_required");
+    dossier::review_candidate(&mut c,&t,&structured_review(&s,1,original)).unwrap();
+    for altered in [
+        "The witness did not report three knocks.",
+        "The witness reports four knocks.",
+        "The guard reports three knocks.",
+        "The witness reports three knocks at 14.5 seconds.",
+    ] {
+        let edited=json!({
+            "answer":format!("[Attributed statement] {altered}"),
+            "citations":[format!("evidence:{s}#L1-L1")],
+            "gaps":[],
+            "blocks":[{"id":"b1","kind":"attributed_statement","text":altered,"claims":["claim-knocks"]}]
+        });
+        let completion=dossier::completion(&c,&t,&edited).unwrap();
+        let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+        assert!(
+            gaps.contains("No claim-level review is bound to this exact answer"),
+            "for {altered}: {gaps}"
+        );
+        assert_ne!(completion["outcome"],"declared_checks_complete","for {altered}");
+    }
+    // The unedited candidate still has its bound review.
+    let completion=dossier::completion(&c,&t,&structured_candidate(&s)).unwrap();
+    assert!(!serde_json::to_string(&completion["gaps"]).unwrap().contains("No claim-level review"));
 }
 
+/// R03 — mixed supported/unsupported factual blocks block certification, and an
+/// unsupported factual block cannot even be recorded as supported without a
+/// claim reference.
 #[test]
-fn sentences_citing_mapped_dossier_evidence_count_as_represented() {
+fn unsupported_factual_blocks_block_certification() {
     let (_dir,mut c,s,t)=setup();
     let mut p=plan(&s);
-    p["claims"].as_array_mut().unwrap().push(json!({"proposition":"A recording corroborates the knocks.","assessment":"supported_within_scope","supporting":[format!("evidence:{s}#L1-L1")],"contrary":[],"uncertainty":"None noted.","next_check":"Listen again."}));
+    p["claims"].as_array_mut().unwrap().push(json!({"id":"claim-sedan","proposition":"A red sedan was parked outside.","assessment":"supported_within_scope","supporting":[format!("evidence:{s}#L1-L1")],"contrary":[],"uncertainty":"None noted.","next_check":"Check again."}));
     dossier::save(&mut c,&t,&p).unwrap();
-    let citation=format!("evidence:{s}#L1-L1");
-    let candidate=json!({"answer":format!("The witness statement describes three knocks. A separate instrument log entry appears at {citation}."), "citations":[citation],"gaps":[]});
-    let completion=dossier::completion(&c,&t,&candidate).unwrap();
+    let a=json!({
+        "answer":"[Attributed statement] The witness reports three knocks.\n\n[Observation] A red sedan was parked outside.",
+        "citations":[format!("evidence:{s}#L1-L1")],
+        "gaps":[],
+        "blocks":[
+            {"id":"b1","kind":"attributed_statement","text":"The witness reports three knocks.","claims":["claim-knocks"]},
+            {"id":"b2","kind":"observation","text":"A red sedan was parked outside.","claims":["claim-sedan"]}
+        ]
+    });
+    assert_eq!(agent::execute_tool(&mut c,&t,"finish_task",&a).unwrap()["status"],"review_required");
+    let review=json!({
+        "revision":1,
+        "candidate":a,
+        "assessments":[
+            {"claim_index":0,"state":"supported","reason":"Line 1 supports it."},
+            {"claim_index":1,"state":"supported","reason":"Line 1 does not actually mention any sedan."}
+        ],
+        "block_reviews":[
+            {"block_id":"b1","state":"supported","reason":"Matches the assessed claim."},
+            {"block_id":"b2","state":"unsupported","reason":"The cited line mentions no sedan."}
+        ]
+    });
+    dossier::review_candidate(&mut c,&t,&review).unwrap();
+    let completion=dossier::completion(&c,&t,&review["candidate"]).unwrap();
     let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
-    assert!(!gaps.contains("not represented in the assessed claim structure"),"{gaps}");
+    assert!(gaps.contains("lacks a support review bound to this exact wording"),"{gaps}");
+    assert_ne!(completion["outcome"],"declared_checks_complete");
+    assert_eq!(completion["blocks"][1]["review"],"unsupported");
+}
+
+/// R03 — non-factual blocks cannot smuggle unreviewed assertions (the old
+/// qualifier-substring bypass, now a kind label that still requires review),
+/// cannot carry claim references, and a hypothesis-only answer never certifies.
+#[test]
+fn non_factual_blocks_cannot_smuggle_assertions_or_claims() {
+    let (_dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    // An unreviewed limitation block carrying an identity assertion.
+    let smuggle=json!({
+        "answer":"[Attributed statement] The witness reports three knocks.
+
+[Limitation] John Smith was the person entering at 14:32:05.",
+        "citations":[format!("evidence:{s}#L1-L1")],
+        "gaps":[],
+        "blocks":[
+            {"id":"b1","kind":"attributed_statement","text":"The witness reports three knocks.","claims":["claim-knocks"]},
+            {"id":"b2","kind":"limitation","text":"John Smith was the person entering at 14:32:05.","claims":[]}
+        ]
+    });
+    let completion=dossier::completion(&c,&t,&smuggle).unwrap();
+    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+    assert!(gaps.contains("lacks a review confirming it is a genuine limitation"),"{gaps}");
+    assert_ne!(completion["outcome"],"declared_checks_complete");
+    // A limitation block trying to satisfy the carrying check via claims.
+    let carrying=json!({
+        "answer":"[Limitation] Timing is uncertain.",
+        "citations":[format!("evidence:{s}#L1-L1")],
+        "gaps":[],
+        "blocks":[{"id":"b1","kind":"limitation","text":"Timing is uncertain.","claims":["claim-knocks"]}]
+    });
+    let error=agent::execute_tool(&mut c,&t,"finish_task",&carrying).unwrap_err();
+    assert!(error.to_string().contains("cannot reference claims"),"{error}");
+    // A hypothesis-only structured answer never certifies even when reviewed.
+    let hypo=json!({
+        "answer":"[Hypothesis] A recording may exist.",
+        "citations":[format!("evidence:{s}#L1-L1")],
+        "gaps":[],
+        "blocks":[{"id":"b1","kind":"hypothesis","text":"A recording may exist.","claims":[]}]
+    });
+    let completion=dossier::completion(&c,&t,&hypo).unwrap();
+    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+    assert!(gaps.contains("no factual blocks"),"{gaps}");
+    assert_ne!(completion["outcome"],"declared_checks_complete");
+}
+
+/// R03 — dossiers stored before structured publication (claims without ids)
+/// stay readable, but no block can bind to their unaddressable claims.
+#[test]
+fn legacy_claimless_id_dossiers_stay_readable_but_unaddressable() {
+    let (_dir,mut c,s,t)=setup();
+    // Simulate a pre-R03 stored dossier: no claim ids.
+    let stored=plan(&s);
+    let legacy=json!({"revision":stored["revision"],"scope":stored["scope"],"checks":stored["checks"],"claims":[{"proposition":"The witness reports three knocks.","assessment":"supported_within_scope","supporting":[format!("evidence:{s}#L1-L1")],"contrary":[],"uncertainty":"None.","next_check":"None."}]});
+    c.set_meta(&format!("dossier:{t}"),&legacy.to_string()).unwrap();
+    assert!(dossier::load(&c,&t).unwrap().is_some(), "legacy dossier remains readable");
+    let a=json!({
+        "answer":"[Attributed statement] The witness reports three knocks.",
+        "citations":[format!("evidence:{s}#L1-L1")],
+        "gaps":[],
+        "blocks":[{"id":"b1","kind":"attributed_statement","text":"The witness reports three knocks.","claims":[""]}]
+    });
+    let completion=dossier::completion(&c,&t,&a).unwrap();
+    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+    assert!(gaps.contains("unknown dossier claim"),"{gaps}");
+    assert_ne!(completion["outcome"],"declared_checks_complete");
+}
+
+/// R03 — the agent save_dossier path accepts the schema shape (stable claim
+/// ids) and a full structured publication round-trips through the tools.
+#[test]
+fn save_dossier_tool_round_trips_claim_ids() {
+    let (_dir,mut c,s,t)=setup();
+    let p=plan(&s); // revision 0 = initial declaration, exactly the tool schema.
+    let saved=agent::execute_tool(&mut c,&t,"save_dossier",&p).unwrap();
+    assert_eq!(saved["dossier"]["revision"],1);
+    assert_eq!(saved["dossier"]["claims"][0]["id"],"claim-knocks");
+}
+
+/// R03 — legacy free-text answers stay readable but never certify once a
+/// dossier exists; the completion says exactly why.
+#[test]
+fn legacy_free_text_with_dossier_stays_visible_and_uncertified() {
+    let (_dir,mut c,s,t)=setup();
+    dossier::save(&mut c,&t,&plan(&s)).unwrap();
+    let completion=dossier::completion(&c,&t,&candidate(&s)).unwrap();
+    let gaps=serde_json::to_string(&completion["gaps"]).unwrap();
+    assert!(gaps.contains("unstructured free text"),"{gaps}");
+    assert_eq!(completion["structured"],false);
+    assert_ne!(completion["outcome"],"declared_checks_complete");
 }
