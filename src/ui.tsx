@@ -288,6 +288,8 @@ export function CopyButton({ text, label, small }: { text: string; label?: strin
 /* -------------------------------- citations --------------------------------- */
 
 export function citationLabel(locator: string): string {
+  const pinned = /^R(\d+)L(\d+)-L(\d+)$/.exec(locator);
+  if (pinned) return `rev ${pinned[1]} · ${pinned[2]}–${pinned[3]}`;
   if (/^L\d+-L\d+$/.test(locator)) return locator.replaceAll('L', '');
   if (locator === 'image') return 'Image';
   if (locator === 'media') return 'Media';
@@ -306,7 +308,9 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
   useEffect(() => () => window.clearTimeout(timer.current), []);
   if (!parts) return <span className="citation-raw">{value}</span>;
   const lineMatch = /^L(\d+)-L(\d+)$/.exec(parts.locator);
-  const startLine = lineMatch ? Number(lineMatch[1]) : null;
+  const pinnedMatch = /^R(\d+)L([1-9]\d*)-L[1-9]\d*$/.exec(parts.locator);
+  const startLine = lineMatch ? Number(lineMatch[1]) : pinnedMatch ? Number(pinnedMatch[2]) : null;
+  const pinnedRevision = pinnedMatch ? Number(pinnedMatch[1]) : null;
   const supported = previewable && startLine !== null;
   return <span className="citation-host">
     <button
@@ -334,7 +338,12 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
   function loadPreview() {
     if (startLine === null) return;
     setPreview('loading');
-    api<{ text: string; start: number }>('read_text', { source_id: parts!.sourceId, start: startLine, count: 10 })
+    // Hover previews show the pinned revision's wording for R-form citations,
+    // so a superseded extraction cannot silently preview as current text.
+    const request = pinnedRevision !== null
+      ? api<{ text: string; start: number }>('read_extract_revision', { source_id: parts!.sourceId, revision: pinnedRevision, start: startLine, count: 10 })
+      : api<{ text: string; start: number }>('read_text', { source_id: parts!.sourceId, start: startLine, count: 10 });
+    request
       .then(page => {
         const lines = page.text.split('\n').map((text, offset) => ({ number: page.start + offset, text })).filter(line => line.text.trim());
         setPreview({ lines: lines.slice(0, 8) });

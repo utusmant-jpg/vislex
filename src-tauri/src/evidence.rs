@@ -85,16 +85,23 @@ impl EvidenceLocator {
                 line_start,
                 line_end,
             } => {
-                let recorded: bool = case.db.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM extract_revisions WHERE source_id=? AND revision=?)",
+                // The locator is bound to one immutable extraction revision: its
+                // bounds must resolve against THAT revision's text, never the
+                // active extraction row (which a later publication may replace).
+                let text: Option<String> = case.db.query_row(
+                    "SELECT text FROM extract_revisions WHERE source_id=? AND revision=?",
                     params![source_id, extraction_revision],
                     |r| r.get(0),
                 )?;
                 ensure!(
-                    recorded && *extraction_revision >= 1 && *line_start > 0 && line_end >= line_start,
+                    text.is_some() && *extraction_revision >= 1 && *line_start > 0 && line_end >= line_start,
                     "Unknown extraction revision or invalid text location"
                 );
-                case.validate_citation(&format!("evidence:{source_id}#L{line_start}-L{line_end}"))?;
+                let total_lines = text.unwrap().lines().count();
+                ensure!(
+                    *line_end <= total_lines as u64,
+                    "Text location extends beyond extraction revision {extraction_revision}"
+                );
             }
             Self::Artifact {
                 source_id,

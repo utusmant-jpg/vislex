@@ -19,7 +19,7 @@ export type Revision = { revision: number; title: string; content: string; actor
 
 export type Selection = { type: 'source' | 'record'; id: string; locator?: string } | null;
 
-export type TextPage = { text: string; start: number; end: number; total_lines: number; locator: string; truncated_long_lines: boolean };
+export type TextPage = { text: string; start: number; end: number; total_lines: number; revision: number; historical?: boolean; locator: string; truncated_long_lines: boolean };
 
 export type Action = { id: string; name: string; input: string; output: string; status: string; created_at: string };
 

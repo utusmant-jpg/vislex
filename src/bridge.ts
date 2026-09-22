@@ -71,7 +71,7 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
 
   else if (!demo) throw new Error('Open the synthetic sample, or run the desktop app for real case storage.');
 
-  else if (action === 'read_text') { const lines = sampleText.split('\n'); const start = Number(args.start ?? 1); const end = Math.min(start - 1 + Number(args.count ?? 200), lines.length); result = { text: lines.slice(start - 1, end).join('\n'), start, end, total_lines: lines.length, locator: `evidence:demo-statement#L${start}-L${end}`, truncated_long_lines: false }; }
+  else if (action === 'read_text') { const lines = sampleText.split('\n'); const start = Number(args.start ?? 1); const end = Math.min(start - 1 + Number(args.count ?? 200), lines.length); result = { text: lines.slice(start - 1, end).join('\n'), start, end, total_lines: lines.length, revision: 1, locator: `evidence:demo-statement#R1L${start}-L${end}`, truncated_long_lines: false }; }
 
   else if (action === 'search') { result = { results: sampleText.toLowerCase().includes(String(args.query).toLowerCase()) ? [{ source_id: demoSource.id, name: demoSource.name, excerpt: sampleText.split('\n').filter(s => s.toLowerCase().includes(String(args.query).toLowerCase())).join(' … ') }] : [], next_offset: null }; }
 
@@ -94,6 +94,8 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
 
   else if (action === 'revisions') { const r = demo.records.find(r => r.id === args.record_id); result = r ? [{ ...r, reason: 'Browser sample — history is not persisted', created_at: r.updated_at }] : []; }
 
+  else if (action === 'read_extract_revision') { if (Number(args.revision) !== 1) throw new Error('Unknown extraction revision'); const lines = sampleText.split('\n'); const start = Number(args.start ?? 1); const end = Math.min(start - 1 + Number(args.count ?? 200), lines.length); result = { text: lines.slice(start - 1, end).join('\n'), start, end, total_lines: lines.length, revision: 1, historical: true, truncated_long_lines: false, locator: `evidence:demo-statement#R1L${start}-L${end}` }; }
+
   else if (action === 'actions') result = [];
 
   else throw new Error('This operation requires the native desktop app. The browser sample never accesses files or sends evidence.');
@@ -108,7 +110,7 @@ export function formatBytes(bytes: number) { if (bytes >= 1024 ** 3) return `${(
 
 export function citationParts(value: string): { sourceId: string; locator: string } | null {
 
-  const match = /^evidence:([a-zA-Z0-9-]+)#(L\d+-L\d+|image|media|artifact:[a-zA-Z0-9-]+)$/.exec(value);
+  const match = /^evidence:([a-zA-Z0-9-]+)#(R[1-9]\d*L[1-9]\d*-L[1-9]\d*|L\d+-L\d+|image|media|artifact:[a-zA-Z0-9-]+)$/.exec(value);
 
   return match ? { sourceId: match[1], locator: match[2] } : null;
 

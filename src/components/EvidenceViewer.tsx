@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { api, evidenceUrl, formatBytes } from '../bridge';
 import type { Source, TextPage } from '../types';
+import { parsePinnedTextLocator } from '../citationLocator';
 import FullTranscript from './FullTranscript';
 import RedactionPanel from './RedactionPanel';
 import VideoDiscovery from './VideoDiscovery';
@@ -142,6 +143,8 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const [pendingSeek, setPendingSeek] = useState<number | null>(null);
   useEffect(() => { if (pendingSeek !== null && media.current?.readyState) { media.current.currentTime = pendingSeek; setCurrentTime(pendingSeek); setPendingSeek(null); } }, [pendingSeek]);
   const requestedTime = locator?.startsWith('time:') ? Number(locator.slice(5)) : null;
+  const pinnedText = parsePinnedTextLocator(locator);
+  const requestedRevision = pinnedText?.revision ?? null;
   const requestedPage = locator?.startsWith('page:') ? Number(locator.slice(5)) : null;
   const [page, setPage] = useState<TextPage | null>(null);
   const [error, setError] = useState('');
@@ -158,7 +161,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const [playback, setPlayback] = useState<string | null>(null);
   const [needsProxy, setNeedsProxy] = useState(/\.avi$/i.test(source.name));
   const [filmstrip, setFilmstrip] = useState<{ artifact: string; time: number }[] | null>(null);
-  const [askChip, setAskChip] = useState<{ x: number; y: number; a: number; b: number } | null>(null);
+  const [askChip, setAskChip] = useState<{ x: number; y: number; a: number; b: number; revision: number } | null>(null);
 
   // PDF continuous-scroll state
   const [pdfCount, setPdfCount] = useState<number | null>(null);
@@ -226,7 +229,8 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   }, [derived]);
 
   useEffect(() => {
-    if (locator?.startsWith('L')) { setShowText(true); setDerived(null); setStart(Number(/^L(\d+)/.exec(locator)?.[1] ?? 1)); }
+    if (locator?.startsWith('L')) { setShowText(true); setDerived(null); setStart(Number(/^L(\d+)/.exec(locator ?? '')?.[1] ?? 1)); }
+    else if (parsePinnedTextLocator(locator)) { setShowText(true); setDerived(null); setStart(parsePinnedTextLocator(locator)!.start); }
     else if (locator?.startsWith('artifact:')) { setDerived(locator.slice(9)); setShowText(false); }
     else { setDerived(null); setShowText(source.kind === 'text' || (source.kind === 'other' && source.status.startsWith('text'))); setStart(1); }
   }, [locator, source.id, source.kind, source.status]);
@@ -235,9 +239,14 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
 
   useEffect(() => {
     let active = true; setPage(null);
-    if (showText) api<TextPage>('read_text', { source_id: source.id, start, count: 200 }).then(value => { if (active) { setPage(value); setError(''); } }).catch(e => { if (active) setError(String(e)); });
+    if (showText) {
+      const request = requestedRevision !== null
+        ? api<TextPage>('read_extract_revision', { source_id: source.id, revision: requestedRevision, start, count: 200 })
+        : api<TextPage>('read_text', { source_id: source.id, start, count: 200 });
+      request.then(value => { if (active) { setPage(value); setError(''); } }).catch(e => { if (active) setError(String(e)); });
+    }
     return () => { active = false; };
-  }, [source.id, source.kind, start, showText, source.status]);
+  }, [source.id, source.kind, start, showText, source.status, requestedRevision]);
 
   useEffect(() => {
     if (requestedTime != null && media.current?.readyState && Number.isFinite(requestedTime)) media.current.currentTime = requestedTime;
@@ -268,7 +277,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       if (selection.containsNode(element, true) && element.textContent) numbers.push(Number(element.dataset.line));
     }
     if (!numbers.length) { setAskChip(null); return; }
-    setAskChip({ x: event.clientX, y: event.clientY, a: Math.min(...numbers), b: Math.max(...numbers) });
+    setAskChip({ x: event.clientX, y: event.clientY, a: Math.min(...numbers), b: Math.max(...numbers), revision: page?.revision ?? 1 });
   }
 
   const totalPdfPages = pdfCount ?? Math.max((requestedPage ?? 1) + 4, 12);
@@ -306,6 +315,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
 
       {showText && page === null && !error ? <div className="document-page"><Skeleton /></div> : null}
       {showText && page ? <article className="document-page" onMouseUp={onTextSelect}>
+        {page.historical ? <p className="small muted historical-notice" role="note">Historical extraction revision {page.revision} — superseded wording preserved; this is not the current active text.</p> : null}
         <h2>{source.name.replace(/^\d+ · /, '')}</h2>
         <div className="doc-rule" />
         <div className="text-lines">
@@ -372,7 +382,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
 
     {askChip ? <div className="ask-chip" style={{ left: askChip.x, top: askChip.y }} role="toolbar" aria-label="Selection actions">
       <button onClick={() => { onLocatorSelect(`L${askChip.a}-L${askChip.b}`); setAskChip(null); window.dispatchEvent(new CustomEvent('vislex:focus-composer')); }}><AArrowDown size={13} />Ask about L{askChip.a}–L{askChip.b}</button>
-      <button onClick={() => { void navigator.clipboard.writeText(`evidence:${source.id}#L${askChip.a}-L${askChip.b}`); setAskChip(null); }}>Copy citation</button>
+      <button onClick={() => { void navigator.clipboard.writeText(`evidence:${source.id}#R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); }}>Copy citation (rev {askChip.revision})</button>
     </div> : null}
 
     {['video', 'audio'].includes(source.kind) && !showText && !derived ? <MediaControls media={media} filmstrip={source.kind === 'video' ? filmstrip : null} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} /> : null}
@@ -385,7 +395,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     </details> : null}
     {page ? <div className="locator-bar">
       <button className="quiet" onClick={() => run(async () => { await navigator.clipboard.writeText(page.locator); })}>Copy evidence link</button>
-      <code>L{page.start}–L{page.end} / {page.total_lines}</code>
+      <code>{page.historical ? `rev ${page.revision} · ` : ''}L{page.start}–L{page.end} / {page.total_lines}</code>
       <div className="spacer" />
       <Tooltip text="Previous 200 lines"><button className="icon-button" aria-label="Previous lines" disabled={start === 1} onClick={() => setStart(value => Math.max(1, value - 200))}><ChevronsLeft size={16} /></button></Tooltip>
       <Tooltip text="Next 200 lines"><button className="icon-button" aria-label="Next lines" disabled={page.end >= page.total_lines} onClick={() => setStart(page.end + 1)}><ChevronsRight size={16} /></button></Tooltip>

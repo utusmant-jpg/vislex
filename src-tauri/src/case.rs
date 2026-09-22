@@ -478,7 +478,10 @@ impl Case {
         let lines: Vec<_> = text.lines().collect();
         ensure!(start <= lines.len().max(1), "Line outside revision");
         let end = (start - 1 + count).min(lines.len());
-        Ok(json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].join("\n"),"historical":true}))
+        // Same long-line bound and truncation reporting as the active-text read
+        // path, so a pathological single-line revision cannot balloon payloads.
+        let window = &lines[start - 1..end];
+        Ok(json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":window.iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"historical":true,"truncated_long_lines":window.iter().any(|s|s.chars().count()>2000),"locator":format!("evidence:{source_id}#R{revision}L{start}-L{end}")}))
     }
     pub fn import_files(&mut self, paths: &[String], production: &str) -> Result<Value> {
         ensure!(
@@ -642,7 +645,7 @@ impl Case {
         ensure!(start <= lines.len().max(1), "Line outside source");
         let end = (start - 1 + count).min(lines.len());
         Ok(
-            json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"locator":format!("evidence:{source_id}#L{start}-L{end}"),"truncated_long_lines":lines[start-1..end].iter().any(|s|s.chars().count()>2000)}),
+            json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"locator":format!("evidence:{source_id}#R{revision}L{start}-L{end}"),"truncated_long_lines":lines[start-1..end].iter().any(|s|s.chars().count()>2000)}),
         )
     }
     pub fn search(&self, query: &str, offset: usize) -> Result<Value> {
@@ -1006,6 +1009,11 @@ impl Case {
             .split_once('#')
             .context("Citation requires an exact locator")?;
         let s = self.source(source_id)?;
+        // Which immutable extraction revision the line bounds resolve against.
+        // `R<rev>L a-b` pins the revision; bare `L a-b` is the legacy/active-text
+        // form (a navigation address whose meaning moves with the active row).
+        let mut revision_binding = "active-text";
+        let mut pinned_revision: Option<i64> = None;
         if let Some(artifact_id) = loc.strip_prefix("artifact:") {
             let (owner, _, _, _) = crate::processing::artifact(self, artifact_id)?;
             ensure!(owner == source_id, "Artifact belongs to another source");
@@ -1014,6 +1022,25 @@ impl Case {
         } else if loc == "image" {
             ensure!(s.kind == "image", "Source is not an image");
             self.verify_source(source_id)?;
+        } else if let Some(lines) = loc.strip_prefix('R') {
+            let (rev, rest) = lines.split_once('L').context("Use R2L1-L3 syntax")?;
+            let rev = canonical_locator_number(rev).context("Use R2L1-L3 syntax")?;
+            ensure!(rev >= 1, "Invalid extraction revision");
+            let (a, b) = rest.split_once("-L").context("Use R2L1-L3 syntax")?;
+            let a = canonical_locator_number(a).context("Use R2L1-L3 syntax")? as usize;
+            let b = canonical_locator_number(b).context("Use R2L1-L3 syntax")? as usize;
+            ensure!(b >= a && b - a < 200, "Invalid line interval");
+            // Pinned citations verify the original bytes exactly like the
+            // legacy form does; the wording itself is checked against the
+            // immutable revision below.
+            self.verify_source(source_id)?;
+            let result = self.read_text_revision(source_id, rev as i64, a, b - a + 1)?;
+            ensure!(
+                result["end"].as_u64() == Some(b as u64),
+                "Citation extends beyond extraction revision"
+            );
+            revision_binding = "pinned";
+            pinned_revision = Some(rev as i64);
         } else if let Some(lines) = loc.strip_prefix('L') {
             let (a, b) = lines.split_once("-L").context("Use L1-L3 syntax")?;
             let a: usize = a.parse()?;
@@ -1024,11 +1051,12 @@ impl Case {
                 result["end"].as_u64() == Some(b as u64),
                 "Citation extends beyond source"
             );
+            pinned_revision = result["revision"].as_i64();
         } else {
             bail!("This locator type is not implemented yet");
         }
         Ok(
-            json!({"valid":true,"source_id":source_id,"name":s.name,"citation":citation,"support":"Locator verified; evidentiary support requires review"}),
+            json!({"valid":true,"source_id":source_id,"name":s.name,"citation":citation,"revision":pinned_revision,"revision_binding":revision_binding,"support":"Locator verified; evidentiary support requires review"}),
         )
     }
     pub fn export_record(&mut self, record_id: &str, destination: &Path) -> Result<()> {
@@ -1079,6 +1107,20 @@ pub fn safe_relative(path: &Path) -> bool {
         && path.components().all(|c| matches!(c, Component::Normal(_)))
         && !path.to_string_lossy().contains(':')
         && !path.to_string_lossy().contains('\\')
+}
+
+/// Canonical nonnegative integer for serialized citation locators: ASCII digits
+/// only, no sign and no leading zeros, so one location has exactly one spelling
+/// on both the Rust and TypeScript grammars.
+pub fn canonical_locator_number(text: &str) -> Option<u64> {
+    if text.is_empty()
+        || text.len() > 18
+        || !text.bytes().all(|b| b.is_ascii_digit())
+        || text.starts_with('0')
+    {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// Prepared outside the database writer lock. Fields remain private to the importer.

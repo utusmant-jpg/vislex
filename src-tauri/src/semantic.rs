@@ -47,10 +47,10 @@ pub fn publish(case:&mut Case,job:&SearchJob,result:Value)->Result<Value> {
     let terms=job.query.to_lowercase().split_whitespace().map(str::to_owned).collect::<Vec<_>>();
     let mut rows=vec![];
     for source in &job.scope {
-        let mut statement=case.db.prepare("SELECT p.line,p.text,p.vector,p.truncated FROM semantic_passages p JOIN extracts e ON e.source_id=p.source_id AND e.revision=p.revision WHERE p.source_id=? AND p.model=?")?;
-        for row in statement.query_map(params![source,MODEL],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?)))? {
-            let (line,text,raw,truncated)=row?;let values=vector(&serde_json::from_str(&raw)?)?;let score=query.iter().zip(values).map(|(a,b)|a*b).sum::<f64>();let lower=text.to_lowercase();let lexical=terms.iter().filter(|term|lower.contains(term.as_str())).count();
-            rows.push((score,lexical,json!({"source_id":source,"name":case.source(source)?.name,"locator":format!("evidence:{source}#L{line}-L{line}"),"excerpt":text,"embedding_truncated":truncated,"semantic_similarity":score})));
+        let mut statement=case.db.prepare("SELECT p.line,p.text,p.vector,p.truncated,p.revision FROM semantic_passages p JOIN extracts e ON e.source_id=p.source_id AND e.revision=p.revision WHERE p.source_id=? AND p.model=?")?;
+        for row in statement.query_map(params![source,MODEL],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,i64>(4)?)))? {
+            let (line,text,raw,truncated,revision)=row?;let values=vector(&serde_json::from_str(&raw)?)?;let score=query.iter().zip(values).map(|(a,b)|a*b).sum::<f64>();let lower=text.to_lowercase();let lexical=terms.iter().filter(|term|lower.contains(term.as_str())).count();
+            rows.push((score,lexical,json!({"source_id":source,"name":case.source(source)?.name,"revision":revision,"locator":format!("evidence:{source}#R{revision}L{line}-L{line}"),"excerpt":text,"embedding_truncated":truncated,"semantic_similarity":score})));
         }
     }
     let mut semantic=(0..rows.len()).collect::<Vec<_>>();semantic.sort_by(|a,b|rows[*b].0.total_cmp(&rows[*a].0));let mut lexical=semantic.clone();lexical.sort_by_key(|i|std::cmp::Reverse(rows[*i].1));

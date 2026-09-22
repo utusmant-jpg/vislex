@@ -8,6 +8,16 @@ describe('parseBlocks', () => {
     expect(splitCitations('See evidence:demo-statement#L5-L7 now')).toEqual(['See ', 'evidence:demo-statement#L5-L7', ' now']);
   });
 
+  // R02 — revision-pinned citation chips render exactly like legacy ones and
+  // never split mid-token. Mirrors the Rust grammar fixtures.
+  it('keeps revision-pinned citation tokens intact', () => {
+    const blocks = parseBlocks('Finding.\nSee evidence:demo-statement#R2L5-L7 for the claim.');
+    expect(blocks).toEqual([{ kind: 'paragraph', text: 'Finding.\nSee evidence:demo-statement#R2L5-L7 for the claim.' }]);
+    expect(splitCitations('See evidence:demo-statement#R2L5-L7 now')).toEqual(['See ', 'evidence:demo-statement#R2L5-L7', ' now']);
+    expect(splitCitations('Mixed evidence:demo-statement#L1-L1 and evidence:demo-statement#R12L3-L4 end'))
+      .toEqual(['Mixed ', 'evidence:demo-statement#L1-L1', ' and ', 'evidence:demo-statement#R12L3-L4', ' end']);
+  });
+
   it('parses headings, lists and rules', () => {
     const blocks = parseBlocks('# Findings\n\n- one\n- two\n\n---\n\n1. first\n2. second');
     expect(blocks).toEqual([
