@@ -4,7 +4,21 @@
   "meaning": "pending = proposed; implemented = code exists but acceptance incomplete; verified = specified task evidence recorded, not product certification; blocked requires reason. Edit manually, never infer from test counts.",
   "tasks": {
     "R00": {
-      "state": "pending"
+      "state": "verified",
+      "evidence": "docs/implementation/BASELINE-2026-09-21.md",
+      "environment": "Windows 10.0.26200 x64; Python 3.11.15; node 24.14.1/npm 11.11.0; rustc/cargo 1.98.1",
+      "commands": [
+        "python -m unittest discover -s scripts -p test_vislex_plan.py -> exit 0, 10 tests",
+        "python scripts/vislex_plan.py check -> exit 0",
+        "npm ci -> exit 0 (after clearing stale esbuild service lock; see baseline report)",
+        "npm test -> exit 0, 20 passed",
+        "npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 115 passed, 0 failed, 22 ignored",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0"
+      ],
+      "unrun_checks": "21 sandbox.rs + 1 discovery.rs packaged-worker tests ignored; native-acceptance.ps1, packaged journey, visual checks, CI runner all NOT RUN (release blockers)",
+      "note": "Characterization only; no production code changed. Verified as baseline characterization per task acceptance, not product certification.",
+      "commit": "92d364a2c1a4e8302b03a6d66d5b25273043ff60"
     },
     "R01": {
       "state": "pending"
