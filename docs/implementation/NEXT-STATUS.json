@@ -283,6 +283,23 @@
       },
       "note": "Chat shows the model answer directly and adds a compact source list only for citations omitted from the answer. Routine gaps and review diagnostics remain retrievable on request in the dossier/completion and saved report. The per-message AI assessment badge was removed. No claim of human certification is introduced; metadata and review gates remain."
     },
+    "RELIABILITY-SLICE-2026-09-22": {
+      "state": "implemented",
+      "commit": "37896dc",
+      "environment": "Windows x64; packaged VisLex 0.3.0-dev4 remains running on the live case; code changes tested in the repository only",
+      "evidence": "src-tauri/tests/discovery.rs, src-tauri/tests/core.rs, src-tauri/tests/dossier.rs, src-tauri/tests/master_v4.rs, src/App.test.tsx",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0; default suite passed with packaged-worker cases ignored",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "npm test -- --run -> exit 0, 31 passed in 8 files",
+        "npm run build -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "implemented_scope": "Automatic review waits for discovery; failed discovery parent resumes from its published cursor and a linked child routes to that recovery; Windows resource error 1450 gets two delayed retries; memory-heavy workers serialize; Jobs groups old tool errors and counts active attention; dossier schema matches runtime inspection values; two identical failed tool submissions force a qualified finish; provider incomplete reason is allowlisted; automatic completion audit is idempotent; agent ledger bounds old read/visual detail with exact receipts retained.",
+      "unrun_checks": "No new packaged build or native interaction journey against these changes. Encrypted live-case backup and controlled restart await backup verification. No full-duration deterministic visual coverage ledger yet; no measured post-change token/latency/memory improvement; no synthetic medium/large tier run. R05 and R08-R23 remain subject to their own acceptance gates.",
+      "reviewer": "Self-review and focused production-path tests; no separate reviewer or live provider run. The terminal observed on this desktop is a separate Class Assistant cmd process launched by Explorer; running VisLex.exe has GUI subsystem and its worker uses CREATE_NO_WINDOW, so the reported terminal association remains unconfirmed.",
+      "note": "Implemented slice, not release verification or legal-accuracy certification. The running case and old packaged executable were not modified or restarted."
+    },
     "LIVE-CASE-AUDIT-2026-09-22": {
       "state": "diagnosed",
       "environment": "Running packaged VisLex 0.3.0-dev4 on Windows; live case inspected read-only through Computer Use and SQLite read-only URI; branch impl/wave1-repairs",
