@@ -67,7 +67,20 @@
       "note": "Certification now requires: structured blocks, every factual block claim-bound and block-review-supported against the exact candidate stamp, every block kind-disciplined and reviewed, every supported claim carried by a factual block, all claims supported, checks done, citations present, evidence current. Prose-only answers: visible 'unstructured free text' gap, never certified. Old completions/dossiers remain readable (serde default ids; empty ids unaddressable)."
     },
     "R04": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "filled-at-commit",
+      "evidence": "src-tauri/tests/master_v4.rs app_preferences_apply_exactly_the_chosen_policy_without_forcing (rewritten from forcing-asserting test); src-tauri/tests/core.rs unmarked_ai_defaults..., direct_media_consent_round_trips..., case_grants_and_consents_survive_backup_and_restore_exactly, image_grant_without_text_grant_is_refused...; src/components/SettingsDialog.tsx Case permissions panel",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 134 passed, 0 failed, 22 ignored",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 49 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test master_v4 -> exit 0, 24 passed",
+        "npm test -> exit 0, 26 passed; npm run build -> exit 0",
+        "cargo clippy --tests -> no warnings in changed files"
+      ],
+      "reviewer": "adversarial review: FAIL with 1 major (primary-model per-profile checkboxes shown but never applied) — FIXED truthfully (primary governed by case permissions, stated in UI); minors fixed: corrupt ai-defaults can no longer block case creation (ignored, case starts local), images-requires-text enforced server-side with test; known limitations recorded: first save after upgrade visibly confirms historically forced values as defaults (displayed as-is; no provenance marker per grant), no DOM interaction harness exists for the consent panel",
+      "unrun_checks": "Native settings journey without VISLEX_TEST_MODE bypass NOT RUN (no packaged app; bypass is debug_assertions-only so release applies marked defaults); no visual check of the consent panel (no vision harness); packaged-worker suite, native acceptance NOT RUN",
+      "note": "apply_app_settings saves exactly the chosen policy (no forced online/text/images/standard/zero-budget); ai-defaults.json carries consent_version 2 and unmarked legacy files are ignored at create_case only; direct media has a visible audited opt-in; offline emergency-stop copy is truthful about in-flight requests; reopen/restore protection preserved."
     },
     "R05": {
       "state": "pending"

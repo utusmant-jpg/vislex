@@ -581,7 +581,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let result=(||->anyhow::Result<()> {
                 crate::providers::apply_app_settings(c,&args)?;
                 let directory=app.path().app_config_dir()?;std::fs::create_dir_all(&directory)?;
-                let defaults=json!({"config":crate::providers::load(c)?,"settings":c.settings()?});
+                let defaults=json!({"config":crate::providers::load(c)?,"settings":c.settings()?,"consent_version":crate::providers::AI_DEFAULTS_CONSENT_VERSION});
                 let mut staged=tempfile::NamedTempFile::new_in(&directory)?;
                 std::io::Write::write_all(&mut staged,&serde_json::to_vec(&defaults)?)?;
                 staged.as_file().sync_all()?;
@@ -592,8 +592,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             c.db.execute_batch("RELEASE ai_settings")?;
             Value::Null
         },
-        "direct_media_permission" => json!({"enabled":c.meta("gemini_direct_media")?.as_deref()==Some("true")}),
-        "set_direct_media_permission" => {let enabled=args["enabled"].as_bool().context("Missing permission")?;c.set_meta("gemini_direct_media",if enabled{"true"}else{"false"})?;c.audit("gemini_direct_media_permission",json!({"enabled":enabled}))?;Value::Null},
+        "direct_media_permission" => json!({"enabled":crate::providers::direct_media_enabled(c)}),
+        "set_direct_media_permission" => {let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
         "ai_config" => serde_json::to_value(crate::providers::load(c)?)?,
         "save_ai_config" => {crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
         "save_settings" => {
@@ -1161,8 +1161,21 @@ fn apply_ai_defaults(app:&tauri::AppHandle,case:&mut Case)->anyhow::Result<()> {
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return Ok(());}
     let path=app.path().app_config_dir()?.join("ai-defaults.json");
-    let value=if path.is_file(){serde_json::from_slice(&std::fs::read(path)?)?}else{json!({"config":crate::providers::load(case)?,"settings":case.settings()?})};
-    crate::providers::apply_app_settings(case,&value)
+    if path.is_file() {
+        // Only defaults saved by the consent-aware flow initialize a new case.
+        // Older forced files are ignored: the case starts local (offline, no
+        // grants) until the user re-consents in Settings. A corrupt or invalid
+        // defaults file is likewise ignored — it can never block case creation
+        // or smuggle in a broader policy through an error path.
+        if let Ok(value)=serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap_or_default()) {
+            match crate::providers::parse_ai_defaults(&value) {
+                Ok(Some((config,settings)))=>{crate::providers::apply_app_settings(case,&json!({"config":config,"settings":settings}))?;}
+                Ok(None)=>{}
+                Err(error)=>eprintln!("Ignoring unusable ai-defaults.json: {error}"),
+            }
+        }
+    }
+    Ok(())
 }
 fn kick_discovery(app:tauri::AppHandle,case_id:String) {
     static ACTIVE:std::sync::OnceLock<Mutex<std::collections::HashSet<String>>>=std::sync::OnceLock::new();

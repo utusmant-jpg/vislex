@@ -538,19 +538,53 @@ pub async fn list_models(provider: Provider, key: &str) -> Result<Vec<ModelOptio
     bail!("Model catalogue pagination exceeded the safe response limit; retry later")
 }
 
-/// Apply the app's provider preferences to a case without copying any credentials.
+/// Marker written into ai-defaults.json by the consent-aware settings flow.
+/// Files written before case-consent separation (R04) contain values that were
+/// forced online/text/images/standard rather than chosen; they are ignored so a
+/// new case starts local instead of inheriting unchosen grants.
+pub const AI_DEFAULTS_CONSENT_VERSION: i64 = 2;
+
+/// Parse saved app defaults for NEW-case initialization. Returns None unless
+/// the file was written by the consent-aware flow and carries a complete,
+/// valid configuration; callers then apply exactly this policy.
+pub fn parse_ai_defaults(value:&Value)->Result<Option<(Config,crate::case::Settings)>> {
+    if value["consent_version"].as_i64()!=Some(AI_DEFAULTS_CONSENT_VERSION) {
+        return Ok(None);
+    }
+    let config:Config=serde_json::from_value(value["config"].clone())?;
+    let settings:crate::case::Settings=serde_json::from_value(value["settings"].clone())?;
+    config.validate()?;
+    if !settings.model.is_empty(){validate_model(&settings.model)?;}
+    Ok(Some((config,settings)))
+}
+
+/// Apply the app's chosen provider preferences to a case without copying any
+/// credentials. R04: the exact chosen policy is saved — execution mode, review
+/// mode, per-profile grants, offline state, case grants, budget and prices.
+/// Nothing is forced, so saving a model choice alone can neither broaden case
+/// grants nor downgrade a stricter review mode.
 pub fn apply_app_settings(case:&mut crate::case::Case,value:&Value)->Result<()> {
-    let mut config:Config=serde_json::from_value(value["config"].clone())?;
-    let mut settings:crate::case::Settings=serde_json::from_value(value["settings"].clone())?;
-    config.execution=Execution::Auto;config.review=Review::Standard;
-    for profile in &mut config.pool {profile.allow_text=true;profile.allow_images=true;}
-    config.validate()?;if !settings.model.is_empty(){validate_model(&settings.model)?;}
-    settings.offline=false;settings.allow_text=true;settings.allow_images=true;
-    settings.case_budget=0.;settings.input_per_million=0.;settings.output_per_million=0.;
+    let config:Config=serde_json::from_value(value["config"].clone())?;
+    let settings:crate::case::Settings=serde_json::from_value(value["settings"].clone())?;
+    config.validate()?;
+    if settings.allow_images && !settings.allow_text {
+        bail!("Image analysis always sends accompanying text; grant text before images");
+    }
+    if !settings.model.is_empty(){validate_model(&settings.model)?;}
     case.db.execute_batch("SAVEPOINT app_preferences")?;
     // Direct media (original audio/video transmission) stays a separate explicit
-    // per-case opt-in; applying provider defaults never silently enables it.
+    // per-case opt-in; applying provider preferences never silently enables it.
     let result=(||->Result<()> {save(case,config)?;case.save_settings(settings)?;Ok(())})();
     match result {Ok(())=>case.db.execute_batch("RELEASE app_preferences")?,Err(error)=>{case.db.execute_batch("ROLLBACK TO app_preferences; RELEASE app_preferences")?;return Err(error);}}
     Ok(())
+}
+
+/// Explicit per-case direct-media consent (original audio/video transmission).
+pub fn set_direct_media(case:&mut crate::case::Case,enabled:bool)->Result<()> {
+    case.set_meta("gemini_direct_media",if enabled{"true"}else{"false"})?;
+    case.audit("gemini_direct_media_permission",json!({"enabled":enabled}))?;
+    Ok(())
+}
+pub fn direct_media_enabled(case:&crate::case::Case)->bool {
+    case.meta("gemini_direct_media").ok().flatten().as_deref()==Some("true")
 }

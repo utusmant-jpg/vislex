@@ -870,3 +870,104 @@ fn failed_automatic_review_is_not_treated_as_completed_analysis() {
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
     assert_ne!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
 }
+
+/// R04 — only consent-marked app defaults may initialize a new case's AI
+/// policy; files written by the pre-consent flow (forced values) are ignored,
+/// so no upgrade silently grants online/text/images to new cases.
+#[test]
+fn unmarked_ai_defaults_are_ignored_and_marked_defaults_apply_exactly() {
+    let (_dir, mut c, _s) = setup();
+    // Pre-R04 shape: no consent marker (values were forced, never chosen).
+    let legacy = serde_json::json!({
+        "config": {"provider":"openai","execution":"auto","review":"standard","pool":[]},
+        "settings": {"offline":false,"allow_text":true,"allow_images":true,"model":"m","case_budget":0.,"input_per_million":0.,"output_per_million":0.}
+    });
+    assert!(evidence_desk::providers::parse_ai_defaults(&legacy).unwrap().is_none(),
+        "unmarked defaults must not initialize a case");
+    // Consent-marked defaults apply exactly as chosen, including refusal to
+    // broaden: a deliberately local policy stays local.
+    let mut chosen = legacy;
+    chosen["consent_version"] = serde_json::json!(2);
+    chosen["settings"] = serde_json::json!({"offline":true,"allow_text":false,"allow_images":false,"model":"","case_budget":0.,"input_per_million":0.,"output_per_million":0.});
+    let (config, settings) = evidence_desk::providers::parse_ai_defaults(&chosen).unwrap().unwrap();
+    assert!(settings.offline && !settings.allow_text && !settings.allow_images);
+    assert_eq!(config.review, evidence_desk::providers::Review::Standard);
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({"config":config,"settings":settings})).unwrap();
+    let applied = c.settings().unwrap();
+    assert!(applied.offline && !applied.allow_text && !applied.allow_images,
+        "the explicitly local policy must be saved, not forced online");
+    // A marked file carrying a wrong consent version is refused too.
+    let mut wrong = chosen;
+    wrong["consent_version"] = serde_json::json!(1);
+    assert!(evidence_desk::providers::parse_ai_defaults(&wrong).unwrap().is_none());
+}
+
+/// R04 — direct-media consent is a deliberate, audited, revocable per-case
+/// decision; revocation blocks future dispatch.
+#[test]
+fn direct_media_consent_round_trips_revokes_and_audits() {
+    let (_dir, mut c, _s) = setup();
+    assert!(!evidence_desk::providers::direct_media_enabled(&c));
+    evidence_desk::providers::set_direct_media(&mut c, true).unwrap();
+    assert!(evidence_desk::providers::direct_media_enabled(&c));
+    evidence_desk::providers::set_direct_media(&mut c, false).unwrap();
+    assert!(!evidence_desk::providers::direct_media_enabled(&c));
+    let audits: i64 = c.db.query_row(
+        "SELECT count(*) FROM audit WHERE event='gemini_direct_media_permission'",
+        [], |r| r.get(0),
+    ).unwrap();
+    assert_eq!(audits, 2, "every consent change is audited");
+    c.verify_audit().unwrap();
+}
+
+/// R04 — the exact case policy (grants, offline state, review mode, direct-media
+/// consent) survives encrypted backup and restore byte-for-byte.
+#[test]
+fn case_grants_and_consents_survive_backup_and_restore_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("policy.ledcase");
+    let mut c = Case::create(&root, "Policy case").unwrap();
+    let mut granted = c.settings().unwrap();
+    granted.offline = false;
+    granted.allow_text = true;
+    granted.allow_images = false;
+    granted.case_budget = 12.5;
+    c.save_settings(granted).unwrap();
+    evidence_desk::providers::set_direct_media(&mut c, true).unwrap();
+    let config = evidence_desk::providers::Config {
+        provider: evidence_desk::providers::Provider::Gemini,
+        execution: evidence_desk::providers::Execution::Single,
+        review: evidence_desk::providers::Review::Challenge,
+        pool: vec![],
+    };
+    let chosen = c.settings().unwrap();
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({"config":config,"settings":chosen})).unwrap();
+
+    let archive = dir.path().join("policy.age");
+    evidence_desk::backup::backup(&mut c, &archive, "policy-pass-123").unwrap();
+    drop(c);
+    let restored = evidence_desk::backup::restore(&archive, &dir.path().join("restored.ledcase"), "policy-pass-123").unwrap();
+    let settings = restored.settings().unwrap();
+    assert!(!settings.offline && settings.allow_text && !settings.allow_images, "text-only grant must survive restore exactly");
+    assert_eq!(settings.case_budget, 12.5);
+    assert_eq!(evidence_desk::providers::load(&restored).unwrap().review, evidence_desk::providers::Review::Challenge);
+    assert!(evidence_desk::providers::direct_media_enabled(&restored), "explicit direct-media consent must survive restore");
+    restored.verify_audit().unwrap();
+}
+
+/// R04 — the images-requires-text consent invariant is enforced server-side,
+/// not only in the settings dialog.
+#[test]
+fn image_grant_without_text_grant_is_refused_by_apply_app_settings() {
+    let (_dir, mut c, _s) = setup();
+    let mut settings = c.settings().unwrap();
+    settings.offline = false;
+    settings.allow_text = false;
+    settings.allow_images = true;
+    let error = evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"openai","execution":"auto","review":"standard","pool":[]},
+        "settings": settings
+    })).unwrap_err();
+    assert!(error.to_string().contains("grant text before images"), "{error}");
+    assert!(!c.settings().unwrap().allow_images, "refused policy must not be partially applied");
+}

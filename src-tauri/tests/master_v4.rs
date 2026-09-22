@@ -626,21 +626,37 @@ fn job_history_only_resolves_after_same_processor_succeeds() {
 }
 
 #[test]
-fn app_preferences_replace_existing_case_model_without_credentials() {
+fn app_preferences_apply_exactly_the_chosen_policy_without_forcing() {
     let (_dir,mut c,_)=setup();
-    let mut settings=c.settings().unwrap();settings.model="app-model".into();
-    let preferences=json!({"config":{"provider":"openai","execution":"single","review":"challenge","pool":[]},"settings":settings});
+    // R04: the exact chosen policy is saved. A stricter review mode, custom
+    // execution, narrow grants and a real budget survive application; saving a
+    // different model later cannot downgrade review or broaden grants.
+    let mut settings=c.settings().unwrap();
+    settings.offline=false;settings.allow_text=true;settings.allow_images=false;
+    settings.model="app-model".into();settings.case_budget=7.5;
+    settings.input_per_million=1.25;settings.output_per_million=5.;
+    let preferences=json!({"config":{"provider":"openai","execution":"single","review":"challenge","pool":[{"provider":"gemini","model":"vision-model","allow_text":true,"allow_images":false}]},"settings":settings});
     providers::apply_app_settings(&mut c,&preferences).unwrap();
     assert_eq!(c.settings().unwrap().model,"app-model");
-    assert_eq!(providers::load(&c).unwrap().execution,Execution::Auto);
-    assert_eq!(providers::load(&c).unwrap().review,Review::Standard);
+    assert_eq!(providers::load(&c).unwrap().execution,Execution::Single,"chosen execution must be preserved");
+    assert_eq!(providers::load(&c).unwrap().review,Review::Challenge,"chosen review mode must be preserved");
+    assert!(!c.settings().unwrap().allow_images,"image grant must not be forced on");
+    assert_eq!(c.settings().unwrap().case_budget,7.5);
+    assert_eq!(providers::load(&c).unwrap().pool[0].allow_images,false,"per-profile grants must not be forced on");
+    // A model-only change preserves the rest of the policy exactly.
+    let mut model_only=preferences.clone();
+    model_only["settings"]["model"]=json!("replacement-model");
+    providers::apply_app_settings(&mut c,&model_only).unwrap();
+    assert_eq!(providers::load(&c).unwrap().review,Review::Challenge,"model change cannot downgrade review");
+    assert!(!c.settings().unwrap().allow_images,"model change cannot enable images");
     // VL-002: applying app preferences never silently enables direct media;
-    // it remains a separate explicit per-case opt-in.
+    // it remains a separate explicit opt-in.
     assert_ne!(c.meta("gemini_direct_media").unwrap().as_deref(),Some("true"));
     let other_dir=tempfile::tempdir().unwrap();let mut other=Case::create(&other_dir.path().join("second"),"Second case").unwrap();
     providers::apply_app_settings(&mut other,&preferences).unwrap();
-    assert_eq!(other.settings().unwrap().model,c.settings().unwrap().model);
+    assert_eq!(other.settings().unwrap().model,"app-model");
+    assert_eq!(providers::load(&other).unwrap().review,Review::Challenge,"second case receives the same chosen policy");
     let mut invalid=preferences;invalid["settings"]["model"]=json!("invalid model!");
     assert!(providers::apply_app_settings(&mut c,&invalid).is_err());
-    assert_eq!(c.settings().unwrap().model,"app-model");
+    assert_eq!(c.settings().unwrap().model,"replacement-model");
 }

@@ -11,15 +11,19 @@ type Section = typeof sections[number];
 
 function initialProfiles(snapshot: Snapshot): AIProfile[] {
   const saved = configuredProfiles(snapshot);
-  return [...saved.map(p => ({ ...p, allow_text: true, allow_images: true })), ...companies.filter(provider => !saved.some(p => p.provider === provider)).map(provider => ({ provider, model: '', allow_text: false, allow_images: false }))];
+  // Grants stay exactly as previously chosen; selecting a model alone never
+  // confers text or image consent (R04).
+  return [...saved, ...companies.filter(provider => !saved.some(p => p.provider === provider)).map(provider => ({ provider, model: '', allow_text: false, allow_images: false }))];
 }
 export default function SettingsDialog({ snapshot, onClose, refresh }: { snapshot: Snapshot; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const mounted = useRef(true);
   const { theme, setTheme } = useTheme();
   const [section, setSection] = useState<Section>('AI providers');
-  const [settings] = useState<Settings>({ ...snapshot.settings, offline: false, allow_text: true, allow_images: true, case_budget: 0, input_per_million: 0, output_per_million: 0 });
-  const [config] = useState<AIConfig>(snapshot.ai_config ?? defaultConfig);
+  const [settings, setSettings] = useState<Settings>({ ...snapshot.settings });
+  const [config, setConfig] = useState<AIConfig>(snapshot.ai_config ?? defaultConfig);
+  const [directMedia, setDirectMedia] = useState<boolean | null>(null);
+  const [initialDirectMedia, setInitialDirectMedia] = useState<boolean | null>(null);
   const [profiles, setProfiles] = useState(() => initialProfiles(snapshot));
   const [primary, setPrimary] = useState(() => Math.max(0, initialProfiles(snapshot).findIndex(p => p.provider === (snapshot.ai_config ?? defaultConfig).provider && p.model === snapshot.settings.model)));
   const [error, setError] = useState('');
@@ -35,6 +39,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
     companies.forEach(provider => {
       api<{ configured: boolean }>('provider_key_status', { provider }).then(v => { if (mounted.current) setStored(s => ({ ...s, [provider]: v.configured })); }).catch(e => { if (mounted.current) setCatalogErrors(s => ({ ...s, [provider]: String(e) })); });
     });
+    if (native) api<{ enabled: boolean }>('direct_media_permission').then(v => { if (mounted.current) { setDirectMedia(v.enabled); setInitialDirectMedia(v.enabled); } }).catch(() => { if (mounted.current) { setDirectMedia(false); setInitialDirectMedia(false); } });
     return () => { mounted.current = false; };
   }, []);
   function updateProfile(index: number, change: Partial<AIProfile>) { setProfiles(ps => ps.map((p, i) => i === index ? { ...p, ...change } : p)); }
@@ -73,7 +78,17 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
           if (!status.configured) throw new Error(`Add an API key for ${providerNames[provider]}, or remove its selected model.`);
         }
       }
-      await api('save_ai_settings', { config: { ...config, execution: 'auto', review: 'standard', provider: lead.provider, pool: profiles.filter((p, i) => i !== primary && p.model).map(p => ({ ...p, allow_text: true, allow_images: true })) }, settings: { ...settings, model: lead.model, allow_text: true, allow_images: true } });
+      // R04: save precisely the choices shown. Nothing is forced: review mode,
+      // execution, per-profile grants, offline state, case grants, budget and
+      // prices all persist exactly as configured above.
+      if (settings.allow_images && !settings.allow_text) throw new Error('Image analysis always sends accompanying text; grant text before images.');
+      await api('save_ai_settings', {
+        config: { ...config, provider: lead.provider, pool: profiles.filter((p, i) => i !== primary && p.model) },
+        settings: { ...settings, model: lead.model },
+      });
+      if (directMedia !== null && directMedia !== initialDirectMedia) {
+        await api('set_direct_media_permission', { enabled: directMedia });
+      }
       await refresh(); onClose();
     } catch (e) { if (mounted.current) setError(String(e)); }
     finally { if (mounted.current) setSaving(false); }
@@ -91,8 +106,50 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
 
         {section === 'AI providers' ? <fieldset disabled={saving} className="ai-setup-fields">
           {!native ? <p className="notice">AI setup is available in the Windows desktop app. This browser is a preview.</p> : null}
-          <p className="notice">Saved once for all cases. VisLex chooses when to delegate and which enabled tools to use. AI is always enabled once a model is configured. All selected models can analyze case text and images. Add keys and choose models below.</p>
+          <p className="notice">Saved once for all cases. Selecting a model makes it available — what it may see is decided by the case permissions below, not by the selection. VisLex chooses when to delegate among permitted models.</p>
           <p className="small muted disclosure-open"><KeyRound size={13} /> Keys are stored in Windows Credential Manager. Loading models contacts that company without sending case evidence.</p>
+          <fieldset className="provider-card case-permissions"><legend>Case permissions{native ? '' : ' (desktop app)'}</legend>
+            <label className="field-label">AI dispatch
+              <div className="chip-row">
+                <button type="button" className={`chip ${!settings.offline ? 'selected' : ''}`} disabled={!native} onClick={() => setSettings(current => ({ ...current, offline: false }))}>Allowed</button>
+                <button type="button" className={`chip ${settings.offline ? 'selected' : ''}`} disabled={!native} onClick={() => setSettings(current => ({ ...current, offline: true }))}>Offline — stop new requests</button>
+              </div>
+            </label>
+            <p className="small muted">Going offline refuses new AI requests immediately; a request already in flight may still be completing. Reopening a case never changes these choices.</p>
+            <div className="provider-grants">
+              <label><input type="checkbox" disabled={!native} checked={settings.allow_text} onChange={e => setSettings(current => ({ ...current, allow_text: e.target.checked, allow_images: e.target.checked ? current.allow_images : false }))} /> Case text may be sent to permitted models</label>
+              <label><input type="checkbox" disabled={!native || !settings.allow_text} checked={settings.allow_images} onChange={e => setSettings(current => ({ ...current, allow_images: e.target.checked }))} /> Case images may be sent to permitted models</label>
+            </div>
+            <div className="input-row">
+              <label className="field-label">Review mode
+                <select disabled={!native} value={config.review} onChange={e => setConfig(current => ({ ...current, review: e.target.value as AIConfig['review'] }))}>
+                  <option value="standard">Standard</option>
+                  <option value="independent">Independent check</option>
+                  <option value="challenge">Challenge</option>
+                </select>
+              </label>
+              <label className="field-label">Parallel work
+                <select disabled={!native} value={config.execution} onChange={e => setConfig(current => ({ ...current, execution: e.target.value as AIConfig['execution'] }))}>
+                  <option value="single">Single agent</option>
+                  <option value="parallel">Parallel team</option>
+                  <option value="auto">Let VisLex decide</option>
+                </select>
+              </label>
+            </div>
+            <label className="field-label">Direct media (Gemini only)
+              <div className="chip-row">
+                <button type="button" className={`chip ${directMedia === true ? 'selected' : ''}`} disabled={!native || directMedia === null} onClick={() => setDirectMedia(true)}>Permitted — original audio/video may be sent</button>
+                <button type="button" className={`chip ${directMedia === false || directMedia === null ? 'selected' : ''}`} disabled={!native} onClick={() => setDirectMedia(false)}>Blocked</button>
+              </div>
+            </label>
+            <p className="small muted">Direct media transmits an original recording (up to 12 MiB) to Gemini when a task needs it. It is a separate, audited consent; disabling it blocks future transmission only.</p>
+            <div className="input-row">
+              <label className="field-label">Case budget (USD)<input type="number" min={0} max={10000} step="0.01" disabled={!native} value={settings.case_budget} onChange={e => setSettings(current => ({ ...current, case_budget: Number(e.target.value) }))} /></label>
+              <label className="field-label">Input $/M tokens<input type="number" min={0} max={10000} step="0.01" disabled={!native} value={settings.input_per_million} onChange={e => setSettings(current => ({ ...current, input_per_million: Number(e.target.value) }))} /></label>
+              <label className="field-label">Output $/M tokens<input type="number" min={0} max={10000} step="0.01" disabled={!native} value={settings.output_per_million} onChange={e => setSettings(current => ({ ...current, output_per_million: Number(e.target.value) }))} /></label>
+            </div>
+            <p className="small muted">Budget and prices feed the live usage indicator; they never cap or mute visibility of spending, and cancelling a run is always available.</p>
+          </fieldset>
           {companies.map(provider => <fieldset key={provider} className="provider-card"><legend>{providerNames[provider]}</legend>
             <div className="input-row">
               <input aria-label={`${providerNames[provider]} API key`} type="password" autoComplete="off" value={keys[provider] ?? ''} disabled={loading[provider]} onChange={e => setKeys(s => ({ ...s, [provider]: e.target.value }))} placeholder={stored[provider] ? 'Key saved in Windows Credential Manager' : 'Paste API key'} />
@@ -101,8 +158,10 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
             </div>
             {catalogErrors[provider] ? <p role="alert" className="small danger-text">{catalogErrors[provider]}</p> : null}
             {profiles.map((p, i) => p.provider !== provider ? null : <div className="provider-model" key={i}>
-              <label>Model<select aria-label={`${providerNames[provider]} model ${i + 1}`} value={p.model} onChange={e => { const first = !profiles.some(x => x.model); updateProfile(i, { model: e.target.value, allow_text: true, allow_images: true }); if (first) setPrimary(i); }}><option value="">{loading[provider] ? 'Loading models…' : 'Select a model'}</option>{p.model && !models[provider]?.some(m => m.id === p.model) ? <option value={p.model}>{p.model} (saved)</option> : null}{models[provider]?.map(m => <option key={m.id} value={m.id}>{m.name === m.id ? m.id : `${m.name} · ${m.id}`}</option>)}</select></label>
-              <div className="provider-permissions"><label><input type="radio" name="default-model" checked={primary === i} onChange={() => setPrimary(i)} /> Default chat model</label>{p.model ? <span className="badge">Enabled</span> : null}{profiles.filter(x => x.provider === provider).length > 1 && primary !== i ? <button className="quiet" onClick={() => { setProfiles(ps => ps.filter((_, j) => j !== i)); if (primary > i) setPrimary(primary - 1); }}>Remove</button> : null}</div>
+              <label>Model<select aria-label={`${providerNames[provider]} model ${i + 1}`} value={p.model} onChange={e => { const first = !profiles.some(x => x.model); updateProfile(i, { model: e.target.value }); if (first) setPrimary(i); }}><option value="">{loading[provider] ? 'Loading models…' : 'Select a model'}</option>{p.model && !models[provider]?.some(m => m.id === p.model) ? <option value={p.model}>{p.model} (saved)</option> : null}{models[provider]?.map(m => <option key={m.id} value={m.id}>{m.name === m.id ? m.id : `${m.name} · ${m.id}`}</option>)}</select></label>
+              <div className="provider-permissions"><label><input type="radio" name="default-model" checked={primary === i} onChange={() => setPrimary(i)} /> Default chat model</label>{p.model ? <span className="badge">Selected</span> : null}{profiles.filter(x => x.provider === provider).length > 1 && primary !== i ? <button className="quiet" onClick={() => { setProfiles(ps => ps.filter((_, j) => j !== i)); if (primary > i) setPrimary(primary - 1); }}>Remove</button> : null}</div>
+              {p.model && primary === i ? <p className="small muted">The default model is governed by the case permissions above — selecting it grants nothing by itself.</p> : null}
+              {p.model && primary !== i ? <div className="provider-grants"><label><input type="checkbox" checked={p.allow_text} onChange={e => updateProfile(i, { allow_text: e.target.checked, allow_images: e.target.checked ? p.allow_images : false })} /> May receive case text</label><label><input type="checkbox" checked={p.allow_images} disabled={!p.allow_text} onChange={e => updateProfile(i, { allow_images: e.target.checked })} /> May receive case images</label><span className="small muted">applies to delegated team work</span></div> : null}
             </div>)}
             <button className="quiet" disabled={profiles.length >= 16} onClick={() => setProfiles(ps => [...ps, { provider, model: '', allow_text: false, allow_images: false }])}>Add another model</button>
           </fieldset>)}
