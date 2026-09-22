@@ -821,3 +821,52 @@ fn applying_app_defaults_never_silently_enables_direct_media() {
     c.set_meta("gemini_direct_media","true").unwrap();
     assert_eq!(c.meta("gemini_direct_media").unwrap().as_deref(),Some("true"));
 }
+
+#[test]
+fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
+    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    // Dispatching the automatic task must NOT mark the inventory analyzed.
+    let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    assert!(c.meta("auto_review_fingerprint").unwrap().is_none(),"fingerprint written at start");
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"running");
+    // Yielded for the user's chat: stays paused, never treated as complete, and
+    // nothing is resent while a transmission's delivery is uncertain.
+    evidence_desk::automatic::preempt_for_chat(&mut c).unwrap();
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"paused");
+    // A user stop (or any other pause reason) must not silently restart either.
+    c.db.execute("UPDATE tasks SET error='Stopped by user' WHERE id=?",[&task]).unwrap();
+    c.db.execute("INSERT INTO transmissions VALUES('tx-uncertain',?,'hash','test-model','[]',0,0,'uncertain',NULL,'2026-09-21T00:00:00Z')",rusqlite::params![task]).unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None,"uncertain transmission blocks silent resume");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM tasks",[],|r|r.get::<_,i64>(0)).unwrap(),1,"no duplicate review started");
+    // Once the uncertain transmission is resolved, the chat-preempted task
+    // resumes; a foreign pause reason still stays down.
+    c.db.execute("UPDATE transmissions SET status='confirmed' WHERE id='tx-uncertain'",[]).unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None,"non-preemption pause must not auto-resume");
+    c.db.execute("UPDATE tasks SET error=? WHERE id=?",[evidence_desk::automatic::CHAT_PREEMPTION,&task]).unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),Some(task.clone()));
+    // Observed successful completion is what finally writes the fingerprint.
+    c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
+    assert!(c.meta("auto_review_fingerprint").unwrap().is_some());
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
+    // New evidence changes the inventory: a fresh review is planned.
+    let extra=std::path::PathBuf::from(c.root.parent().unwrap().join("extra.txt"));
+    std::fs::write(&extra,"new material").unwrap();
+    c.import_files(&[extra.to_string_lossy().into()],"Late").unwrap();
+    let next=evidence_desk::automatic::start_review(&mut c).unwrap();
+    assert!(next.is_some()&&next!=Some(task));
+    c.verify_audit().unwrap();
+}
+
+#[test]
+fn failed_automatic_review_is_not_treated_as_completed_analysis() {
+    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    // Simulate the legacy failure shape: task exists but never completed, and an
+    // old start-time fingerprint must not suppress a retry.
+    c.set_meta("auto_review_fingerprint","stale-legacy-value").unwrap();
+    c.db.execute("UPDATE tasks SET status='paused',error='Provider failed' WHERE id=?",[&task]).unwrap();
+    c.db.execute("INSERT INTO transmissions VALUES('tx2',?,'h','m','[]',0,0,'uncertain',NULL,'2026-09-21T00:00:00Z')",rusqlite::params![task]).unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
+    assert_ne!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
+}

@@ -586,7 +586,9 @@ fn automatic_queue_deduplicates_imports_resumes_and_yields_to_chat() {
     let chat=agent::start(&mut c,"My question","ask",vec![sid],vec![],0.).unwrap();
     assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
     agent::pause(&mut c,&chat,"Finished test").unwrap();
-    let resumed=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();assert_ne!(resumed,task);
+    // VL-007: after yielding to chat, the paused automatic review resumes the
+    // same task (keeping its investigation context) instead of restarting.
+    let resumed=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();assert_eq!(resumed,task);
     agent::pause(&mut c,&resumed,"Stopped by user").unwrap();
     assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
 }
