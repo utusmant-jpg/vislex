@@ -282,6 +282,20 @@
         "pe_subsystem": "2 (Windows GUI), checked from packaged PE header"
       },
       "note": "Chat shows the model answer directly and adds a compact source list only for citations omitted from the answer. Routine gaps and review diagnostics remain retrievable on request in the dossier/completion and saved report. The per-message AI assessment badge was removed. No claim of human certification is introduced; metadata and review gates remain."
+    },
+    "LIVE-CASE-AUDIT-2026-09-22": {
+      "state": "diagnosed",
+      "environment": "Running packaged VisLex 0.3.0-dev4 on Windows; live case inspected read-only through Computer Use and SQLite read-only URI; branch impl/wave1-repairs",
+      "evidence": "docs/implementation/LIVE-CASE-ERROR-AUDIT-2026-09-22.md",
+      "commands": [
+        "Computer Use: inspected the running chat and Jobs & issues panel; automatic review paused, 11 discovery jobs pending, 48 attention items displayed",
+        "Read-only SQLite: PRAGMA quick_check -> ok; 1,302 registered artifact paths present; 10 source preparation jobs and 8 full-audio jobs complete",
+        "Read-only SQLite: latest automatic review 76 transmissions, 1,287,309 reported input tokens and 18,285 output tokens on received calls; no final answer; provider incomplete event",
+        "Source inspection: automatic::start_review excludes video discovery from readiness; Jobs discovery recovery routes to processing::resume without discovery::store_chunk; dossier schema accepts free-form check tool but runtime allows exact inspection tools"
+      ],
+      "reviewer": "Self-review only; compared live UI, case job/action/transmission summaries, registered artifact files, and source control paths. Client document content and identifiers omitted from report.",
+      "unrun_checks": "No changes were applied to the running case or app. Error 1450's exact OS resource cause is unproven without worker memory/commit diagnostics. Provider's omitted incomplete reason cannot be recovered from stored transmission metadata. Proposed repairs and packaged end-to-end verification remain open.",
+      "note": "A diagnostic audit, not an implementation or verification claim. Prioritize discovery readiness/recovery, bounded error loops, resource handling, and provider diagnostics. The paused automatic task has an uncertain transmission and should not be blindly resent."
     }
   }
 }
