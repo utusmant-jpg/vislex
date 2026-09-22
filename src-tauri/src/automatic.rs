@@ -126,7 +126,7 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
                     case.set_meta("auto_review_state","running")?;
                     return Ok(Some(task));
                 }
-                case.set_meta("auto_review_state","paused")?;
+                case.set_meta("auto_review_state",if reason=="Stopped by user" || reason==CHAT_PREEMPTION {"paused"} else {"failed"})?;
                 return Ok(None);
             }
             _=>{case.set_meta("auto_review_state","failed")?;}
@@ -160,7 +160,10 @@ pub fn status(case:&Case)->Result<Value> {
     };
     let review_state=match live.as_deref() {
         Some("running")=>"running",
-        Some("paused")=>"paused",
+        Some("paused")=>{
+            let reason:String=case.db.query_row("SELECT error FROM tasks WHERE id=?",[task.as_deref().unwrap()],|r|r.get(0)).unwrap_or_default();
+            if reason=="Stopped by user" || reason==CHAT_PREEMPTION {"paused"} else {"failed"}
+        },
         Some("complete")=>{
             let dispatched=task.as_ref().and_then(|task|case.meta(&format!("auto_review_inventory:{task}")).ok().flatten().or_else(||case.meta("auto_review_fingerprint").ok().flatten()));
             let current=case.sources().and_then(|sources|review_input_stamp(case,&sources.into_iter().filter(|source|!source.restricted).map(|source|source.id).collect::<Vec<_>>())).ok();

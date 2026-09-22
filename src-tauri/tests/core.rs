@@ -969,7 +969,7 @@ fn failed_automatic_review_is_not_treated_as_completed_analysis() {
     c.db.execute("UPDATE tasks SET status='paused',error='Provider failed' WHERE id=?",[&task]).unwrap();
     c.db.execute("INSERT INTO transmissions VALUES('tx2',?,'h','m','[]',0,0,'uncertain',NULL,'2026-09-21T00:00:00Z')",rusqlite::params![task]).unwrap();
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
-    assert_ne!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"failed");
 }
 
 /// R04 — only consent-marked app defaults may initialize a new case's AI
