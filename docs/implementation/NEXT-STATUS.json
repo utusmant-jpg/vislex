@@ -291,6 +291,7 @@
       "partial_progress_commit": "f67ed97 (after two identical failed final submissions, saved checkpoint summary and gaps remain visible; unsupported failed final wording is discarded; focused core regression passed)",
       "visual_coverage_commit": "4d0b2e1 (automatic task forces batches of registered discovery frames, one chosen per 20-second bin plus scene boundaries; only successful visual-observation receipts count; version 1 per-source coverage reports missing bins, scene counts, EOF and discovery gaps; synthetic production-path selection and provenance checks passed)",
       "coordinator_commit": "909541f (discovery terminal transition wakes automatic review even when preparation workers finished earlier; resource error 1450 records allowlisted physical/pagefile availability; discovery suite 7 passed, 1 packaged test ignored; desktop feature check passed)",
+      "new_build": "artifacts/VisLex 0.3.0-dev5/VisLex.exe; SHA-256 4891623c7b6e329d792f94c0ac777b0b40d802d6e720cb5318d9e71229c0fa18; npm exec tauri build -- --debug --features desktop --no-bundle and package-development.ps1 both exited 0. This package has not been run or verified against the live case.",
       "environment": "Windows x64; packaged VisLex 0.3.0-dev4 remains running on the live case; code changes tested in the repository only",
       "evidence": "src-tauri/tests/discovery.rs, src-tauri/tests/core.rs, src-tauri/tests/dossier.rs, src-tauri/tests/master_v4.rs, src/App.test.tsx",
       "commands": [
