@@ -240,6 +240,32 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
     let mut guard = state.case.lock().unwrap_or_else(|e|e.into_inner());
 
+    if action == "delete_case" {
+        let target = PathBuf::from(text(&args, "path")?);
+        // Only the open case itself needs a quiet case and an early close, which
+        // releases the exclusive lock before removal; any other case is untouched.
+        let resolved = target.canonicalize().ok();
+        if let Some(c) = guard.as_ref() {
+            if resolved.as_deref() == Some(c.root.as_path()) {
+                anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the current import before deleting this case");
+                let running: i64 = c.db.query_row(
+
+                    "SELECT (SELECT count(*) FROM tasks WHERE status='running')+(SELECT count(*) FROM processing_jobs WHERE status='running')",
+
+                    [],
+
+                    |r| r.get(0),
+
+                )?;
+                anyhow::ensure!(running == 0,"Stop active tasks and processing jobs before deleting this case");
+                *guard = None;
+            }
+        }
+        let receipt = crate::case::delete_case(&target, text(&args, "confirm")?)?;
+        let _ = app.emit("case-changed", ());
+        return Ok(receipt);
+    }
+
     if ["create_case", "open_case", "restore_case", "close_case"].contains(&action) {
         anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the current import before switching cases");
 

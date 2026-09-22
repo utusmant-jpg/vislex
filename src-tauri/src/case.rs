@@ -1146,6 +1146,72 @@ impl Case {
     }
 }
 
+/// Permanently delete an entire case folder after explicit confirmation.
+/// Fails closed unless the folder is a real case database, the confirmation
+/// repeats the case name, and the exclusive case lock is free — so a case open
+/// in this or another instance can never be removed underneath a live session
+/// (the caller closes the open case first). Read-only attributes on preserved
+/// originals are cleared during the removal walk; reparse points and symlinks
+/// are unlinked, never traversed.
+pub fn delete_case(root: &Path, confirm: &str) -> Result<Value> {
+    ensure!(root.is_absolute(), "Choose an absolute local path");
+    ensure!(root.is_dir(), "Case folder not found");
+    ensure!(
+        root.join("case.sqlite3").is_file(),
+        "No case database found; this is not a case folder"
+    );
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join("case.lock"))?;
+    lock.try_lock_exclusive().context(
+        "This case is open in another window. Close it there before deleting.",
+    )?;
+    let db = Connection::open(root.join("case.sqlite3"))?;
+    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    ensure!(version <= 6, "This case requires a newer application");
+    let name: String = db
+        .query_row("SELECT value FROM meta WHERE key='name'", [], |r| r.get(0))
+        .optional()
+        .map_err(|_| anyhow::anyhow!("Not an Evidence Desk case"))?
+        .context("Not an Evidence Desk case")?;
+    let sources: i64 = db.query_row("SELECT count(*) FROM sources", [], |r| r.get(0))?;
+    let records: i64 = db.query_row("SELECT count(*) FROM records", [], |r| r.get(0))?;
+    drop(db);
+    ensure!(
+        confirm.trim().eq_ignore_ascii_case(name.trim()),
+        "Type the case name exactly to confirm deletion"
+    );
+    // Clear the read-only flag on content-addressed originals so removal can
+    // proceed. Reparse points are skipped here and unlink — never follow —
+    // inside remove_dir_all.
+    let mut bytes = 0u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            #[cfg(windows)]
+            { use std::os::windows::fs::MetadataExt; if metadata.file_attributes() & 0x400 != 0 { continue; } }
+            if metadata.file_type().is_symlink() { continue; }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                bytes += metadata.len();
+                let mut permissions = metadata.permissions();
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(entry.path(), permissions);
+            }
+        }
+    }
+    fs::remove_dir_all(root).context(
+        "Case folder could not be fully removed; close any program using these files and retry",
+    )?;
+    Ok(json!({"deleted":true,"name":name,"sources":sources,"records":records,"bytes":bytes}))
+}
+
 pub fn safe_relative(path: &Path) -> bool {
     !path.as_os_str().is_empty()
         && path.components().all(|c| matches!(c, Component::Normal(_)))

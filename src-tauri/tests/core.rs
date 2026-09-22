@@ -1109,3 +1109,41 @@ fn artifact_reads_reject_metadata_preserving_tampering() {
     let error = evidence_desk::processing::artifact(&c, &artifact_id).unwrap_err();
     assert!(error.to_string().contains("Artifact integrity check failed"), "{error}");
 }
+
+/// Case deletion is the one operation that destroys originals, so it must fail
+/// closed on every gate: live case lock, exact typed confirmation, non-case
+/// folders. Read-only preserved originals must not block the final removal.
+#[test]
+fn delete_case_requires_free_lock_exact_confirmation_and_removes_everything() {
+    let (dir, c, _sid) = setup();
+    let root = dir.path().join("test.ledcase");
+    assert!(fs::read_dir(root.join("originals")).unwrap().next().is_some());
+    let name = c.meta("name").unwrap().unwrap();
+    // Open in this instance: the exclusive lock is held, so even a correct
+    // confirmation is refused and nothing is removed.
+    let error = evidence_desk::case::delete_case(&root, &name).unwrap_err().to_string();
+    assert!(error.contains("another window"), "unexpected error: {error}");
+    assert!(root.join("case.sqlite3").is_file());
+    // Closed case, wrong confirmation: refused, still nothing removed.
+    drop(c);
+    let error = evidence_desk::case::delete_case(&root, "Synthetic Cas").unwrap_err().to_string();
+    assert!(error.contains("case name"), "unexpected error: {error}");
+    assert!(root.join("case.sqlite3").is_file());
+    let receipt = evidence_desk::case::delete_case(&root, &name).unwrap();
+    assert_eq!(receipt["deleted"], json!(true));
+    assert_eq!(receipt["name"], json!("Synthetic case"));
+    assert_eq!(receipt["sources"], json!(1));
+    assert_eq!(receipt["records"], json!(0));
+    assert!(receipt["bytes"].as_u64().unwrap() > 0);
+    assert!(!root.exists());
+}
+
+#[test]
+fn delete_case_refuses_folders_that_are_not_cases() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("not-a-case");
+    fs::create_dir_all(&plain).unwrap();
+    assert!(evidence_desk::case::delete_case(&plain, "anything").is_err());
+    assert!(plain.exists());
+    assert!(evidence_desk::case::delete_case(&dir.path().join("missing"), "anything").is_err());
+}

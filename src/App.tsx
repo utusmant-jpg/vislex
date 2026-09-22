@@ -154,7 +154,7 @@ export default function App() {
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(false);
-  const [modal, setModal] = useState<'create' | 'note' | 'backup' | 'restore' | null>(null);
+  const [modal, setModal] = useState<'create' | 'note' | 'backup' | 'restore' | 'delete' | null>(null);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [production] = useState('Initial production');
@@ -319,6 +319,15 @@ export default function App() {
     if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; setSnapshot(await api<Snapshot>('create_case', { path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
     if (modal === 'note') { const created = await api<WorkingRecord>('write_record', { title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
     if (modal === 'backup') { const path = await save({ defaultPath: 'case-backup.tar.age', filters: [{ name: 'Encrypted backup', extensions: ['age'] }] }); if (!path) return; await api('backup', { path, password }); notify.success('Encrypted backup saved', path); }
+    if (modal === 'delete') {
+      if (!snapshot) throw new Error('Open a case first.');
+      const receipt = await api<{ deleted: boolean; bytes: number }>('delete_case', { path: snapshot.root, confirm: name });
+      setProjects(previous => { const next = previous.filter(project => project.id !== snapshot.id); localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; });
+      if (localStorage.getItem('vislex-last-case') === snapshot.root) localStorage.removeItem('vislex-last-case');
+      localStorage.removeItem(`vislex-conversation:${snapshot.id}`);
+      setSnapshot(null); setSelection(null); setOpenTabs([]);
+      notify.success('Case deleted', `${formatBytes(receipt.bytes)} of case data removed from disk.`);
+    }
     if (modal === 'restore') { const archive = await open({ filters: [{ name: 'Encrypted case', extensions: ['age'] }] }); if (typeof archive !== 'string') return; const parent = await open({ directory: true, title: 'Choose restoration parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a restored case folder name.'); setSnapshot(await api<Snapshot>('restore_case', { archive, path: `${parent}\\${safeName}.ledcase`, password })); setSelection(null); }
     setPassword(''); setModal(null);
   }
@@ -333,6 +342,7 @@ export default function App() {
     { id: 'settings', label: 'Open settings', run: () => { setPalette(false); if (snapshot) setSettings(true); else notify.info('Open a case to configure its API permissions.'); } },
     { id: 'transcribe-all', label: 'Queue missing full transcripts', run: () => { setPalette(false); run(async () => { await api('transcribe_all'); await refresh(); }); } },
     { id: 'add-files', label: 'Add files to this case', run: () => { setPalette(false); run(importFiles); } },
+    { id: 'delete-case', label: 'Delete this case permanently', run: () => { setPalette(false); if (snapshot && native) showModal('delete'); else notify.info('Open a native case to delete it.'); } },
   ], [run, refresh, snapshot]);
   const paletteMatches = useMemo(() => {
     const text = query.trim().toLowerCase();
@@ -434,6 +444,7 @@ export default function App() {
                 <button disabled={!snapshot} onClick={() => showModal('note')}>New note</button>
                 <button disabled={!snapshot} onClick={() => showModal('backup')}>Export case archive</button>
                 <button onClick={() => showModal('restore')}>Restore case archive</button>
+                <button className="danger" disabled={!snapshot || !native} title={native ? 'Erase this case folder permanently' : 'Deleting a case requires the desktop app'} onClick={() => showModal('delete')}>Delete case…</button>
               </div></details>
             </div>
           </div>
@@ -532,15 +543,16 @@ export default function App() {
       {settings && snapshot ? <SettingsDialog snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /> : null}
 
       {modal ? <dialog ref={dialog} className="modal" onCancel={() => { setModal(null); setPassword(''); }}>
-        <div className="modal-heading"><h2>{modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : 'Restore a case'}</h2><button className="icon-button" aria-label="Close dialog" onClick={() => { setModal(null); setPassword(''); }}><X size={20} /></button></div>
-        {modal !== 'backup' ? <label className="field-label">{modal === 'note' ? 'Title' : 'Case name'}<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder={modal === 'note' ? 'Review notes' : 'Matter name or reference'} /></label> : null}
+        <div className="modal-heading"><h2>{modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : modal === 'delete' ? 'Delete this case permanently' : 'Restore a case'}</h2><button className="icon-button" aria-label="Close dialog" onClick={() => { setModal(null); setPassword(''); }}><X size={20} /></button></div>
+        {modal !== 'backup' ? <label className="field-label">{modal === 'note' ? 'Title' : modal === 'delete' ? 'Type the case name to confirm' : 'Case name'}<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder={modal === 'note' ? 'Review notes' : modal === 'delete' ? snapshot?.name ?? '' : 'Matter name or reference'} /></label> : null}
+        {modal === 'delete' && snapshot ? <p className="small danger-text">“{snapshot.name}” and its entire folder are erased: originals, working files, chats, review decisions and any case archives stored in {snapshot.root}. This cannot be undone. Export an encrypted backup first if you may need this evidence again.</p> : null}
         {modal === 'note' ? <label className="field-label">Record type<select value={kind} onChange={event => setKind(event.target.value)}>{['note', 'report', 'claim', 'event', 'person', 'issue', 'transcript', 'clock', 'script'].map(option => <option key={option}>{option}</option>)}</select></label> : null}
         {modal === 'backup' || modal === 'restore' ? <>
           <label className="field-label">Backup passphrase<input type="password" autoComplete="off" value={password} onChange={event => setPassword(event.target.value)} placeholder="At least 12 characters for a new backup" /></label>
           <p className="small muted">Keep this passphrase separately. There is no password recovery. Backups include originals, notes, historical revisions, and restricted material.</p>
         </> : null}
         {modal === 'create' ? <p className="small muted">Choose a local folder on the next step. The case starts offline. Do not use a shared or cloud-synchronized working directory.</p> : null}
-        <div className="modal-footer"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={busy || (modal !== 'backup' && !name.trim()) || ((modal === 'backup' || modal === 'restore') && !password)} onClick={() => run(performModal)}>{busy ? 'Working…' : modal === 'note' ? 'Create file' : 'Continue'}<ArrowRight size={14} /></button></div>
+        <div className="modal-footer"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className={`primary ${modal === 'delete' ? 'danger-action' : ''}`} disabled={busy || (modal !== 'backup' && !name.trim()) || ((modal === 'backup' || modal === 'restore') && !password) || (modal === 'delete' && name.trim().toLowerCase() !== (snapshot?.name ?? '').trim().toLowerCase())} onClick={() => run(performModal)}>{busy ? 'Working…' : modal === 'note' ? 'Create file' : modal === 'delete' ? 'Delete case' : 'Continue'}{modal === 'delete' ? null : <ArrowRight size={14} />}</button></div>
       </dialog> : null}
 
       <ToastStack />

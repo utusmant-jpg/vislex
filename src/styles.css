@@ -955,3 +955,8 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+.case-menu button.danger { color: var(--danger); }
+.case-menu button.danger:hover:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
+.primary.danger-action { background: var(--danger); }
+.primary.danger-action:hover:not(:disabled) { background: var(--danger); filter: brightness(0.9); }
