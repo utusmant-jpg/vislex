@@ -156,6 +156,22 @@
     },
     "R23": {
       "state": "pending"
+    },
+    "CASE-DELETE": {
+      "state": "implemented",
+      "evidence": "src-tauri/tests/core.rs delete_case_requires_free_lock_exact_confirmation_and_removes_everything, delete_case_refuses_folders_that_are_not_cases; src-tauri/src/case.rs delete_case; src-tauri/src/desktop.rs delete_case dispatch branch; src/App.tsx Delete case menu item + typed-confirmation dialog; README.md case-management paragraph",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; branch impl/wave1-repairs",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core delete_case -> exit 0, 2 passed (red-first not applicable: new feature, no prior behavior)",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 127 passed, 0 failed, 21 ignored",
+        "npm test -> exit 0, 26 passed (6 files)",
+        "npm run build -> exit 0 (tsc -b + vite)",
+        "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --tests -> no new warnings in changed lines (permissions_set_readonly_false lint fires on pre-existing reclaim_staging idiom that delete_case deliberately mirrors)"
+      ],
+      "reviewer": "self-review pass (no separate reviewer agent available in this session, stated limitation): lock-before-read ordering, canonicalize() equality for open-case detection (verbatim \\?\\ forms), Connection dropped before removal, reparse points skipped in walk and unlinked-not-followed by remove_dir_all, confirmation checked before any destructive action, read-only originals cleared before remove_dir_all (covered by Windows test asserting !root.exists())",
+      "unrun_checks": "DOM-level interaction test of the delete dialog NOT RUN (vitest has no DOM environment/testing-library in this repo; AGENTS.md requires interaction tests for UI changes — gap recorded, consistent with R04's recorded limitation); native packaged journey with a real deletion NOT RUN; symlink/reparse-point adversarial fixture NOT RUN (needs Windows symlink privilege)",
+      "note": "New user-requested feature outside the R-queue. Backend gates: exclusive case.lock must be free (case open in another instance is refused), typed case-name confirmation must match on-disk meta name, folder must contain case.sqlite3 with user_version<=6 and a meta id/name. Deleting the open case stops on running tasks/jobs and active imports, closes the case first, then removes the whole folder and returns a bytes/sources/records receipt. Frontend: case menu Delete case… (disabled without an open native case) and command-palette entry open a dialog warning that originals/working files/chats/review history/archives inside the case folder are erased irreversibly; the destructive button enables only when the typed name matches; on success the projects list, last-case pointer and conversation pointer are cleared and the app returns to onboarding. Exports/archives the user saved outside the case folder are intentionally untouched. Deletion runs while holding the app case mutex by design: renderer stays responsive (spawn_blocking), other case commands queue honestly behind the removal. Known non-goal: a backup/export streaming concurrently from another trigger has no tracked in-flight state and would fail with an IO error rather than corrupt other data.",
+      "commit": "85f47aa7a6a24a3714b82451535b4730e6c9a04c"
     }
   }
 }
