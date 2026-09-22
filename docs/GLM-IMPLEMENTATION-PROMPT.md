@@ -1,79 +1,62 @@
-# GLM-5.3 execution prompt for VisLex
+# VisLex — current GLM implementation prompt
 
-This file is designed to be read after pulling the repository. The repository plan is docs/VISLEX-ULTRA-IMPLEMENTATION-PLAN.md.
+Repository: `utusmant-jpg/vislex`. Code audit base: `485882149585a1f2db34f1e7e9c29226758ba039` (15 commits after the earlier `9916bb9` audit).
 
-## Required repository setup
+## Mission
 
-Work against the private GitHub repository utusmant-jpg/vislex.
+Improve the existing Windows evidence workspace, not a replacement application. Deliver a reliable source-to-finding-to-review-to-export workflow, fast enough for 40–60 GB cases, with precise historical citations and visible uncertainty. Keep the new workspace rail and theme. Fix integration regressions before cosmetic redesign or additional agents.
 
-If there is no local clone, clone it with the authenticated Git credentials available to the host, then enter the repository.
+## Git setup — do this first
 
-If a clone already exists:
-- inspect git status before doing anything
-- never delete, reset, overwrite or stash user work without authorization
-- git fetch origin
-- update from origin/main using a safe fast-forward only when the current worktree is clean and doing so will not destroy work
-- never force-push
+Use authenticated Git access already supplied by the coding host. Clone the private repository only if there is no clone. In an existing clone, inspect status, branch and HEAD before any write. Fetch origin. Fast-forward from origin/main only on a clean safe worktree; otherwise create an isolated branch/worktree from origin/main without overwriting, resetting or stashing somebody else's changes. Never force-push. Record the exact code base.
 
-Record the exact branch and HEAD before editing.
+If the origin is not this repository, stop that checkout operation and use the correct isolated repository. Never run destructive cleanup on a case folder.
 
-## Required first read
+## Read little, but read the right material
 
-Read, in this order:
-1. docs/VISLEX-ULTRA-IMPLEMENTATION-PLAN.md
-2. README.md
-3. docs/EVIDENCE-DESK-IMPLEMENTATION.md
-4. docs/VERIFICATION.md
-5. docs/SECURITY.md
-6. .github/workflows/ci.yml
-7. package.json
-8. src-tauri/Cargo.toml
-9. the current source/tests relevant to the first ticket
+Read AGENTS.md, this prompt and NEXT-PLAN.md once. Run:
+```
+python scripts/vislex_plan.py check
+python scripts/vislex_plan.py next
+python scripts/vislex_plan.py packet R00
+```
+The helper prints one bounded task. Do not load the entire JSON task book, every historical roadmap, generated schema dump, binary or lockfile into the model context. Generate their inventory and inspect relevant provenance/diffs instead. Read complete relevant source files in manageable ranges and their callers before editing. Do not mistake a search hit or file hash for semantic review.
 
-Repository source is authoritative. The plan was produced from an earlier audit and must be revalidated against the current HEAD before every fix.
+Use the first ready task, with R01/R02/R03 as the critical repair chain. R04 and other independent work may be parallelized only without overlapping writers. Do not restart already delivered context suppression, HTML ingest or basic schema-6 history.
 
-## Your role
+Current verified-by-static-inspection hazards to reproduce:
+- R01: real published transcripts are registered in artifacts AND scanned again by backup, creating duplicate archive paths. The test used unregistered files and missed it.
+- R02: historical revision existence is checked, but ordinary citations and text locator bounds still resolve active extraction text.
+- R03: token overlap, dropping `not`/numbers, a qualifier substring or an existing citation can wrongly cover an unrelated/contrary assertion. Use structured publication, not another NLP threshold.
+- R04: reopen protection is improved, but the actual Settings UI and apply_app_settings still force grants/review options; direct-media opt-in is missing from the visible UI.
 
-Act as the implementation coordinator, not as a one-shot code generator.
+These are audit findings, not proof that later HEAD still contains them. Diff against the audit base first and revalidate only affected paths. Preserve newer correct work.
 
-Use GLM-5.3 at the highest practical reasoning setting available for difficult architecture, Rust, concurrency, migrations and cross-file changes.
+## Execution loop
 
-Use actual subagents/worktrees if the host provides them. Do not pretend subagents ran if the host only supports one process.
+For each selected packet:
+1. State the current code invariant and minimal failing production-path regression or measured baseline. Keep this brief.
+2. Read the packet's files and direct call sites. Record newly reviewed paths/hash/sections in the local review register.
+3. Write the regression. A hand-built object that bypasses production publication is insufficient for an integration defect.
+4. Implement the smallest coherent slice. If the packet spans several layers, use finite child commits with explicit interface contracts; do not claim the parent verified early.
+5. Run changed-path tests and the existing protected journey; after shared-schema/contract changes run all affected suites. Native/worker tests must really run in a supported environment. Unavailable checks stay NOT RUN/BLOCKED.
+6. Have a separate reviewer inspect the diff and adversarial cases. If no separate agent is available, do a separate review pass and state the limitation. Agreement among agents is not correctness evidence.
+7. Inspect final diff for unrelated churn, secrets, weakened assertions, hidden uploads and changes to original evidence. Commit coherently on the implementation branch; push normally to the same repository when authorized by the host workflow, never overwrite main or other writers blindly.
+8. Update NEXT-STATUS with state, tested commit, evidence path, environment, exact commands/exit codes, reviewer findings and unrun checks. `verified` requires the task's acceptance, not merely code or tests existing.
+9. Continue to the next dependency-ready task during the active session without asking for a new prompt after each small fix.
 
-Preferred structure:
-- one coordinator
-- up to three implementation agents on disjoint file areas
-- one independent reviewer/tester
+If the host reaches a session limit, leave a durable handoff stating exact branch/HEAD, task, changed files, failing command, pending test and next command. Do not claim work will continue after the session ends. If blocked, explain the concrete prerequisite and move only to independent safe work. Do not wave through a dependency.
 
-Do not allow multiple writers to concurrently modify database migrations, case.rs, desktop.rs, agent.rs, shared DTOs, lockfiles or packaging config.
+## Quality and token discipline
 
-## Start now
+Keep a stable compact prefix and one active task packet. Reuse source knowledge while its hash is unchanged; refresh when a dependency changes. Do not ask every subagent to audit the entire repository. Give each one the invariant, file ownership and specific negative tests. Limit simultaneous writers to three, and serialize shared Rust/DTO/migration/lockfile changes.
 
-First:
-- inspect git status, branch and HEAD
-- compare current HEAD to b673ad77a8a2b22d0be098587b08bc0538b5c76b and 9916bb9e0286bd6871d56c8873f62276affc42b2
-- inspect recent commits so you do not undo newer work
-- run/characterize the current test baseline
-- establish docs/implementation/ as the small canonical execution ledger if an equivalent current mechanism does not already exist
-- begin VL-001
-- then implement dependency-ready P0 tickets in the order in the plan
+Use GLM-5.3 `max` reasoning for difficult coding when supported by the host; do not blindly pass unsupported flags. Official documentation currently recommends `max` and describes GLM-5.3 as text-only. Real screenshot review therefore needs a human or an available vision-capable tool, not a fabricated visual inspection. Source checked for this handoff: https://docs.z.ai/guides/llm/glm-5.3 . Recheck if configuring a different version/host.
 
-For each ticket:
-1. reproduce/revalidate
-2. read complete relevant files/call sites
-3. write the smallest regression or baseline measurement
-4. implement narrowly
-5. run relevant tests
-6. independently review negative cases/races/restrictions
-7. record exact verification
-8. commit coherently
-9. rerun the protected journey after integration
+Reduce redundant context and retries, not reasoning quality or tests. Never replace detailed acceptance with 'make it better', spawn agents to vote, or rewrite working subsystems for aesthetic consistency.
 
-Do not start another whole-app redesign. Preserve the new workspace UI. Do not weaken evidence integrity, permissions, source restrictions, review gates or the worker sandbox for convenience.
+## Nonnegotiable boundaries
 
-Continue autonomously through dependency-ready work during this coding session. If something is blocked, record the exact blocker and move to an independent safe ticket rather than repeatedly asking broad questions.
+No real client evidence, case databases or credentials in coding prompts, repository fixtures, telemetry or public CI. No silent broadening of cloud permissions, model-quality downgrade, forced spending cap, unrestricted worker, writable hardlink to originals, fake human approval, or undocumented API billing fallback. Keep legacy evidence readable; unknown provenance is labeled unknown, not guessed. Tests cannot be deleted or weakened merely to turn green.
 
-The end-state gate is:
-import -> process -> exact search -> exact original navigation -> finding review -> pinned export -> encrypted backup -> restore -> reopen.
-
-Do not claim a test passed unless it actually ran successfully.
+The endpoint is R23's measured packaged Windows journey, not 'all files edited'. R20 subscription ACP is optional and MCP remains deferred. Treat current source plus the task contracts as authoritative; old plans/LEDGER are history, not a reason to repeat completed work.

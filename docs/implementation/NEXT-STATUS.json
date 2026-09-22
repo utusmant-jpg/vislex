@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "audit_base": "485882149585a1f2db34f1e7e9c29226758ba039",
+  "meaning": "pending = proposed; implemented = code exists but acceptance incomplete; verified = specified task evidence recorded, not product certification; blocked requires reason. Edit manually, never infer from test counts.",
+  "tasks": {
+    "R00": {
+      "state": "pending"
+    },
+    "R01": {
+      "state": "pending"
+    },
+    "R02": {
+      "state": "pending"
+    },
+    "R03": {
+      "state": "pending"
+    },
+    "R04": {
+      "state": "pending"
+    },
+    "R05": {
+      "state": "pending"
+    },
+    "R06": {
+      "state": "pending"
+    },
+    "R07": {
+      "state": "pending"
+    },
+    "R08": {
+      "state": "pending"
+    },
+    "R09": {
+      "state": "pending"
+    },
+    "R10": {
+      "state": "pending"
+    },
+    "R11": {
+      "state": "pending"
+    },
+    "R12": {
+      "state": "pending"
+    },
+    "R13": {
+      "state": "pending"
+    },
+    "R14": {
+      "state": "pending"
+    },
+    "R15": {
+      "state": "pending"
+    },
+    "R16": {
+      "state": "pending"
+    },
+    "R17": {
+      "state": "pending"
+    },
+    "R18": {
+      "state": "pending"
+    },
+    "R19": {
+      "state": "pending"
+    },
+    "R20": {
+      "state": "pending"
+    },
+    "R21": {
+      "state": "pending"
+    },
+    "R22": {
+      "state": "pending"
+    },
+    "R24": {
+      "state": "pending"
+    },
+    "R25": {
+      "state": "pending"
+    },
+    "R23": {
+      "state": "pending"
+    }
+  }
+}
