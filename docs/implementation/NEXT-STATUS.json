@@ -68,7 +68,7 @@
     },
     "R04": {
       "state": "implemented",
-      "commit": "filled-at-commit",
+      "commit": "1a4f67900e40ba294f8b873cacd2ed75018c83d5",
       "evidence": "src-tauri/tests/master_v4.rs app_preferences_apply_exactly_the_chosen_policy_without_forcing (rewritten from forcing-asserting test); src-tauri/tests/core.rs unmarked_ai_defaults..., direct_media_consent_round_trips..., case_grants_and_consents_survive_backup_and_restore_exactly, image_grant_without_text_grant_is_refused...; src/components/SettingsDialog.tsx Case permissions panel",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
       "commands": [
