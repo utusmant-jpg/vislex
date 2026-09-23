@@ -8,6 +8,9 @@ import type { AIConfig, AIProfile, ModelOption, Provider, Settings, Snapshot } f
 const companies = Object.keys(providerNames) as Provider[];
 const sections = ['AI providers', 'Appearance', 'About'] as const;
 type Section = typeof sections[number];
+type AccessState = { route: 'api_keys' | 'chatgpt_subscription'; subscription?: { model: string; effort: string } | null; subscription_ready: boolean; blocker: string };
+type CodexAccount = { connected: boolean; email?: string | null; plan?: string | null };
+type CodexModel = { id: string; name: string; efforts: string[]; default_effort?: string | null };
 
 function initialProfiles(snapshot: Snapshot): AIProfile[] {
   const saved = configuredProfiles(snapshot);
@@ -33,15 +36,50 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
   const [models, setModels] = useState<Partial<Record<Provider, ModelOption[]>>>({});
   const [loading, setLoading] = useState<Partial<Record<Provider, boolean>>>({});
   const [catalogErrors, setCatalogErrors] = useState<Partial<Record<Provider, string>>>({});
+  const [access, setAccess] = useState<AccessState | null>(null);
+  const [account, setAccount] = useState<CodexAccount | null>(null);
+  const [login, setLogin] = useState<{ login_id: string; auth_url: string } | null>(null);
+  const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
+  const [codexModel, setCodexModel] = useState('');
+  const [codexEffort, setCodexEffort] = useState('');
+  const [codexLimits, setCodexLimits] = useState('');
+  const [codexBusy, setCodexBusy] = useState(false);
+  const [codexError, setCodexError] = useState('');
   const busy = saving || Object.values(loading).some(Boolean);
   useEffect(() => {
     mounted.current = true; dialog.current?.showModal();
     companies.forEach(provider => {
       api<{ configured: boolean }>('provider_key_status', { provider }).then(v => { if (mounted.current) setStored(s => ({ ...s, [provider]: v.configured })); }).catch(e => { if (mounted.current) setCatalogErrors(s => ({ ...s, [provider]: String(e) })); });
     });
+    if (native) {
+      api<AccessState>('ai_access_route').then(v => { if (mounted.current) {setAccess(v);setCodexModel(v.subscription?.model ?? '');setCodexEffort(v.subscription?.effort ?? '');} }).catch(e => {if (mounted.current) setCodexError(String(e));});
+      api<CodexAccount>('codex_account_status').then(v => {if (mounted.current) setAccount(v);}).catch(e => {if (mounted.current) setCodexError(String(e));});
+    }
     if (native) api<{ enabled: boolean }>('direct_media_permission').then(v => { if (mounted.current) { setDirectMedia(v.enabled); setInitialDirectMedia(v.enabled); } }).catch(() => { if (mounted.current) { setDirectMedia(false); setInitialDirectMedia(false); } });
     return () => { mounted.current = false; };
   }, []);
+  useEffect(() => {
+    if (!login || account?.connected) return;
+    const timer = window.setInterval(() => {
+      api<CodexAccount>('codex_account_status').then(v => {if (mounted.current) {setAccount(v);if (v.connected) setLogin(null);}}).catch(() => {});
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [login, account?.connected]);
+  async function codexAction(action: () => Promise<void>) {
+    if (codexBusy) return;
+    setCodexBusy(true); setCodexError('');
+    try { await action(); } catch (e) { if (mounted.current) setCodexError(String(e)); }
+    finally { if (mounted.current) setCodexBusy(false); }
+  }
+  async function loadCodexModels() {
+    const result = await api<CodexModel[]>('codex_account_models');
+    if (mounted.current) {
+      setCodexModels(result);
+      const selected = result.find(m => m.id === codexModel) ?? result[0];
+      setCodexModel(selected?.id ?? '');
+      setCodexEffort(selected?.efforts.includes(codexEffort) ? codexEffort : selected?.default_effort ?? selected?.efforts[0] ?? '');
+    }
+  }
   function updateProfile(index: number, change: Partial<AIProfile>) { setProfiles(ps => ps.map((p, i) => i === index ? { ...p, ...change } : p)); }
   async function loadModels(provider: Provider) {
     if (loading[provider]) return;
@@ -106,6 +144,26 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
 
         {section === 'AI providers' ? <fieldset disabled={saving} className="ai-setup-fields">
           {!native ? <p className="notice">AI setup is available in the Windows desktop app. This browser is a preview.</p> : null}
+          <fieldset className="provider-card"><legend>OpenAI access route</legend>
+            <div className="chip-row">
+              <button type="button" className={`chip ${access?.route === 'api_keys' ? 'selected' : ''}`} disabled={!native || codexBusy} onClick={() => void codexAction(async () => {const v = await api<AccessState>('set_ai_access_route',{route:'api_keys'});setAccess(current => current ? {...current,route:v.route} : null);})}>API keys</button>
+              <button type="button" className={`chip ${access?.route === 'chatgpt_subscription' ? 'selected' : ''}`} disabled={!native || !access?.subscription_ready || codexBusy} onClick={() => void codexAction(async () => {const v = await api<AccessState>('set_ai_access_route',{route:'chatgpt_subscription'});setAccess(current => current ? {...current,route:v.route} : null);})}>ChatGPT subscription</button>
+            </div>
+            <p className="small muted">API usage and ChatGPT subscription usage are separate. The selected route applies to all new AI tasks; no task switches routes automatically.</p>
+            {!access?.subscription_ready && access ? <p className="small muted" role="status">Subscription tasks are disabled: {access.blocker}. API tasks continue normally.</p> : null}
+            <div className="input-row">
+              <span className="small">ChatGPT account: {account?.connected ? `${account.email ?? 'Connected'}${account.plan ? ` · ${account.plan}` : ''}` : 'Not connected'}</span>
+              {!account?.connected ? <button type="button" className="secondary" disabled={!native || codexBusy} onClick={() => void codexAction(async () => {setLogin(await api('codex_account_login'));})}>Sign in with ChatGPT</button> : <button type="button" className="secondary" disabled={codexBusy} onClick={() => void codexAction(async () => {await api('codex_account_logout');setAccount({connected:false});setCodexModels([]);setCodexLimits('');})}>Sign out</button>}
+              <button type="button" className="quiet" disabled={!native || codexBusy} onClick={() => void codexAction(async () => {setAccount(await api('codex_account_status'));})}>Refresh status</button>
+            </div>
+            {login ? <p className="small">Finish sign-in in your browser: <a href={login.auth_url} target="_blank" rel="noopener noreferrer">Open ChatGPT sign-in</a> <button type="button" className="quiet" onClick={() => void codexAction(async () => {await api('codex_account_cancel_login',{login_id:login.login_id});setLogin(null);})}>Cancel sign-in</button></p> : null}
+            {account?.connected ? <>
+              <div className="input-row"><button type="button" className="secondary" disabled={codexBusy} onClick={() => void codexAction(loadCodexModels)}>Load subscription models</button><button type="button" className="quiet" disabled={codexBusy} onClick={() => void codexAction(async () => {const v = await api<{rateLimits?:{primary?:{usedPercent?:number}}}>('codex_account_limits');setCodexLimits(typeof v.rateLimits?.primary?.usedPercent === 'number' ? `${v.rateLimits.primary.usedPercent}% of current Codex window used` : 'Usage limit detail unavailable');})}>Check subscription usage</button></div>
+              {codexLimits ? <p className="small muted" role="status">{codexLimits}</p> : null}
+              {codexModels.length ? <div className="input-row"><label className="field-label">Subscription model<select aria-label="ChatGPT subscription model" value={codexModel} onChange={e => {const model=codexModels.find(m => m.id===e.target.value);setCodexModel(e.target.value);setCodexEffort(model?.default_effort ?? model?.efforts[0] ?? '');}}>{codexModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label><label className="field-label">Reasoning effort<select aria-label="ChatGPT reasoning effort" value={codexEffort} onChange={e => setCodexEffort(e.target.value)}>{(codexModels.find(m => m.id===codexModel)?.efforts ?? []).map(effort => <option key={effort} value={effort}>{effort}</option>)}</select></label><button type="button" className="secondary" disabled={codexBusy || !codexEffort} onClick={() => void codexAction(async () => {await api('save_codex_selection',{model:codexModel,effort:codexEffort});setAccess(current => current ? {...current,subscription:{model:codexModel,effort:codexEffort}} : null);})}>Save subscription model</button></div> : null}
+            </> : null}
+            {codexError ? <p role="alert" className="small danger-text">{codexError}</p> : null}
+          </fieldset>
           <p className="notice">Saved once for all cases. Selecting a model makes it available — what it may see is decided by the case permissions below, not by the selection. VisLex chooses when to delegate among permitted models.</p>
           <p className="small muted disclosure-open"><KeyRound size={13} /> Keys are stored in Windows Credential Manager. Loading models contacts that company without sending case evidence.</p>
           <fieldset className="provider-card case-permissions"><legend>Case permissions{native ? '' : ' (desktop app)'}</legend>
