@@ -244,6 +244,12 @@ fn legacy_caps_and_step_count_do_not_block_enabled_agent() {
     let request = agent::prepare_request(&mut c, &task).unwrap();
     assert_eq!(request.body["store"], false);
     assert_eq!(c.db.query_row("SELECT count(*) FROM transmissions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    let metrics:String=c.db.query_row("SELECT data FROM audit WHERE event='agent_request_size'",[],|r|r.get(0)).unwrap();
+    let metrics:serde_json::Value=serde_json::from_str(&metrics).unwrap();
+    assert!(metrics["input_json_bytes"].as_u64().unwrap()>0);
+    assert!(metrics["tool_schema_bytes"].as_u64().unwrap()>0);
+    assert!(metrics["wire_json_bytes"].as_u64().unwrap()>=metrics["input_json_bytes"].as_u64().unwrap());
+    assert!(!metrics.to_string().contains("question"),"Request-size audit must not contain client text");
 }
 #[test]
 fn actual_agent_tool_response_writes_once_and_checkpoints() {

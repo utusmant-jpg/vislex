@@ -1257,21 +1257,26 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
     if reasoning_model { body["reasoning"]=json!({"effort":"high"}); }
     // Byte-count allowance intentionally overestimates text tokens; image
     // allowance is conservative, not a provider billing guarantee.
-    let estimated_tokens=serde_json::to_vec(&body["input"])?.len()
-        + body["instructions"].as_str().unwrap_or("").len()
-        + serde_json::to_vec(&body["tools"])?.len()
+    let input_bytes=serde_json::to_vec(&body["input"])?.len();
+    let instruction_bytes=body["instructions"].as_str().unwrap_or("").len();
+    let tool_schema_bytes=serde_json::to_vec(&body["tools"])?.len();
+    let estimated_tokens=input_bytes
+        + instruction_bytes
+        + tool_schema_bytes
         + image_count*30000;
     let reservation=(estimated_tokens as f64*settings.input_per_million
         + output_allowance as f64*settings.output_per_million)/1_000_000.0;
     let wire=crate::providers::encode(profile.provider,&body)?;
+    let wire_json=wire.body.to_string();
     let transmission = id();
     let tx = case.db.transaction()?;
-    tx.execute("INSERT INTO transmissions(id,task_id,payload_hash,model,source_ids,reserved,status,created_at) VALUES(?,?,?,?,?,?,'pending',?)",params![transmission,task,digest(wire.body.to_string().as_bytes()),format!("{}:{}",profile.provider.name(),settings.model),serde_json::to_string(&ids)?,reservation,now()])?;
+    tx.execute("INSERT INTO transmissions(id,task_id,payload_hash,model,source_ids,reserved,status,created_at) VALUES(?,?,?,?,?,?,'pending',?)",params![transmission,task,digest(wire_json.as_bytes()),format!("{}:{}",profile.provider.name(),settings.model),serde_json::to_string(&ids)?,reservation,now()])?;
     tx.execute(
         "UPDATE tasks SET reserved=reserved+?,step=step+1,updated_at=? WHERE id=?",
         params![reservation, now(), task],
     )?;
     tx.commit()?;
+    case.audit("agent_request_size",json!({"transmission":transmission,"task":task,"step":step+1,"input_json_bytes":input_bytes,"instruction_bytes":instruction_bytes,"tool_schema_bytes":tool_schema_bytes,"wire_json_bytes":wire_json.len(),"image_count":image_count,"attached_image_bytes":attached_bytes,"history_entries":input.len(),"ledger_json_bytes":ledger.to_string().len()}))?;
     Ok(PreparedRequest { provider:profile.provider, body, transmission })
 }
 /// Bounded SSE decoder. Keep bytes until newline so split UTF-8 characters survive.
