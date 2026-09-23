@@ -464,6 +464,10 @@ fn snapshot_groups_failed_tools_and_links_discovery_child_to_parent() {
     assert_eq!(c.issue_history(latest,0).unwrap()["receipts"].as_array().unwrap().len(),3);
     let child=snapshot["jobs"].as_array().unwrap().iter().find(|job|job["id"]=="child").unwrap();
     assert_eq!(child["parent_run_id"],"parent");
+    c.db.execute("INSERT INTO processing_jobs VALUES('replacement',?,'video_ocr_index','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    let jobs=c.snapshot().unwrap()["jobs"].as_array().unwrap().clone();
+    assert_eq!(jobs.iter().find(|job|job["id"]=="parent").unwrap()["superseded"],true);
+    assert_eq!(jobs.iter().find(|job|job["id"]=="replacement").unwrap()["superseded"],false);
 }
 #[test]
 fn large_snapshot_excludes_full_working_record_bodies() {
@@ -583,8 +587,10 @@ fn chats_wait_for_file_preparation_but_failures_release_the_gate() {
     assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());
     c.db.execute("UPDATE processing_jobs SET status='failed',error='Synthetic processor failure' WHERE id='preparing'",[]).unwrap();
     assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
-    c.db.execute("INSERT INTO processing_jobs VALUES('recovered',?,'auto_prepare','complete','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
-    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none(),"Historical failed jobs do not release a later active gate");
+    c.db.execute("INSERT INTO processing_jobs VALUES('recovered',?,'auto_prepare','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some(),"Historical failure must not release the gate while its replacement runs");
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE id='recovered'",[]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
     let review=agent::start(&mut c,"Synthetic automatic review","investigate",vec![sid.clone()],vec![],0.).unwrap();
     c.set_meta("auto_review_task",&review).unwrap();
     assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());

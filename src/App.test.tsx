@@ -40,6 +40,17 @@ it('groups old AI tool errors and loads their receipts only when expanded', asyn
   expect(await screen.findByText(/Receipt latest/)).toBeTruthy();
 });
 
+it('keeps a failed older run in history while its replacement is queued', () => {
+  const current=snapshot();
+  current.jobs![0].superseded=true;
+  current.jobs![1].superseded=true;
+  current.jobs!.push({id:'replacement',source_id:'source',name:'synthetic.mp4',kind:'video_ocr_index',status:'queued',error:'',created_at:'',superseded:false});
+  render(<JobsCenter snapshot={current} run={fn => { void fn(); }} refresh={async () => undefined} />);
+  expect(screen.getByText('Earlier failures replaced by newer runs (2)')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Retry index from saved progress' })).toBeNull();
+  expect(screen.getAllByText('queued').length).toBeGreaterThan(0);
+});
+
 it('loads record text on selection and ignores a late result from another case', async () => {
   const summary:RecordSummary={id:'same-id',title:'Synthetic note',kind:'note',revision:1,actor:'human',review:'unreviewed',protected:false,stale:false,updated_at:'now',dependencies:[]};
   let resolveOld!:(record:WorkingRecord)=>void;

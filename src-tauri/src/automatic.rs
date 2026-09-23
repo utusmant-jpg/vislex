@@ -257,9 +257,9 @@ pub fn status(case:&Case)->Result<Value> {
 pub fn chat_pause_reason(case:&Case)->Result<Option<&'static str>> {
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return Ok(None);}
-    let failed:i64=case.db.query_row("SELECT count(*) FROM processing_jobs j WHERE j.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') AND j.status IN ('failed','interrupted') AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.status='complete' AND newer.rowid>j.rowid)",[],|r|r.get(0))?;
+    let failed:i64=case.db.query_row("SELECT count(*) FROM processing_jobs j WHERE j.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') AND j.status IN ('failed','interrupted') AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid)",[],|r|r.get(0))?;
     if failed>0 {return Ok(None);}
-    let pending:i64=case.db.query_row("SELECT count(*) FROM processing_jobs j WHERE j.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') AND j.status IN ('queued','running') AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.status='complete' AND newer.rowid>j.rowid)",[],|r|r.get(0))?;
+    let pending:i64=case.db.query_row("SELECT count(*) FROM processing_jobs j WHERE j.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') AND j.status IN ('queued','running') AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid)",[],|r|r.get(0))?;
     if pending>0 {return Ok(Some("Files are still being prepared. Chat will be available when processing finishes or reports an error."));}
     if let Some(task)=case.meta("auto_review_task")? {
         let running:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=? AND status='running')",[task],|r|r.get(0))?;
