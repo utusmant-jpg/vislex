@@ -140,7 +140,23 @@
       "state": "pending"
     },
     "R20": {
-      "state": "pending"
+      "state": "pending",
+      "partial_commit": "2ed1118403bd282ce90b7ab7f331085c3877e167",
+      "evidence": "docs/implementation/R20-COMPATIBILITY-2026-09-22.md; src-tauri/src/ai_access.rs and codex_account.rs account-only tests; src/components/SettingsDialog.test.tsx interaction tests",
+      "environment": "Windows x64; Rust 1.98.1; Node 24.14.1; npm 11.11.0; codex-cli 0.155.0-alpha.16; isolated worktree codex/chatgpt-subscription",
+      "commands": [
+        "npm ci -> exit 0",
+        "npm run build -> exit 0",
+        "npm test -> exit 0, 36 passed",
+        "cargo test --manifest-path src-tauri/Cargo.toml ai_access --lib -> exit 0, 1 passed",
+        "cargo check --manifest-path src-tauri/Cargo.toml --features desktop -> exit 1 without packaged worker resources; retry with temporary compile-only resource placeholder -> exit 0; placeholder removed",
+        "cargo test --manifest-path src-tauri/Cargo.toml --features desktop codex_account::tests --lib -> exit 0, 1 passed, 1 ignored",
+        "cargo test --manifest-path src-tauri/Cargo.toml --features desktop codex_account::tests::account_read_protocol_smoke --lib -- --ignored --exact -> exit 0, 1 passed using isolated temporary CODEX_HOME",
+        "cargo test --manifest-path src-tauri/Cargo.toml -> exit 1: existing discovery::transient_resource_failure_retries_twice_then_stays_visible requires unavailable packaged processor; preceding tests passed"
+      ],
+      "reviewer": "Separate self-review of staged diff and permission paths; no independent reviewer. Confirmed subscription task routing remains gated and no API fallback is invoked when route is subscription.",
+      "unrun_checks": "No authorized signed-in account test, dynamic tool bridge, case-scoped synthetic journey, packaged Windows process isolation, native UI interaction, backup/restore under subscription, or release build. R19 and R24 remain pending prerequisites.",
+      "note": "Account-only ChatGPT login/status/logout/model-effort/limit controls implemented, but subscription task execution intentionally disabled. R20 acceptance not met; do not treat this as a usable Plus/Pro inference route."
     },
     "R21": {
       "state": "pending"
