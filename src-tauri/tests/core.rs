@@ -1030,6 +1030,45 @@ fn failed_automatic_review_is_not_treated_as_completed_analysis() {
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"failed");
 }
 
+#[test]
+fn current_saved_analysis_uses_small_first_reply_and_expands_only_on_request() {
+    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let mut settings=c.settings().unwrap();settings.model="gpt-5.6-luna".into();c.save_settings(settings).unwrap();
+    let automatic=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.db.execute("UPDATE tasks SET status='complete',answer='A witness reported a blue bag.' WHERE id=?",[&automatic]).unwrap();
+    evidence_desk::automatic::start_review(&mut c).unwrap();
+    let (sources,records)=agent::case_scope(&c).unwrap();
+    let task=agent::start(&mut c,"What did the witness report?","investigate",sources.clone(),records.clone(),0.).unwrap();
+    let first=agent::prepare_request(&mut c,&task).unwrap();
+    assert_eq!(first.body["tools"].as_array().unwrap().len(),1);
+    assert_eq!(first.body["tools"][0]["name"],"request_more_research");
+    assert_eq!(first.body["model"],"gpt-5.6-luna");
+    assert_eq!(first.body["reasoning"]["effort"],"low");
+    assert!(!first.body["instructions"].as_str().unwrap().contains("QUESTION DOSSIER"));
+    assert!(agent::execute_tool(&mut c,&task,"search_evidence",&json!({"query":"bag","offset":0})).is_err(),"Quick phase must not permit an unadvertised research tool");
+    let response=json!({"status":"completed","usage":{"input_tokens":20,"output_tokens":10},"output":[{"type":"function_call","call_id":"research","name":"request_more_research","arguments":"{\"reason\":\"Need the exact source wording\"}"}]});
+    assert!(agent::receive(&mut c,&task,&first.transmission,response).unwrap());
+    let expanded=agent::prepare_request(&mut c,&task).unwrap();
+    assert!(expanded.body["tools"].as_array().unwrap().len()>20);
+    assert_eq!(expanded.body["model"],"gpt-5.6-luna");
+    assert_eq!(expanded.body["reasoning"]["effort"],"high");
+    assert!(expanded.body["instructions"].as_str().unwrap().contains("QUESTION DOSSIER"));
+    let quick_bytes=first.body.to_string().len();
+    let expanded_bytes=expanded.body.to_string().len();
+    eprintln!("saved-analysis first request: {quick_bytes} bytes; expanded research request: {expanded_bytes} bytes");
+    assert!(quick_bytes<expanded_bytes,"Saved analysis should not pay the full research request cost");
+    let direct=agent::start(&mut c,"Summarize the saved finding","investigate",sources,records,0.).unwrap();
+    let quick=agent::prepare_request(&mut c,&direct).unwrap();
+    let answer=json!({"status":"completed","usage":{"input_tokens":30,"output_tokens":12},"output":[{"type":"message","content":[{"type":"output_text","text":"The saved analysis says a witness reported a blue bag."}]}]});
+    assert!(!agent::receive(&mut c,&direct,&quick.transmission,answer).unwrap());
+    assert_eq!(c.db.query_row("SELECT status FROM tasks WHERE id=?",[&direct],|r|r.get::<_,String>(0)).unwrap(),"complete");
+    let (sources,records)=agent::case_scope(&c).unwrap();
+    let stale=agent::start(&mut c,"Check the wording again","investigate",sources.clone(),records,0.).unwrap();
+    c.publish_extract(&sources[0],"Revised synthetic wording", "test",true).unwrap();
+    let refreshed=agent::prepare_request(&mut c,&stale).unwrap();
+    assert!(refreshed.body["tools"].as_array().unwrap().len()>20,"A new extraction must disable the saved-answer shortcut");
+}
+
 /// R04 — only consent-marked app defaults may initialize a new case's AI
 /// policy; files written by the pre-consent flow (forced values) are ignored,
 /// so no upgrade silently grants online/text/images to new cases.
