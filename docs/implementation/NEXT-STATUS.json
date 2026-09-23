@@ -332,6 +332,8 @@
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test discovery -> exit 0, 11 passed and 1 packaged fixture test ignored after 113b3b0",
         "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0 after 113b3b0",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after 113b3b0, all non-ignored suites passed; worker_video_e2e passed",
+        "Packaged live snapshot during dual discovery: 62,749 serialized bytes and 54 ms bridge latency with 10 sources, 172 job summaries, and 1 paused task; single observed sample, not p95",
+        "Packaged live resource sample during dual discovery: 2 worker processes, 1,046,339,584 combined private bytes, 6,608,670,720 available physical bytes; no current processing failure",
         "Dev15 packaged PE subsystem -> 2 (Windows GUI); app child processes were evidence-worker.exe and msedgewebview2.exe, with no console child",
         "npm test -- --run -> exit 0, 36 tests in 10 files after 935864d and 234f03c; npm run build -> exit 0",
         "Python worker unit tests -> exit 0, 18 passed after overview scaling and scheduling changes",
