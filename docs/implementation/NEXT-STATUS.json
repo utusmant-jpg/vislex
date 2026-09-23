@@ -294,6 +294,7 @@
       "new_build": "artifacts/VisLex 0.3.0-dev5/VisLex.exe; SHA-256 4891623c7b6e329d792f94c0ac777b0b40d802d6e720cb5318d9e71229c0fa18; npm exec tauri build -- --debug --features desktop --no-bundle and package-development.ps1 both exited 0. This package has not been run or verified against the live case.",
       "request_size_commit": "5af4527 (forced single-tool requests omit unused tool schemas; synthetic investigator request tool-schema bytes measured 29,822 -> 1,189, full default Rust suite passed; this is a per-request schema comparison, not a measured live token/latency reduction)",
       "continuation_commits": "c8e4f72 + aa4a3ab (paused task can start a new task from saved progress and the same selected model without replaying the old uncertain transmission; backend and UI interaction regressions pass; existing chat interaction tests restored, frontend suite 32 passed and build passed)",
+      "bounded_snapshot_commit": "f1da476 (working-record bodies removed from polled snapshot and loaded by case-ID/revision-fenced detail action; 500 synthetic 2-KiB records measured 1,156,389 -> 125,886 serialized snapshot bytes; Rust core 64 passed, React 33 passed, UI stale-case interaction passed, native script syntax checked but native journey not run)",
       "latest_build": "artifacts/VisLex 0.3.0-dev7/VisLex.exe; SHA-256 48f4b1209ddee303efc75635efbed578ec9f3a10698bea9f6fa813a2e3664bdb; includes safe paused-task continuation; Tauri debug desktop build and isolated packaging exited 0. Not launched against the live case.",
       "environment": "Windows x64; packaged VisLex 0.3.0-dev4 remains running on the live case; code changes tested in the repository only",
       "evidence": "src-tauri/tests/discovery.rs, src-tauri/tests/core.rs, src-tauri/tests/dossier.rs, src-tauri/tests/master_v4.rs, src/App.test.tsx",
@@ -305,9 +306,33 @@
         "git diff --cached --check -> exit 0"
       ],
       "implemented_scope": "Automatic review waits for discovery; failed discovery parent resumes from its published cursor and a linked child routes to that recovery; Windows resource error 1450 gets two delayed retries; memory-heavy workers serialize; Jobs groups old tool errors and counts active attention; dossier schema matches runtime inspection values; two identical failed tool submissions force a qualified finish; provider incomplete reason is allowlisted; automatic completion audit is idempotent; agent ledger bounds old read/visual detail with exact receipts retained.",
-      "unrun_checks": "Dev7 is packaged but has no native interaction journey against these changes. Encrypted live-case backup and controlled restart await backup verification. The deterministic visual-bin ledger has only synthetic checks, no full-duration packaged/live run; document-page and text-unit coverage remain unfinished. No measured post-change token/latency/memory improvement; no synthetic medium/large tier run. R05 and R08-R23 remain subject to their own acceptance gates.",
+      "unrun_checks": "Dev7 predates the bounded-snapshot change and needs a fresh package. No native interaction journey against these changes. Encrypted live-case backup and controlled restart await backup verification. The deterministic visual-bin ledger has only synthetic checks, no full-duration packaged/live run; document-page and text-unit coverage remain unfinished. No measured post-change token/latency/memory improvement; no synthetic medium/large tier run. R05 and R08-R23 remain subject to their own acceptance gates.",
       "reviewer": "Self-review and focused production-path tests; no separate reviewer or live provider run. The terminal observed on this desktop is a separate Class Assistant cmd process launched by Explorer; running VisLex.exe has GUI subsystem and its worker uses CREATE_NO_WINDOW, so the reported terminal association remains unconfirmed.",
       "note": "Implemented slice, not release verification or legal-accuracy certification. The running case and old packaged executable were not modified or restarted."
+    },
+    "NEW-CASE-VALIDATION-2026-09-22": {
+      "state": "in_progress",
+      "environment": "Packaged VisLex 0.3.0-dev14 on Windows; new isolated case created from copies of 10 source files; source folder and older case untouched",
+      "evidence": "Production Tauri bridge import, preparation, transcription, encrypted backup, and live request audit; client identifiers and content omitted",
+      "commands": [
+        "New case: 10 of 10 sources imported; 10 auto_prepare and 8 full_audio jobs completed; 17 PDF pages and 54 DOCX text lines extracted",
+        "Live request audit: 8 transmissions, 7 received and 1 uncertain; 96,690 input and 1,825 output tokens; automatic task paused without resending the uncertain transmission",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 66 passed after 630758d",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites passed; 21 packaged-worker sandbox tests ignored by default; worker_video_e2e passed",
+        "npm test -- --run -> exit 0, 34 React interaction/unit tests passed",
+        "npm exec tauri build -- --debug --features desktop --no-bundle and scripts/package-development.ps1 -OutputName VisLex 0.3.0-dev15 -> exit 0",
+        "Encrypted backup completed: 3,395,733,078-byte .age archive, SHA-256 ADCE801AD28B1F78C67BD3A11D88A330CD1310D954F3BC9D6916E3B4509F190D",
+        "Production Tauri restore to a separate new folder succeeded; restored case opened with 10 sources and 3,366,790,450 original bytes; SQLite quick_check -> ok",
+        "Production Tauri queue_video_discovery -> 8 of 8 videos queued successfully; 16 latest OCR/overview index jobs present, 1 running and 15 queued at start",
+        "Dev15 packaged PE subsystem -> 2 (Windows GUI); app child processes were evidence-worker.exe and msedgewebview2.exe, with no console child",
+        "npm test -- --run -> exit 0, 36 tests in 10 files after 935864d and 234f03c; npm run build -> exit 0",
+        "Python worker unit tests -> exit 0, 18 passed after overview scaling and scheduling changes",
+        "Packaged AppContainer worker_e2e and discovery tests -> exit 0 after 34176b0"
+      ],
+      "commits": ["e6c775f", "c41a0df", "1344b82", "81229f2", "de613f7", "34176b0", "fa80948", "630758d", "935864d", "234f03c"],
+      "implemented_scope": "Sanitized per-request size metrics, bounded current-review first answer, faster overview scaling, historical Jobs grouping, fair overview scheduling, cancelled-discovery finalization, and paused automatic review continuation from current inventory while preserving uncertain delivery",
+      "unrun_checks": "The 16 new full-duration video index jobs are running or queued; their EOF status and the visual-bin ledger are pending. No packaged citation/export/reopen journey on this new case, two concurrent provider chats, full release suite, medium/large tier benchmark, or measured follow-up latency yet. Dev15 includes 630758d and is now running on the case. This entry is not release verification.",
+      "note": "The user redirected validation to a new case from copies of the source folder. No case material or names were committed. The earlier case remains untouched. The encrypted backup restored successfully into a separate folder; both case versions were retained. Full-duration discovery must finish before the paused AI task can be continued from current saved progress."
     },
     "LIVE-CASE-AUDIT-2026-09-22": {
       "state": "diagnosed",
