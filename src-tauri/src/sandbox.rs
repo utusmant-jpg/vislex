@@ -103,6 +103,21 @@ impl WorkerPermit {
         *active += 1; Self
     }
 }
+fn available_physical_mib() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut memory=MEMORYSTATUSEX::default();
+    memory.dwLength=std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    (unsafe {GlobalMemoryStatusEx(&mut memory)}!=0).then_some(memory.ullAvailPhys/(1024*1024))
+}
+fn serial_worker(kind: Option<&str>, physical_available_mib: Option<u64>) -> bool {
+    match kind {
+        // Overview is a navigation pass. Run it beside one ASR/OCR worker
+        // only when enough physical memory remains for both sandboxes.
+        Some("video_overview") => physical_available_mib.unwrap_or(0)<4096,
+        None | Some("video_ocr"|"full_audio"|"video"|"audio"|"diarization") => true,
+        _ => false,
+    }
+}
 impl Drop for WorkerPermit {
     fn drop(&mut self) {
         let (lock,wake) = &WORKER_SLOTS;
@@ -173,7 +188,7 @@ pub fn run_worker(executable: &Path, job: &Path, timeout: Duration) -> Result<()
     // Reserve their shared slot before a general worker slot so a waiting
     // video job does not prevent a lightweight document job from starting.
     let request=std::fs::read(job.join("request.json")).ok().and_then(|raw|serde_json::from_slice::<serde_json::Value>(&raw).ok());
-    let heavy=request.as_ref().is_none_or(|value| ["video_ocr","video_overview","full_audio","video","audio","diarization"].contains(&value["kind"].as_str().unwrap_or("")));
+    let heavy=serial_worker(request.as_ref().and_then(|value|value["kind"].as_str()),available_physical_mib());
     let _heavy=heavy.then(HeavyPermit::acquire);
     let _permit=WorkerPermit::acquire();
     ensure!(
@@ -345,5 +360,13 @@ mod tests {
         assert_eq!(super::quote("hello world"), "\"hello world\"");
         assert_eq!(super::quote("a\"b"), "\"a\\\"b\"");
         assert_eq!(super::quote("a\\"), "\"a\\\\\"");
+    }
+    #[test]
+    fn overview_uses_spare_memory_without_running_two_ocr_workers() {
+        assert!(!super::serial_worker(Some("video_overview"),Some(6144)));
+        assert!(super::serial_worker(Some("video_overview"),Some(2048)));
+        assert!(super::serial_worker(Some("video_overview"),None));
+        assert!(super::serial_worker(Some("full_audio"),Some(6144)));
+        assert!(super::serial_worker(Some("video_ocr"),Some(6144)));
     }
 }

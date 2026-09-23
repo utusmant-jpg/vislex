@@ -48,6 +48,15 @@ fn automatic_review_waits_for_discovery_and_restarts_when_inputs_change() {
     let tools=agent::tools("ask");assert!(tools.iter().any(|t|t["name"]=="browse_video_overview"));
 }
 #[test]
+fn overview_navigation_advances_while_full_audio_uses_the_heavy_worker() {
+    let (_dir,mut c,s)=setup();
+    let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    c.db.execute("INSERT INTO processing_jobs VALUES('long-audio',?,'full_audio','running','{}','',?)",rusqlite::params![s,evidence_desk::case::now()]).unwrap();
+    let job=discovery::next(&mut c).unwrap().unwrap();
+    assert_eq!(job.run_id,queued["jobs"][1].as_str().unwrap());
+    assert_eq!(job.processor.kind,"video_overview");
+}
+#[test]
 fn automatic_video_batch_selects_each_twenty_second_bin_and_scene_change_once() {
     let (_dir,mut c,s)=setup();
     let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();

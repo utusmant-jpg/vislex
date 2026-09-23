@@ -3,6 +3,11 @@ import math
 from pathlib import Path
 
 
+def _detector_size(width: int, height: int) -> tuple[int, int]:
+    scale = min(1.0, 640 / width, 360 / height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 def discover(job: Path, request: dict) -> dict:
     import av
     start = float(request.get('start', 0))
@@ -54,7 +59,8 @@ def discover(job: Path, request: dict) -> dict:
                 # Scale in FFmpeg before converting to an array. Converting a
                 # full-resolution frame to PIL and then shrinking it made long
                 # recordings spend most of discovery in image conversion.
-                rgb = frame.reformat(width=640, height=360, format='rgb24').to_ndarray()
+                width, height = _detector_size(frame.width, frame.height)
+                rgb = frame.reformat(width=width, height=height, format='rgb24').to_ndarray()
                 cut = bool(detector.process_frame(FrameTimecode(Timecode(frame.pts, frame.time_base), fps=video.average_rate or 30), rgb[:, :, ::-1]))
                 if cut and relative-last_cut >= .5:
                     last_cut = relative
