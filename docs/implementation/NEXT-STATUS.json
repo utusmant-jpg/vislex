@@ -327,14 +327,19 @@
         "Dev16 controlled restart during discovery -> 16 parent runs resumed from their saved 60-120 second cursors; old automatic task remained paused and no new transmission was made",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test discovery -> exit 0, 10 passed and 1 packaged fixture test ignored after chunk alternation change",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after 45d3378, all non-ignored suites passed; 21 packaged-worker sandbox tests ignored by default; worker_video_e2e passed",
+        "Dev17 packaged live run -> one video OCR index and one video overview index running concurrently, 4 index runs complete, 10 queued; 2 worker processes and approximately 6 GB available physical memory at observation",
+        "npm exec tauri build -- --debug --features desktop --no-bundle and scripts/package-development.ps1 -OutputName VisLex 0.3.0-dev17 -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test discovery -> exit 0, 11 passed and 1 packaged fixture test ignored after 113b3b0",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0 after 113b3b0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after 113b3b0, all non-ignored suites passed; worker_video_e2e passed",
         "Dev15 packaged PE subsystem -> 2 (Windows GUI); app child processes were evidence-worker.exe and msedgewebview2.exe, with no console child",
         "npm test -- --run -> exit 0, 36 tests in 10 files after 935864d and 234f03c; npm run build -> exit 0",
         "Python worker unit tests -> exit 0, 18 passed after overview scaling and scheduling changes",
         "Packaged AppContainer worker_e2e and discovery tests -> exit 0 after 34176b0"
       ],
-      "commits": ["e6c775f", "c41a0df", "1344b82", "81229f2", "de613f7", "34176b0", "fa80948", "630758d", "935864d", "234f03c", "45d3378"],
-      "implemented_scope": "Sanitized per-request size metrics, bounded current-review first answer, faster overview scaling, historical Jobs grouping, alternating overview/OCR chunks, cancelled-discovery finalization, and paused automatic review continuation from current inventory while preserving uncertain delivery",
-      "unrun_checks": "The 16 new full-duration video index jobs are running or queued; their EOF status and the visual-bin ledger are pending. No packaged citation/export/reopen journey on this new case, two concurrent provider chats, full release suite, medium/large tier benchmark, or measured follow-up latency yet. Dev16 contains the scheduler change and is now running on the case. This entry is not release verification.",
+      "commits": ["e6c775f", "c41a0df", "1344b82", "81229f2", "de613f7", "34176b0", "fa80948", "630758d", "935864d", "234f03c", "45d3378", "113b3b0"],
+      "implemented_scope": "Sanitized per-request size metrics, bounded current-review first answer, faster overview scaling, historical Jobs grouping, alternating overview/OCR chunks with one concurrent lane for each, cancelled-discovery finalization, and paused automatic review continuation from current inventory while preserving uncertain delivery",
+      "unrun_checks": "The 16 new full-duration video index jobs have not all reached EOF; the visual-bin ledger is pending. No packaged citation/export/reopen journey on this new case, two concurrent provider chats, medium/large tier benchmark, or measured follow-up latency yet. Dev17 contains the coordinated lanes and is now running on the case. This entry is not release verification.",
       "note": "The user redirected validation to a new case from copies of the source folder. No case material or names were committed. The earlier case remains untouched. The encrypted backup restored successfully into a separate folder; both case versions were retained. Full-duration discovery must finish before the paused AI task can be continued from current saved progress."
     },
     "LIVE-CASE-AUDIT-2026-09-22": {
