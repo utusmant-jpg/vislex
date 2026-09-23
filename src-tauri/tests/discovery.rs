@@ -72,6 +72,17 @@ fn overview_and_ocr_chunks_alternate_across_a_large_case() {
     }
 }
 #[test]
+fn discovery_claims_one_ocr_and_one_overview_lane_without_double_claiming() {
+    let (_dir,mut c,s)=setup();
+    discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let first=discovery::next(&mut c).unwrap().unwrap();
+    let second=discovery::next(&mut c).unwrap().unwrap();
+    assert_eq!(first.processor.kind,"video_overview");
+    assert_eq!(second.processor.kind,"video_ocr");
+    assert_ne!(first.run_id,second.run_id);
+    assert!(discovery::next(&mut c).unwrap().is_none());
+}
+#[test]
 fn cancelling_discovery_releases_child_and_does_not_start_automatic_review() {
     let (_dir,mut c,s)=setup();
     discovery::enqueue(&mut c,&s,5.,false).unwrap();

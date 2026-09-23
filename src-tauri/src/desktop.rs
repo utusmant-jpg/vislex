@@ -1233,16 +1233,15 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
     let lease=Lease{active,id:case_id.clone()};
     tauri::async_runtime::spawn_blocking(move || {
         let _lease=lease;
-        loop {
-            let job=match with_case(&app,&case_id,crate::discovery::next) {
-                Ok(Some(job))=>job,
-                Ok(None)=>{let pending=with_case(&app,&case_id,|c|Ok(c.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE s.restricted=0 AND j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index'))",[],|r|r.get::<_,bool>(0))?)).unwrap_or(false);if pending {std::thread::sleep(std::time::Duration::from_millis(500));continue;}break;},
-                Err(_)=>break
-            };
-            let result=crate::processing::run_prepared(&job.processor);
-            let _=with_case(&app,&case_id,|c|crate::discovery::publish(c,&job,result));
-            let _=app.emit("case-changed",());
-        }
+        // One lane can run OCR while the other runs overview. discovery::next
+        // claims distinct kinds under the case lock, and the worker's memory
+        // gate still serializes OCR and refuses unsafe overlap.
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                let app=app.clone();let case_id=case_id.clone();
+                scope.spawn(move || run_discovery_lane(&app,&case_id));
+            }
+        });
         let task=with_case(&app,&case_id,|c| {
             let provider=crate::providers::load(c)?.provider;
             if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
@@ -1253,6 +1252,18 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
             tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});
         }
     });
+}
+fn run_discovery_lane(app:&tauri::AppHandle,case_id:&str) {
+    loop {
+        let job=match with_case(app,case_id,crate::discovery::next) {
+            Ok(Some(job))=>job,
+            Ok(None)=>{let pending=with_case(app,case_id,|c|Ok(c.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE s.restricted=0 AND j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index'))",[],|r|r.get::<_,bool>(0))?)).unwrap_or(false);if pending {std::thread::sleep(std::time::Duration::from_millis(500));continue;}break;},
+            Err(_)=>break
+        };
+        let result=crate::processing::run_prepared(&job.processor);
+        let _=with_case(app,case_id,|c|crate::discovery::publish(c,&job,result));
+        let _=app.emit("case-changed",());
+    }
 }
 fn kick_automatic(app:tauri::AppHandle,case_id:String) {
     #[cfg(debug_assertions)]
