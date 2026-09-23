@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { JobsCenter } from './App';
-import type { Snapshot } from './types';
+import { JobsCenter, RecordDetailPanel } from './App';
+import type { Snapshot, RecordSummary, WorkingRecord } from './types';
 
 const api = vi.hoisted(() => vi.fn());
 vi.mock('./bridge', () => ({ api, native: false, formatBytes: (value:number) => `${value} bytes`, citationParts: () => null }));
@@ -38,4 +38,20 @@ it('groups old AI tool errors and loads their receipts only when expanded', asyn
   fireEvent.click(group);
   await waitFor(() => expect(api).toHaveBeenCalledWith('issue_history', { receipt_id: 'latest', offset: 0 }));
   expect(await screen.findByText(/Receipt latest/)).toBeTruthy();
+});
+
+it('loads record text on selection and ignores a late result from another case', async () => {
+  const summary:RecordSummary={id:'same-id',title:'Synthetic note',kind:'note',revision:1,actor:'human',review:'unreviewed',protected:false,stale:false,updated_at:'now',dependencies:[]};
+  let resolveOld!:(record:WorkingRecord)=>void;
+  const old=new Promise<WorkingRecord>(resolve=>{resolveOld=resolve;});
+  api.mockImplementation((action:string,args:{case_id?:string})=>action==='record_detail'?(args.case_id==='old-case'?old:Promise.resolve({...summary,content:'New case text'})):Promise.resolve(null));
+  const props={summary,run:(fn:()=>Promise<void>)=>{void fn();},refresh:async()=>undefined};
+  const view=render(<RecordDetailPanel caseId="old-case" {...props}/>);
+  expect(screen.getByText('Loading working file…')).toBeTruthy();
+  view.rerender(<RecordDetailPanel caseId="new-case" {...props}/>);
+  await waitFor(()=>expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('New case text'));
+  resolveOld({...summary,content:'Old case text'});
+  await Promise.resolve();
+  expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('New case text');
+  expect(api).toHaveBeenCalledWith('record_detail',{case_id:'new-case',record_id:'same-id',revision:1});
 });

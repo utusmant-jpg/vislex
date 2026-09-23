@@ -44,9 +44,10 @@ const at = '2026-09-20T14:32:00Z';
 
 const demoSource: Source = { id: 'demo-statement', name: '01 · Witness statement.txt', sha256: 'synthetic-preview-not-a-source-hash', size: sampleText.length, mime: 'text/plain', kind: 'text', status: 'text indexed', restricted: false, occurrences: 1, created_at: at };
 
-let demo: Snapshot | null = null;
+type DemoSnapshot=Omit<Snapshot,'records'> & {records:WorkingRecord[]};
+let demo: DemoSnapshot | null = null;
 
-export function sampleSnapshot(): Snapshot {
+export function sampleSnapshot(): DemoSnapshot {
 
   return { id: 'synthetic-demo', name: 'Harbor Street · sample case', root: 'Browser memory — no files stored', generation: 1, sources: [demoSource], records: [{ id: 'demo-note', title: 'Initial review notes', kind: 'note', content: '# Initial review\n\nThe witness statement reports two people near the north entrance. This is an attributed claim, not an independently verified observation.\n\nSource: evidence:demo-statement#L5-L7\n\n## Open questions\n\n- Obtain the original recording.\n- Reconcile the camera clock.\n- Inspect any supporting photographs.\n\nSynthetic demonstration only.', revision: 1, actor: 'human', review: 'unreviewed', protected: false, stale: false, updated_at: at, dependencies: ['demo-statement'] }], settings: { offline: true, allow_text: false, allow_images: false, model: '', case_budget: 10, input_per_million: 0, output_per_million: 0 }, tasks: [], budget_committed: 0 };
 
@@ -72,6 +73,7 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
   else if (!demo) throw new Error('Open the synthetic sample, or run the desktop app for real case storage.');
 
   else if (action === 'read_text') { const lines = sampleText.split('\n'); const start = Number(args.start ?? 1); const end = Math.min(start - 1 + Number(args.count ?? 200), lines.length); result = { text: lines.slice(start - 1, end).join('\n'), start, end, total_lines: lines.length, revision: 1, locator: `evidence:demo-statement#R1L${start}-L${end}`, truncated_long_lines: false }; }
+  else if (action === 'record_detail') { const record = demo.records.find(r => r.id === args.record_id); if (args.case_id !== demo.id || !record || record.revision !== args.revision) throw new Error('Case or record revision changed'); result = record; }
 
   else if (action === 'search') { result = { results: sampleText.toLowerCase().includes(String(args.query).toLowerCase()) ? [{ source_id: demoSource.id, name: demoSource.name, excerpt: sampleText.split('\n').filter(s => s.toLowerCase().includes(String(args.query).toLowerCase())).join(' … ') }] : [], next_offset: null }; }
 
@@ -115,4 +117,3 @@ export function citationParts(value: string): { sourceId: string; locator: strin
   return match ? { sourceId: match[1], locator: match[2] } : null;
 
 }
-

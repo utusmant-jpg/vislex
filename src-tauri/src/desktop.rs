@@ -352,6 +352,12 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     let result = match action {
 
         "snapshot" => c.snapshot()?,
+        "record_detail" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before record detail");
+            let record=c.record(text(&args,"record_id")?)?;
+            anyhow::ensure!(record.revision==args["revision"].as_i64().context("Missing record revision")?,"Record revision changed; refresh before editing");
+            serde_json::to_value(record)?
+        },
         "speaker_annotations" => crate::speaker_annotations::read(c,text(&args,"source_id")?,text(&args,"artifact_id")?)?,
         "save_speaker_annotations" => crate::speaker_annotations::save(c,text(&args,"source_id")?,text(&args,"artifact_id")?,args["revision"].as_u64().context("Missing annotation revision")?,&args["labels"],&args["turns"])?,
         "video_discovery_status" => crate::discovery::status(c,text(&args,"source_id")?)?,
@@ -788,7 +794,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "search",
 
-        "actions", "issue_history",
+        "actions", "issue_history", "record_detail",
 
         "revisions",
 

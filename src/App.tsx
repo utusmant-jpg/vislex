@@ -7,7 +7,7 @@ import {
   MoreHorizontal, NotebookPen, Plus, Scale, Search, Settings, X,
 } from 'lucide-react';
 import { api, formatBytes, native } from './bridge';
-import type { Snapshot, Selection, SearchResult, WorkingRecord } from './types';
+import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary } from './types';
 import { suggestedMatterName } from './review';
 import EvidenceViewer, { SourceIcon } from './components/EvidenceViewer';
 import RecordEditor from './components/RecordEditor';
@@ -114,6 +114,21 @@ function IssueHistory({ issue }: { issue: NonNullable<Snapshot['issues']>[number
     {receipts.map(receipt => <p className="small" key={receipt.id}><code>Receipt {receipt.id}</code> · {receipt.created_at}</p>)}
     {nextOffset !== null && receipts.length ? <button className="quiet" disabled={loading} onClick={() => void load()}>More receipts</button> : null}
   </details>;
+}
+
+export function RecordDetailPanel({caseId,summary,run,refresh}:{caseId:string;summary:RecordSummary;run:(fn:()=>Promise<void>)=>void;refresh:()=>Promise<void>}) {
+  const [detail,setDetail]=useState<WorkingRecord|null>(null);
+  const [error,setError]=useState('');
+  useEffect(()=>{
+    let active=true;setDetail(null);setError('');
+    void api<WorkingRecord>('record_detail',{case_id:caseId,record_id:summary.id,revision:summary.revision})
+      .then(record=>{if(active)setDetail(record);})
+      .catch(reason=>{if(active)setError(String(reason));});
+    return ()=>{active=false;};
+  },[caseId,summary.id,summary.revision,summary.updated_at,summary.protected,summary.review,summary.stale]);
+  return detail?.id===summary.id && detail.revision===summary.revision
+    ? <RecordEditor key={detail.id} record={detail} run={run} refresh={refresh}/>
+    : <div className="empty-state">{error?<p role="alert">Could not load working file: {error}</p>:<p>Loading working file…</p>}</div>;
 }
 
 export function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
@@ -516,7 +531,7 @@ export default function App() {
             })}
           </div>
           {source ? <EvidenceViewer key={source.id} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} /> : null}
-          {record ? <RecordEditor key={record.id} record={record} run={run} refresh={refresh} /> : null}
+          {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${record.id}`} caseId={snapshot.id} summary={record} run={run} refresh={refresh}/> : null}
         </main>
       </div>
 

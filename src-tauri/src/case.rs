@@ -727,6 +727,14 @@ impl Case {
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
+    pub fn record_summaries(&self) -> Result<Vec<Value>> {
+        let mut stmt=self.db.prepare("SELECT id,title,kind,revision,actor,review,protected,stale,updated_at,dependencies FROM records ORDER BY updated_at DESC,id DESC")?;
+        let rows=stmt.query_map([],|r|{
+            let kind:String=r.get(2)?;let actor:String=r.get(4)?;
+            Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"kind":kind,"revision":r.get::<_,i64>(3)?,"actor":actor,"review":r.get::<_,String>(5)?,"protected":r.get::<_,bool>(6)?,"stale":if actor=="processor"&&kind=="transcript"{false}else{r.get::<_,bool>(7)?},"updated_at":r.get::<_,String>(8)?,"dependencies":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(json!([]))}))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>,_>>()?)
+    }
     pub fn record(&self, record_id: &str) -> Result<Record> {
         self.db
             .query_row(
@@ -1037,7 +1045,7 @@ impl Case {
         let mut issues = self.db.prepare("SELECT a.task_id,a.name,a.output,COUNT(*),(SELECT last.id FROM actions last WHERE last.status='failed' AND last.task_id=a.task_id AND last.name=a.name AND last.output=a.output ORDER BY last.rowid DESC LIMIT 1),MAX(a.created_at) FROM actions a WHERE a.status='failed' GROUP BY a.task_id,a.name,a.output ORDER BY MAX(a.rowid) DESC LIMIT 100")?;
         let issues = issues.query_map([], |r| {let output=serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or(Value::Null);Ok(json!({"task_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"error":output["error"].as_str().unwrap_or("Tool failed; open the receipt for details"),"count":r.get::<_,i64>(3)?,"latest_receipt":r.get::<_,String>(4)?,"created_at":r.get::<_,String>(5)?}))})?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(
-            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.records()?,"settings":self.settings()?,"tasks":tasks,"budget_committed":spent,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
+            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.record_summaries()?,"settings":self.settings()?,"tasks":tasks,"budget_committed":spent,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
         )
     }
     pub fn actions(&self, task: &str) -> Result<Value> {

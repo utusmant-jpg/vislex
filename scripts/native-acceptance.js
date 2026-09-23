@@ -45,6 +45,13 @@
   // Automatic local transcription can change the case generation. Wait for it before testing an exact-revision export.
   for(let i=0;i<240;i++){const current=await invoke('snapshot');if(!current.jobs.some(j=>j.kind==='full_audio'&&['running','queued'].includes(j.status)))break;if(i===239)throw new Error('Automatic transcripts did not settle');await new Promise(resolve=>setTimeout(resolve,500));}
   const record=await invoke('write_record',{title:'Synthetic native draft',kind:'report',content:'Synthetic caf\u00e9 draft. Evidence remains unreviewed.',source_ids:[pdf.id]});
+  const compact=await invoke('snapshot');
+  const summary=compact.records.find(item=>item.id===record.id);
+  if(!summary||Object.hasOwn(summary,'content'))throw new Error('Working-record body leaked into case summary');
+  const detail=await invoke('record_detail',{case_id:compact.id,record_id:record.id,revision:record.revision});
+  if(detail.content!==record.content)throw new Error('Working-record detail did not match saved revision');
+  let staleDetailDenied=false;try{await invoke('record_detail',{case_id:'other-case',record_id:record.id,revision:record.revision});}catch{staleDetailDenied=true;}
+  if(!staleDetailDenied)throw new Error('Cross-case record detail was accepted');
   const exports=[];
   for(const ext of ['docx','pdf'])exports.push(await invoke('export_word',{record_id:record.id,path:root+'/artifacts/acceptance-'+run+'.'+ext}));
   const redaction=await invoke('prepare_redaction',{source_id:photo.id,boxes:[{page:1,x:0,y:0,width:100,height:30}]});
@@ -60,6 +67,10 @@
   const evidence=await waitFor(()=>[...document.querySelectorAll('button.rail-button')].find(b=>b.getAttribute('aria-label')==='Evidence'),'evidence workspace');evidence.click();
   const doc=await waitFor(()=>[...document.querySelectorAll('button.library-row')].find(b=>b.querySelector('.library-name')?.textContent==='notes.docx'),'DOCX library entry');doc.click();
   await waitFor(()=>document.querySelector('.document-page .text-lines')?.textContent.length>10,'DOCX preview');
+  evidence.click();
+  const working=await waitFor(()=>[...document.querySelectorAll('.library-controls button')].find(b=>b.textContent==='Working files'),'working-file filter');working.click();
+  const draft=await waitFor(()=>[...document.querySelectorAll('button.library-row')].find(b=>b.querySelector('.library-name')?.textContent==='Synthetic native draft'),'working-file entry');draft.click();
+  await waitFor(()=>document.querySelector('textarea[aria-label="Working file content"]')?.value===record.content,'lazy working-file detail');
   if(document.querySelector('.saved-progress,.question-dossier,.context-note'))throw new Error('Internal review panels leaked into normal chat');
   return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.sources.length,snapshot_latency_ms:latencies,semantic_results:search.results.length,remaining_passages:search.remaining_passages,exports,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
 })()

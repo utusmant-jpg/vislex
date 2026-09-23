@@ -459,6 +459,20 @@ fn snapshot_groups_failed_tools_and_links_discovery_child_to_parent() {
     let child=snapshot["jobs"].as_array().unwrap().iter().find(|job|job["id"]=="child").unwrap();
     assert_eq!(child["parent_run_id"],"parent");
 }
+#[test]
+fn large_snapshot_excludes_full_working_record_bodies() {
+    let (_dir,mut c,sid)=setup();
+    let tx=c.db.transaction().unwrap();
+    for index in 0..500 {
+        tx.execute("INSERT INTO records(id,title,kind,content,revision,actor,review,updated_at,dependencies) VALUES(?,?,'note',?,1,'human','unreviewed',?,?)",rusqlite::params![format!("synthetic-record-{index}"),format!("Synthetic record {index}"),"x".repeat(2048),format!("2026-09-22T00:{:02}:{:02}Z",index/60,index%60),json!([sid]).to_string()]).unwrap();
+    }
+    tx.commit().unwrap();
+    let snapshot=c.snapshot().unwrap();
+    let bytes=serde_json::to_vec(&snapshot).unwrap().len();
+    println!("500 synthetic 2-KiB records snapshot bytes: {bytes}");
+    assert!(bytes<256*1024,"Summary should stay under 256 KiB for this synthetic tier");
+    assert!(snapshot["records"][0].get("content").is_none(),"Full record text requires explicit detail fetch");
+}
 
 #[test]
 fn older_visual_inputs_remain_revisitable_without_resending_all_images() {
