@@ -139,7 +139,7 @@ export function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run
     if (native) void api<Record<string, number>>('storage_usage').then(setStorage).catch(() => undefined);
   }, [snapshot.id, snapshot.generation]);
   const active = snapshot.jobs?.filter(job => !job.superseded && ['queued', 'running', 'failed', 'interrupted', 'cancelled'].includes(job.status)) ?? [];
-  const supersededFailures = snapshot.jobs?.filter(job => job.superseded && job.status === 'failed') ?? [];
+  const supersededFailures = snapshot.jobs?.filter(job => job.superseded && ['failed', 'interrupted'].includes(job.status)) ?? [];
   return <section className="workspace-view jobs-center" aria-label="Jobs and issues">
     <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" onClick={() => run(async () => { await api('transcribe_all'); await refresh(); })}>Queue missing full transcripts</button></div>
     <p className="small muted">Processing status does not certify evidence review. Historical failures remain visible with their receipts.</p>
@@ -162,7 +162,7 @@ export function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run
       </div>
       <code>Receipt {job.id}</code>
     </article>) : <div className="empty-state"><ListChecks size={32} /><h3>No failed tools or unfinished jobs</h3><p>Background transcription, indexing and analysis runs appear here while they work.</p></div>}
-    {supersededFailures.length ? <details className="job-card"><summary>Earlier failures replaced by newer runs ({supersededFailures.length})</summary>{supersededFailures.map(job => <article key={job.id}><strong>{job.name}</strong><p className="small muted">{job.kind} · {job.error}</p><code>Receipt {job.id}</code></article>)}</details> : null}
+    {supersededFailures.length ? <details className="job-card"><summary>Earlier failures and interruptions replaced by newer runs ({supersededFailures.length})</summary>{supersededFailures.map(job => <article key={job.id}><strong>{job.name}</strong><p className="small muted">{job.kind} · {job.error || job.status}</p><code>Receipt {job.id}</code></article>)}</details> : null}
     {snapshot.issues?.length ? <details className="job-card"><summary>Previous AI tool errors ({snapshot.issues.length} group{snapshot.issues.length === 1 ? '' : 's'})</summary>{snapshot.issues.map(issue => <IssueHistory issue={issue} key={issue.latest_receipt} />)}</details> : null}
     {storage ? <div className="job-card">
       <div className="job-card-head"><strong>Case storage</strong><Tooltip text="Only abandoned import copies matching a verified original are removed. Job folders are retained."><button className="quiet" onClick={() => run(async () => { const receipt = await api<{ reclaimed_bytes: number }>('reclaim_staging'); setReclaimed(receipt.reclaimed_bytes); setStorage(await api<Record<string, number>>('storage_usage')); })}>Reclaim verified staging duplicates</button></Tooltip></div>

@@ -467,6 +467,7 @@ fn snapshot_groups_failed_tools_and_links_discovery_child_to_parent() {
     c.db.execute("INSERT INTO processing_jobs VALUES('replacement',?,'video_ocr_index','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
     let jobs=c.snapshot().unwrap()["jobs"].as_array().unwrap().clone();
     assert_eq!(jobs.iter().find(|job|job["id"]=="parent").unwrap()["superseded"],true);
+    assert_eq!(jobs.iter().find(|job|job["id"]=="child").unwrap()["superseded"],true,"A child of the old index is historical too");
     assert_eq!(jobs.iter().find(|job|job["id"]=="replacement").unwrap()["superseded"],false);
 }
 #[test]
