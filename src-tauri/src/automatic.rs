@@ -156,6 +156,20 @@ fn review_input_stamp(case:&Case,source_ids:&[String])->Result<String> {
     inputs.sort();
     Ok(digest(inputs.join("\n").as_bytes()))
 }
+/// A new task can continue a paused automatic review without replaying its
+/// uncertain transmission. The pointer follows that task and fingerprints the
+/// current permitted inventory, including sources added since the pause.
+pub fn adopt_continuation(case:&mut Case,old:&str,new:&str,source_ids:&[String])->Result<()> {
+    anyhow::ensure!(case.meta("auto_review_task")?.as_deref()==Some(old),"Automatic review changed before continuation");
+    let fingerprint=review_input_stamp(case,source_ids)?;
+    case.set_meta(&format!("automatic_task:{new}"),"true")?;
+    case.set_meta(&format!("auto_review_inventory:{new}"),&fingerprint)?;
+    case.set_meta(&format!("chat_title:{new}"),"Automatic case analysis (continued)")?;
+    case.set_meta("auto_review_task",new)?;
+    case.set_meta("auto_review_state","running")?;
+    case.audit("automatic_case_review_continued",json!({"from":old,"to":new,"inventory":fingerprint}))?;
+    Ok(())
+}
 pub fn start_review(case:&mut Case)->Result<Option<String>> {
     let settings=case.settings()?;
     if settings.offline || !settings.allow_text || settings.model.is_empty() {return Ok(None);}

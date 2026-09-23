@@ -191,12 +191,13 @@ pub fn continue_paused(case:&mut Case,parent:&str)->Result<(String,String)> {
     ensure!(status=="paused","Only paused work can continue in a new task");
     let profile=crate::providers::task_profile(case,parent)?;
     crate::providers::check_permission(case,&profile)?;
-    let sources:Vec<String>=serde_json::from_str(&scope)?;
-    let records:Vec<String>=serde_json::from_str(&edit_scope)?;
-    let task=start(case,&prompt,&mode,sources,records,budget)?;
+    let automatic=case.meta(&format!("automatic_task:{parent}"))?.as_deref()==Some("true") && case.meta("auto_review_task")?.as_deref()==Some(parent);
+    let (sources,records)=if automatic {case_scope(case)?} else {(serde_json::from_str::<Vec<String>>(&scope)?,serde_json::from_str::<Vec<String>>(&edit_scope)?)};
+    let task=start(case,&prompt,&mode,sources.clone(),records,budget)?;
     case.set_meta(&format!("quick_answer_phase:{task}"),"expanded")?;
     case.set_meta(&format!("task_profile:{task}"),&serde_json::to_string(&profile)?)?;
     let conversation=continue_conversation(case,&task,Some(parent))?;
+    if automatic {crate::automatic::adopt_continuation(case,parent,&task,&sources)?;}
     case.audit("task_continued_from_paused",json!({"new_task":task,"paused_task":parent,"old_transmissions_unchanged":true}))?;
     Ok((task,conversation))
 }

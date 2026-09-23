@@ -582,6 +582,24 @@ fn paused_uncertain_task_continues_without_replaying_old_transmission() {
     assert!(prepared.body["input"].to_string().contains("Saved partial finding"));
 }
 #[test]
+fn automatic_continuation_tracks_current_sources_and_keeps_old_delivery_uncertain() {
+    let (dir,mut c,_sid)=setup();enable(&mut c);
+    let old=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.db.execute("INSERT INTO transmissions VALUES('auto-uncertain',?,'hash','test-model','[]',0,0,'uncertain',NULL,'2026-09-21T00:00:00Z')",rusqlite::params![old]).unwrap();
+    agent::pause(&mut c,&old,"Provider response incomplete").unwrap();
+    let extra=dir.path().join("added.txt");fs::write(&extra,"Synthetic added source").unwrap();
+    c.import_files(&[extra.to_string_lossy().into_owned()],"fixture").unwrap();
+    let (new,_)=agent::continue_paused(&mut c,&old).unwrap();
+    assert_eq!(c.meta("auto_review_task").unwrap().as_deref(),Some(new.as_str()));
+    assert_eq!(c.meta(&format!("automatic_task:{new}")).unwrap().as_deref(),Some("true"));
+    assert!(c.meta(&format!("auto_review_inventory:{new}")).unwrap().is_some());
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"running");
+    let new_scope:String=c.db.query_row("SELECT scope FROM tasks WHERE id=?",[&new],|r|r.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<Vec<String>>(&new_scope).unwrap().len(),2);
+    assert_eq!(c.db.query_row("SELECT status FROM transmissions WHERE id='auto-uncertain'",[],|r|r.get::<_,String>(0)).unwrap(),"uncertain");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM transmissions WHERE task_id=?",[&new],|r|r.get::<_,i64>(0)).unwrap(),0);
+}
+#[test]
 fn chats_wait_for_file_preparation_but_failures_release_the_gate() {
     let (_dir,mut c,sid)=setup();enable(&mut c);
     c.db.execute("INSERT INTO processing_jobs VALUES('preparing',?,'auto_prepare','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
