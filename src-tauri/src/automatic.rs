@@ -161,6 +161,8 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
     if settings.offline || !settings.allow_text || settings.model.is_empty() {return Ok(None);}
     let busy:i64=case.db.query_row("SELECT (SELECT count(*) FROM tasks WHERE status='running')+(SELECT count(*) FROM processing_jobs WHERE status IN ('queued','running') AND kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index'))",[],|r|r.get(0))?;
     if busy>0 {return Ok(None);}
+    let cancelled:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs j WHERE j.kind IN ('video_ocr_index','video_overview_index') AND j.status='cancelled' AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid))",[],|r|r.get(0))?;
+    if cancelled {return Ok(None);}
     let (sources,records)=agent::case_scope(case)?;
     if sources.is_empty(){return Ok(None);}
     let usable:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM sources s WHERE s.restricted=0 AND (EXISTS(SELECT 1 FROM extracts e WHERE e.source_id=s.id) OR EXISTS(SELECT 1 FROM processing_jobs j WHERE j.source_id=s.id AND j.status='complete')))",[],|r|r.get(0))?;

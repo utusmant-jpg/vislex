@@ -57,6 +57,21 @@ fn overview_navigation_advances_while_full_audio_uses_the_heavy_worker() {
     assert_eq!(job.processor.kind,"video_overview");
 }
 #[test]
+fn cancelling_discovery_releases_child_and_does_not_start_automatic_review() {
+    let (_dir,mut c,s)=setup();
+    discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let job=discovery::next(&mut c).unwrap().unwrap();
+    discovery::cancel(&c,&s).unwrap();
+    discovery::publish(&mut c,&job,Err(anyhow::anyhow!("Synthetic cancelled worker"))).unwrap();
+    let child:String=c.db.query_row("SELECT status FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get(0)).unwrap();
+    assert_eq!(child,"cancelled");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM processing_jobs WHERE status='running'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    c.db.execute("INSERT INTO extracts(source_id,text,method) VALUES(?,'prepared','fixture')",[&s]).unwrap();
+    let mut settings=c.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.model="synthetic".into();c.save_settings(settings).unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none(),"A deliberate cancellation should release chat");
+}
+#[test]
 fn automatic_video_batch_selects_each_twenty_second_bin_and_scene_change_once() {
     let (_dir,mut c,s)=setup();
     let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
