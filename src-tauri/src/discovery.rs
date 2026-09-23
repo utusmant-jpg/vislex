@@ -78,7 +78,11 @@ pub fn next(case:&mut Case)->Result<Option<Job>> {
     let busy:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs WHERE status='running' AND kind IN ('video_ocr_index','video_overview_index','video','audio','diarization'))",[],|r|r.get(0))?;
     if busy {return Ok(None)}
     let long_audio_running:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs WHERE kind='full_audio' AND status='running')",[],|r|r.get(0))?;
-    let row:Option<(String,String,String,String)>=case.db.query_row("SELECT j.id,j.source_id,j.kind,j.result FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index') AND s.restricted=0 AND COALESCE(CAST(json_extract(j.result,'$.retry_after_epoch') AS INTEGER),0)<=CAST(strftime('%s','now') AS INTEGER) ORDER BY CASE WHEN ?1 AND j.kind='video_overview_index' THEN 0 WHEN ?1 THEN 1 ELSE 0 END,CAST(json_extract(j.result,'$.next_start') AS REAL),j.created_at,j.id LIMIT 1",[long_audio_running],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+    // Alternate short overview and OCR chunks so navigation becomes useful
+    // while a long case is still being indexed. Transcription favors overview.
+    let previous=case.meta("discovery_last_kind")?;
+    let preferred=if long_audio_running || previous.as_deref()!=Some("video_overview_index") {"video_overview_index"} else {"video_ocr_index"};
+    let row:Option<(String,String,String,String)>=case.db.query_row("SELECT j.id,j.source_id,j.kind,j.result FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index') AND s.restricted=0 AND COALESCE(CAST(json_extract(j.result,'$.retry_after_epoch') AS INTEGER),0)<=CAST(strftime('%s','now') AS INTEGER) ORDER BY CASE WHEN j.kind=?1 THEN 0 ELSE 1 END,CAST(json_extract(j.result,'$.next_start') AS REAL),j.created_at,j.id LIMIT 1",[preferred],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     let Some((run_id,source,kind,raw))=row else{return Ok(None)};
     let mut config:Value=serde_json::from_str(&raw)?;
     let worker=processing::worker_path()?;let hash=crate::case::file_hash(&worker)?;
@@ -91,6 +95,7 @@ pub fn next(case:&mut Case)->Result<Option<Job>> {
     };
     config["active_job"]=if processor.cached.is_some(){Value::Null}else{json!(processor.job_id)};
     case.db.execute("UPDATE processing_jobs SET status='running',result=? WHERE id=?",params![config.to_string(),run_id])?;
+    case.set_meta("discovery_last_kind",&kind)?;
     Ok(Some(Job{run_id,start,processor}))
 }
 pub fn publish(case:&mut Case,job:&Job,result:Result<Value>)->Result<()> {

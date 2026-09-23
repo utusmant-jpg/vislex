@@ -57,6 +57,21 @@ fn overview_navigation_advances_while_full_audio_uses_the_heavy_worker() {
     assert_eq!(job.processor.kind,"video_overview");
 }
 #[test]
+fn overview_and_ocr_chunks_alternate_across_a_large_case() {
+    let (dir,mut c,first)=setup();
+    let other=dir.path().join("second.mp4");std::fs::write(&other,b"different synthetic recording").unwrap();
+    c.import_files(&[other.to_string_lossy().into_owned()],"fixture").unwrap();
+    let second=c.sources().unwrap().into_iter().find(|source|source.id!=first).unwrap().id;
+    c.db.execute("UPDATE sources SET kind='video',mime='video/mp4' WHERE id=?",[&second]).unwrap();
+    discovery::enqueue(&mut c,&first,5.,false).unwrap();
+    discovery::enqueue(&mut c,&second,5.,false).unwrap();
+    for expected in ["video_overview","video_ocr","video_overview","video_ocr"] {
+        let job=discovery::next(&mut c).unwrap().unwrap();
+        assert_eq!(job.processor.kind,expected);
+        c.db.execute("UPDATE processing_jobs SET status='complete' WHERE id IN (?,?)",rusqlite::params![job.run_id,job.processor.job_id]).unwrap();
+    }
+}
+#[test]
 fn cancelling_discovery_releases_child_and_does_not_start_automatic_review() {
     let (_dir,mut c,s)=setup();
     discovery::enqueue(&mut c,&s,5.,false).unwrap();
