@@ -32,7 +32,8 @@
       "nsis"
     ],
     "resources": [
-      "resources/worker/**/*"
+      "resources/worker/**/*",
+      "resources/codex/**/*"
     ],
     "icon": [
       "icons/icon.ico",

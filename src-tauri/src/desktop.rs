@@ -161,6 +161,44 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return Ok(json!({"saved":true,"current_case_updated":current_case_updated}));
     }
 
+    if ["ai_access_route","set_ai_access_route","save_codex_selection","codex_account_status","codex_account_login","codex_account_cancel_login","codex_account_logout","codex_account_models","codex_account_limits"].contains(&action) {
+        let directory = app.path().app_config_dir()?;
+        if action == "ai_access_route" {
+            let settings=crate::ai_access::read_settings(&directory)?;
+            return Ok(json!({"route":settings.route,"subscription":settings.subscription,"subscription_ready":false,
+                "blocker":"Codex dynamic tools and its Windows process boundary have not passed packaged security verification"}));
+        }
+        if action == "set_ai_access_route" {
+            let route:crate::ai_access::AccessRoute=serde_json::from_value(args["route"].clone())?;
+            anyhow::ensure!(route == crate::ai_access::AccessRoute::ApiKeys,
+                "ChatGPT subscription tasks are unavailable until the Codex tool bridge and Windows process boundary are verified");
+            crate::ai_access::write(&directory,route)?;
+            return Ok(json!({"route":route}));
+        }
+        let home=app.path().resource_dir()?.join("codex");
+        if action == "save_codex_selection" {
+            let model=text(&args,"model")?;
+            let effort=text(&args,"effort")?;
+            let catalogue=crate::codex_account::models(&home)?;
+            anyhow::ensure!(catalogue.as_array().is_some_and(|entries|entries.iter().any(|entry|
+                entry["id"]==model && entry["efforts"].as_array().is_some_and(|options|options.iter().any(|option|option==effort)))),
+                "Choose a reasoning effort returned for this ChatGPT model");
+            let mut settings=crate::ai_access::read_settings(&directory)?;
+            settings.subscription=Some(crate::ai_access::SubscriptionSelection{model:model.into(),effort:effort.into()});
+            crate::ai_access::write_settings(&directory,settings)?;
+            return Ok(Value::Null);
+        }
+        return match action {
+            "codex_account_status"=>crate::codex_account::status(&home),
+            "codex_account_login"=>crate::codex_account::begin_login(&home),
+            "codex_account_cancel_login"=>{crate::codex_account::cancel_login(&home,text(&args,"login_id")?)?;Ok(Value::Null)},
+            "codex_account_logout"=>{crate::codex_account::logout(&home)?;Ok(Value::Null)},
+            "codex_account_models"=>crate::codex_account::models(&home),
+            "codex_account_limits"=>crate::codex_account::limits(&home),
+            _=>unreachable!(),
+        };
+    }
+
     if action=="hybrid_search" {
         let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before search");require_session_epoch(&state,&args)?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::semantic::prepare_query(case,text(&args,"query")?,scope)?)};
         let result=crate::semantic::run(&job)?;
@@ -918,6 +956,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "start_task" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat started");
             require_session_epoch(&state,&args)?;
+            anyhow::ensure!(crate::ai_access::read(&app.path().app_config_dir()?)? == crate::ai_access::AccessRoute::ApiKeys,
+                "ChatGPT subscription execution is unavailable; no API key was used. Select API keys in Settings to run this task.");
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let selected = if let (Some(provider), Some(model)) = (args.get("provider"), args["model"].as_str()) {
@@ -993,6 +1033,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "resume_task" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat resumed");
             require_session_epoch(&state,&args)?;
+            anyhow::ensure!(crate::ai_access::read(&app.path().app_config_dir()?)? == crate::ai_access::AccessRoute::ApiKeys,
+                "ChatGPT subscription execution is unavailable; no API key was used. Select API keys in Settings to resume this task.");
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let task = text(&args, "task_id")?.to_string();
@@ -1221,6 +1263,9 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
     Box::pin(async move {
 
     let result=async {
+
+        anyhow::ensure!(crate::ai_access::read(&app.path().app_config_dir()?)? == crate::ai_access::AccessRoute::ApiKeys,
+            "ChatGPT subscription execution is unavailable; no API key was used");
 
 
 
@@ -1556,6 +1601,7 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
             }
         });
         let task=with_case_expected(&app,&case_id,Some(epoch),|c| {
+            if crate::ai_access::read(&app.path().app_config_dir()?)? != crate::ai_access::AccessRoute::ApiKeys {return Ok(None);}
             let provider=crate::providers::load(c)?.provider;
             if provider_key_for_case(provider).is_err(){return Ok(None);}
             crate::automatic::start_review(c)
@@ -1594,10 +1640,11 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
                 let published=with_case_expected(&app,&case_id,Some(epoch),|c|{crate::automatic::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
                 if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);kick_semantic(app.clone(),case_id.clone());}
                 emit_case_changed(&app);
-                let task=with_case_expected(&app,&case_id,Some(epoch),|c| {let provider=crate::providers::load(c)?.provider;if provider_key_for_case(provider).is_err(){return Ok(None);}crate::automatic::start_review(c)});
+                let task=with_case_expected(&app,&case_id,Some(epoch),|c| {if crate::ai_access::read(&app.path().app_config_dir()?)? != crate::ai_access::AccessRoute::ApiKeys {return Ok(None);}let provider=crate::providers::load(c)?.provider;if provider_key_for_case(provider).is_err(){return Ok(None);}crate::automatic::start_review(c)});
                 if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});}
             }
             let task=with_case_expected(&app,&case_id,Some(epoch),|c| {
+                if crate::ai_access::read(&app.path().app_config_dir()?)? != crate::ai_access::AccessRoute::ApiKeys {return Ok(None);}
                 let provider=crate::providers::load(c)?.provider;
                 if provider_key_for_case(provider).is_err(){return Ok(None);}
                 crate::automatic::start_review(c)
