@@ -589,6 +589,20 @@ fn paused_uncertain_task_continues_without_replaying_old_transmission() {
     let prepared=agent::prepare_request(&mut c,&new).unwrap();
     assert!(prepared.body["input"].to_string().contains("Saved partial finding"));
 }
+
+#[test]
+fn continuing_a_deleted_automatic_chat_creates_a_visible_conversation() {
+    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let old=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    let conversation=agent::continue_conversation(&mut c,&old,None).unwrap();
+    agent::pause(&mut c,&old,"Provider response incomplete").unwrap();
+    c.delete_conversation(&conversation,true).unwrap();
+    assert!(c.snapshot().unwrap()["tasks"].as_array().unwrap().is_empty());
+    let (new,visible)=agent::continue_paused(&mut c,&old).unwrap();
+    assert_eq!(visible,new);
+    assert_eq!(c.snapshot().unwrap()["tasks"][0]["id"],new);
+    assert_eq!(c.meta("auto_review_task").unwrap().as_deref(),Some(new.as_str()));
+}
 #[test]
 fn automatic_continuation_tracks_current_sources_and_keeps_old_delivery_uncertain() {
     let (dir,mut c,_sid)=setup();enable(&mut c);

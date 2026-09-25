@@ -196,7 +196,13 @@ pub fn continue_paused(case:&mut Case,parent:&str)->Result<(String,String)> {
     let task=start(case,&prompt,&mode,sources.clone(),records,budget)?;
     case.set_meta(&format!("quick_answer_phase:{task}"),"expanded")?;
     case.set_meta(&format!("task_profile:{task}"),&serde_json::to_string(&profile)?)?;
-    let conversation=continue_conversation(case,&task,Some(parent))?;
+    let mut conversation=continue_conversation(case,&task,Some(parent))?;
+    let hidden:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM hidden_conversations WHERE id=?)",[&conversation],|r|r.get(0))?;
+    if hidden {
+        // A deleted chat must not hide a newly requested recovery task.
+        case.db.execute("UPDATE conversation_tasks SET conversation_id=? WHERE task_id=?",params![task,task])?;
+        conversation=task.clone();
+    }
     if automatic {crate::automatic::adopt_continuation(case,parent,&task,&sources)?;}
     case.audit("task_continued_from_paused",json!({"new_task":task,"paused_task":parent,"old_transmissions_unchanged":true}))?;
     Ok((task,conversation))

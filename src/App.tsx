@@ -131,7 +131,7 @@ export function RecordDetailPanel({caseId,summary,run,refresh}:{caseId:string;su
     : <div className="empty-state">{error?<p role="alert">Could not load working file: {error}</p>:<p>Loading working file…</p>}</div>;
 }
 
-export function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
+export function JobsCenter({ snapshot, run, refresh, onConversation }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onConversation?: (id: string) => void }) {
   const [storage, setStorage] = useState<Record<string, number> | null>(null);
   const [reclaimed, setReclaimed] = useState<number | null>(null);
   useEffect(() => {
@@ -140,13 +140,26 @@ export function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run
   }, [snapshot.id, snapshot.generation]);
   const active = snapshot.jobs?.filter(job => !job.superseded && ['queued', 'running', 'failed', 'interrupted', 'cancelled'].includes(job.status)) ?? [];
   const supersededFailures = snapshot.jobs?.filter(job => job.superseded && ['failed', 'interrupted'].includes(job.status)) ?? [];
+  const review = snapshot.automatic_analysis;
+  const reviewOpen = !!review?.review_task && ['running', 'paused', 'failed'].includes(review.review_state);
   return <section className="workspace-view jobs-center" aria-label="Jobs and issues">
     <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" onClick={() => run(async () => { await api('transcribe_all'); await refresh(); })}>Queue missing full transcripts</button></div>
     <p className="small muted">Processing status does not certify evidence review. Historical failures remain visible with their receipts.</p>
+    {reviewOpen ? <article className={`job-card ${review?.review_state === 'failed' ? 'job-attention' : ''}`}>
+      <div className="job-card-head"><strong>Automatic case analysis</strong><StatusPill state={review?.review_state === 'running' ? 'running' : review?.review_state === 'failed' ? 'failed' : 'interrupted'} label={review!.review_state} small /></div>
+      {review?.review_state === 'failed' ? <p className="small danger-text">Saved progress is available. Continue in a new task to keep uncertain requests untouched.</p> : null}
+      {review?.review_state === 'paused' ? <p className="small muted">The review is paused. Saved progress remains available.</p> : null}
+      {review?.review_state !== 'running' ? <button className="quiet" onClick={() => run(async () => {
+        const result=await api<{task_id:string;conversation_id:string}>('continue_paused_task',{task_id:review!.review_task});
+        await refresh();
+        onConversation?.(result.conversation_id);
+      })}>Continue saved review</button> : null}
+      <code>Task {review!.review_task}</code>
+    </article> : null}
     {active.length ? active.map(job => <article className={`job-card ${['failed', 'interrupted'].includes(job.status) ? 'job-attention' : ''}`} key={job.id}>
       <div className="job-card-head">
         <strong>{job.name}</strong>
-        <StatusPill state={job.status === 'running' ? 'running' : job.status === 'queued' ? 'queued' : job.status === 'cancelled' ? 'cancelled' : 'interrupted'} label={job.status} small />
+        <StatusPill state={job.status === 'running' ? 'running' : job.status === 'queued' ? 'queued' : job.status === 'cancelled' ? 'cancelled' : job.status === 'failed' ? 'failed' : 'interrupted'} label={job.status} small />
       </div>
       <p className="small muted">{job.kind}</p>
       {job.error ? <p role="alert" className="small danger-text">{job.error}</p> : null}
@@ -161,7 +174,7 @@ export function JobsCenter({ snapshot, run, refresh }: { snapshot: Snapshot; run
         })}>{job.parent_run_id || ['video_ocr_index', 'video_overview_index'].includes(job.kind) ? 'Retry index from saved progress' : 'Recover saved job'}</button> : null}
       </div>
       <code>Receipt {job.id}</code>
-    </article>) : <div className="empty-state"><ListChecks size={32} /><h3>No failed tools or unfinished jobs</h3><p>Background transcription, indexing and analysis runs appear here while they work.</p></div>}
+    </article>) : !reviewOpen ? <div className="empty-state"><ListChecks size={32} /><h3>No active processing jobs</h3><p>Completed jobs and earlier tool errors remain available in the case history.</p></div> : null}
     {supersededFailures.length ? <details className="job-card"><summary>Earlier failures and interruptions replaced by newer runs ({supersededFailures.length})</summary>{supersededFailures.map(job => <article key={job.id}><strong>{job.name}</strong><p className="small muted">{job.kind} · {job.error || job.status}</p><code>Receipt {job.id}</code></article>)}</details> : null}
     {snapshot.issues?.length ? <details className="job-card"><summary>Previous AI tool errors ({snapshot.issues.length} group{snapshot.issues.length === 1 ? '' : 's'})</summary>{snapshot.issues.map(issue => <IssueHistory issue={issue} key={issue.latest_receipt} />)}</details> : null}
     {storage ? <div className="job-card">
@@ -335,7 +348,7 @@ export default function App() {
   const suggestedName = suggestedMatterName(snapshot?.sources.map(item => item.name) ?? []);
   const pending = snapshot?.jobs?.filter(job => ['queued', 'running'].includes(job.status)) ?? [];
   const needsAttention = (snapshot?.jobs?.filter(job => !job.superseded && !job.parent_run_id && ['failed', 'interrupted'].includes(job.status)).length ?? 0)
-    + (snapshot?.tasks?.filter(task => task.status === 'paused' && !!task.error && task.id === snapshot.automatic_analysis?.review_task).length ?? 0);
+    + (snapshot?.automatic_analysis?.review_state === 'failed' ? 1 : 0);
   const selectSource = (id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); };
 
   async function importFiles() {
@@ -508,7 +521,7 @@ export default function App() {
           /> : null}
           {snapshot && view === 'findings' ? <EvidenceNotebook key={snapshot.id} snapshot={snapshot} onClose={() => setView('chat')} onSource={selectSource} /> : null}
           {snapshot && view === 'review' ? <InvestigationWorkbench key={snapshot.id} snapshot={snapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /> : null}
-          {snapshot && view === 'jobs' ? <JobsCenter snapshot={snapshot} run={run} refresh={refresh} /> : null}
+          {snapshot && view === 'jobs' ? <JobsCenter snapshot={snapshot} run={run} refresh={refresh} onConversation={id => { setConversationId(id); setView('chat'); }} /> : null}
         </div>
 
         <main className="main-panel" hidden={!selection}>

@@ -52,6 +52,20 @@ it('keeps a failed older run in history while its replacement is queued', () => 
   expect(screen.getAllByText('queued').length).toBeGreaterThan(0);
 });
 
+it('shows a failed automatic review even when its original chat is hidden', async () => {
+  const current=snapshot();
+  current.jobs=[];
+  current.automatic_analysis={files:1,prepared:1,pending:0,failed:0,review_task:'hidden-review',review_state:'failed',note:''};
+  const onConversation=vi.fn();
+  api.mockResolvedValueOnce({task_id:'continued-review',conversation_id:'continued-review'});
+  render(<JobsCenter snapshot={current} run={fn => { void fn(); }} refresh={async () => undefined} onConversation={onConversation} />);
+  expect(screen.getByText('Automatic case analysis')).toBeTruthy();
+  expect(screen.queryByText('No active processing jobs')).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Continue saved review'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('continue_paused_task',{task_id:'hidden-review'}));
+  expect(onConversation).toHaveBeenCalledWith('continued-review');
+});
+
 it('loads record text on selection and ignores a late result from another case', async () => {
   const summary:RecordSummary={id:'same-id',title:'Synthetic note',kind:'note',revision:1,actor:'human',review:'unreviewed',protected:false,stale:false,updated_at:'now',dependencies:[]};
   let resolveOld!:(record:WorkingRecord)=>void;
