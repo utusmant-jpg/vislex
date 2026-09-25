@@ -658,6 +658,12 @@ fn active_review_checkpoint_can_seed_a_followup_until_evidence_changes() {
     let context=evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().unwrap();
     assert_eq!(context["state"],"running");
     assert_eq!(context["citations"][0],locator);
+    let followup=agent::start(&mut c,"What did the witness report?","investigate",scope.clone(),vec![],0.).unwrap();
+    let request=agent::prepare_request(&mut c,&followup).unwrap();
+    assert!(request.body["input"].to_string().contains("blue car"));
+    assert!(request.body["instructions"].as_str().unwrap().contains("request_more_research"));
+    assert_eq!(request.body["tools"].as_array().unwrap().len(),1,"saved progress should use the bounded answer or research path first");
+    assert_eq!(request.body["tools"][0]["name"],"request_more_research");
     c.publish_extract(&sid,"A later extraction changed the report.","test",true).unwrap();
     assert!(evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().is_none(),"stale checkpoint cannot seed a quick answer");
 }

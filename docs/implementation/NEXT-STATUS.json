@@ -188,6 +188,22 @@
     }
   },
   "additional_work": {
+    "PHASED-RELIABILITY-2026-09-25": {
+      "state": "implemented",
+      "commits": ["91da827", "0480d26"],
+      "environment": "Windows 10.0.26200 x64; branch impl/phased-reliability-20260925; source HEAD before changes 4591612",
+      "evidence": "Production settings and case snapshot remove AI currency values; new transmissions reserve 0 while token/timing display remains; chat unlocks after preparation even during automatic review; current fingerprinted checkpoints can seed a quick answer; hidden paused automatic chats continue into a visible new conversation; Jobs shows active/failed automatic analysis and its recovery action.",
+      "commands": [
+        "npm test -- --reporter=dot -> exit 0, 37 tests after 91da827; 38 after 0480d26",
+        "npm run build -> exit 0 after both code commits",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0 after 91da827, including 21 native AppContainer tests and packaged worker video test",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core continuing_a_deleted_automatic_chat_creates_a_visible_conversation -> exit 0 after 0480d26",
+        "python scripts/vislex_plan.py check -> exit 0, 26 task contracts structurally valid; no dependency-ready task yet"
+      ],
+      "reviewer": "Separate self-review of changed interfaces, legacy settings compatibility, hidden conversation recovery, and test evidence; no independent reviewer or real provider call in this slice.",
+      "unrun_checks": "No new packaged executable or validation-case migration was performed. R02/R03/R04/R07 acceptance remains implemented rather than verified; R05/R08-R23 mandatory acceptance and large-case measurements remain open. Concurrent live provider chats and first-response measurements remain unrun.",
+      "note": "Incremental implementation only. The live case and Downloads source folder were not opened or modified. Existing database money columns remain inert for compatibility with old cases and backups; historical audit entries remain intact. Tool/UI wording and current snapshot no longer expose pricing controls."
+    },
     "CHAT-FIX": {
       "state": "implemented",
       "evidence": "src-tauri/src/agent.rs (review_candidate candidate.blocks items given the finish_task block shape; list_sources.details made nullable+required), src-tauri/src/providers.rs (provider_rejection surfaces bounded provider error bodies on HTTP failures in send and list_models; stream failure events include the provider message), src-tauri/tests/master_v4.rs (tool_schemas_satisfy_openai_strict_mode, review_candidate_candidate_blocks_match_finish_task_block_shape)",
