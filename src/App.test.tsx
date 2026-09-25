@@ -9,8 +9,8 @@ vi.mock('./bridge', () => ({ api, native: false, formatBytes: (value:number) => 
 
 function snapshot(): Snapshot {
   return {
-    id: 'synthetic-case', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1, sources: [], records: [], tasks: [], budget_committed: 0,
-    settings: { offline: true, allow_text: false, allow_images: false, model: '', case_budget: 0, input_per_million: 0, output_per_million: 0 },
+    id: 'synthetic-case', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1, sources: [], records: [], tasks: [],
+    settings: { offline: true, allow_text: false, allow_images: false, model: '' },
     jobs: [
       { id: 'index-run', source_id: 'source', name: 'synthetic.mp4', kind: 'video_ocr_index', status: 'failed', error: 'resource error', created_at: '', superseded: false },
       { id: 'child-job', parent_run_id: 'index-run', source_id: 'source', name: 'synthetic.mp4', kind: 'video_ocr', status: 'failed', error: 'resource error', created_at: '', superseded: false },

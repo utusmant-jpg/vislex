@@ -152,8 +152,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const fileJobs = snapshot?.jobs?.filter(job => !job.superseded && ['auto_prepare', 'full_audio', 'video_ocr_index', 'video_overview_index'].includes(job.kind)) ?? [];
   const processingFailed = fileJobs.some(job => ['failed', 'interrupted'].includes(job.status));
   const processingPending = fileJobs.some(job => ['queued', 'running'].includes(job.status));
-  const automaticRunning = snapshot?.tasks.some(candidate => candidate.id === snapshot.automatic_analysis?.review_task && candidate.status === 'running') ?? false;
-  const chatBlocked = !!running || (!processingFailed && (processingPending || automaticRunning));
+  const chatBlocked = !!running || (!processingFailed && processingPending);
   const liveTaskIds = turns.filter(turn => turn.status === 'running').map(turn => turn.id).join(',');
 
   useEffect(() => { setSelectedModel(sessionStorage.getItem(modelKey(snapshot?.id, conversationId)) ?? ''); }, [snapshot?.id, conversationId]);
@@ -274,7 +273,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     {showJump ? <button className="jump-latest" aria-label="Jump to latest message" onClick={() => { following.current = true; if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; setShowJump(false); }}>Latest ↓</button> : null}
     <div className="composer-area">
       {snapshot && (snapshot.settings.offline || !snapshot.settings.allow_text || !availableModels.length) ? <button className="offline-notice" onClick={onSettings}>Set up or enable AI in settings</button> : null}
-      {chatBlocked && !running ? <p role="status" className="small muted">{processingPending ? 'Preparing case files before chat is available.' : 'Automatic case review is running. Chat opens when it finishes or reports an error.'}</p> : null}
+      {chatBlocked && !running ? <p role="status" className="small muted">Preparing case files before chat is available.</p> : null}
       <div className="composer">
         {contextName ? <div className="viewer-context" title="The agent receives this open file, its page and playback position">
           <span>Viewing</span><strong>{contextName}</strong>
@@ -294,7 +293,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           <div className="spacer" />
           {running
             ? <Tooltip text="Stop the current investigation"><button className="send stop" aria-label="Stop investigation" onClick={() => run(async () => { await api('stop_task', { task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
-            : <Tooltip text={chatBlocked ? 'Waiting for case preparation or automatic review' : 'Send message (Enter)'}><button className="send" aria-label="Send message" disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile} onClick={submit}><ArrowUp size={18} /></button></Tooltip>}
+            : <Tooltip text={chatBlocked ? 'Waiting for case preparation' : 'Send message (Enter)'}><button className="send" aria-label="Send message" disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile} onClick={submit}><ArrowUp size={18} /></button></Tooltip>}
         </div>
       </div>
       <p className="composer-foot">VisLex cites evidence for what it claims · Enter to send · Shift+Enter for a new line</p>

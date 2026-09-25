@@ -717,19 +717,17 @@ fn job_history_only_resolves_after_same_processor_succeeds() {
 fn app_preferences_apply_exactly_the_chosen_policy_without_forcing() {
     let (_dir,mut c,_)=setup();
     // R04: the exact chosen policy is saved. A stricter review mode, custom
-    // execution, narrow grants and a real budget survive application; saving a
+    // execution and narrow grants survive application; saving a
     // different model later cannot downgrade review or broaden grants.
     let mut settings=c.settings().unwrap();
     settings.offline=false;settings.allow_text=true;settings.allow_images=false;
-    settings.model="app-model".into();settings.case_budget=7.5;
-    settings.input_per_million=1.25;settings.output_per_million=5.;
+    settings.model="app-model".into();
     let preferences=json!({"config":{"provider":"openai","execution":"single","review":"challenge","pool":[{"provider":"gemini","model":"vision-model","allow_text":true,"allow_images":false}]},"settings":settings});
     providers::apply_app_settings(&mut c,&preferences).unwrap();
     assert_eq!(c.settings().unwrap().model,"app-model");
     assert_eq!(providers::load(&c).unwrap().execution,Execution::Single,"chosen execution must be preserved");
     assert_eq!(providers::load(&c).unwrap().review,Review::Challenge,"chosen review mode must be preserved");
     assert!(!c.settings().unwrap().allow_images,"image grant must not be forced on");
-    assert_eq!(c.settings().unwrap().case_budget,7.5);
     assert_eq!(providers::load(&c).unwrap().pool[0].allow_images,false,"per-profile grants must not be forced on");
     // A model-only change preserves the rest of the policy exactly.
     let mut model_only=preferences.clone();

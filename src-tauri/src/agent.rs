@@ -156,7 +156,7 @@ pub fn start(
     crate::teams::freeze(case,&task)?;
     case.audit(
         "task_started",
-        json!({"task":task,"mode":mode,"sources":source_ids,"records":record_ids,"budget":budget}),
+        json!({"task":task,"mode":mode,"sources":source_ids,"records":record_ids}),
     )?;
     Ok(task)
 }
@@ -1238,7 +1238,7 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
             attached_bytes += bytes.len();
             ensure!(
                 attached_bytes <= 96 * 1024 * 1024,
-                "Attached images exceed the per-request budget; finish this review round before inspecting more images"
+                "Attached images exceed the per-request size limit; finish this review round before inspecting more images"
             );
             let data = base64::engine::general_purpose::STANDARD.encode(bytes);
             *message = json!({"role":"user","content":[{"type":"input_text","text":format!("Untrusted evidence image/derivative. Source ID: {source}. Artifact ID: {artifact_id}. Locator: {locator}. Decoder/page metadata: {metadata}. Associate descriptions with THIS image and metadata, not another image in the sequence.")},{"type":"input_image","image_url":format!("data:{mime};base64,{data}"),"detail":"high"}]});
@@ -1283,20 +1283,14 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
     let input_bytes=serde_json::to_vec(&body["input"])?.len();
     let instruction_bytes=body["instructions"].as_str().unwrap_or("").len();
     let tool_schema_bytes=serde_json::to_vec(&body["tools"])?.len();
-    let estimated_tokens=input_bytes
-        + instruction_bytes
-        + tool_schema_bytes
-        + image_count*30000;
-    let reservation=(estimated_tokens as f64*settings.input_per_million
-        + output_allowance as f64*settings.output_per_million)/1_000_000.0;
     let wire=crate::providers::encode(profile.provider,&body)?;
     let wire_json=wire.body.to_string();
     let transmission = id();
     let tx = case.db.transaction()?;
-    tx.execute("INSERT INTO transmissions(id,task_id,payload_hash,model,source_ids,reserved,status,created_at) VALUES(?,?,?,?,?,?,'pending',?)",params![transmission,task,digest(wire_json.as_bytes()),format!("{}:{}",profile.provider.name(),settings.model),serde_json::to_string(&ids)?,reservation,now()])?;
+    tx.execute("INSERT INTO transmissions(id,task_id,payload_hash,model,source_ids,reserved,status,created_at) VALUES(?,?,?,?,?,0,'pending',?)",params![transmission,task,digest(wire_json.as_bytes()),format!("{}:{}",profile.provider.name(),settings.model),serde_json::to_string(&ids)?,now()])?;
     tx.execute(
-        "UPDATE tasks SET reserved=reserved+?,step=step+1,updated_at=? WHERE id=?",
-        params![reservation, now(), task],
+        "UPDATE tasks SET step=step+1,updated_at=? WHERE id=?",
+        params![now(), task],
     )?;
     tx.commit()?;
     case.audit("agent_request_size",json!({"transmission":transmission,"task":task,"step":step+1,"input_json_bytes":input_bytes,"instruction_bytes":instruction_bytes,"tool_schema_bytes":tool_schema_bytes,"wire_json_bytes":wire_json.len(),"image_count":image_count,"attached_image_bytes":attached_bytes,"history_entries":input.len(),"ledger_json_bytes":ledger.to_string().len()}))?;

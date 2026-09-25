@@ -693,7 +693,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
                 record_ids,
 
-                args["budget"].as_f64().unwrap_or(1.0),
+                0.0,
 
             )?;
 
@@ -966,7 +966,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
 
                 result=crate::providers::send(prepared.provider,&key,prepared.body,|delta|{let _=app.emit("agent-progress",json!({"case_id":case_id,"task_id":task,"transmission_id":prepared.transmission,"delta":delta}));})=>result,
 
-                _=cancelled(&app,&case_id,&task)=>Err(anyhow::anyhow!("Request cancelled; transmission may have occurred and its budget reservation is retained")),
+                _=cancelled(&app,&case_id,&task)=>Err(anyhow::anyhow!("Request cancelled; transmission may have occurred")),
 
             };
 

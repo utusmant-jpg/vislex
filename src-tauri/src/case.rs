@@ -126,9 +126,6 @@ pub struct Settings {
     pub allow_text: bool,
     pub allow_images: bool,
     pub model: String,
-    pub case_budget: f64,
-    pub input_per_million: f64,
-    pub output_per_million: f64,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -137,9 +134,6 @@ impl Default for Settings {
             allow_text: false,
             allow_images: false,
             model: String::new(),
-            case_budget: 10.0,
-            input_per_million: 0.0,
-            output_per_million: 0.0,
         }
     }
 }
@@ -315,18 +309,6 @@ impl Case {
         )?)
     }
     pub fn save_settings(&mut self, settings: Settings) -> Result<()> {
-        ensure!(
-            settings.case_budget.is_finite()
-                && settings.case_budget >= 0.0
-                && settings.case_budget <= 10000.0,
-            "Invalid case budget"
-        );
-        ensure!(
-            [settings.input_per_million, settings.output_per_million]
-                .iter()
-                .all(|p| p.is_finite() && *p >= 0.0 && *p <= 10000.0),
-            "Invalid model prices"
-        );
         ensure!(settings.model.len() <= 120, "Invalid model identifier");
         self.set_meta("settings", &serde_json::to_string(&settings)?)?;
         self.audit("policy_changed", serde_json::to_value(settings)?)?;
@@ -1026,8 +1008,8 @@ impl Case {
         Ok(receipt)
     }
     pub fn snapshot(&self) -> Result<Value> {
-        let mut stmt=self.db.prepare("SELECT id,prompt,mode,status,budget,reserved,spent,step,answer,error,generation,created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=tasks.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=tasks.id) FROM tasks WHERE id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE((SELECT conversation_id FROM conversation_tasks WHERE task_id=tasks.id),tasks.id) NOT IN (SELECT id FROM hidden_conversations) ORDER BY created_at DESC")?;
-        let tasks=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"budget":r.get::<_,f64>(4)?,"reserved":r.get::<_,f64>(5)?,"spent":r.get::<_,f64>(6)?,"step":r.get::<_,i64>(7)?,"answer":r.get::<_,String>(8)?,"error":r.get::<_,String>(9)?,"generation":r.get::<_,i64>(10)?,"created_at":r.get::<_,String>(11)?,"input_tokens":r.get::<_,i64>(12)?,"output_tokens":r.get::<_,i64>(13)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut stmt=self.db.prepare("SELECT id,prompt,mode,status,step,answer,error,generation,created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=tasks.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=tasks.id) FROM tasks WHERE id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE((SELECT conversation_id FROM conversation_tasks WHERE task_id=tasks.id),tasks.id) NOT IN (SELECT id FROM hidden_conversations) ORDER BY created_at DESC")?;
+        let tasks=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let mut tasks = tasks;
         for task in &mut tasks {
             let conversation: Option<String> = self.db.query_row("SELECT conversation_id FROM conversation_tasks WHERE task_id=?", [task["id"].as_str().unwrap_or_default()], |r|r.get(0)).optional()?;
@@ -1035,17 +1017,12 @@ impl Case {
             task["progress"] = serde_json::to_value(crate::review_progress::load(self,task["id"].as_str().unwrap_or_default())?)?;
             task["title"] = json!(self.meta(&format!("chat_title:{}", task["conversation_id"].as_str().unwrap_or_default()))?);
         }
-        let spent: f64 = self.db.query_row(
-            "SELECT COALESCE(SUM(reserved),0) FROM transmissions",
-            [],
-            |r| r.get(0),
-        )?;
         let mut jobs = self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,j.error,j.created_at,(EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) OR EXISTS(SELECT 1 FROM processing_jobs parent JOIN processing_jobs newer ON newer.source_id=parent.source_id AND newer.kind=parent.kind AND newer.rowid>parent.rowid WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id))),(SELECT parent.id FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id) ORDER BY parent.rowid DESC LIMIT 1) FROM processing_jobs j JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC")?;
         let jobs = jobs.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?,"parent_run_id":r.get::<_,Option<String>>(8)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let mut issues = self.db.prepare("SELECT a.task_id,a.name,a.output,COUNT(*),(SELECT last.id FROM actions last WHERE last.status='failed' AND last.task_id=a.task_id AND last.name=a.name AND last.output=a.output ORDER BY last.rowid DESC LIMIT 1),MAX(a.created_at) FROM actions a WHERE a.status='failed' GROUP BY a.task_id,a.name,a.output ORDER BY MAX(a.rowid) DESC LIMIT 100")?;
         let issues = issues.query_map([], |r| {let output=serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or(Value::Null);Ok(json!({"task_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"error":output["error"].as_str().unwrap_or("Tool failed; open the receipt for details"),"count":r.get::<_,i64>(3)?,"latest_receipt":r.get::<_,String>(4)?,"created_at":r.get::<_,String>(5)?}))})?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(
-            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.record_summaries()?,"settings":self.settings()?,"tasks":tasks,"budget_committed":spent,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
+            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.record_summaries()?,"settings":self.settings()?,"tasks":tasks,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
         )
     }
     pub fn actions(&self, task: &str) -> Result<Value> {

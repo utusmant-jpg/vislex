@@ -79,8 +79,8 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
         }
       }
       // R04: save precisely the choices shown. Nothing is forced: review mode,
-      // execution, per-profile grants, offline state, case grants, budget and
-      // prices all persist exactly as configured above.
+      // execution, per-profile grants, offline state, and case grants persist
+      // exactly as configured above.
       if (settings.allow_images && !settings.allow_text) throw new Error('Image analysis always sends accompanying text; grant text before images.');
       await api('save_ai_settings', {
         config: { ...config, provider: lead.provider, pool: profiles.filter((p, i) => i !== primary && p.model) },
@@ -143,12 +143,6 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
               </div>
             </label>
             <p className="small muted">Direct media transmits an original recording (up to 12 MiB) to Gemini when a task needs it. It is a separate, audited consent; disabling it blocks future transmission only.</p>
-            <div className="input-row">
-              <label className="field-label">Case budget (USD)<input type="number" min={0} max={10000} step="0.01" disabled={!native} value={settings.case_budget} onChange={e => setSettings(current => ({ ...current, case_budget: Number(e.target.value) }))} /></label>
-              <label className="field-label">Input $/M tokens<input type="number" min={0} max={10000} step="0.01" disabled={!native} value={settings.input_per_million} onChange={e => setSettings(current => ({ ...current, input_per_million: Number(e.target.value) }))} /></label>
-              <label className="field-label">Output $/M tokens<input type="number" min={0} max={10000} step="0.01" disabled={!native} value={settings.output_per_million} onChange={e => setSettings(current => ({ ...current, output_per_million: Number(e.target.value) }))} /></label>
-            </div>
-            <p className="small muted">Budget and prices feed the live usage indicator; they never cap or mute visibility of spending, and cancelling a run is always available.</p>
           </fieldset>
           {companies.map(provider => <fieldset key={provider} className="provider-card"><legend>{providerNames[provider]}</legend>
             <div className="input-row">

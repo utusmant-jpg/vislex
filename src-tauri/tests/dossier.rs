@@ -378,7 +378,7 @@ fn inventory_completion_needs_no_content_citation_or_review() {
 fn authority_publish_ingests_bytes_with_provenance_and_indexing() {
     let dir=tempfile::tempdir().unwrap();
     let mut case=evidence_desk::case::Case::create(&dir.path().join("auth.ledcase"),"Authority case").unwrap();
-    case.save_settings(evidence_desk::case::Settings{offline:false,allow_text:false,allow_images:false,model:String::new(),case_budget:0.,input_per_million:0.,output_per_million:0.}).unwrap();
+    case.save_settings(evidence_desk::case::Settings{offline:false,allow_text:false,allow_images:false,model:String::new()}).unwrap();
     let html=b"<html><head><style>body{}</style></head><body><p>The record refers to a holding about nominal damages.</p><script>steal()</script></body></html>";
     let download=evidence_desk::authority::Download{url:"https://www.govinfo.gov/content/pkg/test/html/test.htm".into(),bytes:html.to_vec(),mime:"text/html".into(),retrieved_at:"2026-09-21T00:00:00Z".into()};
     let value=evidence_desk::authority::publish(&mut case,download,"Test authority holding","United States","2026-09-01").unwrap();

@@ -616,7 +616,7 @@ pub fn parse_ai_defaults(value:&Value)->Result<Option<(Config,crate::case::Setti
 
 /// Apply the app's chosen provider preferences to a case without copying any
 /// credentials. R04: the exact chosen policy is saved — execution mode, review
-/// mode, per-profile grants, offline state, case grants, budget and prices.
+/// mode, per-profile grants, offline state, and case grants.
 /// Nothing is forced, so saving a model choice alone can neither broaden case
 /// grants nor downgrade a stricter review mode.
 pub fn apply_app_settings(case:&mut crate::case::Case,value:&Value)->Result<()> {

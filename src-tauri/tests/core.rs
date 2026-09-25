@@ -25,9 +25,6 @@ fn enable(case: &mut Case) {
         allow_text: true,
         allow_images: false,
         model: "test-model".into(),
-        case_budget: 10.,
-        input_per_million: 1.,
-        output_per_million: 5.,
     })
     .unwrap();
 }
@@ -234,15 +231,15 @@ fn offline_blocks_network_preparation_and_revoked_permissions() {
 fn legacy_caps_and_step_count_do_not_block_enabled_agent() {
     let (_dir, mut c, s) = setup();
     enable(&mut c);
-    let mut settings = c.settings().unwrap();
-    settings.case_budget = 0.;
-    settings.input_per_million = 0.;
-    settings.output_per_million = 0.;
-    c.save_settings(settings).unwrap();
     let task = agent::start(&mut c, "question", "ask", vec![s], vec![], 0.).unwrap();
     c.db.execute("UPDATE tasks SET step=25,reserved=999999 WHERE id=?", [&task]).unwrap();
     let request = agent::prepare_request(&mut c, &task).unwrap();
     assert_eq!(request.body["store"], false);
+    assert_eq!(c.db.query_row("SELECT reserved FROM transmissions WHERE id=?",[&request.transmission],|r|r.get::<_,f64>(0)).unwrap(),0.0);
+    let view=c.snapshot().unwrap();
+    assert!(view["settings"].get("case_budget").is_none());
+    assert!(view.get("budget_committed").is_none());
+    assert!(view["tasks"][0].get("reserved").is_none());
     assert_eq!(c.db.query_row("SELECT count(*) FROM transmissions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     let metrics:String=c.db.query_row("SELECT data FROM audit WHERE event='agent_request_size'",[],|r|r.get(0)).unwrap();
     let metrics:serde_json::Value=serde_json::from_str(&metrics).unwrap();
@@ -250,6 +247,17 @@ fn legacy_caps_and_step_count_do_not_block_enabled_agent() {
     assert!(metrics["tool_schema_bytes"].as_u64().unwrap()>0);
     assert!(metrics["wire_json_bytes"].as_u64().unwrap()>=metrics["input_json_bytes"].as_u64().unwrap());
     assert!(!metrics.to_string().contains("question"),"Request-size audit must not contain client text");
+}
+
+#[test]
+fn historical_price_settings_are_ignored_when_a_case_is_reopened() {
+    let (_dir,mut c,_)=setup();
+    c.set_meta("settings",&json!({"offline":false,"allow_text":true,"allow_images":false,"model":"test-model","case_budget":500.0,"input_per_million":40.0,"output_per_million":80.0}).to_string()).unwrap();
+    let settings=c.settings().unwrap();
+    assert_eq!(settings.model,"test-model");
+    assert!(serde_json::to_value(&settings).unwrap().get("case_budget").is_none());
+    c.save_settings(settings).unwrap();
+    assert!(!c.meta("settings").unwrap().unwrap().contains("per_million"));
 }
 #[test]
 fn actual_agent_tool_response_writes_once_and_checkpoints() {
@@ -612,11 +620,32 @@ fn chats_wait_for_file_preparation_but_failures_release_the_gate() {
     assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
     let review=agent::start(&mut c,"Synthetic automatic review","investigate",vec![sid.clone()],vec![],0.).unwrap();
     c.set_meta("auto_review_task",&review).unwrap();
-    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none(),"completed extraction unlocks chat during automatic review");
     agent::pause(&mut c,&review,"Synthetic review error").unwrap();
     assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
     c.db.execute("INSERT INTO processing_jobs VALUES('fresh',?,'full_audio','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
     assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());
+}
+
+#[test]
+fn active_review_checkpoint_can_seed_a_followup_until_evidence_changes() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    c.publish_extract(&sid,"A witness reported a blue car.","test",true).unwrap();
+    let review=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    let scope=evidence_desk::agent::case_scope(&c).unwrap().0;
+    assert!(evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().is_none(),"empty work cannot seed a quick answer");
+    let locator=format!("evidence:{sid}#R1L1-L1");
+    evidence_desk::review_progress::save(&c,&review,&evidence_desk::review_progress::Progress{
+        summary:"The witness report mentions a blue car.".into(),
+        citations:vec![locator.clone()],
+        gaps:vec!["Video review is pending".into()],
+        ..Default::default()
+    }).unwrap();
+    let context=evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().unwrap();
+    assert_eq!(context["state"],"running");
+    assert_eq!(context["citations"][0],locator);
+    c.publish_extract(&sid,"A later extraction changed the report.","test",true).unwrap();
+    assert!(evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().is_none(),"stale checkpoint cannot seed a quick answer");
 }
 
 #[test]
@@ -1154,7 +1183,6 @@ fn case_grants_and_consents_survive_backup_and_restore_exactly() {
     granted.offline = false;
     granted.allow_text = true;
     granted.allow_images = false;
-    granted.case_budget = 12.5;
     c.save_settings(granted).unwrap();
     evidence_desk::providers::set_direct_media(&mut c, true).unwrap();
     let config = evidence_desk::providers::Config {
@@ -1172,7 +1200,6 @@ fn case_grants_and_consents_survive_backup_and_restore_exactly() {
     let restored = evidence_desk::backup::restore(&archive, &dir.path().join("restored.ledcase"), "policy-pass-123").unwrap();
     let settings = restored.settings().unwrap();
     assert!(!settings.offline && settings.allow_text && !settings.allow_images, "text-only grant must survive restore exactly");
-    assert_eq!(settings.case_budget, 12.5);
     assert_eq!(evidence_desk::providers::load(&restored).unwrap().review, evidence_desk::providers::Review::Challenge);
     assert!(evidence_desk::providers::direct_media_enabled(&restored), "explicit direct-media consent must survive restore");
     restored.verify_audit().unwrap();

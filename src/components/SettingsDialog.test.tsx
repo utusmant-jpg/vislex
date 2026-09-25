@@ -10,9 +10,9 @@ vi.mock('../ui', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn() })
 
 const snapshot: Snapshot = {
   id: 'synthetic-case', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1,
-  sources: [], records: [], tasks: [], budget_committed: 0,
+  sources: [], records: [], tasks: [],
   ai_config: { provider: 'openai', execution: 'single', review: 'challenge', pool: [] },
-  settings: { offline: false, allow_text: true, allow_images: true, model: 'saved-model', case_budget: 0, input_per_million: 0, output_per_million: 0 },
+  settings: { offline: false, allow_text: true, allow_images: true, model: 'saved-model' },
 };
 
 beforeEach(() => {
@@ -27,6 +27,7 @@ it('saves the exact case grants and review mode chosen in the dialog', async () 
   const onClose = vi.fn();
   render(<SettingsDialog snapshot={snapshot} refresh={refresh} onClose={onClose} run={fn => { void fn(); }} />);
   await screen.findByText('Permitted — original audio/video may be sent');
+  expect(screen.queryByText(/Case budget|tokens|\$\/M/i)).toBeNull();
   fireEvent.click(screen.getByText('Offline — stop new requests'));
   fireEvent.click(screen.getByRole('checkbox', { name: 'Case text may be sent to permitted models' }));
   fireEvent.click(screen.getByText('Permitted — original audio/video may be sent'));
@@ -34,7 +35,7 @@ it('saves the exact case grants and review mode chosen in the dialog', async () 
   await waitFor(() => expect(onClose).toHaveBeenCalled());
   expect(api).toHaveBeenCalledWith('save_ai_settings', {
     config: { provider: 'openai', execution: 'single', review: 'challenge', pool: [] },
-    settings: { offline: true, allow_text: false, allow_images: false, model: 'saved-model', case_budget: 0, input_per_million: 0, output_per_million: 0 },
+    settings: { offline: true, allow_text: false, allow_images: false, model: 'saved-model' },
   });
   expect(api).toHaveBeenCalledWith('set_direct_media_permission', { enabled: true });
 });

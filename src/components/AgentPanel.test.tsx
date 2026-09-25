@@ -9,10 +9,10 @@ vi.mock('../bridge', () => ({ api, native: true, citationParts: () => null }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => undefined }));
 
 function task(id: string, conversation: string): Task {
-  return { id, conversation_id: conversation, prompt: 'Existing question', mode: 'investigate', status: 'running', budget: 0, reserved: 0, spent: 0, input_tokens: 0, output_tokens: 0, step: 0, answer: '', error: '', generation: 1, created_at: '2026-09-22T00:00:00Z' };
+  return { id, conversation_id: conversation, prompt: 'Existing question', mode: 'investigate', status: 'running', input_tokens: 0, output_tokens: 0, step: 0, answer: '', error: '', generation: 1, created_at: '2026-09-22T00:00:00Z' };
 }
 function snapshot(tasks: Task[] = [], jobs: Snapshot['jobs'] = []): Snapshot {
-  return { id: 'case-1', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1, sources: [], records: [], tasks, jobs, settings: { offline: false, allow_text: true, allow_images: false, model: 'synthetic-model', case_budget: 0, input_per_million: 0, output_per_million: 0 }, budget_committed: 0 };
+  return { id: 'case-1', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1, sources: [], records: [], tasks, jobs, settings: { offline: false, allow_text: true, allow_images: false, model: 'synthetic-model' } };
 }
 function panel(data: Snapshot, conversationId: string | null = null) {
   const onConversation = vi.fn();
@@ -51,6 +51,16 @@ describe('chat composer interaction', () => {
     panel(snapshot([completed]), 'current-chat');
     expect(screen.getByText('The report describes three knocks.')).toBeTruthy();
     expect(screen.queryByText('AI assessment')).toBeNull();
+  });
+
+  it('allows chat after file preparation while automatic review continues', async () => {
+    const data = snapshot([task('review-task', 'review-chat')]);
+    data.automatic_analysis = { files: 1, prepared: 1, pending: 0, failed: 0, review_task: 'review-task', review_state: 'running', note: '' };
+    panel(data);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Summarize the prepared document' } });
+    expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('start_task', expect.objectContaining({ prompt: 'Summarize the prepared document' })));
   });
 
   it('continues paused work in a new task without resuming the uncertain request', async () => {
