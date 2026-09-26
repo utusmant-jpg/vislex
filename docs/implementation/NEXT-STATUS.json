@@ -385,7 +385,8 @@
     },
     "R23": {
       "state": "pending",
-      "capacity_preflight": "Windows C: Get-PSDrive measured 8,015,208,448 free bytes on 2026-09-26 while a separate fixed-source installer was building. The mandatory 10-GB and 40–60-GB non-sparse synthetic tiers cannot run on this volume without additional provisioned storage; no substitute sparse-file result will be counted. The 1-GB opaque synthetic file measured earlier is not a realistic video tier or release acceptance. No live client case was touched."
+      "capacity_preflight": "Windows C: Get-PSDrive measured 8,015,208,448 free bytes on 2026-09-26 while a separate fixed-source installer was building. The mandatory 10-GB and 40–60-GB non-sparse synthetic tiers cannot run on this volume without additional provisioned storage; no substitute sparse-file result will be counted. The 1-GB opaque synthetic file measured earlier is not a realistic video tier or release acceptance. No live client case was touched.",
+      "local_test_checkpoint": "At commit 6d24203 before the separate app-wide AI settings integration, cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored exited 0: 233 Rust tests passed across 11 suites, including all 26 native sandbox/AppContainer tests and worker video e2e. .venv-worker Python worker discovery exited 0 (28 tests); npm test -- --run exited 0 (110 tests across 21 files); benchmark suite 10/10 passed. These are local tests on this checkout, not the final combined commit or exact release installer, and do not satisfy the live-case or large realistic media gates."
     }
   },
   "packaged_worker_and_acceptance_evidence": {
