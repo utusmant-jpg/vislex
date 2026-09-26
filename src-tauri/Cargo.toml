@@ -51,6 +51,7 @@ tempfile = "3"
 age = "0.11"
 tar = "0.4"
 filetime = "0.2"
+rusqlite = { version = "0.32", features = ["trace"] }
 
 # Preserve fast source integrity checks in the developer desktop build.
 [profile.dev.package.sha2]

@@ -368,18 +368,32 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "source_page" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before source page");
             anyhow::ensure!(args["generation"].as_i64()==Some(c.generation()?),"Case changed before source page");
+            anyhow::ensure!(args["audit_seq"].as_i64()==c.case_summary()?["audit_seq"].as_i64(),"Case changed before source page");
             let before=if args["before"].is_null(){None}else{Some((text(&args["before"],"created_at")?,text(&args["before"],"id")?))};
             c.source_page(before)?
         },
         "record_page" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working file page");
             anyhow::ensure!(args["generation"].as_i64()==Some(c.generation()?),"Case changed before working file page");
+            anyhow::ensure!(args["audit_seq"].as_i64()==c.case_summary()?["audit_seq"].as_i64(),"Case changed before working file page");
             let before=if args["before"].is_null(){None}else{Some((text(&args["before"],"updated_at")?,text(&args["before"],"id")?))};
             c.record_page(before)?
         },
         "job_page" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before job page");
             c.job_page(args["before"].as_i64())?
+        },
+        "attention_job_page" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before current problems page");
+            c.attention_job_page(args["before"].as_i64())?
+        },
+        "source_detail" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before source detail");
+            serde_json::to_value(c.source(text(&args,"source_id")?)?)?
+        },
+        "record_summary" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working file summary");
+            c.record_summary(text(&args,"record_id")?)?
         },
         "conversation_detail" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before conversation detail");
@@ -836,7 +850,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "search",
 
-        "actions", "issue_history", "record_detail", "task_page", "source_page", "record_page", "job_page", "conversation_detail", "case_summary",
+        "actions", "issue_history", "record_detail", "record_summary", "source_detail", "task_page", "source_page", "record_page", "job_page", "attention_job_page", "conversation_detail", "case_summary",
 
         "revisions",
 

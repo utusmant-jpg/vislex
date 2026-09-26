@@ -742,6 +742,13 @@ impl Case {
         let next_cursor=if more {records.last().map(|record|json!({"updated_at":record["updated_at"],"id":record["id"]}))}else{None};
         Ok(json!({"records":records,"next_cursor":next_cursor}))
     }
+    pub fn record_summary(&self,id:&str)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT id,title,kind,revision,actor,review,protected,stale,updated_at,dependencies FROM records WHERE id=?")?;
+        stmt.query_row([id],|r|{
+            let kind:String=r.get(2)?;let actor:String=r.get(4)?;
+            Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"kind":kind,"revision":r.get::<_,i64>(3)?,"actor":actor,"review":r.get::<_,String>(5)?,"protected":r.get::<_,bool>(6)?,"stale":if actor=="processor"&&kind=="transcript"{false}else{r.get::<_,bool>(7)?},"updated_at":r.get::<_,String>(8)?,"dependencies":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(json!([]))}))
+        }).map_err(Into::into)
+    }
     pub fn record(&self, record_id: &str) -> Result<Record> {
         self.db
             .query_row(
@@ -1052,10 +1059,14 @@ impl Case {
         let (source_count,record_count,task_count,job_count):(i64,i64,i64,i64)=self.db.query_row("SELECT (SELECT count(*) FROM sources),(SELECT count(*) FROM records),(SELECT count(*) FROM tasks),(SELECT count(*) FROM processing_jobs)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
         let audit_seq:i64=self.db.query_row("SELECT COALESCE(MAX(seq),0) FROM audit",[],|r|r.get(0))?;
         let action_rowid:i64=self.db.query_row("SELECT COALESCE(MAX(rowid),0) FROM actions",[],|r|r.get(0))?;
+        let transmission_rowid:i64=self.db.query_row("SELECT COALESCE(MAX(rowid),0) FROM transmissions",[],|r|r.get(0))?;
         let task_update:String=self.db.query_row("SELECT COALESCE(MAX(updated_at),'') FROM tasks",[],|r|r.get(0))?;
+        let (tasks_running,tasks_paused,tasks_complete):(i64,i64,i64)=self.db.query_row("SELECT COALESCE(SUM(status='running'),0),COALESCE(SUM(status='paused'),0),COALESCE(SUM(status='complete'),0) FROM tasks",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
         let (queued,running,failed,complete):(i64,i64,i64,i64)=self.db.query_row("SELECT COALESCE(SUM(status='queued'),0),COALESCE(SUM(status='running'),0),COALESCE(SUM(status IN ('failed','interrupted')),0),COALESCE(SUM(status='complete'),0) FROM processing_jobs",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        let source_bytes:i64=self.db.query_row("SELECT COALESCE(SUM(size),0) FROM sources",[],|r|r.get(0))?;
+        let jobs_attention:i64=self.db.query_row("SELECT count(*) FROM processing_jobs j WHERE j.status IN ('failed','interrupted') AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) AND NOT EXISTS(SELECT 1 FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id))",[],|r|r.get(0))?;
         let viewer_request=self.meta("viewer_request")?.map(|value|digest(value.as_bytes()));
-        Ok(json!({"case_id":self.meta("id")?,"generation":self.generation()?,"audit_seq":audit_seq,"action_rowid":action_rowid,"viewer_request_hash":viewer_request,"task_update":task_update,"source_count":source_count,"record_count":record_count,"task_count":task_count,"job_count":job_count,"jobs_queued":queued,"jobs_running":running,"jobs_failed":failed,"jobs_complete":complete}))
+        Ok(json!({"case_id":self.meta("id")?,"generation":self.generation()?,"audit_seq":audit_seq,"action_rowid":action_rowid,"transmission_rowid":transmission_rowid,"viewer_request_hash":viewer_request,"task_update":task_update,"tasks_running":tasks_running,"tasks_paused":tasks_paused,"tasks_complete":tasks_complete,"source_count":source_count,"source_bytes":source_bytes,"record_count":record_count,"task_count":task_count,"job_count":job_count,"jobs_queued":queued,"jobs_running":running,"jobs_failed":failed,"jobs_attention":jobs_attention,"jobs_complete":complete,"chat_pause":crate::automatic::chat_pause_reason(self)?}))
     }
     pub fn job_page(&self,before:Option<i64>)->Result<Value> {
         let mut stmt=self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,substr(j.error,1,500),j.created_at,(EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) OR EXISTS(SELECT 1 FROM processing_jobs parent JOIN processing_jobs newer ON newer.source_id=parent.source_id AND newer.kind=parent.kind AND newer.rowid>parent.rowid WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id))),(SELECT parent.id FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id) ORDER BY parent.rowid DESC LIMIT 1),j.rowid FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE (?1 IS NULL OR j.rowid<?1) ORDER BY j.rowid DESC LIMIT 51")?;
@@ -1065,14 +1076,25 @@ impl Case {
         for job in &mut jobs {job.as_object_mut().unwrap().remove("cursor");}
         Ok(json!({"jobs":jobs,"next_cursor":next_cursor}))
     }
+    pub fn attention_job_page(&self,before:Option<i64>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,substr(j.error,1,500),j.created_at,j.rowid FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE j.status IN ('failed','interrupted') AND (?1 IS NULL OR j.rowid<?1) AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) AND NOT EXISTS(SELECT 1 FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id)) ORDER BY j.rowid DESC LIMIT 51")?;
+        let mut jobs=stmt.query_map([before],|r|Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":false,"parent_run_id":Value::Null,"cursor":r.get::<_,i64>(7)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=jobs.len()>50;jobs.truncate(50);
+        let next_cursor=if more {jobs.last().and_then(|job|job["cursor"].as_i64())}else{None};
+        for job in &mut jobs {job.as_object_mut().unwrap().remove("cursor");}
+        Ok(json!({"jobs":jobs,"next_cursor":next_cursor}))
+    }
     pub fn snapshot(&self) -> Result<Value> {
         let tasks=self.task_page(None)?["tasks"].clone();
-        let mut jobs = self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,j.error,j.created_at,(EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) OR EXISTS(SELECT 1 FROM processing_jobs parent JOIN processing_jobs newer ON newer.source_id=parent.source_id AND newer.kind=parent.kind AND newer.rowid>parent.rowid WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id))),(SELECT parent.id FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id) ORDER BY parent.rowid DESC LIMIT 1) FROM processing_jobs j JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC")?;
-        let jobs = jobs.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?,"parent_run_id":r.get::<_,Option<String>>(8)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let job_page=self.job_page(None)?;
+        let attention_page=self.attention_job_page(None)?;
+        let source_page=self.source_page(None)?;
+        let record_page=self.record_page(None)?;
+        let jobs=job_page["jobs"].clone();
         let mut issues = self.db.prepare("SELECT a.task_id,a.name,a.output,COUNT(*),(SELECT last.id FROM actions last WHERE last.status='failed' AND last.task_id=a.task_id AND last.name=a.name AND last.output=a.output ORDER BY last.rowid DESC LIMIT 1),MAX(a.created_at) FROM actions a WHERE a.status='failed' GROUP BY a.task_id,a.name,a.output ORDER BY MAX(a.rowid) DESC LIMIT 100")?;
         let issues = issues.query_map([], |r| {let output=serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or(Value::Null);Ok(json!({"task_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"error":output["error"].as_str().unwrap_or("Tool failed; open the receipt for details"),"count":r.get::<_,i64>(3)?,"latest_receipt":r.get::<_,String>(4)?,"created_at":r.get::<_,String>(5)?}))})?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(
-            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.record_summaries()?,"settings":self.settings()?,"tasks":tasks,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
+            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"job_next_cursor":job_page["next_cursor"],"attention_jobs":attention_page["jobs"],"attention_next_cursor":attention_page["next_cursor"],"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":source_page["sources"],"source_next_cursor":source_page["next_cursor"],"records":record_page["records"],"record_next_cursor":record_page["next_cursor"],"counts":self.case_summary()?,"settings":self.settings()?,"tasks":tasks,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
         )
     }
     pub fn actions(&self, task: &str) -> Result<Value> {

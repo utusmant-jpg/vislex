@@ -4,6 +4,10 @@ use evidence_desk::{
 };
 use serde_json::json;
 use std::fs;
+use std::sync::atomic::{AtomicUsize,Ordering};
+
+static SNAPSHOT_SQL_COUNT:AtomicUsize=AtomicUsize::new(0);
+fn count_snapshot_sql(_sql:&str){SNAPSHOT_SQL_COUNT.fetch_add(1,Ordering::Relaxed);}
 
 fn setup() -> (tempfile::TempDir, Case, String) {
     let dir = tempfile::tempdir().unwrap();
@@ -506,21 +510,37 @@ fn large_snapshot_excludes_full_working_record_bodies() {
     for index in 0..120 {
         tx.execute("INSERT INTO sources(id,name,sha256,size,mime,kind,status,restricted,created_at) VALUES(?,?,?,1,'text/plain','text','imported',0,?)",rusqlite::params![format!("synthetic-source-{index}"),format!("Synthetic source {index}"),format!("{index:064x}"),format!("2026-09-22T02:{:02}:{:02}Z",index/60,index%60)]).unwrap();
     }
+    tx.execute("INSERT INTO processing_jobs(id,source_id,kind,status,result,error,created_at) VALUES('old-current-failure','synthetic-source-119','image_ocr','failed','{}','Synthetic failure','2026-09-22T03:00:00Z')",[]).unwrap();
     for index in 0..100 {
         tx.execute("INSERT INTO processing_jobs(id,source_id,kind,status,result,error,created_at) VALUES(?,?,'auto_prepare','complete','{}','',?)",rusqlite::params![format!("synthetic-job-{index}"),format!("synthetic-source-{}",index%120),format!("2026-09-22T03:{:02}:{:02}Z",index/60,index%60)]).unwrap();
     }
     tx.commit().unwrap();
+    SNAPSHOT_SQL_COUNT.store(0,Ordering::Relaxed);
+    c.db.trace(Some(count_snapshot_sql));
     let started=std::time::Instant::now();
     let snapshot=c.snapshot().unwrap();
+    c.db.trace(None);
+    let statements=SNAPSHOT_SQL_COUNT.load(Ordering::Relaxed);
     let bytes=serde_json::to_vec(&snapshot).unwrap().len();
-    println!("500 synthetic 2-KiB records and 500 completed answers snapshot bytes: {bytes}; elapsed_ms: {}",started.elapsed().as_millis());
+    println!("500 synthetic 2-KiB records and 500 completed answers snapshot bytes: {bytes}; elapsed_ms: {}; sql_statements: {statements}",started.elapsed().as_millis());
     assert!(bytes<256*1024,"Summary should stay under 256 KiB for this synthetic tier");
+    assert!(statements<=40,"A bounded snapshot must not issue one query per source, record, task, or job: {statements}");
     assert!(snapshot["records"][0].get("content").is_none(),"Full record text requires explicit detail fetch");
+    SNAPSHOT_SQL_COUNT.store(0,Ordering::Relaxed);
+    c.db.trace(Some(count_snapshot_sql));
+    let summary_started=std::time::Instant::now();
     let summary=c.case_summary().unwrap();
+    c.db.trace(None);
+    let summary_statements=SNAPSHOT_SQL_COUNT.load(Ordering::Relaxed);
+    println!("Routine case summary bytes: {}; elapsed_ms: {}; sql_statements: {summary_statements}",serde_json::to_vec(&summary).unwrap().len(),summary_started.elapsed().as_millis());
     assert!(serde_json::to_vec(&summary).unwrap().len()<1024,"Routine polling must stay small");
+    assert!(summary_statements<=15,"Routine polling should use bounded queries: {summary_statements}");
     assert_eq!(summary["record_count"],500);
     assert_eq!(summary["source_count"],121);
-    assert_eq!(summary["job_count"],100);
+    assert_eq!(summary["job_count"],101);
+    assert_eq!(summary["jobs_attention"],1,"An older current failure must affect attention even outside the first job page");
+    assert!(snapshot["jobs"].as_array().unwrap().iter().all(|job|job["id"]!="old-current-failure"));
+    assert_eq!(snapshot["attention_jobs"][0]["id"],"old-current-failure","An older current failure must be visible without paging through completed work");
     assert_eq!(summary["task_count"],500);
     assert_eq!(snapshot["tasks"].as_array().unwrap().len(),50);
     assert!(snapshot["tasks"][0]["answer"].as_str().unwrap().len()<=200);
@@ -559,7 +579,7 @@ fn large_snapshot_excludes_full_working_record_bodies() {
         let Some(cursor)=page["next_cursor"].as_i64() else {break};
         before=Some(cursor);
     }
-    assert_eq!(jobs.len(),100,"Rowid pages must not skip synthetic jobs");
+    assert_eq!(jobs.len(),101,"Rowid pages must not skip synthetic jobs");
     let old=c.conversation_detail("synthetic-task-0",None).unwrap();
     assert_eq!(old["tasks"][0]["answer"].as_str().unwrap().len(),"Old answer. ".repeat(90).len(),"Full historical answer remains retrievable on demand");
     let plan:String=c.db.query_row("EXPLAIN QUERY PLAN SELECT id FROM tasks ORDER BY created_at DESC,id DESC LIMIT 50",[],|r|r.get(3)).unwrap();
