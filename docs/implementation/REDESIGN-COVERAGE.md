@@ -8,24 +8,24 @@ Only synthetic browser data may be used for design captures. A row is **verified
 | Startup, create, open, restore, recent cases, sample preview | `App` | In progress: new tokens and two-column entry layout | Native dialogs, missing folders, synthetic walkthrough |
 | Case rename, import files/folders, note, backup, delete | `App`, `FolderImport` | Pending | Confirmations, failure preservation, native lifecycle |
 | Titlebar, five workspace shortcuts, sidebar, chats, projects | `App` | In progress: collapse and layout presets | Keyboard, narrow widths, persisted state |
-| Search/command palette, source and command results | `App` | Pending | Paging, case switch, exact locator |
+| Search/command palette, source and command results | `App` | Implemented: keyboard result semantics, case-independent settings command | Native focus and case switch; exact locator DOM tests pass |
 | Conversation list, history paging, delete/undo | `App`, `AgentPanel` | Pending | Interaction tests |
-| Composer, context, model, send/stop, drafts | `AgentPanel` | In progress: auto-growing input | IME, draft retention, blocked reasons, streaming |
-| Tool receipts, team activity, error, resume/continue | `AgentPanel` | Pending | Existing functional tests and native journey |
+| Composer, context, model, send/stop, drafts | `AgentPanel` | In progress: auto-growing input, case summary and task suggestions | IME, draft retention, blocked reasons, streaming |
+| Tool receipts, team activity, error, resume/continue | `AgentPanel` | In progress: clearer saved/running/paused/error labels | Existing functional tests and native journey |
 | Evidence and working-file library, filter, paging, restriction | `EvidenceLibrary` | In progress: responsive filter controls | Paged rows, restriction, case fences |
 | Viewer tabs, back/forward, source locator | `App`, `EvidenceViewer` | In progress: keyboard-resizable pane, narrow return | Exact revision and scroll preservation |
 | Text/image/PDF, copy citation, zoom and limits | `EvidenceViewer` | Pending | Native and historical citation journey |
 | Audio/video controls and discovery | `EvidenceViewer`, discovery components | Pending | Native transport, frame/clock gates |
 | Transcript, speaker turns, corrections | `FullTranscript`, `SpeakerTurns` | Pending; retain R12 | Long segment paging and correction review |
-| Record editor, revision conflicts, saved export | `RecordEditor` | Pending | Review invalidation and export |
-| Findings and notebook object kinds | `EvidenceNotebook` | Pending | All kinds, dependencies, citations |
+| Record editor, revision conflicts, saved export | `RecordEditor` | Existing UI retained; editor loaded on demand | Review invalidation and export |
+| Findings and notebook object kinds | `EvidenceNotebook` | Existing UI retained; notebook loaded on demand | All kinds, dependencies, citations |
 | Discrepancy, changed, replay, coverage, legal review | `InvestigationWorkbench`, `QuestionDossier` | Pending | Human decisions and uncertainty |
 | Redaction and restricted derivative export | `RedactionPanel` | Pending | Derivative-only native export |
 | Jobs, failures, retries, cancel, storage | `JobsCenter` | Pending | Action routing and history |
-| Provider/model settings and credentials | `SettingsDialog` | In progress: separated navigation | Credential Manager and native save |
+| Provider/model settings and credentials | `SettingsDialog` | In progress: separated navigation and on-demand loading | Credential Manager and native save |
 | Case permissions and review/execution choices | `SettingsDialog` | In progress: separate sections, same save contract | Negative permission tests |
 | Dark/light/System, compact density, About without case | `ThemeProvider`, preferences dialogs | Implemented, frontend tests pass | Visual contrast, OS switch, packaged first paint |
-| Menus, tooltips, dialogs, notifications, empty/error/loading | `ui`, global CSS | In progress: token treatment, duplicate-toast suppression | Focus return, accessibility, all states |
+| Menus, tooltips, dialogs, notifications, empty/error/loading | `ui`, global CSS | In progress: token treatment, duplicate-toast suppression, keyboard tooltip and context-menu focus return | Dialog focus, accessibility, all states |
 
 ## Vstorm frontend disposition
 
@@ -48,6 +48,6 @@ Source audited at [`3428d9a6214619d3514312886d59a36400747b7d`](https://github.co
 
 ## Baseline and current evidence
 
-At base `298ab42`: 63 frontend tests passed; production bundle 446.74 kB JS (131.61 kB gzip) and 56.54 kB CSS (11.18 kB gzip). The initial redesign slice passes 69 frontend tests and a production build. Current JS/CSS sizes and native acceptance must be recorded against a committed candidate. Browser inspection used only the built-in synthetic case; it exposed a missing `case_summary` preview fixture, reported to the bridge owner. Browser UI inspection is not packaged Windows verification.
+At base `298ab42`: 63 frontend tests passed; production bundle 446.74 kB JS (131.61 kB gzip) and 56.54 kB CSS (11.18 kB gzip). Through `b18a6c8`, 73 frontend tests pass, the initial JavaScript is 403.83 kB (120.20 kB gzip), and CSS is 62.49 kB (12.35 kB gzip). Settings, findings, review, and record editing now load on demand. This is a payload comparison, not a measured startup or interaction-speed gain. Browser inspection used only the built-in synthetic case in light and dark modes; it exposed a missing `case_summary` preview fixture, reported to the bridge owner. Browser UI inspection is not packaged Windows verification.
 
 Bundled asset: Inter Variable from [rsms/inter](https://github.com/rsms/inter), SIL Open Font License 1.1; local license at `src/assets/fonts/Inter-LICENSE.txt`, SHA-256 `693B77D4F32EE9B8BFC995589B5FAD5E99ADF2832738661F5402F9978429A8E3`. No runtime font request is made.
