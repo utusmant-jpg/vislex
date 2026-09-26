@@ -188,6 +188,18 @@
     }
   },
   "additional_work": {
+    "CASE-REFRESH-FENCE-2026-09-26": {
+      "state": "implemented",
+      "commit": "20aa09e",
+      "evidence": "Renderer case epoch discards a snapshot response started before a project switch; DOM regression delays the old case refresh until after the new case opens and confirms the new case stays visible.",
+      "commands": [
+        "npm test -- --run -> exit 0, 44 tests in 11 files",
+        "npm run build -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "R08 backend request/session fences, bounded typed lists, query-plan evidence and large-case latency measurements remain open. Same-case out-of-order refreshes are not yet event-sequence fenced. No packaged cross-case race run.",
+      "note": "This is a renderer race fix, not R08 verification."
+    },
     "REVIEW-INPUT-STATE-2026-09-26": {
       "state": "implemented",
       "commit": "6720c3f",
