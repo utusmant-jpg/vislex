@@ -329,7 +329,17 @@
       "state": "pending"
     },
     "R19": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "c0c0143",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1",
+      "evidence": "Gemini signed text and thought parts now round-trip through the REST adapter before function calls; context compaction retains native signed parts with their tool call and result. Regression first failed at two returned parts versus three expected, then passed. Official Gemini guidance: https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures ; Claude thinking block guidance: https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test master_v4 -> exit 0, 28 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 79 passed",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Single-owner separate diff review: Gemini native parts are used only for assistant messages from the Gemini adapter; provider-native thought parts remain hidden from the user answer; original tool call/result IDs remain paired. No independent reviewer yet.",
+      "unrun_checks": "Full adapter capability table and provider-specific streaming contracts, reusable HTTP client, malformed chunk/refusal/uncertain billing matrices, scoped team merge acceptance, current-model synthetic probes, packaged Windows journey and release build remain open. No real account probe was run. This is not R19 verification."
     },
     "R20": {
       "state": "pending"
