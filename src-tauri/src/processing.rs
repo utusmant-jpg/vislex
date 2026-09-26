@@ -4,9 +4,11 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs,
-    io::Read,
+    io::{Read,Seek},
     path::{Path, PathBuf},
+    sync::{atomic::{AtomicBool,Ordering},Arc,Mutex,OnceLock},
     time::Duration,
 };
 #[cfg(windows)]
@@ -115,6 +117,11 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     request["asr_model"] = json!(case.meta("asr_profile")?.unwrap_or_else(||"tiny".into()));
     request["version"] = json!(1);
     request["kind"] = json!(kind);
+    if ["video_ocr","video_overview"].contains(&kind) {
+        let epoch=case.meta(&format!("source_policy_epoch:{}",source.id))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
+        request["source_lease_epoch"]=json!(epoch);
+        request["source_lease"]=json!(case.root.join("staging/source-leases").join(&source.id).join(&source.sha256).join(epoch.to_string()).join("input").to_string_lossy());
+    }
     let worker_hash=file_hash_cached(&worker)?;
     let cache_key=format!("processor_cache:{}",digest(json!([source.id,source.sha256,worker_hash,request]).to_string().as_bytes()));
     if kind!="redaction" && kind!="video_ocr" && kind!="video_overview" {
@@ -147,9 +154,15 @@ pub fn run_prepared(job:&PreparedJob)->Result<Value> {
         let result:Value=serde_json::from_slice(&fs::read(path)?)?;
         if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash_strong(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
     }
-    copy_input(&job.source_path,job.staging.path(),&job.source.sha256)?;
+    let lease=if ["video_ocr","video_overview"].contains(&job.kind.as_str()) {
+        Some(acquire_source_lease(job)?)
+    } else {copy_input(&job.source_path,job.staging.path(),&job.source.sha256)?;None};
+    if let Some(lease)=lease.as_ref() {
+        let new_copy=lease.created_by_job==job.job_id;
+        fs::write(job.staging.path().join("source-lease-receipt.json"),json!({"version":1,"source_bytes":job.source.size,"copied_bytes_for_job":if new_copy{lease.copied_bytes}else{0},"reused":!new_copy}).to_string())?;
+    }
     #[cfg(windows)]
-    crate::sandbox::run_worker(&job.worker,job.staging.path(),Duration::from_secs(if ["playback","video_ocr","video_overview"].contains(&job.kind.as_str()) || job.request["operation"]=="automatic" {3600}else if job.kind=="diarization" {600}else{120}))?;
+    crate::sandbox::run_worker_with_readonly(&job.worker,job.staging.path(),lease.as_ref().map(|lease|lease.path.as_path()),Duration::from_secs(if ["playback","video_ocr","video_overview"].contains(&job.kind.as_str()) || job.request["operation"]=="automatic" {3600}else if job.kind=="diarization" {600}else{120}))?;
     #[cfg(not(windows))]
     anyhow::bail!("Windows AppContainer is required");
     let path=job.staging.path().join("result.json");
@@ -206,6 +219,79 @@ fn copy_input(source:&Path, staging:&Path, expected:&str)->Result<()> {
     ensure!(format!("{:x}",hash.finalize())==expected,"Source changed while preparing processing");
     Ok(())
 }
+struct SharedSourceLease {
+    path:PathBuf,
+    copied_bytes:u64,
+    created_by_job:String,
+    original:Option<fs::File>,
+    private:Option<fs::File>,
+}
+impl Drop for SharedSourceLease {
+    fn drop(&mut self) {
+        drop(self.original.take());drop(self.private.take());
+        // Only known derivative files are removed; an unexpected entry remains
+        // available to recovery inventory instead of being recursively deleted.
+        let _=fs::remove_file(&self.path);
+        let _=fs::remove_file(self.path.parent().unwrap().join("manifest.json"));
+        let _=fs::remove_dir(self.path.parent().unwrap());
+        let _=fs::remove_dir(self.path.parent().unwrap().parent().unwrap());
+        let _=fs::remove_dir(self.path.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+}
+struct LeaseEntry {build:Mutex<()>,ready:Mutex<Option<Arc<SharedSourceLease>>>,invalid:AtomicBool,case_root:PathBuf,source_id:String}
+type LeaseTable=HashMap<PathBuf,Arc<LeaseEntry>>;
+static SOURCE_LEASES:OnceLock<Mutex<LeaseTable>>=OnceLock::new();
+fn source_leases()->&'static Mutex<LeaseTable>{SOURCE_LEASES.get_or_init(||Mutex::new(HashMap::new()))}
+fn acquire_source_lease(job:&PreparedJob)->Result<Arc<SharedSourceLease>> {
+    uuid::Uuid::parse_str(&job.source.id).context("Invalid lease source identity")?;
+    ensure!(job.source.sha256.len()==64 && job.source.sha256.bytes().all(|byte|byte.is_ascii_hexdigit()),"Invalid lease source hash");
+    let epoch=job.request["source_lease_epoch"].as_u64().context("Missing source lease policy epoch")?;
+    let path=job.case_root.join("staging/source-leases").join(&job.source.id).join(&job.source.sha256).join(epoch.to_string()).join("input");
+    ensure!(job.request["source_lease"].as_str()==Some(path.to_string_lossy().as_ref()),"Source lease request changed");
+    let entry={
+        let mut table=source_leases().lock().unwrap_or_else(|e|e.into_inner());
+        table.entry(path.clone()).or_insert_with(||Arc::new(LeaseEntry{build:Mutex::new(()),ready:Mutex::new(None),invalid:AtomicBool::new(false),case_root:job.case_root.clone(),source_id:job.source.id.clone()})).clone()
+    };
+    let _builder=entry.build.lock().unwrap_or_else(|e|e.into_inner());
+    ensure!(!entry.invalid.load(Ordering::SeqCst),"Source lease was revoked");
+    if let Some(lease)=entry.ready.lock().unwrap_or_else(|e|e.into_inner()).as_ref(){return Ok(lease.clone());}
+    ensure!(!job.staging.path().join("cancel.request").exists(),"Processing cancelled before source lease");
+    let mut original=verified_lease(&job.source_path,&job.source.sha256)?;
+    let directory=path.parent().context("Missing lease directory")?;
+    fs::create_dir_all(directory)?;
+    ensure!(directory.canonicalize()?.starts_with(job.case_root.join("staging").canonicalize()?),"Source lease escaped staging");
+    let mut copied_bytes=0u64;
+    if !path.exists() {
+        use std::io::Write;
+        let mut staged=tempfile::NamedTempFile::new_in(directory)?;
+        original.rewind()?;
+        let mut hash=Sha256::new();let mut buffer=vec![0u8;1024*1024];
+        loop {
+            ensure!(!job.staging.path().join("cancel.request").exists(),"Processing cancelled while leasing source");
+            let count=original.read(&mut buffer)?;if count==0{break;}
+            hash.update(&buffer[..count]);staged.write_all(&buffer[..count])?;copied_bytes+=count as u64;
+        }
+        staged.as_file().sync_all()?;
+        ensure!(format!("{:x}",hash.finalize())==job.source.sha256,"Source changed while creating lease");
+        if let Err(error)=staged.persist_noclobber(&path){if error.error.kind()!=std::io::ErrorKind::AlreadyExists{return Err(error.into());}}
+    }
+    let private=verified_lease(&path,&job.source.sha256)?;
+    let manifest=json!({"version":1,"source_id":job.source.id,"source_sha256":job.source.sha256,"kind":"read_only_source_lease","copied_bytes_this_session":copied_bytes});
+    let mut file=fs::File::create(directory.join("manifest.json"))?;
+    std::io::Write::write_all(&mut file,manifest.to_string().as_bytes())?;file.sync_all()?;
+    ensure!(!entry.invalid.load(Ordering::SeqCst) && !job.staging.path().join("cancel.request").exists(),"Source lease was revoked during preparation");
+    let lease=Arc::new(SharedSourceLease{path:path.clone(),copied_bytes,created_by_job:job.job_id.clone(),original:Some(original),private:Some(private)});
+    *entry.ready.lock().unwrap_or_else(|e|e.into_inner())=Some(lease.clone());
+    Ok(lease)
+}
+pub fn invalidate_source_lease(case_root:&Path,source_id:&str) {
+    let removed={let mut table=source_leases().lock().unwrap_or_else(|e|e.into_inner());let keys=table.iter().filter(|(_,entry)|entry.case_root==case_root&&entry.source_id==source_id).map(|(path,_)|path.clone()).collect::<Vec<_>>();keys.into_iter().filter_map(|key|{let entry=table.remove(&key)?;entry.invalid.store(true,Ordering::SeqCst);Some(entry)}).collect::<Vec<_>>()};
+    drop(removed);
+}
+pub fn invalidate_case_leases(case_root:&Path) {
+    let removed={let mut table=source_leases().lock().unwrap_or_else(|e|e.into_inner());let keys=table.iter().filter(|(_,entry)|entry.case_root==case_root).map(|(path,_)|path.clone()).collect::<Vec<_>>();keys.into_iter().filter_map(|key|{let entry=table.remove(&key)?;entry.invalid.store(true,Ordering::SeqCst);Some(entry)}).collect::<Vec<_>>()};
+    drop(removed);
+}
 pub fn cancel(case:&Case,job_id:&str)->Result<()> {
     let active:bool=case.db.query_row("SELECT status='running' FROM processing_jobs WHERE id=?",[job_id],|r|r.get(0))?;
     ensure!(active,"Processing job is not running");
@@ -246,7 +332,7 @@ fn publish_file_cancellable(source:&Path,destination:&Path,expected:&str,cancel:
     if !destination.exists() {
         let mut staged=tempfile::NamedTempFile::new_in(destination.parent().context("Missing output directory")?)?;
         let mut input=read_lease(source)?;
-        let mut hash=Sha256::new();let mut buffer=[0u8;1024*1024];
+        let mut hash=Sha256::new();let mut buffer=vec![0u8;1024*1024];
         loop {
             ensure!(!cancel.exists(),"Processing cancelled during publication");
             let count=input.read(&mut buffer)?;if count==0{break;}
@@ -280,7 +366,7 @@ fn read_lease(path:&Path)->Result<fs::File> {
     Ok(options.open(path)?)
 }
 fn leased_hash(mut file:&fs::File)->Result<String> {
-    let mut hasher=Sha256::new();let mut buffer=[0u8;1024*1024];
+    let mut hasher=Sha256::new();let mut buffer=vec![0u8;1024*1024];
     loop {let n=file.read(&mut buffer)?;if n==0 {break;}hasher.update(&buffer[..n]);}
     Ok(format!("{:x}",hasher.finalize()))
 }
@@ -373,7 +459,11 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
     if staged.is_some() {
         let current=case.source(source_id)?;
         ensure!(current.sha256==source.sha256,"Source changed before publication");
-        if request["operation"]=="automatic" {ensure!(!current.restricted,"Source was restricted before publication");}
+        if request["operation"]=="automatic" || ["video_ocr","video_overview"].contains(&kind) {ensure!(!current.restricted,"Source was restricted before publication");}
+        if ["video_ocr","video_overview"].contains(&kind) {
+            let epoch=case.meta(&format!("source_policy_epoch:{source_id}"))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
+            ensure!(request["source_lease_epoch"].as_u64()==Some(epoch),"Source policy changed before discovery publication");
+        }
         let (registered_source,status):(String,String)=case.db.query_row("SELECT source_id,status FROM processing_jobs WHERE id=?",[job_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
         ensure!(registered_source==source_id && status=="running","Processing job changed before publication");
         let journal_path=staging.path().join("publication-journal.json");
@@ -741,6 +831,48 @@ mod publication_tests {
             first.join().unwrap().unwrap();second.join().unwrap().unwrap();
         });
         assert_eq!(file_hash(&target).unwrap(),hash);
+    }
+    #[test]
+    fn discovery_jobs_share_one_verified_private_input_until_revoked() {
+        let dir=tempfile::tempdir().unwrap();
+        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic source lease").unwrap();
+        case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source_id=case.sources().unwrap().into_iter().find(|item|item.kind=="video").unwrap().id;
+        let first=prepare_request(&mut case,&source_id,json!({"operation":"video_ocr","start":0.,"end":60.,"interval":5.})).unwrap();
+        let second=prepare_request(&mut case,&source_id,json!({"operation":"video_overview","start":60.,"end":120.,"interval":5.})).unwrap();
+        let a=acquire_source_lease(&first).unwrap();let b=acquire_source_lease(&second).unwrap();
+        assert!(Arc::ptr_eq(&a,&b));assert!(!first.staging.path().join("input").exists());assert!(!second.staging.path().join("input").exists());
+        assert_eq!(file_hash(&a.path).unwrap(),first.source.sha256);
+        let path=a.path.clone();case.set_restricted(&source_id,true).unwrap();
+        assert!(first.staging.path().join("cancel.request").exists());
+        assert_eq!(case.meta(&format!("source_policy_epoch:{source_id}")).unwrap().as_deref(),Some("1"));
+        drop(a);drop(b);
+        assert!(!path.exists());
+    }
+    #[test]
+    #[ignore = "Generates a two-hour synthetic MP4 and measures 240 discovery chunk leases"]
+    fn two_hour_recording_lease_writes_one_input_for_both_discovery_passes() {
+        let dir=tempfile::tempdir().unwrap();let fixture=dir.path().join("two-hour.mp4");
+        let status=std::process::Command::new("ffmpeg").args(["-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=black:s=64x64:r=1/60","-t","7200","-c:v","libx264","-preset","ultrafast","-movflags","+faststart","-y"]).arg(&fixture).status().unwrap();
+        assert!(status.success());
+        let output=std::process::Command::new("ffprobe").args(["-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1"]).arg(&fixture).output().unwrap();
+        let duration=String::from_utf8(output.stdout).unwrap().trim().parse::<f64>().unwrap();assert!(duration>=7199.,"{duration}");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Two-hour synthetic lease").unwrap();
+        case.import_files(&[fixture.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source=case.sources().unwrap().into_iter().find(|item|item.kind=="video").unwrap();
+        let started=std::time::Instant::now();let mut copied=0u64;let mut launches=0;
+        for minute in 0..120 {
+            for operation in ["video_ocr","video_overview"] {
+                let job=prepare_request(&mut case,&source.id,json!({"operation":operation,"start":minute as f64*60.,"end":minute as f64*60.+60.,"interval":5.})).unwrap();
+                let lease=acquire_source_lease(&job).unwrap();
+                if lease.created_by_job==job.job_id {copied+=lease.copied_bytes;}
+                launches+=1;
+            }
+        }
+        println!("Two-hour synthetic source bytes={} chunk jobs={} prior per-job copy bytes={} leased copied bytes={} lease setup elapsed_ms={}",source.size,launches,source.size*launches,copied,started.elapsed().as_millis());
+        assert_eq!(launches,240);assert_eq!(copied,source.size);
+        invalidate_case_leases(&case.root);
     }
     #[test]
     #[ignore = "Measured synthetic publication baseline; writes four 32-MiB derivatives"]

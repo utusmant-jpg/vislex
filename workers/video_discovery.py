@@ -27,7 +27,8 @@ def discover(job: Path, request: dict) -> dict:
     decoded, missing_pts, eof = 0, 0, True
     previous = None
     last_cut = -math.inf
-    with av.open(str(job / 'input')) as container:
+    source = Path(request['source_lease']) if request.get('source_lease') else job / 'input'
+    with av.open(str(source)) as container:
         index = request.get('stream')
         video = next((s for s in container.streams.video if index is None or s.index == index), None)
         if video is None:

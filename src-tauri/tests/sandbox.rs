@@ -58,6 +58,60 @@ fn appcontainer_denies_outside_files_and_network() {
         "sentinel-must-not-be-readable-or-written"
     );
 }
+#[test]
+#[ignore = "Requires packaged worker with read-only source lease support"]
+fn simultaneous_workers_share_read_only_input_but_not_output_directories() {
+    let dir=tempfile::tempdir().unwrap();
+    let shared=dir.path().join("shared-input");fs::write(&shared,b"verified source lease").unwrap();
+    let worker=processing::worker_path().unwrap();
+    let first=dir.path().join("first");let second=dir.path().join("second");
+    fs::create_dir(&first).unwrap();fs::create_dir(&second).unwrap();
+    fs::write(first.join("marker"),b"first output").unwrap();fs::write(second.join("marker"),b"second output").unwrap();
+    fs::write(first.join("request.json"),json!({"kind":"probe","outside_path":second.join("marker"),"port":9}).to_string()).unwrap();
+    fs::write(second.join("request.json"),json!({"kind":"probe","outside_path":first.join("marker"),"port":9}).to_string()).unwrap();
+    std::thread::scope(|scope|{
+        let a=scope.spawn(||sandbox::run_worker_with_readonly(&worker,&first,Some(&shared),Duration::from_secs(30)));
+        let b=scope.spawn(||sandbox::run_worker_with_readonly(&worker,&second,Some(&shared),Duration::from_secs(30)));
+        a.join().unwrap().unwrap();b.join().unwrap().unwrap();
+    });
+    for job in [&first,&second] {
+        let result:Value=serde_json::from_slice(&fs::read(job.join("result.json")).unwrap()).unwrap();
+        assert_eq!(result["metadata"]["appcontainer"],true,"{result}");
+        assert_eq!(result["metadata"]["read_denied"],true,"{result}");
+        assert_eq!(result["metadata"]["write_denied"],true,"{result}");
+    }
+    let reader=dir.path().join("reader");fs::create_dir(&reader).unwrap();
+    fs::write(reader.join("request.json"),json!({"kind":"probe","outside_path":shared,"port":9}).to_string()).unwrap();
+    sandbox::run_worker_with_readonly(&worker,&reader,Some(&shared),Duration::from_secs(30)).unwrap();
+    let result:Value=serde_json::from_slice(&fs::read(reader.join("result.json")).unwrap()).unwrap();
+    assert_eq!(result["metadata"]["read_denied"],false,"{result}");
+    assert_eq!(result["metadata"]["write_denied"],true,"{result}");
+    assert_eq!(fs::read(shared).unwrap(),b"verified source lease");
+}
+#[test]
+#[ignore = "Requires packaged discovery worker and generated timestamp fixture"]
+fn leased_and_copied_video_input_produce_identical_timestamp_receipts() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut case=Case::create(&dir.path().join("case"),"Lease equivalence fixture").unwrap();
+    let source=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+    case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+    let source=case.sources().unwrap().into_iter().find(|item|item.kind=="video").unwrap();
+    let job=processing::prepare_request(&mut case,&source.id,json!({"operation":"video_overview","start":0.0,"end":60.0,"interval":5.0})).unwrap();
+    let leased=processing::run_prepared(&job).unwrap();
+    let legacy=tempfile::tempdir_in(case.root.join("staging")).unwrap();
+    let mut request=job.request.clone();request.as_object_mut().unwrap().remove("source_lease");request.as_object_mut().unwrap().remove("source_lease_epoch");
+    fs::write(legacy.path().join("request.json"),request.to_string()).unwrap();
+    fs::copy(case.source_path(&source.id).unwrap(),legacy.path().join("input")).unwrap();
+    sandbox::run_worker(&processing::worker_path().unwrap(),legacy.path(),Duration::from_secs(120)).unwrap();
+    let copied:Value=serde_json::from_slice(&fs::read(legacy.path().join("result.json")).unwrap()).unwrap();
+    assert_eq!(leased["metadata"],copied["metadata"]);
+    assert_eq!(leased["previews"],copied["previews"]);
+    for preview in leased["previews"].as_array().unwrap() {
+        let filename=preview["path"].as_str().unwrap();
+        assert_eq!(evidence_desk::case::file_hash(&job.staging.path().join(filename)).unwrap(),evidence_desk::case::file_hash(&legacy.path().join(filename)).unwrap());
+    }
+    processing::invalidate_case_leases(&case.root);
+}
 
 #[test]
 #[ignore = "Requires packaged worker and generated fixtures"]

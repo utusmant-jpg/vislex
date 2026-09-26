@@ -657,10 +657,20 @@ impl Case {
     }
     pub fn set_restricted(&mut self, source_id: &str, restricted: bool) -> Result<()> {
         self.source(source_id)?;
+        if restricted {
+            crate::processing::invalidate_source_lease(&self.root,source_id);
+            let mut query=self.db.prepare("SELECT id FROM processing_jobs WHERE source_id=? AND status='running'")?;
+            let active=query.query_map([source_id],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
+            drop(query);
+            for job in active {let _=crate::processing::cancel(self,&job);}
+        }
         self.db.execute(
             "UPDATE sources SET restricted=? WHERE id=?",
             params![restricted, source_id],
         )?;
+        let key=format!("source_policy_epoch:{source_id}");
+        let epoch=self.meta(&key)?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0).saturating_add(1);
+        self.set_meta(&key,&epoch.to_string())?;
         self.db.execute("UPDATE records SET stale=1 WHERE actor<>'processor' OR kind<>'transcript'", [])?;
         self.audit(
             "source_restriction",

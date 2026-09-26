@@ -273,7 +273,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
                 )?;
                 anyhow::ensure!(running == 0,"Stop active tasks and processing jobs before deleting this case");
+                let old_root=c.root.clone();
                 *guard = None;
+                crate::processing::invalidate_case_leases(&old_root);
             }
         }
         let receipt = crate::case::delete_case(&target, text(&args, "confirm")?)?;
@@ -307,8 +309,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         if action == "close_case" {
-
+            let old_root=guard.as_ref().map(|case|case.root.clone());
             *guard = None;
+            drop(guard);
+            if let Some(root)=old_root {crate::processing::invalidate_case_leases(&root);}
 
             return Ok(Value::Null);
 
@@ -344,8 +348,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         let case_id=c.meta("id")?.unwrap_or_default();
         let snapshot = c.snapshot()?;
 
+        let old_root=guard.as_ref().map(|case|case.root.clone());
         *guard = Some(c);
         drop(guard);
+        if let Some(root)=old_root {crate::processing::invalidate_case_leases(&root);}
         kick_automatic(app.clone(),case_id.clone());
         kick_transcriptions(app.clone(),case_id);
         return Ok(snapshot);

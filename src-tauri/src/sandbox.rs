@@ -139,6 +139,15 @@ fn acl(path: &Path, sid: &str, rights: &str) -> Result<()> {
     );
     Ok(())
 }
+fn acl_exact(path:&Path,sid:&str,rights:&str)->Result<()> {
+    let _access=ACL_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let system=std::env::var_os("SystemRoot").context("Windows SystemRoot is missing")?;
+    let result=Command::new(Path::new(&system).join("System32/icacls.exe"))
+        .arg(path).args(["/grant",&format!("*{sid}:({rights})"),"/Q"])
+        .creation_flags(CREATE_NO_WINDOW).output()?;
+    ensure!(result.status.success(),"Could not scope read-only worker input");
+    Ok(())
+}
 fn remove_acl(path: &Path, sid: &str) {
     let _access=ACL_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     if let Some(system) = std::env::var_os("SystemRoot") {
@@ -149,13 +158,25 @@ fn remove_acl(path: &Path, sid: &str) {
             .output();
     }
 }
+fn remove_acl_exact(path:&Path,sid:&str) {
+    let _access=ACL_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    if let Some(system)=std::env::var_os("SystemRoot") {
+        let _=Command::new(Path::new(&system).join("System32/icacls.exe"))
+            .arg(path).args(["/remove:g",&format!("*{sid}"),"/Q"])
+            .creation_flags(CREATE_NO_WINDOW).output();
+    }
+}
 struct Grants<'a> {
     runtime: &'a Path,
     job: &'a Path,
+    readonly_input: Option<&'a Path>,
+    traverse:Vec<std::path::PathBuf>,
     sid: String,
 }
 impl Drop for Grants<'_> {
     fn drop(&mut self) {
+        if let Some(input)=self.readonly_input {remove_acl_exact(input,&self.sid);}
+        for path in self.traverse.iter().rev(){remove_acl_exact(path,&self.sid);}
         remove_acl(self.runtime, &self.sid);
         remove_acl(self.job, &self.sid);
     }
@@ -184,6 +205,9 @@ fn quote(arg: &str) -> String {
 /// Launches one packaged worker, with no network capabilities, no inherited handles,
 /// 2 GiB memory, at most one process, and a wall-clock limit. Closing the Job kills it.
 pub fn run_worker(executable: &Path, job: &Path, timeout: Duration) -> Result<()> {
+    run_worker_with_readonly(executable,job,None,timeout)
+}
+pub fn run_worker_with_readonly(executable:&Path,job:&Path,readonly_input:Option<&Path>,timeout:Duration)->Result<()> {
     // Decode/OCR/ASR workers can each approach the per-process 2 GiB limit.
     // Reserve their shared slot before a general worker slot so a waiting
     // video job does not prevent a lightweight document job from starting.
@@ -198,6 +222,8 @@ pub fn run_worker(executable: &Path, job: &Path, timeout: Duration) -> Result<()
     ensure!(job.is_absolute() && job.is_dir(), "Invalid job directory");
     let executable = executable.canonicalize()?;
     let job = job.canonicalize()?;
+    let readonly_input=readonly_input.map(Path::canonicalize).transpose()?;
+    if let Some(input)=readonly_input.as_ref(){ensure!(input.is_file(),"Read-only worker input is unavailable");}
     let runtime = executable.parent().context("Worker runtime missing")?;
     unsafe {
         let name = wide(format!("EvidenceDesk.Job.{}", crate::case::id()));
@@ -217,13 +243,23 @@ pub fn run_worker(executable: &Path, job: &Path, timeout: Duration) -> Result<()
         let profile = Profile { sid, name };
         let sid = sid_string(profile.sid)?;
         // RAII revokes grants even if process creation fails.
+        let traverse=readonly_input.as_ref().map(|input|{
+            let common=input.ancestors().find(|ancestor|job.starts_with(ancestor)).context("Worker input is not in the job's case")?;
+            let mut paths=Vec::new();
+            for parent in input.parent().context("Input parent missing")?.ancestors(){paths.push(parent.to_path_buf());if parent==common{break;}}
+            Ok::<_,anyhow::Error>(paths)
+        }).transpose()?.unwrap_or_default();
         let _grants = Grants {
             runtime,
             job: &job,
+            readonly_input:readonly_input.as_deref(),
+            traverse:traverse.clone(),
             sid: sid.clone(),
         };
         acl(runtime, &sid, "RX")?;
         acl(&job, &sid, "M")?;
+        for path in traverse.iter().rev(){acl_exact(path,&sid,"X")?;}
+        if let Some(input)=readonly_input.as_ref(){acl_exact(input,&sid,"R")?;}
         let mut size = 0;
         InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut size);
         ensure!(size > 0, "Cannot size process attributes");
