@@ -157,12 +157,17 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     }
     if ["save_provider_key","provider_key_status","delete_provider_key"].contains(&action) {
         let provider:crate::providers::Provider=serde_json::from_value(args["provider"].clone())?;
-
+        if action == "provider_key_status" {return Ok(json!({"configured":provider_key_entry(provider)?.get_password().is_ok()}));}
+        let state=app.state::<AppState>();
+        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+        let case=guard.as_ref().context("Open a case first")?;
+        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before provider key update");
+        require_session_epoch(&state,&args)?;
         let entry=provider_key_entry(provider)?;
         return match action {
             "save_provider_key"=>{let key=text(&args,"key")?;anyhow::ensure!(!key.trim().is_empty(),"Enter a key");entry.set_password(key.trim())?;Ok(json!({"saved":true}))},
             "delete_provider_key"=>{entry.delete_credential()?;Ok(json!({"deleted":true}))},
-            _=>Ok(json!({"configured":entry.get_password().is_ok()}))
+            _=>anyhow::bail!("Unknown provider key action")
         };
     }
     if ["import_files","import_folder"].contains(&action) {return import_background(app,action,args);}
@@ -196,6 +201,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return result;
     }
     if action == "save_api_key" {
+        let state=app.state::<AppState>();
+        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+        let case=guard.as_ref().context("Open a case first")?;
+        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before API key update");
+        require_session_epoch(&state,&args)?;
 
         let key = text(&args, "key")?;
 
@@ -214,6 +224,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     }
 
     if action == "delete_api_key" {
+        let state=app.state::<AppState>();
+        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+        let case=guard.as_ref().context("Open a case first")?;
+        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before API key update");
+        require_session_epoch(&state,&args)?;
 
         key_entry()?.delete_credential()?;
 

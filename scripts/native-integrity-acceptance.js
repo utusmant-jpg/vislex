@@ -40,6 +40,10 @@
   const source = snapshot.sources[0];
   if (!source || source.size !== 256 * 1024 * 1024) throw new Error('Synthetic source size mismatch');
   const mandatorySessionActions = [
+    ['save_provider_key', { provider: 'openai', key: 'synthetic-never-written' }],
+    ['delete_provider_key', { provider: 'openai' }],
+    ['save_api_key', { key: 'synthetic-never-written' }],
+    ['delete_api_key', {}],
     ['create_case', { path: `${root}/artifacts/rejected-switch-${run}`, name: 'Rejected switch' }],
     ['open_case', { path: casePath }],
     ['restore_case', { archive: `${root}/artifacts/no-archive-${run}.age`, path: `${root}/artifacts/rejected-restore-${run}`, password: 'synthetic-passphrase-only' }],
