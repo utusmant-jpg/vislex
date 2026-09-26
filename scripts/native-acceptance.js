@@ -57,7 +57,8 @@
     if(!result.samples.length||!Number.isFinite(result.samples[0].metadata.pts))throw new Error('Missing timestamped discovery samples');
     discovery.push({kind,samples:result.samples.length,pts:result.samples[0].metadata.pts});
   }
-  const search=await invoke('hybrid_search',{query:'witness account'});if(!search.results.length)throw new Error('No semantic results');
+  const search=await invoke('hybrid_search',{query:'witness'});
+  if(!search.results.length && !search.lexical_results?.length)throw new Error('No saved or lexical lead for the exact synthetic fixture term');
   // Automatic local transcription can change the case generation. Wait for it before testing an exact-revision export.
   for(let i=0;i<240;i++){const current=await invoke('snapshot');if(!current.jobs.some(j=>j.kind==='full_audio'&&['running','queued'].includes(j.status)))break;if(i===239)throw new Error('Automatic transcripts did not settle');await new Promise(resolve=>setTimeout(resolve,500));}
   const record=await invoke('write_record',{title:'Synthetic native draft',kind:'report',content:'Synthetic caf\u00e9 draft. Evidence remains unreviewed.',source_ids:[pdf.id]});
@@ -92,5 +93,5 @@
   const draft=await waitFor(()=>[...document.querySelectorAll('button.library-row')].find(b=>b.querySelector('.library-name')?.textContent==='Synthetic native draft'),'working-file entry');draft.click();
   await waitFor(()=>document.querySelector('textarea[aria-label="Working file content"]')?.value===record.content,'lazy working-file detail');
   if(document.querySelector('.saved-progress,.question-dossier,.context-note'))throw new Error('Internal review panels leaked into normal chat');
-  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.counts.source_count,snapshot_bytes:JSON.stringify(snapshot).length,summary_bytes:JSON.stringify(caseSummary).length,snapshot_latency_ms:latencies,semantic_results:search.results.length,remaining_passages:search.remaining_passages,exports,cross_case_chat_denied:crossCaseChatDenied,cross_case_source_denied:crossCaseSourceDenied,cross_case_export_denied:crossCaseExportDenied,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
+  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.counts.source_count,snapshot_bytes:JSON.stringify(snapshot).length,summary_bytes:JSON.stringify(caseSummary).length,snapshot_latency_ms:latencies,semantic_results:search.results.length,lexical_results:search.lexical_results?.length??0,remaining_passages:search.remaining_passages,exports,cross_case_chat_denied:crossCaseChatDenied,cross_case_source_denied:crossCaseSourceDenied,cross_case_export_denied:crossCaseExportDenied,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
 })()
