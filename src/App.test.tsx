@@ -84,6 +84,19 @@ it('loads record text on selection and ignores a late result from another case',
   expect(api).toHaveBeenCalledWith('record_detail',{case_id:'new-case',record_id:'same-id',revision:1});
 });
 
+it('keeps unsaved editor drafts inside their original case', async () => {
+  const summary:RecordSummary={id:'shared-record',title:'Synthetic note',kind:'note',revision:1,actor:'human',review:'unreviewed',protected:false,stale:false,updated_at:'now',dependencies:[]};
+  api.mockImplementation(async (action:string,args:{case_id:string})=>action==='record_detail'?{...summary,content:args.case_id==='case-a'?'Case A saved text':'Case B saved text'}:null);
+  const props={summary,run:(fn:()=>Promise<void>)=>{void fn();},refresh:async()=>undefined,onSource:vi.fn()};
+  const view=render(<RecordDetailPanel caseId="case-a" {...props}/>);
+  const editor=await screen.findByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement;
+  fireEvent.change(editor,{target:{value:'Case A unsaved draft'}});
+  view.rerender(<RecordDetailPanel caseId="case-b" {...props}/>);
+  await waitFor(()=>expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('Case B saved text'));
+  view.rerender(<RecordDetailPanel caseId="case-a" {...props}/>);
+  await waitFor(()=>expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('Case A unsaved draft'));
+});
+
 it('opens a record preview citation and states that export uses saved text', async () => {
   const summary:RecordSummary={id:'record-1',title:'Synthetic note',kind:'note',revision:1,actor:'human',review:'unreviewed',protected:false,stale:false,updated_at:'now',dependencies:['source-one']};
   api.mockImplementation(async (action:string)=>action==='record_detail'?{...summary,content:'See evidence:source-one#R1L5-L5'}:null);

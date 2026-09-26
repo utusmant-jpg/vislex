@@ -127,7 +127,7 @@ export function RecordDetailPanel({caseId,summary,run,refresh,onSource}:{caseId:
     return ()=>{active=false;};
   },[caseId,summary.id,summary.revision,summary.updated_at,summary.protected,summary.review,summary.stale]);
   return detail?.id===summary.id && detail.revision===summary.revision
-    ? <RecordEditor key={detail.id} record={detail} run={run} refresh={refresh} onSource={onSource}/>
+    ? <RecordEditor key={`${caseId}:${detail.id}`} caseId={caseId} record={detail} run={run} refresh={refresh} onSource={onSource}/>
     : <div className="empty-state">{error?<p role="alert">Could not load working file: {error}</p>:<p>Loading working file…</p>}</div>;
 }
 

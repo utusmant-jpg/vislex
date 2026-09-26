@@ -8,11 +8,12 @@ import type { WorkingRecord, Revision } from '../types';
 // Keep unsaved drafts while switching tabs; never put case content in browser storage.
 const drafts = new Map<string, { content: string; title: string; base: number }>();
 
-export default function RecordEditor({ record, refresh, run, onSource }: { record: WorkingRecord; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; onSource: (id: string, locator?: string) => void }) {
-  const [content, setContent] = useState(drafts.get(record.id)?.content ?? record.content); const [title, setTitle] = useState(drafts.get(record.id)?.title ?? record.title);
-  const [base, setBase] = useState(drafts.get(record.id)?.base ?? record.revision); const [revisions, setRevisions] = useState<Revision[] | null>(null);
+export default function RecordEditor({ caseId, record, refresh, run, onSource }: { caseId: string; record: WorkingRecord; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; onSource: (id: string, locator?: string) => void }) {
+  const draftKey = `${caseId}:${record.id}`;
+  const [content, setContent] = useState(drafts.get(draftKey)?.content ?? record.content); const [title, setTitle] = useState(drafts.get(draftKey)?.title ?? record.title);
+  const [base, setBase] = useState(drafts.get(draftKey)?.base ?? record.revision); const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [preview, setPreview] = useState(false);
-  useEffect(() => { if (content !== record.content || title !== record.title) drafts.set(record.id, { content, title, base }); else drafts.delete(record.id); }, [record.id, record.content, record.title, content, title, base]);
+  useEffect(() => { if (content !== record.content || title !== record.title) drafts.set(draftKey, { content, title, base }); else drafts.delete(draftKey); }, [draftKey, record.content, record.title, content, title, base]);
   const dirty = content !== record.content || title !== record.title;
   const changed = base !== record.revision;
   return <div className="record-view">
