@@ -28,8 +28,8 @@ it('retries the parent discovery run from both failed job cards', async () => {
   const buttons = screen.getAllByRole('button', { name: 'Retry index from saved progress' });
   fireEvent.click(buttons[0]); fireEvent.click(buttons[1]);
   await waitFor(() => expect(api).toHaveBeenCalledTimes(2));
-  expect(api).toHaveBeenNthCalledWith(1, 'retry_video_discovery', { run_id: 'index-run' });
-  expect(api).toHaveBeenNthCalledWith(2, 'retry_video_discovery', { run_id: 'index-run' });
+  expect(api).toHaveBeenNthCalledWith(1, 'retry_video_discovery', { case_id: 'synthetic-case', run_id: 'index-run' });
+  expect(api).toHaveBeenNthCalledWith(2, 'retry_video_discovery', { case_id: 'synthetic-case', run_id: 'index-run' });
 });
 
 it('groups old AI tool errors and loads their receipts only when expanded', async () => {
@@ -280,7 +280,7 @@ it('discards a refresh from the previous case after switching projects', async (
   render(<App/>);
   await screen.findAllByText('Synthetic case');
   fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
-  fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
   fireEvent.click(screen.getByText('New case',{selector:'summary span'}));
   fireEvent.click(screen.getByRole('button',{name:'Open project'}));
@@ -300,7 +300,7 @@ it('keeps the latest same-case refresh when an earlier request returns last', as
   render(<App/>);
   await screen.findAllByText('Synthetic case');
   fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
-  fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
   fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
   await screen.findByText('Latest saved name',{selector:'.title-case'});

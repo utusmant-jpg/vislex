@@ -94,7 +94,7 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
     </div>
     {running ? <div className="notice">{state?.status === 'queued' ? 'Queued behind the current recording…' : progress?.state === 'copying' ? 'Preparing a private processing copy…' : `Track ${progress?.track_number ?? 1} of ${progress?.track_count ?? '?'} · ${Math.floor(progress?.processed_seconds ?? 0)} seconds processed${progress?.estimated_seconds ? ` / approximately ${Math.ceil(progress.estimated_seconds)}` : ''} · ${progress?.segments ?? 0} segments`}<span> You can keep reviewing while this runs.</span></div> : null}
     {state?.status === 'failed' || state?.status === 'interrupted' || error ? <div className="notice error">{error || state?.error}</div> : null}
-    {expanded ? <div className="run-status">Unreviewed machine transcription · timestamps are audio-track-relative; seek positions account for track offsets · tracks are not speaker identities.{!state?.record || running ? <button className="quiet" onClick={() => run(async () => { await api(running ? 'cancel_transcription' : 'transcribe_full', { source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>{running ? 'Cancel transcription' : 'Transcribe recording'}</button> : null}</div> : null}
+    {expanded ? <div className="run-status">Unreviewed machine transcription · timestamps are audio-track-relative; seek positions account for track offsets · tracks are not speaker identities.{!state?.record || running ? <button className="quiet" onClick={() => run(async () => { await api(running ? 'cancel_transcription' : 'transcribe_full', { case_id: caseId, source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>{running ? 'Cancel transcription' : 'Transcribe recording'}</button> : null}</div> : null}
     {expanded && !running && state?.record ? <div className="input-row">
       <label className="small">Next transcription model
         <select value={model} onChange={event => setModel(event.target.value)}>
@@ -102,7 +102,7 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
           <option value="small">Small · higher-capacity local model</option>
         </select>
       </label>
-      <button className="quiet" onClick={() => run(async () => { await api('set_asr_profile', { model }); await api('transcribe_full', { source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>Transcribe a new version</button>
+      <button className="quiet" onClick={() => run(async () => { await api('set_asr_profile', { case_id: caseId, model }); await api('transcribe_full', { case_id: caseId, source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>Transcribe a new version</button>
     </div> : null}
     {state?.record && expanded && state.result.metadata?.container_origin_seconds === undefined ? <p className="small muted">This older transcript has no playback clock mapping. Retranscribe to enable accurate seek links.</p> : null}
     {segmentError ? <p role="alert" className="small danger-text">Could not read transcript segments: {segmentError}</p> : null}
@@ -156,6 +156,6 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
       })}
       {legacyWindowStart+VISIBLE_SEGMENTS<legacyRows.length?<button className="quiet" onClick={()=>setLegacyWindowStart(legacyWindowStart+VISIBLE_SEGMENTS)}>Show next 200 transcript lines</button>:null}
     </div> : expanded && !running && !state?.record ? <p className="small muted">No full transcript is available. Transcribe this recording using the control above.</p> : null}
-    {expanded ? <SpeakerTurns key={sourceId} sourceId={sourceId} onSeek={onSeek} defaultTrack={state?.result.metadata?.tracks?.[0]?.index} /> : null}
+    {expanded ? <SpeakerTurns key={sourceId} caseId={caseId} sourceId={sourceId} onSeek={onSeek} defaultTrack={state?.result.metadata?.tracks?.[0]?.index} /> : null}
   </section>;
 }

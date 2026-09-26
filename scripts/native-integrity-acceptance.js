@@ -42,6 +42,21 @@
     ['reclaim_staging', {}],
     ['review_record', { record_id: 'missing', revision: 1 }],
     ['rollback', { record_id: 'missing', target: 1, base_revision: 1 }],
+    ['process_source', { source_id: source.id }],
+    ['probe_pdf', { source_id: source.id }],
+    ['transcribe_source', { source_id: source.id }],
+    ['scan_sound_events', { source_id: source.id }],
+    ['diarize_source', { source_id: source.id }],
+    ['step_video_frame', { source_id: source.id, target: 0, direction: 'next' }],
+    ['queue_video_discovery', { source_id: source.id, interval: 5 }],
+    ['retry_video_discovery', { run_id: 'missing' }],
+    ['cancel_video_discovery', { source_id: source.id }],
+    ['resume_processing', { job_id: 'missing' }],
+    ['cancel_processing', { job_id: 'missing' }],
+    ['set_asr_profile', { model: 'tiny' }],
+    ['transcribe_full', { source_id: source.id }],
+    ['resume_transcription', { job_id: 'missing' }],
+    ['cancel_transcription', { source_id: source.id }],
   ];
   for (const [action, args] of staleCaseActions) {
     let rejected = false;
