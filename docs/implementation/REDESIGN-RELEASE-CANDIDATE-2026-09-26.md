@@ -38,3 +38,31 @@ Application source `c11c54896cbb42fef7e9b9318f584aabf58d0b02` includes the Dev34
 The first release candidate at `e630c33` failed the six-source UI step because a bridge-opened case emitted `case-event` before React held a snapshot, and the listener suppressed its paired legacy notification. Commit `c11c548` refreshes on a newer session and advances the UI case epoch on an externally observed case switch. A debug native six-source run passed before rebuilding; the release journey above confirms the fix in the packaged source. The failed run is retained as integration evidence, not counted as a pass.
 
 Frontend at `c11c548`: 110 tests in 21 files, nine synthetic Edge browser tests, and dark/light axe scans passed. Initial bundle: 125.23 kB gzip JavaScript and 13.30 kB gzip CSS. These are payload figures, not a measured startup gain. Windows scaling, Narrator, the complete surface/action matrix, all ten protected journeys, 10,000-row responsiveness, startup/memory before-after comparisons, full redaction review UI, and independent review remain open. This package is a tested milestone, not R21 completion.
+
+## Fixed functionality cutoff and reader polish
+
+The redesign pass stopped functionality handoffs at application source `4b5dc96`, incorporating the redaction-worker changes and Claude/Gemini streaming work. `npm run desktop:build:x64` exited 0 for that exact source. Release executable SHA-256: `9C0F83FD4F13C33711C02F8CB84F33562A730409440D8B7C46044EFC39820B86`; NSIS installer SHA-256: `BF2307FCF9DCA64D18B912A873B1F985942660D7F1E2EED1B2B66ADF628C93B8`.
+
+| Check | Result |
+|---|---|
+| Release `native-integrity-acceptance.ps1 -Port 9390` | Exit 0, run `1790463189636`: 256 MiB strongly verified in 1.46 s; 12 summaries completed during hashing; 28 stale-case and 10 stale-session actions denied; four ordered case events; stale and wrong-target deletion denied. |
+| Release `native-acceptance.ps1 -Port 9391` | Exit 0, run `1790463214182`: six synthetic originals; rendered chat and DOCX preview; four OCR and four overview samples; three lexical and 30 semantic results; DOCX/PDF exports; cross-case denials; unreviewed-redaction denial; zero provider calls. |
+| Release `native-large-session.ps1 -Port 9392` | Exit 0, run `1790463407521`: 1 GiB import 11.71 s, verify 3.56 s, 20 summaries during verify, late previous-session verify denied; process-tree peak private memory 228,564,992 bytes. The system disk delta includes more than the case. These timings do not establish a redesign speedup. |
+| `VISLEX_WORKER_PATH=<packaged evidence-worker.exe> cargo test --locked --manifest-path src-tauri/Cargo.toml` | Exit 0 for all non-ignored Rust suites, including AppContainer worker video e2e. |
+| Ignored `flattened_redaction_requires_page_review_and_exports_only_derivative` in `sandbox.rs` | Exit 0 with the packaged worker; this is a backend gate, not a full visual redaction walkthrough. |
+
+Commit `6cac65b` adds source identity, restriction/provenance display, dark/light extracted-text reading surfaces, and commit-on-Enter/blur PDF page entry. It landed **after** the `4b5dc96` installer above. On that reader commit, `npm test` passed 111 tests in 21 files, the frontend production build passed (initial JS 125.49 kB gzip; CSS 13.48 kB gzip), and 11 synthetic Edge/Playwright workspace and accessibility checks passed, including dark/light reader screenshots and a computed theme-surface assertion. R21 remains in progress; the full action/state matrix, Windows scaling and Narrator, complete protected journeys, measured startup/navigation and 10,000-row responsiveness, and independent review remain open.
+
+The synthetic Edge captures are retained at [dark evidence workspace](screenshots/redesign-dark-evidence.png) and [light evidence workspace](screenshots/redesign-light-evidence.png). They show the sample case only; no client data is included.
+The native six-source run also captured the [Windows working-file editor and library](screenshots/redesign-native-working-files.png) in a generated case.
+
+## Packaged reader candidate
+
+The fixed functionality cutoff `4b5dc96` plus reader commit `6cac65b` built successfully with `npm run desktop:build:x64`. The final release executable SHA-256 is `3A590BA63BD48D3CBED02E4FF9190A26D0FF73A92CF06CFDC52D878B8724F14C`; the final NSIS installer SHA-256 is `F3A946D4F81B15044AD3E6316C55F7E8D371341A612B81B3B7B385B33CB5016A`. Bundling changed the executable hash after its first native checks, so both checks were rerun against these final bytes.
+
+| Final executable check | Result |
+|---|---|
+| `native-integrity-acceptance.ps1 -Port 9395` | Exit 0, run `1790464357638`: 256 MiB verification, 12 summaries during hash, 28 stale-case and 10 stale-session denials, four ordered case events, deletion gates. |
+| `native-acceptance.ps1 -Port 9396` | Exit 0, run `1790464371363`: six originals, chat/DOCX preview, OCR/overview, lexical/semantic, DOCX/PDF export, cross-case denials, unreviewed-redaction denial, zero provider calls. |
+
+The final executable hash remained unchanged after both runs. The prior `4b5dc96` package covers the 1 GiB and reviewed-redaction backend checks; no backend source changed in `6cac65b`. The native Windows screenshot linked above was captured from the new UI executable before installer compression and depicts synthetic data. This is a tested redesign milestone, not complete R21 verification or a certified release.
