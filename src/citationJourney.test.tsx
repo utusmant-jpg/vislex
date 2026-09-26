@@ -4,13 +4,15 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Markdown } from './markdown';
 import EvidenceViewer from './components/EvidenceViewer';
-import type { Source, TextPage } from './types';
+import EvidenceNotebook from './components/EvidenceNotebook';
+import type { Snapshot, Source, TextPage } from './types';
 
 const api = vi.hoisted(() => vi.fn());
-vi.mock('./bridge', async () => ({ ...await vi.importActual<typeof import('./bridge')>('./bridge'), api, evidenceUrl: (path: string) => path, formatBytes: (size: number) => `${size} B` }));
+vi.mock('./bridge', async () => ({ ...await vi.importActual<typeof import('./bridge')>('./bridge'), api, native: true, evidenceUrl: (path: string) => path, formatBytes: (size: number) => `${size} B` }));
 vi.mock('./components/FullTranscript', () => ({ default: () => null }));
 vi.mock('./components/RedactionPanel', () => ({ default: () => null }));
 vi.mock('./components/VideoDiscovery', () => ({ default: () => null }));
+vi.mock('./components/SoundDiscovery', () => ({ default: () => null }));
 
 const source: Source = { id: 'source-one', name: 'Statement.txt', sha256: 'hash', size: 100, mime: 'text/plain', kind: 'text', status: 'text ready', restricted: false, occurrences: 1, created_at: '2026-09-22T00:00:00Z' };
 afterEach(() => { cleanup(); api.mockReset(); });
@@ -31,4 +33,15 @@ it('opens a chat citation against the historical wording after active text chang
   await waitFor(() => expect(api).toHaveBeenCalledWith('read_extract_revision', { source_id: 'source-one', revision: 1, start: 5, count: 200 }));
   expect(screen.getByText('Old exact wording')).toBeTruthy();
   expect(screen.queryByText('Changed active wording')).toBeNull();
+});
+
+it('opens a finding citation at its pinned revision', async () => {
+  api.mockImplementation(async (action: string) => action === 'evidence_list' ? { objects: [{ id: 'finding-one', revision: 1, kind: 'observation', title: 'Old observation', content: 'Old exact wording', source_ids: [source.id], locators: ['evidence:source-one#R1L5-L5'], review: 'unreviewed', stale: false, actor: 'human', start_seconds: null, end_seconds: null }], next_offset: null } : {});
+  const onSource = vi.fn();
+  const onClose = vi.fn();
+  render(<EvidenceNotebook snapshot={{ id: 'case-one', sources: [source] } as Snapshot} onSource={onSource} onClose={onClose} />);
+  fireEvent.click(await screen.findByText('Old observation'));
+  fireEvent.click(screen.getByTitle('evidence:source-one#R1L5-L5'));
+  expect(onSource).toHaveBeenCalledWith('source-one', 'R1L5-L5');
+  expect(onClose).toHaveBeenCalledOnce();
 });

@@ -24,7 +24,7 @@ pub fn save(case: &Case, task: &str, state: &Progress) -> Result<()> {
     case.set_meta(&format!("review_progress:{task}"), &serde_json::to_string(state)?)
 }
 pub fn is_retrieval(name: &str) -> bool {
-    ["read_text","read_record","read_artifact","search_passages","search_evidence","read_tool_result","read_receipt","recording_status","list_sources","list_records"].contains(&name)
+    ["read_text","read_extract_revision","read_record","read_artifact","search_passages","search_evidence","read_tool_result","read_receipt","recording_status","list_sources","list_records"].contains(&name)
 }
 pub fn observe(case: &Case, task: &str, name: &str, args: &Value, output: &Value, status: &str) -> Result<bool> {
     if (name == "checkpoint_review" || name == "finish_task") && status=="complete" { return Ok(false); }
@@ -63,10 +63,10 @@ pub fn ledger(case: &Case, task: &str, ids: &[String]) -> Result<Value> {
         let targets:Vec<String>=if let Some(source)=args["source_id"].as_str(){vec![source.into()]}
             else if let Some(id)=args["record_id"].as_str(){records.iter().find(|r|r.id==id).map(|r|r.dependencies.clone()).unwrap_or_default()}
             else {Vec::new()};
-        if status=="complete"&&["read_text","read_record","read_artifact"].contains(&name.as_str()) {
+        if status=="complete"&&["read_text","read_extract_revision","read_record","read_artifact"].contains(&name.as_str()) {
             for source in targets {
                 if let Some(row)=source_rows.get_mut(&source) {
-                    let read=json!({"tool":name,"arguments":args,"receipt":receipt,"start":result["start_line"].as_u64().or(result["start"].as_u64()),"end":result["end_line"].as_u64().or(result["end"].as_u64()),"next_start":result["next_start"],"next_offset":result["next_offset"]});
+                    let read=json!({"tool":name,"arguments":args,"receipt":receipt,"revision":result["revision"],"start":result["start_line"].as_u64().or(result["start"].as_u64()),"end":result["end_line"].as_u64().or(result["end"].as_u64()),"next_start":result["next_start"],"next_offset":result["next_offset"]});
                     row["read_count"]=json!(row["read_count"].as_u64().unwrap_or(0)+1);
                     let duplicate=row["reads"].as_array().unwrap().iter().any(|r|r["tool"]==read["tool"]&&r["arguments"]==read["arguments"]);
                     if !duplicate {

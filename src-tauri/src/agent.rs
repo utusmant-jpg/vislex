@@ -44,6 +44,7 @@ pub fn tools(mode: &str) -> Vec<Value> {
         tool("search_semantic","Local English semantic and lexical rank fusion over scoped extracted text. Indexes up to 256 new passages per call; repeat if remaining_passages is nonzero. Similarity is not support and does not search unextracted media.",json!({"query":{"type":"string"}}),vec!["query"]),
         tool("search_evidence","Search native text and filenames using SQLite FTS5. Unprocessed images/media are not searched.",json!({"query":{"type":"string"},"offset":{"type":"integer","minimum":0}}),vec!["query","offset"]),
         tool("read_text","Read up to 200 lines of an indexed source with immutable line locators.",json!({"source_id":{"type":"string"},"start":{"type":"integer","minimum":1},"count":{"type":"integer","minimum":1,"maximum":200}}),vec!["source_id","start","count"]),
+        tool("read_extract_revision","Read the exact historical wording behind a revision-pinned text citation. Use the R number from evidence:SOURCE#R2L1-L3; active read_text may have different wording. Returns a bounded page and its pinned locator.",json!({"source_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"start":{"type":"integer","minimum":1},"count":{"type":"integer","minimum":1,"maximum":200}}),vec!["source_id","revision","start","count"]),
         tool("inspect_image","Inspect original JPEG/PNG/WebP; or request an orientation-corrected crop [x,y,width,height] in source pixels using the sandboxed worker. Crop creates a versioned derivative and is unavailable in Ask mode. Requires image transmission permission.",json!({"source_id":{"type":"string"},"crop":{"type":["array","null"],"items":{"type":"integer","minimum":0},"minItems":4,"maxItems":4}}),vec!["source_id","crop"]),
         tool("list_records","List permitted working record metadata.",json!({"offset":{"type":"integer","minimum":0}}),vec!["offset"]),
         tool("read_record","Read a current working record and its base revision, up to 200 lines. Continue pagination when needed.",json!({"record_id":{"type":"string"},"start":{"type":"integer","minimum":1},"count":{"type":"integer","minimum":1,"maximum":200}}),vec!["record_id","start","count"]),
@@ -676,6 +677,14 @@ fn execute_tool_prepared(case: &mut Case, task: &str, name: &str, args: &Value, 
                 }
             }
             result
+        }
+        "read_extract_revision" => {
+            let source = str_arg(args, "source_id")?;
+            assert_source(case, source, &ids)?;
+            let revision = args["revision"].as_i64().context("Missing revision")?;
+            let start = args["start"].as_u64().context("Missing start")? as usize;
+            let count = args["count"].as_u64().context("Missing count")? as usize;
+            case.read_text_revision(source, revision, start, count)?
         }
         "transcribe_audio_interval" => {
             ensure!(mode != "ask", "Ask mode cannot run transcription jobs");
@@ -1382,7 +1391,7 @@ pub fn receive_prepared(case: &mut Case, task: &str, transmission: &str, respons
         let cid=call["call_id"].as_str().context("Missing tool call ID")?;
         ensure!(seen.insert(cid) && !history.iter().any(|v|v["type"]=="function_call"&&v["call_id"]==cid),"Duplicate tool call ID; refusing replay");
     }
-    let serial_required=calls.len()>1 && calls.iter().any(|c|!["list_sources","list_records","read_text","read_record","search_passages","search_evidence","validate_citation","recording_status","read_artifact","read_receipt","read_tool_result","list_evidence_objects","read_evidence_object","fit_clock_anchors","list_source_artifacts","list_agent_models"].contains(&c["name"].as_str().unwrap_or("")));
+    let serial_required=calls.len()>1 && calls.iter().any(|c|!["list_sources","list_records","read_text","read_extract_revision","read_record","search_passages","search_evidence","validate_citation","recording_status","read_artifact","read_receipt","read_tool_result","list_evidence_objects","read_evidence_object","fit_clock_anchors","list_source_artifacts","list_agent_models"].contains(&c["name"].as_str().unwrap_or("")));
     for item in &output {
         history.push(item.clone());
     }

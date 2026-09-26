@@ -7,7 +7,7 @@
 //! R02: `#R<rev>L a-b` citations are bound to that immutable revision; bare
 //! `#L a-b` remains the legacy active-text form and is labeled as such.
 
-use evidence_desk::case::Case;
+use evidence_desk::{agent,case::{Case,Settings}};
 use evidence_desk::evidence::EvidenceLocator;
 use serde_json::json;
 use std::fs;
@@ -27,6 +27,36 @@ fn setup_media_case() -> (tempfile::TempDir, Case, String) {
     case.import_files(&[path.to_string_lossy().into()], "A").unwrap();
     let sid = case.sources().unwrap()[0].id.clone();
     (dir, case, sid)
+}
+
+#[test]
+fn agent_reads_pinned_historical_words_without_retargeting_active_text() {
+    let (_dir,mut case,sid)=setup_media_case();
+    case.publish_extract(&sid,"Old exact words\nSecond old line","initial",true).unwrap();
+    case.publish_extract(&sid,"Changed current words","replacement",true).unwrap();
+    case.save_settings(Settings{offline:false,allow_text:true,allow_images:false,model:"test-model".into()}).unwrap();
+    let task=agent::start(&mut case,"Read the old citation","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    let old=agent::execute_tool(&mut case,&task,"read_extract_revision",&json!({"source_id":sid,"revision":1,"start":1,"count":2})).unwrap();
+    assert_eq!(old["text"],"Old exact words\nSecond old line");
+    assert_eq!(old["locator"],format!("evidence:{sid}#R1L1-L2"));
+    assert_eq!(agent::execute_tool(&mut case,&task,"read_text",&json!({"source_id":sid,"start":1,"count":2})).unwrap()["text"],"Changed current words");
+    assert!(agent::execute_tool(&mut case,&task,"read_extract_revision",&json!({"source_id":sid,"revision":3,"start":1,"count":1})).is_err());
+    assert!(agent::execute_tool(&mut case,&task,"read_extract_revision",&json!({"source_id":"other","revision":1,"start":1,"count":1})).is_err());
+}
+
+#[test]
+fn record_export_preserves_the_historical_citation_exactly() {
+    let (dir,mut case,sid)=setup_media_case();
+    case.publish_extract(&sid,"Old exact words","initial",true).unwrap();
+    case.publish_extract(&sid,"Changed current words","replacement",true).unwrap();
+    let citation=format!("evidence:{sid}#R1L1-L1");
+    let record=case.write_record(None,0,"Pinned record","note",&format!("Earlier account: {citation}"),"human","initial",None,vec![sid.clone()]).unwrap();
+    let destination=dir.path().join("record.md");
+    case.export_record_at_revision(&record.id,record.revision,&destination).unwrap();
+    let exported=fs::read_to_string(&destination).unwrap();
+    assert!(exported.contains(&citation));
+    assert_eq!(case.read_text_revision(&sid,1,1,1).unwrap()["text"],"Old exact words");
+    assert_eq!(case.read_text(&sid,1,1).unwrap()["text"],"Changed current words");
 }
 
 #[test]
