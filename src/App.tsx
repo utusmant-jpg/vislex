@@ -378,15 +378,17 @@ export default function App() {
   // Global shortcuts: palette + workspace switching.
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (modal || rename || settings) return;
       const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPalette(value => !value); return; }
+      if ((event.ctrlKey || event.metaKey) && event.key === ',') { event.preventDefault(); setPalette(false); setSettings(true); return; }
       if (typing || !(event.ctrlKey || event.metaKey)) return;
       const index = Number(event.key) - 1;
       if (index >= 0 && index < views.length) { event.preventDefault(); setView(views[index].id); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [modal, rename, settings]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -708,7 +710,7 @@ export default function App() {
               <button className="quiet" onClick={() => run(openCase)}><FolderOpen size={14} />Open</button>
             </div>
             <div className="sidebar-command split">
-              <Tooltip text="Settings"><button className="quiet" onClick={() => setSettings(true)}><Settings size={15} />Settings</button></Tooltip>
+              <Tooltip text="Settings" shortcut="Ctrl+,"><button className="quiet" onClick={() => setSettings(true)}><Settings size={15} />Settings</button></Tooltip>
               <ThemeToggle />
               <details className="case-menu"><summary aria-label="Case options"><MoreHorizontal size={16} /></summary><div>
                 <button onClick={() => run(importFiles)}>Add files</button>

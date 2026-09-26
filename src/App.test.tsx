@@ -342,3 +342,10 @@ it('keeps the command palette useful without a case and exposes keyboard selecti
   fireEvent.keyDown(search, { key: 'Enter' });
   expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
 });
+
+it('opens workspace settings with the global shortcut before a case exists', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  fireEvent.keyDown(window, { key: ',', ctrlKey: true });
+  expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
+});
