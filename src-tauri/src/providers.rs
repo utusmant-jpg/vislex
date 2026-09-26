@@ -263,6 +263,9 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
                 };
                 ("user", vec![part])
             }
+            "message" if provider == Provider::Gemini && item["role"] == "assistant" && item["native_part"].is_object() => {
+                ("assistant", vec![item["native_part"].clone()])
+            }
             _ => {
                 let mut parts = Vec::new();
                 if let Some(s) = item["content"].as_str() {
@@ -403,8 +406,12 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
             let mut native = part.clone();
             native["functionCall"]["id"] = json!(cid);
             output.push(json!({"type":"function_call","call_id":cid,"name":call["name"],"arguments":call["args"].to_string(),"native_part":native}));
-        } else if part["thought"] != true && part["text"].is_string() {
-            output.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":part["text"]}]}));
+        } else if part["thought"] == true {
+            output.push(json!({"type":"provider_native","provider":"gemini","part":part}));
+        } else if part["text"].is_string() {
+            output.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":part["text"]}],"native_part":part}));
+        } else if part["thoughtSignature"].is_string() {
+            output.push(json!({"type":"provider_native","provider":"gemini","part":part}));
         }
     }
     Ok(

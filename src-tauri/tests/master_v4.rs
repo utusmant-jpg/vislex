@@ -181,6 +181,25 @@ fn provider_rejects_orphans_truncation_and_url_models() {
     assert!(providers::encode(Provider::Gemini, &request).is_err());
 }
 #[test]
+fn gemini_preserves_signed_text_and_thought_parts_before_tool_calls() {
+    let response=json!({"candidates":[{"finishReason":"STOP","content":{"parts":[
+        {"text":"private thinking","thought":true,"thoughtSignature":"thought-sig"},
+        {"text":"I will inspect the source.","thoughtSignature":"text-sig"},
+        {"functionCall":{"id":"call-1","name":"read_text","args":{}},"thoughtSignature":"call-sig"}
+    ]}}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":6}});
+    let normalized=providers::decode(Provider::Gemini,response).unwrap();
+    let mut input=vec![json!({"role":"user","content":"Inspect"})];
+    input.extend(normalized["output"].as_array().unwrap().clone());
+    input.push(json!({"type":"function_call_output","call_id":"call-1","output":"source text"}));
+    let request=providers::encode(Provider::Gemini,&body(json!(input))).unwrap();
+    let parts=request.body["contents"][1]["parts"].as_array().unwrap();
+    assert_eq!(parts.len(),3);
+    assert_eq!(parts[0]["thoughtSignature"],"thought-sig");
+    assert_eq!(parts[1]["thoughtSignature"],"text-sig");
+    assert_eq!(parts[2]["thoughtSignature"],"call-sig");
+    assert_eq!(request.body["contents"][2]["parts"][0]["functionResponse"]["id"],"call-1");
+}
+#[test]
 fn provider_incomplete_reason_is_bounded_and_actionable() {
     let event=json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}});
     assert_eq!(providers::stream_failure_detail(&event),"Incomplete response: max_output_tokens");
