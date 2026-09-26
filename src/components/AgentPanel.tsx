@@ -310,9 +310,16 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
             {followUps.map(step => <button key={step} className="follow-up" onClick={() => { draft(`Perform this next check: ${step}`); composer.current?.focus(); }}>{step}</button>)}
           </div> : null}
         </article>) : <div className="agent-welcome">
-          <div className="vislex-glyph"><Sparkles size={26} /></div>
-          <h1>What would you like<br />to uncover?</h1>
-          <p>{snapshot ? `Investigate ${snapshot.name}, compare sources, or build your case.` : 'Open a case to bring your evidence and conversations together.'}</p>
+          <div className="vislex-glyph"><Sparkles size={22} /></div>
+          <div className="eyebrow">CASE WORKSPACE</div>
+          <h1>{snapshot ? snapshot.name : 'Start with a case'}</h1>
+          <p>{snapshot ? 'Explore the evidence, compare accounts, and keep each conclusion tied to its source.' : 'Open a case to bring your evidence and conversations together.'}</p>
+          {snapshot ? <div className="welcome-summary" aria-label="Case at a glance">
+            <div><strong>{snapshot.counts?.source_count ?? snapshot.sources.length}</strong><span>Evidence sources</span></div>
+            <div><strong>{snapshot.counts?.record_count ?? snapshot.records.length}</strong><span>Working files</span></div>
+            <div><strong>{snapshot.sources.filter(source => source.restricted).length}</strong><span>Restricted in this page</span></div>
+          </div> : null}
+          <h2 className="welcome-prompt-label">Suggested starting points</h2>
           <div className="starter-prompts">{starters.map(starter => <button key={starter} onClick={() => { draft(starter); composer.current?.focus(); }}>{starter}<ArrowUp size={14} /></button>)}</div>
         </div>}
       </div>

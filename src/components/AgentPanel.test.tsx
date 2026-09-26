@@ -25,6 +25,17 @@ describe('chat composer interaction', () => {
   beforeEach(() => { api.mockReset(); api.mockResolvedValue({ task_id: 'new-task', conversation_id: 'new-chat' }); });
   afterEach(cleanup);
 
+  it('shows case counts and puts a suggested check in the composer without sending', () => {
+    const data = snapshot();
+    data.counts = { audit_seq: 1, source_count: 42, source_bytes: 0, record_count: 3, task_count: 0, job_count: 0, jobs_queued: 0, jobs_running: 0, jobs_failed: 0, jobs_attention: 0, jobs_complete: 0 };
+    panel(data);
+    expect(screen.getByRole('heading', { name: 'Synthetic case' })).toBeTruthy();
+    expect(screen.getByLabelText('Case at a glance').textContent).toContain('42Evidence sources');
+    fireEvent.click(screen.getByRole('button', { name: /Build a timeline/ }));
+    expect((screen.getByRole('textbox', { name: 'Agent task' }) as HTMLTextAreaElement).value).toContain('Build a timeline');
+    expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
+  });
+
   it('sends a new chat while another conversation is running', async () => {
     const { onConversation } = panel(snapshot([task('other-task', 'other-chat')]));
     fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Check this source' } });
