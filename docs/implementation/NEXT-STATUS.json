@@ -288,7 +288,19 @@
       "note": "RecordEditor remounts on case/record identity and retains case-scoped in-memory drafts; clean records follow new server revisions, conflicting drafts remain local and block save, failed saves keep text. FullTranscript keeps at most 200 rendered segment or legacy text rows while preserving loaded data/search and cursor pagination. User originals and live case untouched."
     },
     "R17": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "137f61f",
+      "evidence": "src/citationJourney.test.tsx exercises two-source comparison, exact-locator navigation, accepted-finding-to-draft dependencies and structured product rendering; existing dossier.rs work-product and authority contracts retained",
+      "environment": "Windows x64; React DOM interaction fixtures and Rust dossier contracts",
+      "commands": [
+        "npm test -- --run -> exit 0, 76 passed in 14 files",
+        "npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 35 passed",
+        "git diff --cached --check -> exit 0"
+      ],
+      "reviewer": "Self-review only. Checked citation source membership is enforced by evidence::write, accepted finding dependency is pinned to its revision, and legal authority remains explicitly unchecked. No independent reviewer was available for this slice.",
+      "unrun_checks": "Native packaged witness comparison -> source -> finding -> draft -> review/export journey has not run. Existing agent work-product workflows for contract review and deposition lack equivalent direct structured manual forms. Structured manual work products use evidence_write validation rather than the task-scoped agent save_work_product path; schema parity and multi-row editing need further backend/UI acceptance. Source comparison draft persistence across workspace remounts and large-case interactions are not measured. R17 is implemented, not verified.",
+      "note": "The existing versioned evidence store now presents a direct comparison form with inconsistency, omission, changed account, uncertain clock and extraction error categories, both account texts, exact citations and next check. Direct issue matrix, production gap, exhibit and draft forms save versioned records; an optional accepted finding pins a dependency. Saved JSON work products render as fields while raw provenance stays expandable. Existing replay, hypotheses and AI product launchers remain. No source originals or live case were changed."
     },
     "R18": {
       "state": "pending"
