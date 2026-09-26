@@ -23,6 +23,8 @@ The current scorer measures material facts, attribution, unsupported statements,
 
 `capture.py` opens an explicitly selected case database read-only and exports selected stopped tasks and their receipts for blinded review. It refuses restricted or missing scoped sources and never reads provider credentials. The mapping file is an array of `{ "incident_id": "incident-a", "repeat": 1, "task_id": "..." }`. Use an external new output file; existing output is not overwritten.
 
+Raw answers and tool receipts can refer to sources beyond a task's saved scope. Capture therefore refuses a case if **any** source is currently restricted. It does not attempt to redact the answer text or tool JSON. Use an authorized deidentified evaluation case with no restricted sources; do not clear a case restriction merely to export a benchmark.
+
 ```
 python benchmarks/capture.py PATH_TO_CASE_DATABASE mapping.json --configuration "Build SHA; provider/model; tool settings; run protocol" --output captured-runs.json
 ```
