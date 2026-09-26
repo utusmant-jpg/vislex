@@ -182,13 +182,13 @@
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox leased_and_copied_video_input_produce_identical_timestamp_receipts -- --include-ignored -> exit 0",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including all 23 AppContainer tests"
       ],
-      "unrun_checks": "A medium/large realistic recording, exact packaged desktop build with the rebuilt worker, peak disk/RAM, and crash-left ACL cleanup have not been accepted. Source lease receipt does not yet feed the Jobs UI. Do not mark verified.",
+      "unrun_checks": "The rebuilt x64 desktop executable (SHA256 0B33D9DF30C357BB04FAA50C70DB1FEC1CCD562703F1136279E41696EF021E40) passed native synthetic acceptance run 1790443386652 with zero provider calls and both video discovery passes. Its installer built successfully (SHA256 BF3BB503925B88E45DA02063C84ED36E17D984BACD6ADFB96DD1054B9FD51689). A medium/large realistic recording, peak disk/RAM, crash-left ACL cleanup and source-lease receipt in Jobs remain open. Do not mark verified.",
       "note": "No writable hardlink or broad case read grant was added. The shared input is a private, hash-verified duplicate held by Windows read leases, not access to the original. A source policy epoch prevents a pre-restriction discovery job from publishing after permissions change."
     },
     "R11": {
       "state": "implemented",
-      "commit": "2dbdbf3 (scheduler), 4c8c609 (native harness)",
-      "evidence": "Schema 7 adds durable per-job priority, attempt, input hash, parent dependency, heartbeat, and cancellation reason. One worker scheduler owns two general permits and one heavy permit; interactive work has priority while a waiting background job is admitted after three interactive grants. Queued waits check cancellation every 200 ms. Stopping a chat cancels its prepared local workers. Discovery child jobs link to their parent. Reopen reconciles running jobs to interrupted before resumption.",
+      "commit": "2dbdbf3 (scheduler), 4c8c609 (native harness), e9fc80f (capacity and Jobs progress)",
+      "evidence": "Schema 7 adds durable per-job priority, attempt, input hash, parent dependency, heartbeat, and cancellation reason. One worker scheduler owns two general permits and one heavy permit; interactive work has priority while a waiting background job is admitted after three interactive grants. Queued waits check cancellation every 200 ms. Stopping a chat cancels its prepared local workers. Discovery child jobs link to their parent. Reopen reconciles running jobs to interrupted before resumption. Follow-up checks free space before making private source copies and adds a bounded case-scoped Jobs progress read with indexed/transcribed units and attempt count.",
       "measurements": "Queued cancellation test completed in 0.22 s under saturated permits. Mixed-task peak RAM/disk, sleep-resume stop latency, and starvation timing on native workloads remain unmeasured.",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core schema_seven_tracks_attempts_and_reconciles_interrupted_jobs -> exit 0",
@@ -198,13 +198,28 @@
         "npm test -> exit 0, 61 passed (12 files); npm run build -> exit 0",
         "python scripts/vislex_plan.py check -> exit 0, 26 task records structurally valid",
         "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
-        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib automatic_office_work_keeps_background_priority_after_normalizing_request -> exit 0"
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib automatic_office_work_keeps_background_priority_after_normalizing_request -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core job_progress_exposes_bounded_units_and_durable_attempt -> exit 0",
+        "npm test -> exit 0, 62 passed (12 files); npm run build -> exit 0"
       ],
-      "unrun_checks": "Exact packaged R11 journey is pending. Disk capacity estimates, progress units in Jobs, virtual-clock fake-transport scheduling test, mixed native journey and measured resource peaks remain open. Do not mark verified.",
+      "unrun_checks": "The rebuilt x64 desktop executable passed synthetic native acceptance run 1790443386652 (six sources; OCR and overview complete; chat/export/review/case fences passed; zero provider calls). That executable predates the follow-up disk and Jobs progress edits. Virtual-clock fake-transport scheduling test, mixed simultaneous transcription/page/overview/cancel/sleep-resume journey, more precise disk estimates and measured resource peaks remain open. Do not mark verified.",
       "note": "Scheduler selection is deterministic and keeps background work moving after three interactive grants. Heartbeat writes are best effort; a failed heartbeat never weakens source or publication checks. Clippy with -D warnings failed on pre-existing style lints in dossier/coverage/agent/discovery; regular desktop cargo check passed."
     },
     "R12": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "67e3f55 (schema, publication, corrections), 3f3c122 (paged UI and bounded worker journal)",
+      "evidence": "Schema 8 adds immutable per-run transcript segments and separate versioned correction proposals. The production staged publisher saves segment and word timing rows, complete TXT/JSON/track SRT artifacts, and a small working record for transcripts over 64 KiB while retaining full searchable extraction text. Case-scoped cursor pages return 25 segments; exact word timing is available by segment detail. Corrections are proposed and reviewed in separate audited transactions; later proposals begin pending and never replace the machine text. The UI pages segments and offers explicit correction review. Worker length accounting is linear and its private partial journal remains small.",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib large_transcript_keeps_later_segments_searchable_and_paged -- --nocapture -> exit 0; 1400 synthetic segments exceed 1 MiB, final segment searchable, cursor page and word detail present, correction review does not transfer, encrypted backup/restore preserves rows",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core schema_eight_migrates_seven_with_backup_and_empty_segment_store -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0 after initial R12 segment publication, including 24 AppContainer tests; later correction/detail edits covered by focused test",
+        "npm test -> exit 0, 63 passed (13 files), including long transcript pagination, seek and correction interaction; npm run build -> exit 0",
+        ".venv-worker/Scripts/python.exe -m unittest discover -s workers -p test_*.py -> exit 0, 18 tests",
+        "powershell -File scripts/build-worker.ps1 -> exit 0 after bounded journal edit",
+        "python scripts/vislex_plan.py check -> exit 0, 26 task records structurally valid"
+      ],
+      "unrun_checks": "Completed chunks are still private until whole-run publication; interrupted/running partial wording is not yet exposed as qualified progress. Long TXT/JSON/SRT generation still materializes the final value in memory instead of streaming rows. Frontend search covers loaded segments only and follow-playback beyond the loaded page is incomplete. No large-run peak memory measurement or exact packaged R12 desktop journey yet. Do not mark verified.",
+      "note": "The exact x64 installer SHA256 BF3BB503925B88E45DA02063C84ED36E17D984BACD6ADFB96DD1054B9FD51689 predates R12 and the final R11 Jobs changes; its passed synthetic journey is a checkpoint, not R12 acceptance. User originals and live case were untouched."
     },
     "R13": {
       "state": "pending"
