@@ -76,15 +76,15 @@ it('steps through exact VFR timestamps and exposes the artifact citation', async
     }
     return {samples:[]};
   });
-  const view=render(<EvidenceViewer source={videoSource} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
+  const view=render(<EvidenceViewer caseId="frame-case" source={videoSource} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
   const video=view.container.querySelector('video')!;
   video.currentTime=0.6;
   fireEvent.click(screen.getByRole('button',{name:'Inspect next decoded frame'}));
   await waitFor(()=>expect(screen.getByAltText('Decoded frame at source time 0:01.400')).toBeTruthy());
-  expect(api).toHaveBeenCalledWith('step_video_frame',{source_id:'source-one',target:0.6,direction:'next'});
+  expect(api).toHaveBeenCalledWith('step_video_frame',{case_id:'frame-case',source_id:'source-one',target:0.6,direction:'next'});
   fireEvent.click(screen.getByRole('button',{name:'Inspect next decoded frame'}));
   await waitFor(()=>expect(screen.getByAltText('Decoded frame at source time 0:02.500')).toBeTruthy());
-  expect(api).toHaveBeenCalledWith('step_video_frame',{source_id:'source-one',target:1.4,direction:'next'});
+  expect(api).toHaveBeenCalledWith('step_video_frame',{case_id:'frame-case',source_id:'source-one',target:1.4,direction:'next'});
   expect(screen.getByRole('button',{name:'Copy frame citation'})).toBeTruthy();
 });
 

@@ -17,7 +17,7 @@ export default function SoundDiscovery({ snapshot, onSource }: { snapshot: Snaps
   const data = scan?.result.metadata;
   async function run() {
     setBusy(true); setError(''); setScan(null); setShown(50);
-    try { const result = await api<Scan>('scan_sound_events', { source_id: source, start, end, track: track === '' ? null : Number(track), channel }); setScan({ source, result }); }
+    try { const result = await api<Scan>('scan_sound_events', { case_id: snapshot.id, source_id: source, start, end, track: track === '' ? null : Number(track), channel }); setScan({ source, result }); }
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }

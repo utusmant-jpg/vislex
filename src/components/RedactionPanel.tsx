@@ -43,7 +43,7 @@ export default function RedactionPanel({ caseId, sourceId, kind }: { caseId?: st
           if (published?.metadata.page_count) setPageCount(published.metadata.page_count);
           setBaseSize(published?.metadata.page_size_points ? { w: published.metadata.page_size_points[0], h: published.metadata.page_size_points[1] } : { w: 612, h: 792 });
         })
-      : api<{ published: { artifact_id: string }[] }>('process_source', { source_id: sourceId })
+      : api<{ published: { artifact_id: string }[] }>('process_source', { case_id: caseId, source_id: sourceId })
         .then(result => {
           if (!active) return;
           setBaseImage(result.published[0] ? evidenceUrl(`artifact/${result.published[0].artifact_id}`) : evidenceUrl(sourceId));

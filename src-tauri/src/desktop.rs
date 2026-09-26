@@ -100,14 +100,14 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return with_case(app,&case_id,|case|crate::exports::publish_staged_document(case,&job,staged));
     }
     if action=="resume_transcription" {
-        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::transcription::resume(case,text(&args,"job_id")?)?)};
+        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcription resume");(case.meta("id")?.unwrap_or_default(),crate::transcription::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::transcription::run(&job).and_then(|value|crate::transcription::stage_transcript(&job,value));
         let value=with_case(app,&case_id,|case|match staged {Ok(v)=>crate::transcription::publish_staged_transcript(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
         if value.is_ok(){kick_semantic(app.clone(),case_id.clone());}
         let _=app.emit("case-changed",());return value;
     }
     if action=="resume_processing" {
-        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::processing::resume(case,text(&args,"job_id")?)?)};
+        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before processing resume");(case.meta("id")?.unwrap_or_default(),crate::processing::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
         let result=with_case(app,&case_id,|case|crate::processing::publish_staged(case,&job,staged));
         if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
@@ -130,7 +130,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let case=guard.as_mut().context("Open a case first")?;
             let source=text(&args,"source_id")?;
-            if ["render_page","prepare_redaction"].contains(&action) {anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before source processing");}
+            anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before source processing");
             if ["scan_sound_events","step_video_frame"].contains(&action) {anyhow::ensure!(!case.source(source)?.restricted,"Restricted source");}
             let options=match action {
                 "render_page"=>json!({"operation":"render_page","page":args["page"]}),
@@ -455,10 +455,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "save_speaker_annotations" => crate::speaker_annotations::save(c,text(&args,"source_id")?,text(&args,"artifact_id")?,args["revision"].as_u64().context("Missing annotation revision")?,&args["labels"],&args["turns"])?,
         "video_discovery_status" => crate::discovery::status(c,text(&args,"source_id")?)?,
         "browse_video_discovery" => crate::discovery::browse(c,text(&args,"source_id")?,args["kind"].as_str().unwrap_or("video_overview"),args["start"].as_f64().unwrap_or(0.),args["end"].as_f64().unwrap_or(1e12),args["offset"].as_u64().unwrap_or(0),args["query"].as_str().unwrap_or(""))?,
-        "queue_video_discovery" => {let value=crate::discovery::enqueue(c,text(&args,"source_id")?,args["interval"].as_f64().unwrap_or(5.),true)?;kick_discovery(app.clone(),c.meta("id")?.unwrap_or_default());value},
-        "retry_video_discovery" => {let value=crate::discovery::retry_run(c,text(&args,"run_id")?)?;kick_discovery(app.clone(),c.meta("id")?.unwrap_or_default());value},
-        "cancel_video_discovery" => crate::discovery::cancel(c,text(&args,"source_id")?)?,
-        "cancel_processing" => {crate::processing::cancel(c,text(&args,"job_id")?)?;Value::Null},
+        "queue_video_discovery" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before video discovery queue");let value=crate::discovery::enqueue(c,text(&args,"source_id")?,args["interval"].as_f64().unwrap_or(5.),true)?;kick_discovery(app.clone(),c.meta("id")?.unwrap_or_default());value},
+        "retry_video_discovery" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before video discovery retry");let value=crate::discovery::retry_run(c,text(&args,"run_id")?)?;kick_discovery(app.clone(),c.meta("id")?.unwrap_or_default());value},
+        "cancel_video_discovery" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before video discovery cancel");crate::discovery::cancel(c,text(&args,"source_id")?)?},
+        "cancel_processing" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before processing cancellation");crate::processing::cancel(c,text(&args,"job_id")?)?;Value::Null},
         "storage_usage" => c.storage_usage()?,
         "reclaim_staging" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before staging cleanup");anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the import before reclaiming staging");c.reclaim_staging()?},
 
@@ -486,9 +486,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "read_extract_revision" => c.read_text_revision(text(&args,"source_id")?,args["revision"].as_i64().context("Missing revision")?,args["start"].as_u64().unwrap_or(1) as usize,args["count"].as_u64().unwrap_or(200) as usize)?,
 
-        "set_asr_profile" => {let model=text(&args,"model")?;anyhow::ensure!(["tiny","small"].contains(&model),"Unsupported local speech model");let worker=crate::processing::worker_path()?;anyhow::ensure!(worker.parent().context("Missing worker folder")?.join("_internal/models").join(model).join("model.bin").is_file(),"This speech model is not installed in the packaged worker");c.set_meta("asr_profile",model)?;c.audit("asr_profile_selected",json!({"model":model}))?;Value::Null},
+        "set_asr_profile" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before speech profile update");let model=text(&args,"model")?;anyhow::ensure!(["tiny","small"].contains(&model),"Unsupported local speech model");let worker=crate::processing::worker_path()?;anyhow::ensure!(worker.parent().context("Missing worker folder")?.join("_internal/models").join(model).join("model.bin").is_file(),"This speech model is not installed in the packaged worker");c.set_meta("asr_profile",model)?;c.audit("asr_profile_selected",json!({"model":model}))?;Value::Null},
         "transcribe_full" => {
-
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcription");
             let job = crate::transcription::begin(c, text(&args, "source_id")?)?;
 
             let job_id = job.id.clone();
@@ -589,7 +589,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         },
 
         "cancel_transcription" => {
-
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcription cancellation");
             crate::transcription::cancel(c, text(&args, "source_id")?)?;
 
             Value::Null
