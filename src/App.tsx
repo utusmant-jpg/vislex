@@ -32,6 +32,7 @@ function WorkspaceLoading({ label, settings = false }: { label: string; settings
 }
 
 type View = 'chat' | 'evidence' | 'findings' | 'review' | 'jobs';
+const caseGuard = (snapshot: Snapshot) => ({ case_id: snapshot.id, ...(typeof snapshot.session_epoch === 'number' ? { session_epoch: snapshot.session_epoch } : {}) });
 
 const views: { id: View; label: string; icon: typeof MessageSquare; shortcut: string }[] = [
   { id: 'chat', label: 'Chat', icon: MessageSquare, shortcut: 'Ctrl+1' },
@@ -185,8 +186,9 @@ export function RecordDetailPanel({caseId,summary,run,refresh,onSource}:{caseId:
 export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgress=native }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onConversation?: (id: string) => void; pollProgress?:boolean }) {
   type JobProgress = {priority:string;attempt:number;progress:null|{unit:string;completed?:number;total?:number;segments?:number;track?:number;tracks?:number}};
   const mounted = useRef(true);
-  const currentCaseId = useRef(snapshot.id);
-  currentCaseId.current = snapshot.id;
+  const caseSessionKey = `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}`;
+  const currentCaseId = useRef(caseSessionKey);
+  currentCaseId.current = caseSessionKey;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [storage, setStorage] = useState<Record<string, number> | null>(null);
   const [reclaimed, setReclaimed] = useState<number | null>(null);
@@ -200,7 +202,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
   const pendingKeys = useRef(new Set<string>());
   const [pendingActions, setPendingActions] = useState<string[]>([]);
   function jobAction(key: string, action: () => Promise<void>) {
-    const scopedKey = `${snapshot.id}:${key}`;
+    const scopedKey = `${caseSessionKey}:${key}`;
     if (pendingKeys.current.has(scopedKey)) return;
     pendingKeys.current.add(scopedKey);
     setPendingActions([...pendingKeys.current]);
@@ -209,7 +211,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
       finally { pendingKeys.current.delete(scopedKey); setPendingActions([...pendingKeys.current]); }
     });
   }
-  const pending = (key: string) => pendingActions.includes(`${snapshot.id}:${key}`);
+  const pending = (key: string) => pendingActions.includes(`${caseSessionKey}:${key}`);
   const [progressByJob,setProgressByJob]=useState<Record<string,JobProgress>>({});
   const runningJobIds=(snapshot.jobs ?? []).filter(job=>job.status==='running').map(job=>job.id).join(',');
   useEffect(()=>{
@@ -218,18 +220,20 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
     let active=true;let timer:ReturnType<typeof setTimeout>;
     const ids=runningJobIds.split(',');
     const poll=async()=>{
-      const values=await Promise.allSettled(ids.map(id=>api<JobProgress>('job_progress',{case_id:snapshot.id,job_id:id})));
+      const values=await Promise.allSettled(ids.map(id=>api<JobProgress>('job_progress',{...caseGuard(snapshot),job_id:id})));
       if(active){const next:Record<string,JobProgress>={};values.forEach((value,index)=>{if(value.status==='fulfilled')next[ids[index]]=value.value;});setProgressByJob(next);timer=setTimeout(()=>{void poll();},2000);}
     };
     void poll();return()=>{active=false;clearTimeout(timer);};
-  },[snapshot.id,runningJobIds,pollProgress]);
-  useEffect(()=>{setOlderJobs([]);setOlderAttention([]);setJobCursor(snapshot.job_next_cursor ?? null);setAttentionCursor(snapshot.attention_next_cursor ?? null);setJobError('');setJobFilter('all');},[snapshot.id]);
+  },[caseSessionKey,runningJobIds,pollProgress]);
+  useEffect(()=>{setOlderJobs([]);setOlderAttention([]);setJobCursor(snapshot.job_next_cursor ?? null);setAttentionCursor(snapshot.attention_next_cursor ?? null);setJobError('');setJobFilter('all');},[caseSessionKey]);
   useEffect(()=>{if(!olderJobs.length)setJobCursor(snapshot.job_next_cursor ?? null);},[snapshot.job_next_cursor]);
   useEffect(()=>{if(!olderAttention.length)setAttentionCursor(snapshot.attention_next_cursor ?? null);},[snapshot.attention_next_cursor]);
   useEffect(() => {
     setStorage(null); setReclaimed(null);
-    if (native) void api<Record<string, number>>('storage_usage').then(setStorage).catch(() => undefined);
-  }, [snapshot.id, snapshot.generation]);
+    let active=true;
+    if (native) void api<Record<string, number>>('storage_usage',caseGuard(snapshot)).then(value=>{if(active)setStorage(value);}).catch(() => undefined);
+    return ()=>{active=false;};
+  }, [caseSessionKey, snapshot.generation]);
   const jobMap=new Map<string,Job>();
   for(const job of [...(snapshot.attention_jobs ?? []),...(snapshot.jobs ?? []),...olderAttention,...olderJobs])if(!jobMap.has(job.id))jobMap.set(job.id,job);
   const jobs=[...jobMap.values()];
@@ -238,26 +242,26 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
   const supersededFailures = jobs.filter(job => job.superseded && ['failed', 'interrupted'].includes(job.status));
   async function loadOlderJobs(){
     if(jobCursor===null||loadingJobs)return;
-    const caseId=snapshot.id;setLoadingJobs(true);setJobError('');
-    try {const page=await api<{jobs:Job[];next_cursor:number|null}>('job_page',{case_id:caseId,before:jobCursor});
-      if(currentCaseId.current!==caseId)return;
+    const sessionKey=caseSessionKey;setLoadingJobs(true);setJobError('');
+    try {const page=await api<{jobs:Job[];next_cursor:number|null}>('job_page',{...caseGuard(snapshot),before:jobCursor});
+      if(currentCaseId.current!==sessionKey)return;
       setOlderJobs(current=>[...current,...page.jobs.filter(job=>!current.some(existing=>existing.id===job.id))]);setJobCursor(page.next_cursor);
-    }catch(error){if(currentCaseId.current===caseId)setJobError(String(error));}
-    finally{if(currentCaseId.current===caseId)setLoadingJobs(false);}
+    }catch(error){if(currentCaseId.current===sessionKey)setJobError(String(error));}
+    finally{if(currentCaseId.current===sessionKey)setLoadingJobs(false);}
   }
   async function loadOlderAttention(){
     if(attentionCursor===null||loadingJobs)return;
-    const caseId=snapshot.id;setLoadingJobs(true);setJobError('');
-    try {const page=await api<{jobs:Job[];next_cursor:number|null}>('attention_job_page',{case_id:caseId,before:attentionCursor});
-      if(currentCaseId.current!==caseId)return;
+    const sessionKey=caseSessionKey;setLoadingJobs(true);setJobError('');
+    try {const page=await api<{jobs:Job[];next_cursor:number|null}>('attention_job_page',{...caseGuard(snapshot),before:attentionCursor});
+      if(currentCaseId.current!==sessionKey)return;
       setOlderAttention(current=>[...current,...page.jobs.filter(job=>!current.some(existing=>existing.id===job.id))]);setAttentionCursor(page.next_cursor);
-    }catch(error){if(currentCaseId.current===caseId)setJobError(String(error));}
-    finally{if(currentCaseId.current===caseId)setLoadingJobs(false);}
+    }catch(error){if(currentCaseId.current===sessionKey)setJobError(String(error));}
+    finally{if(currentCaseId.current===sessionKey)setLoadingJobs(false);}
   }
   const review = snapshot.automatic_analysis;
   const reviewOpen = !!review?.review_task && ['running', 'paused', 'failed'].includes(review.review_state);
   return <section className="workspace-view jobs-center" aria-label="Jobs and issues">
-    <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" disabled={pending('transcribe-all')} onClick={() => jobAction('transcribe-all', async () => { await api('transcribe_all', { case_id: snapshot.id }); await refresh(); })}>{pending('transcribe-all') ? 'Queuing…' : 'Queue missing full transcripts'}</button></div>
+    <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" disabled={pending('transcribe-all')} onClick={() => jobAction('transcribe-all', async () => { await api('transcribe_all', caseGuard(snapshot)); await refresh(); })}>{pending('transcribe-all') ? 'Queuing…' : 'Queue missing full transcripts'}</button></div>
     <p className="small muted">Processing status does not certify evidence review. Historical failures remain visible with their receipts.</p>
     {currentJobs.length ? <div className="chip-row job-filters" role="group" aria-label="Filter jobs by status">
       {([['all', 'All'], ['working', 'Working'], ['attention', 'Needs attention'], ['completed', 'Completed & cancelled']] as const).map(([value, label]) => <button key={value} className={`chip ${jobFilter === value ? 'selected' : ''}`} aria-pressed={jobFilter === value} onClick={() => setJobFilter(value)}>{label}</button>)}
@@ -267,9 +271,9 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
       {review?.review_state === 'failed' ? <p className="small danger-text">Saved progress is available. Continue in a new task to keep uncertain requests untouched.</p> : null}
       {review?.review_state === 'paused' ? <p className="small muted">The review is paused. Saved progress remains available.</p> : null}
       {review?.review_state !== 'running' ? <button className="quiet" disabled={pending(`continue-review:${review!.review_task}`)} onClick={() => jobAction(`continue-review:${review!.review_task}`, async () => {
-        const result=await api<{task_id:string;conversation_id:string}>('continue_paused_task',{case_id:snapshot.id,task_id:review!.review_task});
+        const result=await api<{task_id:string;conversation_id:string}>('continue_paused_task',{...caseGuard(snapshot),task_id:review!.review_task});
         await refresh();
-        if (mounted.current && currentCaseId.current === snapshot.id) onConversation?.(result.conversation_id);
+        if (mounted.current && currentCaseId.current === caseSessionKey) onConversation?.(result.conversation_id);
       })}>{pending(`continue-review:${review!.review_task}`) ? 'Continuing…' : 'Continue saved review'}</button> : null}
       <code>Task {review!.review_task}</code>
     </article> : null}
@@ -282,12 +286,12 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
       {progressByJob[job.id] ? <p role="status" className="small muted">{progressByJob[job.id].priority} · attempt {progressByJob[job.id].attempt}{typeof progressByJob[job.id].progress?.completed==='number' ? ` · ${Math.floor(progressByJob[job.id].progress!.completed!)} ${progressByJob[job.id].progress!.unit}${typeof progressByJob[job.id].progress?.total==='number' ? ` / ${Math.ceil(progressByJob[job.id].progress!.total!)}` : ''}` : ''}{typeof progressByJob[job.id].progress?.segments==='number' ? ` · ${progressByJob[job.id].progress!.segments} segments` : ''}</p> : null}
       {job.error ? <p role="alert" className="small danger-text">{job.error}</p> : null}
       <div className="input-row">
-        {job.kind === 'full_audio' && ['failed', 'interrupted'].includes(job.status) ? <button className="quiet" disabled={pending(`transcript:${job.id}`)} onClick={() => jobAction(`transcript:${job.id}`, async () => { await api('resume_transcription', { case_id: snapshot.id, job_id: job.id }); await refresh(); })}>{pending(`transcript:${job.id}`) ? 'Resuming…' : 'Resume saved chunks'}</button> : null}
-        {job.kind === 'full_audio' ? <button className="quiet" disabled={pending(`transcript:${job.id}`)} onClick={() => jobAction(`transcript:${job.id}`, async () => { await api(['running', 'queued'].includes(job.status) ? 'cancel_transcription' : 'transcribe_full', { case_id: snapshot.id, source_id: job.source_id }); await refresh(); })}>{pending(`transcript:${job.id}`) ? 'Working…' : ['running', 'queued'].includes(job.status) ? 'Cancel' : 'Retry'}</button> : null}
-        {job.status === 'running' && job.kind !== 'full_audio' ? <button className="quiet" disabled={pending(`cancel:${job.id}`)} onClick={() => jobAction(`cancel:${job.id}`, async () => { await api('cancel_processing', { case_id: snapshot.id, job_id: job.id }); await refresh(); })}>{pending(`cancel:${job.id}`) ? 'Cancelling…' : 'Cancel'}</button> : null}
+        {job.kind === 'full_audio' && ['failed', 'interrupted'].includes(job.status) ? <button className="quiet" disabled={pending(`transcript:${job.id}`)} onClick={() => jobAction(`transcript:${job.id}`, async () => { await api('resume_transcription', { ...caseGuard(snapshot), job_id: job.id }); await refresh(); })}>{pending(`transcript:${job.id}`) ? 'Resuming…' : 'Resume saved chunks'}</button> : null}
+        {job.kind === 'full_audio' ? <button className="quiet" disabled={pending(`transcript:${job.id}`)} onClick={() => jobAction(`transcript:${job.id}`, async () => { await api(['running', 'queued'].includes(job.status) ? 'cancel_transcription' : 'transcribe_full', { ...caseGuard(snapshot), source_id: job.source_id }); await refresh(); })}>{pending(`transcript:${job.id}`) ? 'Working…' : ['running', 'queued'].includes(job.status) ? 'Cancel' : 'Retry'}</button> : null}
+        {job.status === 'running' && job.kind !== 'full_audio' ? <button className="quiet" disabled={pending(`cancel:${job.id}`)} onClick={() => jobAction(`cancel:${job.id}`, async () => { await api('cancel_processing', { ...caseGuard(snapshot), job_id: job.id }); await refresh(); })}>{pending(`cancel:${job.id}`) ? 'Cancelling…' : 'Cancel'}</button> : null}
         {['interrupted', 'failed'].includes(job.status) && job.kind !== 'auto_prepare' && job.kind !== 'full_audio' ? <button className="quiet" disabled={pending(`recover:${job.parent_run_id ?? job.id}`)} onClick={() => jobAction(`recover:${job.parent_run_id ?? job.id}`, async () => {
           const runId = job.parent_run_id ?? (['video_ocr_index', 'video_overview_index'].includes(job.kind) ? job.id : null);
-          await (runId ? api('retry_video_discovery', { case_id: snapshot.id, run_id: runId }) : api('resume_processing', { case_id: snapshot.id, job_id: job.id }));
+          await (runId ? api('retry_video_discovery', { ...caseGuard(snapshot), run_id: runId }) : api('resume_processing', { ...caseGuard(snapshot), job_id: job.id }));
           await refresh();
         })}>{pending(`recover:${job.parent_run_id ?? job.id}`) ? 'Recovering…' : job.parent_run_id || ['video_ocr_index', 'video_overview_index'].includes(job.kind) ? 'Retry index from saved progress' : 'Recover saved job'}</button> : null}
       </div>
@@ -299,7 +303,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
     {supersededFailures.length ? <details className="job-card"><summary>Earlier failures and interruptions replaced by newer runs ({supersededFailures.length})</summary>{supersededFailures.map(job => <article key={job.id}><strong>{job.name}</strong><p className="small muted">{job.kind} · {job.error || job.status}</p><code>Receipt {job.id}</code></article>)}</details> : null}
     {snapshot.issues?.length ? <details className="job-card"><summary>Previous AI tool errors ({snapshot.issues.length} group{snapshot.issues.length === 1 ? '' : 's'})</summary>{snapshot.issues.map(issue => <IssueHistory issue={issue} key={issue.latest_receipt} />)}</details> : null}
     {storage ? <div className="job-card">
-      <div className="job-card-head"><strong>Case storage</strong><Tooltip text="Only abandoned import copies matching a verified original are removed. Job folders are retained."><button className="quiet" disabled={pending('reclaim-staging')} onClick={() => jobAction('reclaim-staging', async () => { const caseId = snapshot.id; const receipt = await api<{ reclaimed_bytes: number }>('reclaim_staging', { case_id: caseId }); if (currentCaseId.current !== caseId) return; const usage = await api<Record<string, number>>('storage_usage'); if (currentCaseId.current === caseId) { setReclaimed(receipt.reclaimed_bytes); setStorage(usage); } })}>{pending('reclaim-staging') ? 'Checking staging…' : 'Reclaim verified staging duplicates'}</button></Tooltip></div>
+      <div className="job-card-head"><strong>Case storage</strong><Tooltip text="Only abandoned import copies matching a verified original are removed. Job folders are retained."><button className="quiet" disabled={pending('reclaim-staging')} onClick={() => jobAction('reclaim-staging', async () => { const sessionKey = caseSessionKey; const receipt = await api<{ reclaimed_bytes: number }>('reclaim_staging', caseGuard(snapshot)); if (currentCaseId.current !== sessionKey) return; const usage = await api<Record<string, number>>('storage_usage',caseGuard(snapshot)); if (currentCaseId.current === sessionKey) { setReclaimed(receipt.reclaimed_bytes); setStorage(usage); } })}>{pending('reclaim-staging') ? 'Checking staging…' : 'Reclaim verified staging duplicates'}</button></Tooltip></div>
       {Object.entries(storage).map(([name, bytes]) => <p className="small" key={name}>{name}: {formatBytes(bytes)}</p>)}
       {reclaimed !== null ? <p role="status" className="small success-text">Reclaimed {formatBytes(reclaimed)}</p> : null}
     </div> : null}
@@ -362,7 +366,7 @@ export default function App() {
   useEffect(() => { setActivePane(selection ? 'source' : 'workspace'); }, [selection?.id, selection?.locator]);
   const [navigationHistory, setNavigationHistory] = useState<{ entries: NonNullable<Selection>[]; index: number }>({ entries: [], index: -1 });
   const movingInHistory = useRef(false);
-  useEffect(() => {setExtraSources([]);setExtraRecords([]);},[snapshot?.id,snapshot?.generation,snapshot?.counts?.audit_seq]);
+  useEffect(() => {setExtraSources([]);setExtraRecords([]);},[snapshot?.id,snapshot?.session_epoch,snapshot?.generation,snapshot?.counts?.audit_seq]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [paletteIndex, setPaletteIndex] = useState(0);
@@ -438,7 +442,7 @@ export default function App() {
     setView('chat');
     setStorage(null);
     void api<Record<string, number>>('storage_usage').then(setStorage).catch(() => undefined);
-  }, [snapshot?.id]);
+  }, [snapshot?.id, snapshot?.session_epoch]);
 
   useEffect(() => { if (snapshot) setProjects(previous => { const next = previous.map(project => project.id === snapshot.id ? { ...project, name: snapshot.name } : project); localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; }); }, [snapshot?.name]);
 
@@ -458,7 +462,7 @@ export default function App() {
     };
     timer = setTimeout(poll, 3000);
     return () => { active = false; clearTimeout(timer); };
-  }, [snapshot?.id, refresh]);
+  }, [snapshot?.id, snapshot?.session_epoch, refresh]);
 
   useEffect(() => {
     if (selection) setOpenTabs(tabs => {
@@ -490,7 +494,7 @@ export default function App() {
       void api<RecordSummary>('record_summary',{case_id:caseId,record_id:selection.id}).then(record=>{if(active)setExtraRecords(current=>[...current.filter(item=>item.id!==record.id),record]);}).catch(error=>{if(active)notify.fromError('Could not open working file',error);});
       return ()=>{active=false;};
     }
-  },[snapshot?.id,snapshot?.generation,snapshot?.counts?.audit_seq,selection,extraSources,extraRecords]);
+  },[snapshot?.id,snapshot?.session_epoch,snapshot?.generation,snapshot?.counts?.audit_seq,selection,extraSources,extraRecords]);
 
   function moveInHistory(delta: number) {
     const index = navigationHistory.index + delta;
@@ -522,7 +526,7 @@ export default function App() {
         if (!paths?.length) return;
         run(async () => {
           if (!snapshot) throw new Error('Create or open a case first.');
-          const receipt = await api<{ items: { status: string; detail: { error?: string } }[] }>('import_files', { case_id: snapshot.id, paths, production });
+          const receipt = await api<{ items: { status: string; detail: { error?: string } }[] }>('import_files', { ...caseGuard(snapshot), paths, production });
           await refresh();
           const failed = receipt.items.filter(item => item.status === 'failed');
           if (failed.length) throw new Error(`${failed.length} import(s) failed: ${failed.map(item => item.detail.error).join('; ')}`);
@@ -549,9 +553,9 @@ export default function App() {
       if (!caseId) return;
       const epoch = caseEpoch.current;
       const removed = olderTasks.filter(task => (task.conversation_id ?? task.id) === id);
-      await api('delete_conversation', { case_id: caseId, conversation_id: id });
+      await api('delete_conversation', { ...caseGuard(snapshot), conversation_id: id });
       if (caseEpoch.current === epoch) setOlderTasks(current => current.filter(task => (task.conversation_id ?? task.id) !== id));
-      notify.success('Chat deleted', undefined, { label: 'Undo', run: () => { void api('delete_conversation', { case_id: caseId, conversation_id: id, deleted: false }).then(() => { if (caseEpoch.current === epoch) setOlderTasks(current => [...current, ...removed]); return refresh(); }); } });
+      notify.success('Chat deleted', undefined, { label: 'Undo', run: () => { void api('delete_conversation', { ...caseGuard(snapshot), conversation_id: id, deleted: false }).then(() => { if (caseEpoch.current === epoch) setOlderTasks(current => [...current, ...removed]); return refresh(); }).catch(error => notify.fromError('Could not restore chat', error)); } });
       if (conversationId === id) chooseConversation(null);
       await refresh();
     });
@@ -599,7 +603,7 @@ export default function App() {
     if (!snapshot) throw new Error('Create or open a case first.');
     const paths = await open({ multiple: true, directory: false, title: 'Import evidence — originals will be preserved' });
     if (paths) {
-      const receipt = await api<{ items: { status: string; detail: { error?: string } }[] }>('import_files', { case_id: snapshot.id, paths: Array.isArray(paths) ? paths : [paths], production });
+      const receipt = await api<{ items: { status: string; detail: { error?: string } }[] }>('import_files', { ...caseGuard(snapshot), paths: Array.isArray(paths) ? paths : [paths], production });
       await refresh();
       const failed = receipt.items.filter(item => item.status === 'failed');
       if (failed.length) throw new Error(`${failed.length} import(s) failed: ${failed.map(item => item.detail.error).join('; ')}`);
@@ -615,11 +619,11 @@ export default function App() {
   function openSettings() { settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setSettings(true); }
   async function performModal() {
     if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
-    if (modal === 'note') { if (!snapshot) throw new Error('Open a case first.'); const created = await api<WorkingRecord>('write_record', { case_id: snapshot.id, title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
-    if (modal === 'backup') { if (!snapshot) throw new Error('Open a case first.'); const path = await save({ defaultPath: 'case-backup.tar.age', filters: [{ name: 'Encrypted backup', extensions: ['age'] }] }); if (!path) return; await api('backup', { case_id: snapshot.id, path, password }); notify.success('Encrypted backup saved', path); }
+    if (modal === 'note') { if (!snapshot) throw new Error('Open a case first.'); const created = await api<WorkingRecord>('write_record', { ...caseGuard(snapshot), title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
+    if (modal === 'backup') { if (!snapshot) throw new Error('Open a case first.'); const path = await save({ defaultPath: 'case-backup.tar.age', filters: [{ name: 'Encrypted backup', extensions: ['age'] }] }); if (!path) return; await api('backup', { ...caseGuard(snapshot), path, password }); notify.success('Encrypted backup saved', path); }
     if (modal === 'delete') {
       if (!snapshot) throw new Error('Open a case first.');
-      const receipt = await api<{ deleted: boolean; bytes: number }>('delete_case', { path: snapshot.root, confirm: name });
+      const receipt = await api<{ deleted: boolean; bytes: number }>('delete_case', { ...caseGuard(snapshot), path: snapshot.root, confirm: name });
       setProjects(previous => { const next = previous.filter(project => project.id !== snapshot.id); localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; });
       if (localStorage.getItem('vislex-last-case') === snapshot.root) localStorage.removeItem('vislex-last-case');
       localStorage.removeItem(`vislex-conversation:${snapshot.id}`);
@@ -638,7 +642,7 @@ export default function App() {
     { id: 'view-review', label: 'Go to Review workbench', run: () => { setView('review'); setPalette(false); } },
     { id: 'view-jobs', label: 'Go to Jobs & issues', run: () => { setView('jobs'); setPalette(false); } },
     { id: 'settings', label: 'Open settings', run: () => { setPalette(false); openSettings(); } },
-    { id: 'transcribe-all', label: 'Queue missing full transcripts', run: () => { setPalette(false); run(async () => { if (!snapshot) throw new Error('Open a case first.'); await api('transcribe_all', { case_id: snapshot.id }); await refresh(); }); } },
+    { id: 'transcribe-all', label: 'Queue missing full transcripts', run: () => { setPalette(false); run(async () => { if (!snapshot) throw new Error('Open a case first.'); await api('transcribe_all', caseGuard(snapshot)); await refresh(); }); } },
     { id: 'add-files', label: 'Add files to this case', run: () => { setPalette(false); run(importFiles); } },
     { id: 'delete-case', label: 'Delete this case permanently', run: () => { setPalette(false); if (snapshot && native) showModal('delete'); else notify.info('Open a native case to delete it.'); } },
   ], [run, refresh, snapshot]);
@@ -780,7 +784,7 @@ export default function App() {
             onSourceLoaded={items => setExtraSources(current => [...current,...items.filter(item=>!current.some(existing=>existing.id===item.id))])}
             onRecordLoaded={items => setExtraRecords(current => [...current,...items.filter(item=>!current.some(existing=>existing.id===item.id))])}
             onRename={(id, value) => beginRename('source', id, value)}
-            onRestrict={(id, restricted) => run(async () => { await api('set_restricted', { source_id: id, restricted }); await refresh(); })}
+            onRestrict={(id, restricted) => run(async () => { await api('set_restricted', { ...caseGuard(snapshot), source_id: id, restricted }); await refresh(); })}
           /> : null}
           {visibleSnapshot && view === 'findings' ? <Suspense fallback={<WorkspaceLoading label="Opening findings…" />}><EvidenceNotebook key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} /></Suspense> : null}
           {visibleSnapshot && view === 'review' ? <Suspense fallback={<WorkspaceLoading label="Opening review…" />}><InvestigationWorkbench key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /></Suspense> : null}
@@ -831,7 +835,7 @@ export default function App() {
         <h2>Rename {rename.kind === 'source' ? 'evidence display name' : rename.kind}</h2>
         <label className="field-label">Name<input autoFocus maxLength={240} value={renameValue} onChange={event => setRenameValue(event.target.value)} /></label>
         <p className="small muted">Original bytes, import receipts, hashes and citations are preserved. Evidence display names retain their file extension.</p>
-        <div className="modal-footer"><button className="secondary" onClick={() => setRename(null)}>Cancel</button><button className="primary" disabled={busy || !renameValue.trim()} onClick={() => run(async () => { await api('rename', { kind: rename.kind, id: rename.id, name: renameValue }); await refresh(); setRename(null); })}>Save name</button></div>
+        <div className="modal-footer"><button className="secondary" onClick={() => setRename(null)}>Cancel</button><button className="primary" disabled={busy || !renameValue.trim()} onClick={() => run(async () => { if (!snapshot) throw new Error('Open a case first.'); await api('rename', { ...caseGuard(snapshot), kind: rename.kind, id: rename.id, name: renameValue }); await refresh(); setRename(null); })}>Save name</button></div>
       </dialog> : null}
 
       <dialog ref={paletteDialog} className="modal command-palette" aria-label="Search and commands" onCancel={() => setPalette(false)}>

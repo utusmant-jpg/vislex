@@ -31,6 +31,14 @@ it('deduplicates the parent discovery retry across its failed job cards', async 
   expect(api).toHaveBeenCalledWith('retry_video_discovery', { case_id: 'synthetic-case', run_id: 'index-run' });
 });
 
+it('sends the captured case session on a processing retry', async () => {
+  const current = snapshot();
+  current.session_epoch = 7;
+  render(<JobsCenter snapshot={current} run={fn => { void fn(); }} refresh={async () => undefined} />);
+  fireEvent.click(screen.getAllByRole('button', { name: 'Retry index from saved progress' })[0]);
+  await waitFor(() => expect(api).toHaveBeenCalledWith('retry_video_discovery', { case_id: 'synthetic-case', session_epoch: 7, run_id: 'index-run' }));
+});
+
 it('groups old AI tool errors and loads their receipts only when expanded', async () => {
   render(<JobsCenter snapshot={snapshot()} run={fn => { void fn(); }} refresh={async () => undefined} />);
   expect(screen.getByText('Previous AI tool errors (1 group)')).toBeTruthy();
@@ -97,6 +105,19 @@ it('shows a current older failure immediately beside recent completed jobs', () 
   expect(screen.queryByText('Receipt recent-success')).toBeNull();
 });
 
+it('ignores an older job page from a prior opening of the same case', async () => {
+  const first = snapshot(); first.session_epoch = 3; first.job_next_cursor = 10;
+  let resolvePage!: (value: { jobs: Snapshot['jobs']; next_cursor: null }) => void;
+  api.mockImplementation((action: string) => action === 'job_page' ? new Promise(resolve => { resolvePage = resolve; }) : Promise.resolve(null));
+  const view = render(<JobsCenter snapshot={first} run={fn => { void fn(); }} refresh={async () => undefined} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Load older jobs' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('job_page', { case_id: first.id, session_epoch: 3, before: 10 }));
+  view.rerender(<JobsCenter snapshot={{ ...first, session_epoch: 4, job_next_cursor: null }} run={fn => { void fn(); }} refresh={async () => undefined} />);
+  resolvePage({ jobs: [{ ...first.jobs![0], id: 'late-old-job', name: 'Prior session job' }], next_cursor: null });
+  await Promise.resolve();
+  expect(screen.queryByText('Prior session job')).toBeNull();
+});
+
 it('shows live job units from a case-scoped progress read', async () => {
   const current=snapshot();
   current.jobs=[{...current.jobs![0],id:'running-index',status:'running',error:''}];
@@ -135,7 +156,7 @@ it('shows a failed automatic review even when its original chat is hidden', asyn
   expect(screen.queryByText('No active processing jobs')).toBeNull();
   fireEvent.click(screen.getByRole('button',{name:'Continue saved review'}));
   await waitFor(()=>expect(api).toHaveBeenCalledWith('continue_paused_task',{case_id:'synthetic-case',task_id:'hidden-review'}));
-  expect(onConversation).toHaveBeenCalledWith('continued-review');
+  await waitFor(()=>expect(onConversation).toHaveBeenCalledWith('continued-review'));
 });
 
 it('loads record text on selection and ignores a late result from another case', async () => {
