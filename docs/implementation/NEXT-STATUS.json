@@ -188,6 +188,20 @@
     }
   },
   "additional_work": {
+    "DEV19-NATIVE-JOURNEY-2026-09-26": {
+      "state": "verified",
+      "environment": "Windows x64; isolated synthetic case; debug packaged build with VISLEX_TEST_MODE=1",
+      "build": "artifacts/VisLex 0.3.0-dev19/VisLex.exe; SHA-256 DB91B7D25DC1C6D2A0F602041DC0E85FFB7C26F20A26A0D72AC6A6963C43108D",
+      "evidence": "artifacts/native-acceptance-automated.json and artifacts/native-acceptance-automated.png (local generated artifacts); production Tauri bridge and bundled Windows AppContainer worker used",
+      "commands": [
+        "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0",
+        "scripts/package-development.ps1 -OutputName 'VisLex 0.3.0-dev19' -> exit 0",
+        "scripts/native-acceptance.ps1 -Port 9349 -BinaryPath artifacts/VisLex 0.3.0-dev19/VisLex.exe -> exit 0"
+      ],
+      "observed": "6 synthetic originals imported; video OCR and overview each returned 4 samples; DOCX and XLSX extracted; semantic search returned 30 results; DOCX/PDF exports hashed; unreviewed redaction denied; playback provenance and chat rendering present; 0 provider calls. Snapshot samples 6.1-70.4 ms; discovery snapshot samples 7.2-93 ms, single journey only.",
+      "unrun_checks": "This debug journey bypasses normal consent and provider paths; it is not the R04 production settings journey or a release build. No two live provider chats, full-duration video review, live-case export/restore/reopen, or small/medium/large performance comparison was run. R23 remains open.",
+      "note": "Synthetic case only; user's source folder and existing case remained untouched."
+    },
     "CASE-REFRESH-FENCE-2026-09-26": {
       "state": "implemented",
       "commits": ["20aa09e", "ce77c51"],
