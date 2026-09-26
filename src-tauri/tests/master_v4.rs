@@ -247,6 +247,36 @@ fn claude_stream_rejects_partial_and_malformed_tool_calls() {
     let mut rejected = providers::ClaudeStream::default();
     assert!(rejected.push(&json!({"type":"error","error":{"message":"Synthetic provider error"}})).is_err());
 }
+
+#[test]
+fn gemini_stream_preserves_final_empty_signature_and_complete_tool_parts() {
+    let wire = providers::encode(Provider::Gemini, &body(json!([{"role":"user","content":"Synthetic question"}]))).unwrap();
+    assert!(wire.url.ends_with(":streamGenerateContent?alt=sse"));
+    let mut stream = providers::GeminiStream::default();
+    let (first, done) = stream.push(&json!({"candidates":[{"content":{"parts":[{"text":"Hello "}]}}]})).unwrap();
+    assert_eq!(first, vec!["Hello "]);
+    assert!(done.is_none());
+    let (second, done) = stream.push(&json!({"candidates":[{"content":{"parts":[{"text":"world"},{"thought":true,"text":"private","thoughtSignature":"thought-sig"},{"functionCall":{"id":"call-a","name":"read_text","args":{"start":1}},"thoughtSignature":"call-sig"},{"functionCall":{"id":"call-b","name":"read_text","args":{"start":2}}}]}}]})).unwrap();
+    assert_eq!(second, vec!["world"]);
+    assert!(done.is_none());
+    let (last, done) = stream.push(&json!({"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"final-sig"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":15,"candidatesTokenCount":8}})).unwrap();
+    assert!(last.is_empty());
+    let output = done.unwrap();
+    assert_eq!(output["usage"]["input_tokens"], 15);
+    assert_eq!(output["output"][0]["content"][0]["text"], "Hello world");
+    assert_eq!(output["output"][1]["part"]["thoughtSignature"], "thought-sig");
+    assert_eq!(output["output"][2]["native_part"]["thoughtSignature"], "call-sig");
+    assert_eq!(output["output"][3]["call_id"], "call-b");
+    assert_eq!(output["output"][4]["native_part"]["thoughtSignature"], "final-sig");
+    let sent = providers::encode(Provider::Gemini, &body(json!(output["output"]))).unwrap();
+    let parts = sent.body["contents"][0]["parts"].as_array().unwrap();
+    assert_eq!(parts[2]["thoughtSignature"], "call-sig");
+    assert_eq!(parts.last().unwrap()["thoughtSignature"], "final-sig");
+    let mut malformed = providers::GeminiStream::default();
+    assert!(malformed.push(&json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_text"}}]},"finishReason":"STOP"}]})).is_err());
+    let mut truncated = providers::GeminiStream::default();
+    assert!(truncated.push(&json!({"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"MAX_TOKENS"}]})).unwrap_err().to_string().contains("output token limit"));
+}
 #[test]
 fn provider_stop_reasons_distinguish_truncation_and_refusal() {
     for (reason,expected) in [("max_tokens","incomplete"),("model_context_window_exceeded","incomplete"),("refusal","refused"),("pause_turn","paused")] {
