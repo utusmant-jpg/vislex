@@ -89,6 +89,13 @@ it('shows a current older failure immediately beside recent completed jobs', () 
   expect(screen.getByText('Older recording.mp4')).toBeTruthy();
   expect(screen.getByText('Recover from saved index')).toBeTruthy();
   expect(screen.getByText('Receipt old-current-failure')).toBeTruthy();
+  expect(screen.getByText('Receipt recent-success')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Completed & cancelled' }));
+  expect(screen.getByText('Receipt recent-success')).toBeTruthy();
+  expect(screen.queryByText('Older recording.mp4')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Needs attention' }));
+  expect(screen.getByText('Older recording.mp4')).toBeTruthy();
+  expect(screen.queryByText('Receipt recent-success')).toBeNull();
 });
 
 it('shows live job units from a case-scoped progress read', async () => {

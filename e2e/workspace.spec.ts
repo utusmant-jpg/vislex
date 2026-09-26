@@ -58,3 +58,15 @@ test('workspace has no page-level horizontal overflow at target desktop sizes', 
     await page.screenshot({ path: testInfo.outputPath(`workspace-${width}x${height}.png`) });
   }
 });
+
+test('System appearance follows OS changes and reduced motion disables workspace animation', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+  await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.getByRole('button', { name: /Try the sample case/ }).click();
+  await page.keyboard.press('Control+2');
+  await expect(page.getByRole('heading', { name: 'Evidence library' })).toBeVisible();
+  expect(await page.locator('.workspace-view').evaluate(element => getComputedStyle(element).animationName)).toBe('none');
+});

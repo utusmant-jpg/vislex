@@ -196,6 +196,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
   const [attentionCursor, setAttentionCursor] = useState<number|null>(snapshot.attention_next_cursor ?? null);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [jobError, setJobError] = useState('');
+  const [jobFilter, setJobFilter] = useState<'all' | 'working' | 'attention' | 'completed'>('all');
   const [progressByJob,setProgressByJob]=useState<Record<string,JobProgress>>({});
   const runningJobIds=(snapshot.jobs ?? []).filter(job=>job.status==='running').map(job=>job.id).join(',');
   useEffect(()=>{
@@ -209,7 +210,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
     };
     void poll();return()=>{active=false;clearTimeout(timer);};
   },[snapshot.id,runningJobIds,pollProgress]);
-  useEffect(()=>{setOlderJobs([]);setOlderAttention([]);setJobCursor(snapshot.job_next_cursor ?? null);setAttentionCursor(snapshot.attention_next_cursor ?? null);setJobError('');},[snapshot.id]);
+  useEffect(()=>{setOlderJobs([]);setOlderAttention([]);setJobCursor(snapshot.job_next_cursor ?? null);setAttentionCursor(snapshot.attention_next_cursor ?? null);setJobError('');setJobFilter('all');},[snapshot.id]);
   useEffect(()=>{if(!olderJobs.length)setJobCursor(snapshot.job_next_cursor ?? null);},[snapshot.job_next_cursor]);
   useEffect(()=>{if(!olderAttention.length)setAttentionCursor(snapshot.attention_next_cursor ?? null);},[snapshot.attention_next_cursor]);
   useEffect(() => {
@@ -219,7 +220,8 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
   const jobMap=new Map<string,Job>();
   for(const job of [...(snapshot.attention_jobs ?? []),...(snapshot.jobs ?? []),...olderAttention,...olderJobs])if(!jobMap.has(job.id))jobMap.set(job.id,job);
   const jobs=[...jobMap.values()];
-  const active = jobs.filter(job => !job.superseded && ['queued', 'running', 'failed', 'interrupted', 'cancelled'].includes(job.status));
+  const currentJobs = jobs.filter(job => !job.superseded);
+  const visibleJobs = currentJobs.filter(job => jobFilter === 'all' || (jobFilter === 'working' && ['queued', 'running'].includes(job.status)) || (jobFilter === 'attention' && ['failed', 'interrupted'].includes(job.status)) || (jobFilter === 'completed' && ['complete', 'cancelled'].includes(job.status)));
   const supersededFailures = jobs.filter(job => job.superseded && ['failed', 'interrupted'].includes(job.status));
   async function loadOlderJobs(){
     if(jobCursor===null||loadingJobs)return;
@@ -244,6 +246,9 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
   return <section className="workspace-view jobs-center" aria-label="Jobs and issues">
     <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" onClick={() => run(async () => { await api('transcribe_all'); await refresh(); })}>Queue missing full transcripts</button></div>
     <p className="small muted">Processing status does not certify evidence review. Historical failures remain visible with their receipts.</p>
+    {currentJobs.length ? <div className="chip-row job-filters" role="group" aria-label="Filter jobs by status">
+      {([['all', 'All'], ['working', 'Working'], ['attention', 'Needs attention'], ['completed', 'Completed & cancelled']] as const).map(([value, label]) => <button key={value} className={`chip ${jobFilter === value ? 'selected' : ''}`} aria-pressed={jobFilter === value} onClick={() => setJobFilter(value)}>{label}</button>)}
+    </div> : null}
     {reviewOpen ? <article className={`job-card ${review?.review_state === 'failed' ? 'job-attention' : ''}`}>
       <div className="job-card-head"><strong>Automatic case analysis</strong><StatusPill state={review?.review_state === 'running' ? 'running' : review?.review_state === 'failed' ? 'failed' : 'interrupted'} label={review!.review_state} small /></div>
       {review?.review_state === 'failed' ? <p className="small danger-text">Saved progress is available. Continue in a new task to keep uncertain requests untouched.</p> : null}
@@ -255,10 +260,10 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
       })}>Continue saved review</button> : null}
       <code>Task {review!.review_task}</code>
     </article> : null}
-    {active.length ? active.map(job => <article className={`job-card ${['failed', 'interrupted'].includes(job.status) ? 'job-attention' : ''}`} key={job.id}>
+    {visibleJobs.length ? visibleJobs.map(job => <article className={`job-card ${['failed', 'interrupted'].includes(job.status) ? 'job-attention' : ''}`} key={job.id}>
       <div className="job-card-head">
         <strong>{job.name}</strong>
-        <StatusPill state={job.status === 'running' ? 'running' : job.status === 'queued' ? 'queued' : job.status === 'cancelled' ? 'cancelled' : job.status === 'failed' ? 'failed' : 'interrupted'} label={job.status} small />
+        <StatusPill state={job.status === 'running' ? 'running' : job.status === 'queued' ? 'queued' : job.status === 'cancelled' ? 'cancelled' : job.status === 'failed' ? 'failed' : job.status === 'complete' ? 'complete' : 'interrupted'} label={job.status} small />
       </div>
       <p className="small muted">{job.kind}</p>
       {progressByJob[job.id] ? <p role="status" className="small muted">{progressByJob[job.id].priority} · attempt {progressByJob[job.id].attempt}{typeof progressByJob[job.id].progress?.completed==='number' ? ` · ${Math.floor(progressByJob[job.id].progress!.completed!)} ${progressByJob[job.id].progress!.unit}${typeof progressByJob[job.id].progress?.total==='number' ? ` / ${Math.ceil(progressByJob[job.id].progress!.total!)}` : ''}` : ''}{typeof progressByJob[job.id].progress?.segments==='number' ? ` · ${progressByJob[job.id].progress!.segments} segments` : ''}</p> : null}
@@ -274,7 +279,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
         })}>{job.parent_run_id || ['video_ocr_index', 'video_overview_index'].includes(job.kind) ? 'Retry index from saved progress' : 'Recover saved job'}</button> : null}
       </div>
       <code>Receipt {job.id}</code>
-    </article>) : !reviewOpen ? <div className="empty-state"><ListChecks size={32} /><h3>{jobCursor!==null?'No active jobs in this page':'No active processing jobs'}</h3><p>Completed jobs and earlier tool errors remain available in the case history.</p></div> : null}
+    </article>) : currentJobs.length ? <div className="empty-state"><ListChecks size={32} /><h3>No {jobFilter === 'working' ? 'working jobs' : jobFilter === 'attention' ? 'jobs needing attention' : 'completed jobs'} in this page</h3><p>Choose another status or load older jobs.</p></div> : !reviewOpen ? <div className="empty-state"><ListChecks size={32} /><h3>{jobCursor!==null?'No jobs in this page':'No processing jobs yet'}</h3><p>Queued work, completed jobs, and failures will appear here with their receipts.</p></div> : null}
     {jobError?<p role="alert" className="small danger-text">Could not load older jobs: {jobError}</p>:null}
     {attentionCursor!==null?<button className="quiet" disabled={loadingJobs} onClick={()=>void loadOlderAttention()}>{loadingJobs?'Loading…':'Load more current problems'}</button>:null}
     {jobCursor!==null?<button className="quiet" disabled={loadingJobs} onClick={()=>void loadOlderJobs()}>{loadingJobs?'Loading…':'Load older jobs'}</button>:null}
