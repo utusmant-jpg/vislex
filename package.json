@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "tauri dev --features desktop",
     "desktop:build": "tauri build --features desktop",
+    "desktop:build:x64": "tauri build --features desktop --target x86_64-pc-windows-msvc",
     "test": "vitest run",
     "test:core": "cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "npm run build && npm run test && npm run test:core"

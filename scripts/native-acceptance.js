@@ -7,6 +7,11 @@
   const imported=await invoke('import_files',{paths:['statement.pdf','statement.txt','photograph.png','variable-timing.mp4','notes.docx','table.xlsx'].map(n=>root+'/fixtures/generated/'+n),production:'Synthetic acceptance'});
   if(imported.items.some(i=>i.status!=='imported'))throw new Error('Fixture import failed');
   const snapshot=await invoke('snapshot');
+  const caseSummary=await invoke('case_summary',{case_id:snapshot.id});
+  const firstSources=await invoke('source_page',{case_id:snapshot.id,generation:snapshot.generation,audit_seq:snapshot.counts.audit_seq});
+  if(caseSummary.source_count!==6||firstSources.sources.length!==6||firstSources.next_cursor!==null)throw new Error('Bounded source list did not match imported originals');
+  let crossCaseSourceDenied=false;try{await invoke('source_page',{case_id:'another-case',generation:snapshot.generation,audit_seq:snapshot.counts.audit_seq});}catch{crossCaseSourceDenied=true;}
+  if(!crossCaseSourceDenied)throw new Error('A stale case was allowed to list sources');
   const pdf=snapshot.sources.find(s=>s.kind==='pdf');const photo=snapshot.sources.find(s=>s.kind==='image');const video=snapshot.sources.find(s=>s.kind==='video');
   const process=invoke('process_source',{source_id:pdf.id});const latencies=[];
   for(let i=0;i<5;i++){const t=performance.now();await invoke('snapshot');latencies.push(performance.now()-t);}
@@ -57,6 +62,8 @@
   for(let i=0;i<240;i++){const current=await invoke('snapshot');if(!current.jobs.some(j=>j.kind==='full_audio'&&['running','queued'].includes(j.status)))break;if(i===239)throw new Error('Automatic transcripts did not settle');await new Promise(resolve=>setTimeout(resolve,500));}
   const record=await invoke('write_record',{title:'Synthetic native draft',kind:'report',content:'Synthetic caf\u00e9 draft. Evidence remains unreviewed.',source_ids:[pdf.id]});
   const compact=await invoke('snapshot');
+  const firstRecords=await invoke('record_page',{case_id:compact.id,generation:compact.generation,audit_seq:compact.counts.audit_seq});
+  if(!firstRecords.records.some(item=>item.id===record.id))throw new Error('Saved working file missing from bounded record list');
   const summary=compact.records.find(item=>item.id===record.id);
   if(!summary||Object.hasOwn(summary,'content'))throw new Error('Working-record body leaked into case summary');
   const detail=await invoke('record_detail',{case_id:compact.id,record_id:record.id,revision:record.revision});
@@ -85,5 +92,5 @@
   const draft=await waitFor(()=>[...document.querySelectorAll('button.library-row')].find(b=>b.querySelector('.library-name')?.textContent==='Synthetic native draft'),'working-file entry');draft.click();
   await waitFor(()=>document.querySelector('textarea[aria-label="Working file content"]')?.value===record.content,'lazy working-file detail');
   if(document.querySelector('.saved-progress,.question-dossier,.context-note'))throw new Error('Internal review panels leaked into normal chat');
-  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.sources.length,snapshot_latency_ms:latencies,semantic_results:search.results.length,remaining_passages:search.remaining_passages,exports,cross_case_export_denied:crossCaseExportDenied,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
+  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.counts.source_count,snapshot_bytes:JSON.stringify(snapshot).length,summary_bytes:JSON.stringify(caseSummary).length,snapshot_latency_ms:latencies,semantic_results:search.results.length,remaining_passages:search.remaining_passages,exports,cross_case_chat_denied:crossCaseChatDenied,cross_case_source_denied:crossCaseSourceDenied,cross_case_export_denied:crossCaseExportDenied,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
 })()
