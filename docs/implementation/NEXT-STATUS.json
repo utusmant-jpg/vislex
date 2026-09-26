@@ -7,22 +7,24 @@
     "branch": "codex/vislex-redesign",
     "base_commit": "298ab4291659ab4235c9c7e497a7a74190c0a6e0",
     "slice_commit": "4ba546e",
-    "latest_slice_commit": "b18a6c8",
+    "latest_slice_commit": "4a7f512",
+    "integrated_functionality_commits": "f4ed6f6 (R13 from c9e56a1), 8889fe8 (R14 from bc6e7f2)",
     "evidence": "docs/implementation/REDESIGN-COVERAGE.md; src/appearance.test.tsx; src/App.test.tsx; src/components/SettingsDialog.test.tsx",
     "environment": "Windows x64, isolated worktree; synthetic browser preview only",
     "commands": [
       "npm ci --ignore-scripts -> exit 0",
-      "npm test -- --run -> exit 0, 73 tests in 14 files after b18a6c8",
-      "npm run build -> exit 0; initial 120.20 kB gzip JS and 12.35 kB gzip CSS after b18a6c8, against pre-redesign initial 131.61 kB gzip JS and 11.18 kB gzip CSS; local Inter font asset 352.24 kB",
+      "npm test -- --run -> exit 0, 77 tests in 14 files after R13/R14 integration",
+      "npm run build -> exit 0; initial 121.24 kB gzip JS and 12.35 kB gzip CSS after R13/R14 integration, against pre-redesign initial 131.61 kB gzip JS and 11.18 kB gzip CSS; local Inter font asset 352.24 kB",
       "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 1 without packaged worker in this fresh isolated checkout; six processor-dependent unit tests failed for missing worker resource",
       "VISLEX_WORKER_PATH=<existing local development worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0; all non-ignored Rust unit and integration tests passed, including worker AppContainer e2e",
       "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0 with ignored worktree worker-resource junction to existing local resources; no tracked resource changes",
+      "After cherry-picking R13/R14: VISLEX_WORKER_PATH=<existing local development worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0; cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
       "python scripts/vislex_plan.py check -> exit 0; plan structure only",
       "git diff --cached --check -> exit 0"
     ],
     "implemented_scope": "Graphite/blue dark and neutral light tokens; System theme and compact density persisted without case data; local Inter font; case-independent Appearance/About; separate provider/permission/review settings sections; collapsible navigation; keyboard-resizable evidence pane; narrow one-pane return; layout presets; composer auto-growth; duplicate error-toast suppression. Secondary findings, review, settings, and record-editor views split into on-demand chunks with a delayed loading indicator. Tooltip keyboard description and Escape dismissal; accessible palette selection and case-independent settings command; chat response state and timestamp; evidence-count empty-chat workspace; keyboard context menu and focus return. A Radix tooltip trial increased initial JS to 137.99 kB gzip, so it was removed; no new runtime dependency remains.",
     "reviewer": "Self-review and synthetic dark/light browser inspection; no independent or packaged Windows review.",
-    "unrun_checks": "R21 full surface/interaction matrix, native window and scaling matrix, accessibility/Narrator, packaged Windows journey, complete protected journey and integration with the concurrent functionality branch are NOT RUN. Rust/core and desktop-feature compilation passed using existing development worker resources, but packaged release acceptance remains open. Browser preview case_summary fixture is missing in bridge.ts and assigned to its owner. R21 remains pending until all acceptance gates have evidence.",
+    "unrun_checks": "R21 full surface/interaction matrix, native window and scaling matrix, accessibility/Narrator, packaged Windows journey, complete protected journey and final integration with the concurrent functionality branch (R15 onward) are NOT RUN. R13/R14 code is integrated and Rust/core plus desktop compilation pass using existing development worker resources, but packaged release acceptance remains open. Browser preview case_summary fixture is missing in bridge.ts and assigned to its owner. R21 remains pending until all acceptance gates have evidence.",
     "note": "This records a reviewable implementation slice, not completion or verification of R21 or product certification."
   },
   "tasks": {
