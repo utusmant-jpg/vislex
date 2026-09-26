@@ -34,6 +34,10 @@ it('requires review of the built derivative before exporting only that artifact'
   await waitFor(() => expect(screen.getByText('Saved C:/synthetic/reviewed.pdf')).toBeTruthy());
   expect(api).toHaveBeenCalledWith('review_redaction', { case_id: 'case-a', session_epoch: 3, artifact_id: 'review-pdf', pages: [1], note: 'Checked synthetic page.' });
   expect(api).toHaveBeenCalledWith('export_redaction', { case_id: 'case-a', session_epoch: 3, artifact_id: 'review-pdf', path: 'C:/synthetic/reviewed.pdf' });
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'X of rectangle 1 in points' }), { target: { value: '45' } });
+  expect(screen.queryByAltText('Redacted page 1')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Export derivative only' })).toBeNull();
+  expect(api.mock.calls.filter(([command]) => command === 'export_redaction')).toHaveLength(1);
 });
 
 it('clears review state on source change and ignores a late preparation result', async () => {
