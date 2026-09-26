@@ -240,6 +240,12 @@ fn claude_stream_rejects_partial_and_malformed_tool_calls() {
     malformed.push(&tool).unwrap();
     malformed.push(&json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{bad"}})).unwrap();
     assert!(malformed.push(&json!({"type":"content_block_stop","index":0})).is_err());
+    let mut truncated = providers::ClaudeStream::default();
+    truncated.push(&start).unwrap();
+    truncated.push(&json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}})).unwrap();
+    assert!(truncated.push(&json!({"type":"message_stop"})).unwrap_err().to_string().contains("output token limit"));
+    let mut rejected = providers::ClaudeStream::default();
+    assert!(rejected.push(&json!({"type":"error","error":{"message":"Synthetic provider error"}})).is_err());
 }
 #[test]
 fn provider_stop_reasons_distinguish_truncation_and_refusal() {
