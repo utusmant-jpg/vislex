@@ -343,6 +343,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(false);
   const [modal, setModal] = useState<'create' | 'note' | 'backup' | 'restore' | 'delete' | null>(null);
+  const modalReturnFocus = useRef<HTMLElement | null>(null);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [production] = useState('Initial production');
@@ -371,7 +372,11 @@ export default function App() {
     return () => { void cleanup.then(fn => fn()); };
   }, [refresh, installSnapshot]);
 
-  useEffect(() => { if (modal) dialog.current?.showModal(); }, [modal]);
+  useEffect(() => {
+    if (!modal) return;
+    dialog.current?.showModal();
+    return () => { if (modalReturnFocus.current?.isConnected) modalReturnFocus.current.focus(); };
+  }, [modal]);
   useEffect(() => { if (rename) { setRenameValue(rename.name); renameDialog.current?.showModal(); } }, [rename]);
   useEffect(() => { if (palette) paletteDialog.current?.showModal(); else paletteDialog.current?.close(); }, [palette]);
 
@@ -573,7 +578,7 @@ export default function App() {
     const path = await open({ directory: true, title: 'Open a VisLex case folder' });
     if (typeof path === 'string') { installSnapshot(await api<Snapshot>('open_case', { path })); setSelection(null); setView('chat'); }
   }
-  function showModal(type: typeof modal) { setName(''); setPassword(''); setModal(type); }
+  function showModal(type: typeof modal) { modalReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setName(''); setPassword(''); setModal(type); }
   async function performModal() {
     if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
     if (modal === 'note') { const created = await api<WorkingRecord>('write_record', { title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }

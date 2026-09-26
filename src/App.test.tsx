@@ -349,3 +349,16 @@ it('opens workspace settings with the global shortcut before a case exists', asy
   fireEvent.keyDown(window, { key: ',', ctrlKey: true });
   expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
 });
+
+it('cancels case creation without calling the backend', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  const trigger = screen.getByRole('button', { name: /Create a case/ });
+  trigger.focus();
+  fireEvent.click(trigger);
+  expect(screen.getByRole('heading', { name: 'Create a local case' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('heading', { name: 'Create a local case' })).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  expect(api).not.toHaveBeenCalledWith('create_case', expect.anything());
+});
