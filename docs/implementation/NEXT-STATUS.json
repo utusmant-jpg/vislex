@@ -145,7 +145,7 @@
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites; include-ignored suite rerun in progress after final page changes",
         "packaged release x64 executable SHA256 624C0C9C14A8DDF23A0ACDA264BE938D70FB77B806FE4E5E1B3842CF5A735E45 passed prior synthetic native source-to-export journey including chat case fence; final paging changes postdate this executable"
       ],
-      "unrun_checks": "Typed envelopes/session epoch and event sequence are not yet applied to every case-mutating desktop command. Current x64 packaging run started before the final paging edits; a packaged UI journey on the exact R08 code and larger 1-GB+ tiers remain open. Do not mark R08 verified yet.",
+      "unrun_checks": "Typed envelopes/session epoch and event sequence are not yet applied to every case-mutating desktop command. The later x64 packaged synthetic journey passed on the R08 paging code (run 1790442231875; artifacts/native-acceptance-automated.json), but larger 1-GB+ tiers remain open. Do not mark R08 verified yet.",
       "note": "Routine polling uses case_summary; recovery snapshot limits source, record, task and job lists to first pages with exact totals and current failures. Keyset/rowid pages are case fenced; mutable source/record pages additionally require the audit epoch. Older items remain accessible through list controls or exact detail fetch, including citations and source pickers. The 500-record fixture tests no duplicates/skips and query-plan indexes. Current UI counts reflect total case scope."
     },
     "R09": {
@@ -166,12 +166,12 @@
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after staged playback/document and strong-preparation compatibility fix",
         "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0"
       ],
-      "unrun_checks": "Legacy direct APIs intentionally retain some in-lock validation for compatibility; desktop production paths use staging. Full crash boundary, disk-full, case-close concurrency, exact x64 packaged acceptance and large tiers remain open. Do not mark verified.",
+      "unrun_checks": "Legacy direct APIs intentionally retain some in-lock validation for compatibility; desktop production paths use staging. Full crash boundary, disk-full, case-close concurrency and large tiers remain open. The exact pre-R10 x64 packaged build passed the six-source synthetic native journey (run 1790442231875; artifacts/native-acceptance-automated.json) with zero provider calls; do not mark verified.",
       "note": "Unregistered content-addressed outputs are retained for recovery inventory; cancelled and failed staged jobs stay visible. Legacy document and backup preparation keep immediate strong verification while desktop staging checks bytes outside the mutex."
     },
     "R10": {
       "state": "implemented",
-      "commit": "pending",
+      "commit": "1e7de8a",
       "evidence": "Video OCR and overview jobs now share one verified private input per source hash and source policy epoch. The isolated worker gets exact read access to that file and traverse access only to its parent path; each job keeps its own writable output directory. Source restriction cancels active child jobs and invalidates the lease; case close/switch releases cached leases. A crash leaves a hash-checked private input eligible for reuse on restart.",
       "measurements": "Generated 7200-second MP4, 240 one-minute jobs across OCR and overview: prior per-job input writes 754800 bytes by measured fixture size times 240 jobs; new private-input writes 3145 bytes once in 2456 ms of lease setup and job preparation. This small fixture proves I/O scaling, not wall-clock speed on a large recording. Copied and leased worker runs produced identical metadata, sample timestamps and JPEG hashes on the variable-timing fixture.",
       "commands": [
@@ -186,7 +186,22 @@
       "note": "No writable hardlink or broad case read grant was added. The shared input is a private, hash-verified duplicate held by Windows read leases, not access to the original. A source policy epoch prevents a pre-restriction discovery job from publishing after permissions change."
     },
     "R11": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "2dbdbf3 (scheduler), 4c8c609 (native harness)",
+      "evidence": "Schema 7 adds durable per-job priority, attempt, input hash, parent dependency, heartbeat, and cancellation reason. One worker scheduler owns two general permits and one heavy permit; interactive work has priority while a waiting background job is admitted after three interactive grants. Queued waits check cancellation every 200 ms. Stopping a chat cancels its prepared local workers. Discovery child jobs link to their parent. Reopen reconciles running jobs to interrupted before resumption.",
+      "measurements": "Queued cancellation test completed in 0.22 s under saturated permits. Mixed-task peak RAM/disk, sleep-resume stop latency, and starvation timing on native workloads remain unmeasured.",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core schema_seven_tracks_attempts_and_reconciles_interrupted_jobs -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib queued_worker_cancels_without_waiting_for_busy_permits -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox stopping_chat_cancels_its_prepared_local_worker_before_launch -- --include-ignored -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 24 AppContainer tests and 1 video worker end-to-end test",
+        "npm test -> exit 0, 61 passed (12 files); npm run build -> exit 0",
+        "python scripts/vislex_plan.py check -> exit 0, 26 task records structurally valid",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib automatic_office_work_keeps_background_priority_after_normalizing_request -> exit 0"
+      ],
+      "unrun_checks": "Exact packaged R11 journey is pending. Disk capacity estimates, progress units in Jobs, virtual-clock fake-transport scheduling test, mixed native journey and measured resource peaks remain open. Do not mark verified.",
+      "note": "Scheduler selection is deterministic and keeps background work moving after three interactive grants. Heartbeat writes are best effort; a failed heartbeat never weakens source or publication checks. Clippy with -D warnings failed on pre-existing style lints in dossier/coverage/agent/discovery; regular desktop cargo check passed."
     },
     "R12": {
       "state": "pending"
