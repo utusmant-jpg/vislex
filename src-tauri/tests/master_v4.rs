@@ -181,6 +181,21 @@ fn provider_rejects_orphans_truncation_and_url_models() {
     assert!(providers::encode(Provider::Gemini, &request).is_err());
 }
 #[test]
+fn provider_stop_reasons_distinguish_truncation_and_refusal() {
+    for (reason,expected) in [("max_tokens","incomplete"),("model_context_window_exceeded","incomplete"),("refusal","refused"),("pause_turn","paused")] {
+        let error=providers::decode(Provider::Anthropic,json!({"stop_reason":reason,"content":[]})).unwrap_err().to_string();
+        assert!(error.contains(expected),"{reason}: {error}");
+    }
+    for (reason,expected) in [("MAX_TOKENS","incomplete"),("SAFETY","blocked"),("RECITATION","blocked"),("MALFORMED_FUNCTION_CALL","malformed")] {
+        let error=providers::decode(Provider::Gemini,json!({"candidates":[{"finishReason":reason}]})).unwrap_err().to_string();
+        assert!(error.contains(expected),"{reason}: {error}");
+    }
+    let prompt=providers::decode(Provider::Gemini,json!({"promptFeedback":{"blockReason":"SAFETY"},"candidates":[]})).unwrap_err().to_string();
+    assert!(prompt.contains("prompt blocked"));
+    let unknown=providers::decode(Provider::Gemini,json!({"candidates":[{"finishReason":"untrusted arbitrary text"}]})).unwrap_err().to_string();
+    assert!(!unknown.contains("untrusted arbitrary text"));
+}
+#[test]
 fn gemini_preserves_signed_text_and_thought_parts_before_tool_calls() {
     let response=json!({"candidates":[{"finishReason":"STOP","content":{"parts":[
         {"text":"private thinking","thought":true,"thoughtSignature":"thought-sig"},
