@@ -311,7 +311,9 @@
       "state": "pending"
     },
     "R18": {
-      "state": "pending"
+      "state": "pending",
+      "worker_followup": "d648afc adds synthetic exported-byte checks for hidden PDF text, attachment and source metadata removal, pixel masking, rotated PDF page geometry, EXIF-oriented image coordinates, wrong-page and out-of-bounds rectangles. Initial test failed twice on Windows because PDFium retained the input handle after success and validation errors; the worker now closes page, bitmap, image and document resources. Focused 4/4 and full worker 27/27 Python tests passed; git diff --check passed. Single-owner diff review only; no independent visual review. This is a partial R18 slice, not release verification.",
+      "unrun_checks": "Packaged AppContainer worker on this exact commit, large multipage cancellation/resource tier, reviewed-output hash and revocation matrix, backup/restore round trip on the exact packaged worker, visual inspection and disclosure-package boundary acceptance remain open. R15/R17 prerequisites are implemented, not verified."
     },
     "R19": {
       "state": "implemented",
