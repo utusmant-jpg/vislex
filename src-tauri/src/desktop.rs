@@ -78,10 +78,10 @@ fn key_entry() -> anyhow::Result<keyring::Entry> { provider_key_entry(crate::pro
 
 async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<Value, String> {
     if action=="fetch_public_authority" {
-        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before authority retrieval");anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),url))})();
-        let (case_id,url)=prepared.map_err(|e|e.to_string())?;
+        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before authority retrieval");anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),url))})();
+        let (case_id,epoch,url)=prepared.map_err(|e|e.to_string())?;
         let download=crate::authority::retrieve(&url).await.map_err(|e|e.to_string())?;
-        let value=with_case(&app,&case_id,|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
+        let value=with_case_expected(&app,&case_id,Some(epoch),|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
         kick_automatic(app.clone(),case_id);let _=app.emit("case-changed",());return Ok(value);
     }
     // Explicit account metadata lookup: no case material and no case mutex during network I/O.
@@ -106,27 +106,27 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
 fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result<Value> {
 
     if action=="hybrid_search" {
-        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),crate::semantic::prepare_query(case,text(&args,"query")?,scope)?)};
+        let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::semantic::prepare_query(case,text(&args,"query")?,scope)?)};
         let result=crate::semantic::run(&job)?;
-        return with_case(app,&case_id,|case|crate::semantic::publish(case,&job,result));
+        return with_case_expected(app,&case_id,Some(epoch),|case|crate::semantic::publish(case,&job,result));
     }
     if action=="export_word" {
-        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");let record_id=text(&args,"record_id")?;let expected=export_revision(&args)?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_document_deferred_at_revision(case,record_id,expected,Path::new(text(&args,"path")?))?)};
+        let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");let record_id=text(&args,"record_id")?;let expected=export_revision(&args)?;(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::exports::prepare_document_deferred_at_revision(case,record_id,expected,Path::new(text(&args,"path")?))?)};
         crate::exports::run_document(&job)?;
         let staged=crate::exports::stage_document(&job)?;
-        return with_case(app,&case_id,|case|crate::exports::publish_staged_document(case,&job,staged));
+        return with_case_expected(app,&case_id,Some(epoch),|case|crate::exports::publish_staged_document(case,&job,staged));
     }
     if action=="resume_transcription" {
-        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcription resume");(case.meta("id")?.unwrap_or_default(),crate::transcription::resume(case,text(&args,"job_id")?)?)};
+        let (case_id,epoch,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcription resume");(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::transcription::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::transcription::run(&job).and_then(|value|crate::transcription::stage_transcript(&job,value));
-        let value=with_case(app,&case_id,|case|match staged {Ok(v)=>crate::transcription::publish_staged_transcript(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
+        let value=with_case_expected(app,&case_id,Some(epoch),|case|match staged {Ok(v)=>crate::transcription::publish_staged_transcript(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
         if value.is_ok(){kick_semantic(app.clone(),case_id.clone());}
         let _=app.emit("case-changed",());return value;
     }
     if action=="resume_processing" {
-        let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before processing resume");(case.meta("id")?.unwrap_or_default(),crate::processing::resume(case,text(&args,"job_id")?)?)};
+        let (case_id,epoch,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before processing resume");(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::processing::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
-        let result=with_case(app,&case_id,|case|crate::processing::publish_staged(case,&job,staged));
+        let result=with_case_expected(app,&case_id,Some(epoch),|case|crate::processing::publish_staged(case,&job,staged));
         if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
         let _=app.emit("case-changed",());return result;
     }
@@ -142,7 +142,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     }
     if ["import_files","import_folder"].contains(&action) {return import_background(app,action,args);}
     if ["process_source","probe_pdf","render_page","transcribe_source","scan_sound_events","prepare_redaction","diarize_source","step_video_frame"].contains(&action) {
-        let (case_id,job)={
+        let (case_id,epoch,job)={
             let state=app.state::<AppState>();
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let case=guard.as_mut().context("Open a case first")?;
@@ -160,11 +160,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 "step_video_frame"=>json!({"operation":"frame_at","target":args["target"],"direction":args["direction"]}),
                 _=>json!({"crop":null}),
             };
-            (case.meta("id")?.unwrap_or_default(),crate::processing::prepare_request(case,source,options)?)
+            (case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::processing::prepare_request(case,source,options)?)
         };
         let _=app.emit("case-changed",());
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
-        let result=with_case(app,&case_id,|case|crate::processing::publish_staged(case,&job,staged));
+        let result=with_case_expected(app,&case_id,Some(epoch),|case|crate::processing::publish_staged(case,&job,staged));
         if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
         let _=app.emit("case-changed",());
         return result;
@@ -201,11 +201,12 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let state=app.state::<AppState>();
 
-        let job={
+        let (job,epoch)={
 
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
 
             let c=guard.as_mut().ok_or_else(||anyhow::anyhow!("Open a case first"))?;
+            ensure_session_epoch(&state,&args)?;
 
             let source=text(&args,"source_id")?;
 
@@ -217,7 +218,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             anyhow::ensure!(running==0,"Playback is already being prepared. Reopen this source after conversion finishes.");
 
-            crate::processing::prepare_playback(c,source)?
+            (crate::processing::prepare_playback(c,source)?,state.session_epoch.load(std::sync::atomic::Ordering::SeqCst))
 
         };
 
@@ -228,6 +229,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         let c=guard.as_mut().ok_or_else(||anyhow::anyhow!("Case closed during playback processing"))?;
 
         anyhow::ensure!(c.meta("id")?.unwrap_or_default()==job.case_id,"Case changed during playback processing");
+        anyhow::ensure!(state.session_epoch.load(std::sync::atomic::Ordering::SeqCst)==epoch,"Case session changed before playback publication");
 
         let result=crate::processing::publish_staged_playback(c,&job,staged);
 
@@ -238,58 +240,58 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     }
     if action=="verify_source" {
         let source_id=text(&args,"source_id")?.to_owned();
-        let (case_id,path,expected)={
+        let (case_id,epoch,path,expected)={
             let state=app.state::<AppState>();
             let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_ref().context("Open a case first")?;
             let source=c.source(&source_id)?;
-            (c.meta("id")?.unwrap_or_default(),c.source_path(&source_id)?,source.sha256)
+            (c.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),c.source_path(&source_id)?,source.sha256)
         };
         // Hash the opened original outside the case mutex. On Windows this
         // read handle denies writes and replacement until the hash completes.
         anyhow::ensure!(crate::case::file_hash_strong(&path)?==expected,"Original bytes changed: strong integrity check failed");
-        return with_case(app,&case_id,|c|{
+        return with_case_expected(app,&case_id,Some(epoch),|c|{
             anyhow::ensure!(c.source(&source_id)?.sha256==expected && c.source_path(&source_id)?==path,"Source changed during verification");
             Ok(json!({"verified":true,"method":"full-sha256-reread","verified_at":crate::case::now()}))
         });
     }
     if action=="backup" {
         let destination=PathBuf::from(text(&args,"path")?);
-        let (case_id,plan)={
+        let (case_id,session_epoch,plan)={
             let state=app.state::<AppState>();
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_mut().context("Open a case first")?;
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before backup");
-            (c.meta("id")?.unwrap_or_default(),backup::prepare_backup_deferred(c,&destination,text(&args,"password")?)?)
+            (c.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),backup::prepare_backup_deferred(c,&destination,text(&args,"password")?)?)
         };
         // Archive hashing, tarring and encryption run without the case lock so chat,
         // viewing and cancellation stay responsive during a large backup.
         let mut plan=plan;
         backup::verify_backup_plan(&mut plan)?;
         backup::write_archive(&plan,&destination,text(&args,"password")?)?;
-        let value=with_case(app,&case_id,|c|backup::finish_backup(c,&plan));
+        let value=with_case_expected(app,&case_id,Some(session_epoch),|c|backup::finish_backup(c,&plan));
         let _=app.emit("case-changed",());
         return value;
     }
     if action=="export_dossier_bundle" {
         let destination=PathBuf::from(text(&args,"path")?);
-        let (case_id,plan)={
+        let (case_id,session_epoch,plan)={
             let state=app.state::<AppState>();
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_mut().context("Open a case first")?;
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before reviewed package export");
-            (c.meta("id")?.unwrap_or_default(),crate::exports::prepare_dossier_bundle(c,text(&args,"task_id")?,&destination)?)
+            (c.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::exports::prepare_dossier_bundle(c,text(&args,"task_id")?,&destination)?)
         };
         // Copying cited originals into the package runs without the case lock.
         let staged=crate::exports::write_dossier_bundle(&plan,&destination);
-        let value=with_case(app,&case_id,|c|crate::exports::publish_dossier_bundle(c,&plan,staged,&destination));
+        let value=with_case_expected(app,&case_id,Some(session_epoch),|c|crate::exports::publish_dossier_bundle(c,&plan,staged,&destination));
         let _=app.emit("case-changed",());
         return value;
     }
     if action=="export_redaction" {
-        let (case_id,plan)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction export");(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_redaction_export(case,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?)};
+        let (case_id,session_epoch,plan)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction export");(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::exports::prepare_redaction_export(case,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?)};
         let staged=crate::exports::stage_redaction_export(&plan)?;
-        let result=with_case(app,&case_id,|case|crate::exports::publish_staged_redaction_export(case,&plan,staged));
+        let result=with_case_expected(app,&case_id,Some(session_epoch),|case|crate::exports::publish_staged_redaction_export(case,&plan,staged));
         let _=app.emit("case-changed",());return result;
     }
 
@@ -516,6 +518,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let job_id = job.id.clone();
 
             let case_id = c.meta("id")?.unwrap_or_default();
+            let session_epoch = state.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
 
             let handle = app.clone();
 
@@ -523,7 +526,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
                 let result = crate::transcription::run(&job).and_then(|value| crate::transcription::stage_transcript(&job,value)).and_then(|staged| {
 
-                    with_case(&handle, &case_id, |case| {
+                    with_case_expected(&handle, &case_id, Some(session_epoch), |case| {
 
                         crate::transcription::publish_staged_transcript(case, &job, staged)
 
@@ -533,7 +536,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
                 if let Err(error) = result {
 
-                    let _ = with_case(&handle, &case_id, |case| {
+                    let _ = with_case_expected(&handle, &case_id, Some(session_epoch), |case| {
 
                         crate::transcription::fail(case, &job, &error.to_string())
 
@@ -963,6 +966,15 @@ fn with_case<T>(
     f: impl FnOnce(&mut Case) -> anyhow::Result<T>,
 
 ) -> anyhow::Result<T> {
+    with_case_expected(app, case_id, None, f)
+}
+
+fn with_case_expected<T>(
+    app: &tauri::AppHandle,
+    case_id: &str,
+    expected_epoch: Option<u64>,
+    f: impl FnOnce(&mut Case) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
 
     let state = app.state::<AppState>();
 
@@ -975,6 +987,9 @@ fn with_case<T>(
         .ok_or_else(|| anyhow::anyhow!("Case closed"))?;
 
     anyhow::ensure!(c.meta("id")?.as_deref() == Some(case_id), "Case changed");
+    if let Some(expected_epoch) = expected_epoch {
+        anyhow::ensure!(state.session_epoch.load(std::sync::atomic::Ordering::SeqCst) == expected_epoch, "Case session changed before publishing");
+    }
 
     f(c)
 
