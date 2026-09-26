@@ -18,6 +18,9 @@
   if (reopened.id !== created.id || reopened.session_epoch <= created.session_epoch) throw new Error('Same-case reopen did not advance the session epoch');
   const reopenedSummary = await invoke('case_summary', { case_id: reopened.id });
   if (reopenedSummary.session_epoch !== reopened.session_epoch) throw new Error('Summary session epoch disagrees with the reopened case');
+  if (!Number.isSafeInteger(reopenedSummary.event_seq)) throw new Error('Summary lacks an event sequence');
+  const caseEvents = [];
+  await window.__TAURI_INTERNALS__.invoke('plugin:event|listen', { event: 'case-event', target: { kind: 'Any' }, handler: window.__TAURI_INTERNALS__.transformCallback(event => caseEvents.push(event.payload)) });
   let staleSessionDenied = false;
   try { await invoke('save_settings', { case_id: reopened.id, session_epoch: created.session_epoch, settings: reopened.settings }); }
   catch (error) { staleSessionDenied = String(error).includes('Case session changed'); }
@@ -33,6 +36,7 @@
   const imported = await invoke('import_files', { case_id: created.id, paths: [fixture], production: 'Synthetic integrity' });
   if (imported.items[0]?.status !== 'imported') throw new Error('Synthetic import failed');
   const snapshot = await invoke('snapshot');
+  if (!Number.isSafeInteger(snapshot.event_seq) || snapshot.event_seq < reopenedSummary.event_seq) throw new Error('Case event sequence went backwards');
   const source = snapshot.sources[0];
   if (!source || source.size !== 256 * 1024 * 1024) throw new Error('Synthetic source size mismatch');
   const staleSessionActions = [
@@ -71,6 +75,10 @@
   catch (error) { staleSessionReviewDenied = String(error).includes('Case session changed'); }
   if (!staleSessionReviewDenied) throw new Error('An old same-case session reviewed a finding');
   await invoke('evidence_review', { case_id: snapshot.id, session_epoch: reopened.session_epoch, id: finding.id, revision: finding.revision, review: 'accepted' });
+  const afterFindings = await invoke('case_summary', { case_id: snapshot.id });
+  if (afterFindings.event_seq < snapshot.event_seq + 2) throw new Error('Finding write and review did not advance the event sequence');
+  const findingEvents = caseEvents.filter(event => event.case_id === snapshot.id && event.session_epoch === reopened.session_epoch);
+  if (findingEvents.length < 2 || findingEvents.some((event, index) => index > 0 && event.event_seq <= findingEvents[index - 1].event_seq)) throw new Error('Case event envelopes were missing or out of order');
   const staleWorkflows = [
     ['review_dossier_claim', { case_id: 'closed-synthetic-case', task_id: 'missing', revision: 1, claim_index: 0, decision: 'accepted', note: '' }],
     ['export_dossier_bundle', { case_id: 'closed-synthetic-case', task_id: 'missing', path: `${root}/artifacts/rejected-package-${run}` }],
@@ -130,5 +138,9 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_session_finding_write_denied: staleSessionFindingDenied, stale_session_finding_review_denied: staleSessionReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, stale_delete_denied: staleDeleteDenied, wrong_delete_target_denied: wrongDeleteTargetDenied, valid_empty_case_deleted: deletedEmpty.deleted, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
+  await invoke('close_case');
+  const other = await invoke('create_case', { path: `${root}/artifacts/event-case-b-${run}`, name: `Synthetic event case B ${run}` });
+  const lastEvent = caseEvents.at(-1);
+  if (lastEvent?.case_id !== other.id || lastEvent.session_epoch !== other.session_epoch || lastEvent.event_seq <= afterFindings.event_seq) throw new Error('Case switch did not produce a fenced event');
+  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_session_finding_write_denied: staleSessionFindingDenied, stale_session_finding_review_denied: staleSessionReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, stale_delete_denied: staleDeleteDenied, wrong_delete_target_denied: wrongDeleteTargetDenied, valid_empty_case_deleted: deletedEmpty.deleted, session_epochs: [created.session_epoch, reopened.session_epoch, other.session_epoch], event_seqs: [reopenedSummary.event_seq, snapshot.event_seq, afterFindings.event_seq, lastEvent.event_seq], received_case_events: findingEvents.length, case_id: snapshot.id };
 })().catch(error => ({ native_error: String(error), stack: String(error?.stack ?? '') }))
