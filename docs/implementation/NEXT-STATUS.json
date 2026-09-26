@@ -274,7 +274,18 @@
       "note": "Viewer probes physical count before rendering, so a one-page file never schedules page 12. Per-page render metadata sets geometry; prefetch cannot claim the visible page. The mounted page window is at most 13 even for a 10,000-page fixture, and recent artifact/ratio UI caches are bounded. Invalid page input is rejected before worker launch; page-copy control explicitly says navigation-only. PDF probe/render reuse one verified private source copy; probe/render do not overwrite extraction status. XLSX formula/cached rows iterate linearly. User originals and live case untouched."
     },
     "R16": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "d6c0169",
+      "evidence": "src/components/RecordEditor.test.tsx case switch/revision conflict/failed save; src/components/FullTranscript.test.tsx ten cursor pages and 10,000-line legacy text with bounded rendered rows",
+      "environment": "Windows x64; frontend synthetic interaction fixtures",
+      "commands": [
+        "npm test -> exit 0, 73 passed in 14 files after preserving the prior export-warning text expected by App.test.tsx",
+        "npm run build -> exit 0",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Self-review found that adding the draft-lifetime warning had broken an existing exact-copy assertion; separated the warning and reran the full suite. No independent reviewer was available for this slice.",
+      "unrun_checks": "The >64 KiB live streaming path, normalized case store/selectors, action/message virtualization, reactive viewer context, render-count profile, interaction p95 and packaged UI journey remain unverified. A separate isolated UI redesign task owns App.tsx, AgentPanel.tsx, ui.tsx and markdown.tsx and is investigating the stream truncation; its code is not merged into this branch. Long transcript test proves a mounted-row bound and search of saved text, not total latency on 40–60 GB cases. Memory-only drafts deliberately do not survive app exit/crash; this is now stated in the UI.",
+      "note": "RecordEditor remounts on case/record identity and retains case-scoped in-memory drafts; clean records follow new server revisions, conflicting drafts remain local and block save, failed saves keep text. FullTranscript keeps at most 200 rendered segment or legacy text rows while preserving loaded data/search and cursor pagination. User originals and live case untouched."
     },
     "R17": {
       "state": "pending"
