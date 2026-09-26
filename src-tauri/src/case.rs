@@ -248,7 +248,7 @@ impl Case {
         if !create && version < 3 {
             db.backup(rusqlite::DatabaseName::Main, root.join("pre-migration-v2.sqlite3"), None)?;
         }
-        db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_tasks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),conversation_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hidden_conversations(id TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS conversation_lookup ON conversation_tasks(conversation_id); CREATE INDEX IF NOT EXISTS tasks_created_id ON tasks(created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS records_updated_id ON records(updated_at DESC,id DESC);")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_tasks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),conversation_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hidden_conversations(id TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS conversation_lookup ON conversation_tasks(conversation_id); CREATE INDEX IF NOT EXISTS tasks_created_id ON tasks(created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS sources_created_id ON sources(created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS records_updated_id ON records(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS processing_jobs_source_kind ON processing_jobs(source_id,kind);")?;
         if version < 5 {
             if !create {
                 let snapshot = if version < 4 { "pre-migration-v3.sqlite3" } else { "pre-migration-v4.sqlite3" };
@@ -402,6 +402,21 @@ impl Case {
         }
         normalize_document_status(&mut source);
         Ok(source)
+    }
+    pub fn source_page(&self,before:Option<(&str,&str)>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT s.id,s.name,s.sha256,s.size,s.mime,s.kind,s.status,s.restricted,(SELECT count(*) FROM occurrences o WHERE o.source_id=s.id),s.created_at,j.result,EXISTS(SELECT 1 FROM records r WHERE r.id=json_extract(j.result,'$.record_id')) FROM sources s LEFT JOIN processing_jobs j ON j.rowid=(SELECT rowid FROM processing_jobs WHERE source_id=s.id AND kind='full_audio' AND status='complete' ORDER BY rowid DESC LIMIT 1) WHERE (?1 IS NULL OR s.created_at<?1 OR (s.created_at=?1 AND s.id<?2)) ORDER BY s.created_at DESC,s.id DESC LIMIT 51")?;
+        let mut sources=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r| {
+            let mut source=Source{id:r.get(0)?,name:r.get(1)?,sha256:r.get(2)?,size:r.get(3)?,mime:r.get(4)?,kind:r.get(5)?,status:r.get(6)?,restricted:r.get(7)?,occurrences:r.get(8)?,created_at:r.get(9)?};
+            if let Some(raw)=r.get::<_,Option<String>>(10)? {
+                let result=serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+                source.status=if result["metadata"]["no_audio_tracks"]==true {"no audio tracks · visual review pending"} else if r.get::<_,bool>(11)? {"text transcribed · all audio tracks · unreviewed"} else {"transcript record missing · needs attention"}.into();
+            }
+            normalize_document_status(&mut source);
+            Ok(source)
+        })?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=sources.len()>50;sources.truncate(50);
+        let next_cursor=if more {sources.last().map(|source|json!({"created_at":source.created_at,"id":source.id}))}else{None};
+        Ok(json!({"sources":sources,"next_cursor":next_cursor}))
     }
     pub fn source_path(&self, source_id: &str) -> Result<PathBuf> {
         let s = self.source(source_id)?;
@@ -717,6 +732,16 @@ impl Case {
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>,_>>()?)
     }
+    pub fn record_page(&self,before:Option<(&str,&str)>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT id,title,kind,revision,actor,review,protected,stale,updated_at,dependencies FROM records WHERE (?1 IS NULL OR updated_at<?1 OR (updated_at=?1 AND id<?2)) ORDER BY updated_at DESC,id DESC LIMIT 51")?;
+        let mut records=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r|{
+            let kind:String=r.get(2)?;let actor:String=r.get(4)?;
+            Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"kind":kind,"revision":r.get::<_,i64>(3)?,"actor":actor,"review":r.get::<_,String>(5)?,"protected":r.get::<_,bool>(6)?,"stale":if actor=="processor"&&kind=="transcript"{false}else{r.get::<_,bool>(7)?},"updated_at":r.get::<_,String>(8)?,"dependencies":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(json!([]))}))
+        })?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=records.len()>50;records.truncate(50);
+        let next_cursor=if more {records.last().map(|record|json!({"updated_at":record["updated_at"],"id":record["id"]}))}else{None};
+        Ok(json!({"records":records,"next_cursor":next_cursor}))
+    }
     pub fn record(&self, record_id: &str) -> Result<Record> {
         self.db
             .query_row(
@@ -1031,6 +1056,14 @@ impl Case {
         let (queued,running,failed,complete):(i64,i64,i64,i64)=self.db.query_row("SELECT COALESCE(SUM(status='queued'),0),COALESCE(SUM(status='running'),0),COALESCE(SUM(status IN ('failed','interrupted')),0),COALESCE(SUM(status='complete'),0) FROM processing_jobs",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
         let viewer_request=self.meta("viewer_request")?.map(|value|digest(value.as_bytes()));
         Ok(json!({"case_id":self.meta("id")?,"generation":self.generation()?,"audit_seq":audit_seq,"action_rowid":action_rowid,"viewer_request_hash":viewer_request,"task_update":task_update,"source_count":source_count,"record_count":record_count,"task_count":task_count,"job_count":job_count,"jobs_queued":queued,"jobs_running":running,"jobs_failed":failed,"jobs_complete":complete}))
+    }
+    pub fn job_page(&self,before:Option<i64>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,substr(j.error,1,500),j.created_at,(EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) OR EXISTS(SELECT 1 FROM processing_jobs parent JOIN processing_jobs newer ON newer.source_id=parent.source_id AND newer.kind=parent.kind AND newer.rowid>parent.rowid WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id))),(SELECT parent.id FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id) ORDER BY parent.rowid DESC LIMIT 1),j.rowid FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE (?1 IS NULL OR j.rowid<?1) ORDER BY j.rowid DESC LIMIT 51")?;
+        let mut jobs=stmt.query_map([before],|r|Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?,"parent_run_id":r.get::<_,Option<String>>(8)?,"cursor":r.get::<_,i64>(9)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=jobs.len()>50;jobs.truncate(50);
+        let next_cursor=if more {jobs.last().and_then(|job|job["cursor"].as_i64())}else{None};
+        for job in &mut jobs {job.as_object_mut().unwrap().remove("cursor");}
+        Ok(json!({"jobs":jobs,"next_cursor":next_cursor}))
     }
     pub fn snapshot(&self) -> Result<Value> {
         let tasks=self.task_page(None)?["tasks"].clone();

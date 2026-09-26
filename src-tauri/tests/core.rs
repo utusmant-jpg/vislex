@@ -503,6 +503,12 @@ fn large_snapshot_excludes_full_working_record_bodies() {
         tx.execute("INSERT INTO records(id,title,kind,content,revision,actor,review,updated_at,dependencies) VALUES(?,?,'note',?,1,'human','unreviewed',?,?)",rusqlite::params![format!("synthetic-record-{index}"),format!("Synthetic record {index}"),"x".repeat(2048),format!("2026-09-22T00:{:02}:{:02}Z",index/60,index%60),json!([sid]).to_string()]).unwrap();
         tx.execute("INSERT INTO tasks(id,prompt,mode,status,scope,edit_scope,budget,history,answer,generation,created_at,updated_at) VALUES(?,?,'investigate','complete','[]','[]',0,'[]',?,0,?,?)",rusqlite::params![format!("synthetic-task-{index}"),format!("Synthetic question {index}"),"Old answer. ".repeat(90),format!("2026-09-22T01:{:02}:{:02}Z",index/60,index%60),format!("2026-09-22T01:{:02}:{:02}Z",index/60,index%60)]).unwrap();
     }
+    for index in 0..120 {
+        tx.execute("INSERT INTO sources(id,name,sha256,size,mime,kind,status,restricted,created_at) VALUES(?,?,?,1,'text/plain','text','imported',0,?)",rusqlite::params![format!("synthetic-source-{index}"),format!("Synthetic source {index}"),format!("{index:064x}"),format!("2026-09-22T02:{:02}:{:02}Z",index/60,index%60)]).unwrap();
+    }
+    for index in 0..100 {
+        tx.execute("INSERT INTO processing_jobs(id,source_id,kind,status,result,error,created_at) VALUES(?,?,'auto_prepare','complete','{}','',?)",rusqlite::params![format!("synthetic-job-{index}"),format!("synthetic-source-{}",index%120),format!("2026-09-22T03:{:02}:{:02}Z",index/60,index%60)]).unwrap();
+    }
     tx.commit().unwrap();
     let started=std::time::Instant::now();
     let snapshot=c.snapshot().unwrap();
@@ -513,6 +519,8 @@ fn large_snapshot_excludes_full_working_record_bodies() {
     let summary=c.case_summary().unwrap();
     assert!(serde_json::to_vec(&summary).unwrap().len()<1024,"Routine polling must stay small");
     assert_eq!(summary["record_count"],500);
+    assert_eq!(summary["source_count"],121);
+    assert_eq!(summary["job_count"],100);
     assert_eq!(summary["task_count"],500);
     assert_eq!(snapshot["tasks"].as_array().unwrap().len(),50);
     assert!(snapshot["tasks"][0]["answer"].as_str().unwrap().len()<=200);
@@ -525,10 +533,42 @@ fn large_snapshot_excludes_full_working_record_bodies() {
         before=Some((cursor["created_at"].as_str().unwrap().to_string(),cursor["id"].as_str().unwrap().to_string()));
     }
     assert_eq!(ids.len(),500,"Keyset pages must not skip synthetic tasks");
+    let mut before=None::<(String,String)>;
+    let mut records=std::collections::HashSet::new();
+    loop {
+        let page=c.record_page(before.as_ref().map(|(at,id)|(at.as_str(),id.as_str()))).unwrap();
+        for record in page["records"].as_array().unwrap() {assert!(records.insert(record["id"].as_str().unwrap().to_string()),"Duplicate record page entry");}
+        let Some(cursor)=page["next_cursor"].as_object() else {break};
+        before=Some((cursor["updated_at"].as_str().unwrap().to_string(),cursor["id"].as_str().unwrap().to_string()));
+    }
+    assert_eq!(records.len(),500,"Keyset pages must not skip synthetic records");
+    let mut before=None::<(String,String)>;
+    let mut sources=std::collections::HashSet::new();
+    loop {
+        let page=c.source_page(before.as_ref().map(|(at,id)|(at.as_str(),id.as_str()))).unwrap();
+        for source in page["sources"].as_array().unwrap() {assert!(sources.insert(source["id"].as_str().unwrap().to_string()),"Duplicate source page entry");}
+        let Some(cursor)=page["next_cursor"].as_object() else {break};
+        before=Some((cursor["created_at"].as_str().unwrap().to_string(),cursor["id"].as_str().unwrap().to_string()));
+    }
+    assert_eq!(sources.len(),121,"Keyset pages must not skip synthetic sources");
+    let mut before=None;
+    let mut jobs=std::collections::HashSet::new();
+    loop {
+        let page=c.job_page(before).unwrap();
+        for job in page["jobs"].as_array().unwrap() {assert!(jobs.insert(job["id"].as_str().unwrap().to_string()),"Duplicate job page entry");}
+        let Some(cursor)=page["next_cursor"].as_i64() else {break};
+        before=Some(cursor);
+    }
+    assert_eq!(jobs.len(),100,"Rowid pages must not skip synthetic jobs");
     let old=c.conversation_detail("synthetic-task-0",None).unwrap();
     assert_eq!(old["tasks"][0]["answer"].as_str().unwrap().len(),"Old answer. ".repeat(90).len(),"Full historical answer remains retrievable on demand");
     let plan:String=c.db.query_row("EXPLAIN QUERY PLAN SELECT id FROM tasks ORDER BY created_at DESC,id DESC LIMIT 50",[],|r|r.get(3)).unwrap();
     assert!(plan.contains("tasks_created_id"),"Task page query should use its ordering index: {plan}");
+    for (table,index,order) in [("sources","sources_created_id","created_at"),("records","records_updated_id","updated_at")] {
+        let sql=format!("EXPLAIN QUERY PLAN SELECT id FROM {table} ORDER BY {order} DESC,id DESC LIMIT 50");
+        let plan:String=c.db.query_row(&sql,[],|r|r.get(3)).unwrap();
+        assert!(plan.contains(index),"{table} page query should use {index}: {plan}");
+    }
 }
 
 #[test]

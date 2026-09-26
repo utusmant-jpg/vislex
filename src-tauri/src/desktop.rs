@@ -365,6 +365,22 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let before=if args["before"].is_null(){None}else{Some((text(&args["before"],"created_at")?,text(&args["before"],"id")?))};
             c.task_page(before)?
         },
+        "source_page" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before source page");
+            anyhow::ensure!(args["generation"].as_i64()==Some(c.generation()?),"Case changed before source page");
+            let before=if args["before"].is_null(){None}else{Some((text(&args["before"],"created_at")?,text(&args["before"],"id")?))};
+            c.source_page(before)?
+        },
+        "record_page" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working file page");
+            anyhow::ensure!(args["generation"].as_i64()==Some(c.generation()?),"Case changed before working file page");
+            let before=if args["before"].is_null(){None}else{Some((text(&args["before"],"updated_at")?,text(&args["before"],"id")?))};
+            c.record_page(before)?
+        },
+        "job_page" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before job page");
+            c.job_page(args["before"].as_i64())?
+        },
         "conversation_detail" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before conversation detail");
             let before=if args["before"].is_null(){None}else{Some((text(&args["before"],"created_at")?,text(&args["before"],"id")?))};
@@ -820,7 +836,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "search",
 
-        "actions", "issue_history", "record_detail", "task_page", "conversation_detail", "case_summary",
+        "actions", "issue_history", "record_detail", "task_page", "source_page", "record_page", "job_page", "conversation_detail", "case_summary",
 
         "revisions",
 
