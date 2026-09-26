@@ -47,6 +47,8 @@
     ['backup', { path: `${root}/artifacts/rejected-session-backup-${run}.age`, password: 'synthetic-passphrase-only' }],
     ['export_dossier_bundle', { task_id: 'missing', path: `${root}/artifacts/rejected-session-package-${run}` }],
     ['export_redaction', { artifact_id: 'missing', path: `${root}/artifacts/rejected-session-redaction-${run}.pdf` }],
+    ['review_redaction', { artifact_id: 'missing', pages: [1], note: 'Rejected old session' }],
+    ['save_speaker_annotations', { source_id: source.id, artifact_id: 'missing', revision: 0, labels: {}, turns: {} }],
     ['hybrid_search', { query: 'synthetic' }],
   ];
   for (const [action, args] of staleSessionActions) {
