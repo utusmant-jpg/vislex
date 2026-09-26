@@ -33,6 +33,16 @@ it('opens a pinned citation against its historical revision and marks the wordin
   expect(screen.getByText('Old exact wording')).toBeTruthy();
   expect(screen.queryByText('Changed active wording')).toBeNull();
   expect(screen.getByRole('note').textContent).toContain('superseded wording preserved');
+  expect(screen.getByText('Extracted text · Revision 1 · Lines 5–5 of 9')).toBeTruthy();
+  expect(screen.getByText('TEXT · 100 B · text ready')).toBeTruthy();
+});
+
+it('keeps the restriction visible while reading a source', async () => {
+  const restricted={...source,restricted:true};
+  api.mockResolvedValue({text:'Allowed excerpt',start:1,end:1,total_lines:1,revision:2,historical:false,locator:'evidence:source-one#R2L1-L1'});
+  render(<EvidenceViewer source={restricted} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
+  expect(screen.getByRole('status',{name:'Restricted'})).toBeTruthy();
+  await waitFor(()=>expect(screen.getByText('Allowed excerpt')).toBeTruthy());
 });
 
 it('reattaches transport state after original video changes to a proxy and ignores shortcuts in inputs', async () => {
@@ -121,7 +131,11 @@ it('keeps a very large PDF viewer window bounded and jumps to a valid physical p
   const view=render(<EvidenceViewer source={pdf} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
   await waitFor(()=>expect(screen.getByText('of 10000 physical pages')).toBeTruthy());
   expect(view.container.querySelectorAll('.pdf-page').length).toBeLessThanOrEqual(13);
-  fireEvent.change(screen.getByRole('spinbutton',{name:'Current page'}),{target:{value:'5000'}});
+  const pageInput=screen.getByRole('spinbutton',{name:'Current page'});
+  fireEvent.change(pageInput,{target:{value:'50'}});
+  expect(view.container.querySelector('[data-page="50"]')).toBeNull();
+  fireEvent.change(pageInput,{target:{value:'5000'}});
+  fireEvent.keyDown(pageInput,{key:'Enter'});
   await waitFor(()=>expect(view.container.querySelector('[data-page="5000"]')).toBeTruthy());
   expect(view.container.querySelectorAll('.pdf-page').length).toBeLessThanOrEqual(13);
 });

@@ -183,6 +183,8 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   // PDF continuous-scroll state
   const [pdfCount, setPdfCount] = useState<number | null>(null);
   const [pdfPage, setPdfPage] = useState(requestedPage ?? 1);
+  const [pdfPageInput, setPdfPageInput] = useState<string | null>(null);
+  const ignorePdfBlur = useRef(false);
   const [pdfVisiblePage,setPdfVisiblePage]=useState<number|null>(null);
   const [pdfArtifacts, setPdfArtifacts] = useState<Record<number, string>>({});
   const [pdfRatios, setPdfRatios] = useState<Record<number,number>>({});
@@ -349,8 +351,20 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     setPdfPage(target);
     requestAnimationFrame(()=>pdfPagesRef.current.get(target)?.scrollIntoView?.({behavior:'smooth',block:'start'}));
   };
+  const commitPdfPage=()=>{
+    if(pdfPageInput!==null && /^\d+$/.test(pdfPageInput.trim()))scrollToPdfPage(Number(pdfPageInput.trim()));
+    setPdfPageInput(null);
+  };
 
   return <div className="viewer">
+    <header className="viewer-source-header">
+      <div className="viewer-source-icon"><SourceIcon kind={source.kind} size={17} /></div>
+      <div className="viewer-source-identity">
+        <strong title={source.name}>{source.name}</strong>
+        <span>{source.kind.toUpperCase()} · {formatBytes(source.size)} · {source.status}</span>
+      </div>
+      {source.restricted ? <span className="viewer-restricted" role="status" aria-label="Restricted">Restricted</span> : null}
+    </header>
     {source.kind === 'image' ? <div className="image-controls">
       <Tooltip text="Zoom out"><button className="icon-button" aria-label="Zoom out" onClick={() => setZoom(value => Math.max(0.25, value - 0.25))}><ZoomOut size={15} /></button></Tooltip>
       <span className="mono">{Math.round(zoom * 100)}%</span>
@@ -363,11 +377,13 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       <Tooltip text="Previous physical page"><button className="icon-button" aria-label="Previous page" disabled={pdfCount===null||pdfPage<=1} onClick={() => scrollToPdfPage(pdfPage-1)}><ChevronsLeft size={16} /></button></Tooltip>
       <label className="pdf-page-input">Page
         <input
-          type="number" min={1} max={pdfCount ?? undefined} value={pdfPage} disabled={pdfCount===null}
+          type="number" min={1} max={pdfCount ?? undefined} value={pdfPageInput ?? pdfPage} disabled={pdfCount===null}
           aria-label="Current page"
-          onChange={event => {
-            const target = Number(event.target.value);
-            scrollToPdfPage(target);
+          onChange={event => setPdfPageInput(event.target.value)}
+          onBlur={()=>{if(ignorePdfBlur.current){ignorePdfBlur.current=false;return;}commitPdfPage();}}
+          onKeyDown={event => {
+            if(event.key==='Enter'){event.preventDefault();commitPdfPage();event.currentTarget.blur();}
+            if(event.key==='Escape'){event.preventDefault();ignorePdfBlur.current=true;setPdfPageInput(null);event.currentTarget.blur();}
           }} />
       </label>
       <span className="muted small">{pdfCount ? `of ${pdfCount} physical pages` : 'Checking page count…'}</span>
@@ -384,6 +400,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       {showText && page ? <article className="document-page" onMouseUp={onTextSelect}>
         {page.historical ? <p className="small muted historical-notice" role="note">Historical extraction revision {page.revision} — superseded wording preserved; this is not the current active text.</p> : null}
         <h2>{source.name.replace(/^\d+ · /, '')}</h2>
+        <p className="document-provenance">Extracted text · Revision {page.revision} · Lines {page.start}–{page.end} of {page.total_lines}</p>
         <div className="doc-rule" />
         <div className="text-lines">
           {page.text.split('\n').map((line, index) => <div className="text-line" data-line={start + index} key={index}><span className="line-number">{start + index}</span><span>{line || '\u00a0'}</span></div>)}

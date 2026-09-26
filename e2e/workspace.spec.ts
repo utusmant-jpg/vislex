@@ -1,5 +1,26 @@
 import { expect, test } from '@playwright/test';
 
+test('evidence workspace stays readable in dark and light appearance', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1500, height: 900 });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto('/');
+  await page.getByRole('button', { name: /Try the sample case/ }).click();
+  await page.keyboard.press('Control+2');
+  await page.locator('.library-row').first().click();
+  await expect(page.locator('.document-page')).toBeVisible();
+  await expect(page.locator('.viewer-source-header')).toContainText('Witness statement');
+  const darkReadingSurface = await page.locator('.document-page').evaluate(element => getComputedStyle(element).backgroundColor);
+  await page.screenshot({ path: testInfo.outputPath('redesign-dark-evidence.png') });
+  await page.keyboard.press('Control+,');
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  await page.getByRole('button', { name: 'Light', exact: true }).click();
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  const lightReadingSurface = await page.locator('.document-page').evaluate(element => getComputedStyle(element).backgroundColor);
+  expect(lightReadingSurface).not.toBe(darkReadingSurface);
+  await page.screenshot({ path: testInfo.outputPath('redesign-light-evidence.png') });
+});
+
 test('theme, workspace navigation, and case-independent settings', async ({ page }, testInfo) => {
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.goto('/');

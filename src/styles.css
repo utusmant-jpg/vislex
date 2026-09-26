@@ -27,6 +27,10 @@
   --bg-surface-3: #252b35;
   --bg-inset: #101318;
   --canvas-media: #08090b;
+  --reading-bg: #1b2028;
+  --reading-text: #e6eaf0;
+  --reading-muted: #aeb8c7;
+  --reading-rule: #465569;
 
   --border-subtle: #252b33;
   --border: #313946;
@@ -76,6 +80,10 @@
   --bg-surface-3: #e7ebf1;
   --bg-inset: #f5f7fa;
   --canvas-media: #e6e8ec;
+  --reading-bg: #ffffff;
+  --reading-text: #243044;
+  --reading-muted: #536276;
+  --reading-rule: #b8c8dc;
 
   --border-subtle: #e3e7ed;
   --border: #d4dae3;
@@ -614,6 +622,12 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 .file-tab.active { color: var(--text-primary); background: var(--bg-surface-2); box-shadow: inset 0 2px var(--accent); }
 
 .viewer { display: flex; flex: 1; min-height: 0; flex-direction: column; background: var(--bg-surface-1); }
+.viewer-source-header { display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 8px 14px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface-1); }
+.viewer-source-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: none; color: var(--text-secondary); background: var(--bg-surface-2); border-radius: var(--r-sm); }
+.viewer-source-identity { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.viewer-source-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
+.viewer-source-identity span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font-size: 11px; }
+.viewer-restricted { margin-left: auto; flex: none; padding: 3px 7px; border: 1px solid var(--restricted); border-radius: var(--r-sm); color: var(--restricted); background: var(--restricted-bg); font-size: 11px; font-weight: 600; }
 .viewer-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 14px; border-bottom: 1px solid var(--border-subtle); font-size: 11.5px; flex-shrink: 0; }
 .image-controls, .pdf-navigation {
   display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 12px;
@@ -640,17 +654,18 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 .back-source { padding: 9px; display: block; margin: 10px auto; }
 
 .document-page {
-  max-width: 820px; margin: 18px auto; background: #fdfcfa; color: #2d3a34; min-height: 400px;
+  max-width: 820px; margin: 18px auto; background: var(--reading-bg); color: var(--reading-text); min-height: 400px;
   padding: 34px 32px 26px; box-shadow: var(--shadow-1); border-radius: 3px;
 }
-.document-page h2 { font-family: Georgia, serif; font-size: 21px; font-weight: 400; line-height: 1.4; color: #1e3530; margin-bottom: 14px; }
-.doc-rule { height: 2px; width: 42px; background: #4e7263; margin: 0 0 20px; }
-.text-lines { font-size: 13px; line-height: 1.85; color: #39453e; }
+.document-page h2 { font-size: 20px; font-weight: 600; line-height: 1.4; color: var(--reading-text); margin-bottom: 5px; }
+.document-provenance { margin: 0 0 18px; color: var(--reading-muted); font-size: 11.5px; }
+.doc-rule { height: 1px; width: 100%; background: var(--reading-rule); margin: 0 0 20px; }
+.text-lines { font-size: 14px; line-height: 1.75; color: var(--reading-text); }
 .text-line { display: flex; gap: 14px; }
-.line-number { font-size: 10px; color: #a7a69c; user-select: none; min-width: 20px; padding-top: 3px; text-align: right; font-family: 'Cascadia Code', Consolas, monospace; }
+.line-number { font-size: 10px; color: var(--reading-muted); user-select: none; min-width: 20px; padding-top: 3px; text-align: right; font-family: 'Cascadia Code', Consolas, monospace; }
 .text-line > span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
-.artifact-text { white-space: pre-wrap; font-size: 12.5px; line-height: 1.8; color: #344b40; overflow-wrap: anywhere; }
-.doc-footer { border-top: 1px solid #ddd8c9; padding-top: 13px; margin-top: 30px; color: #87927f; font-size: 10.5px; }
+.artifact-text { white-space: pre-wrap; font-size: 12.5px; line-height: 1.8; color: var(--reading-text); overflow-wrap: anywhere; }
+.doc-footer { border-top: 1px solid var(--reading-rule); padding-top: 13px; margin-top: 30px; color: var(--reading-muted); font-size: 10.5px; }
 
 .audio-stage { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-secondary); gap: 14px; padding: 20px; }
 .audio-stage h2 { font-size: 16px; font-weight: 500; }
