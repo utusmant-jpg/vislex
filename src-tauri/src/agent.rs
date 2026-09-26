@@ -246,6 +246,10 @@ pub fn pause(case: &mut Case, task: &str, reason: &str) -> Result<()> {
         params![reason, now(), task],
     )?;
     if changed>0 {crate::automatic::record_pause(case,task,reason)?;}
+    let mut query=case.db.prepare("SELECT id FROM processing_jobs WHERE status='running' AND json_extract(result,'$.task_id')=?")?;
+    let jobs=query.query_map([task],|row|row.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
+    drop(query);
+    for job in jobs {let _=crate::processing::cancel(case,&job);}
     Ok(())
 }
 pub fn resume(case: &mut Case, task: &str) -> Result<()> {
@@ -370,7 +374,7 @@ pub fn prepare_media(case: &mut Case, task: &str, transmission: &str, response: 
     };
     let mut jobs:Vec<crate::processing::PreparedJob>=vec![];
     for option in options {match crate::processing::prepare_request(case,source,option) {
-        Ok(job)=>jobs.push(job),Err(error)=>{for job in jobs {case.db.execute("UPDATE processing_jobs SET status='failed',error='Preparation batch failed; retry the tool' WHERE id=?",[job.job_id])?;}return Err(error);}
+        Ok(job)=>{case.db.execute("UPDATE processing_jobs SET result=? WHERE id=?",params![json!({"task_id":task}).to_string(),job.job_id])?;jobs.push(job)},Err(error)=>{for job in jobs {case.db.execute("UPDATE processing_jobs SET status='failed',error='Preparation batch failed; retry the tool' WHERE id=?",[job.job_id])?;}return Err(error);}
     }}
     Ok(jobs)
 }

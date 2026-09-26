@@ -23,6 +23,23 @@ fn setup() -> (tempfile::TempDir, Case, String) {
     let sid = case.sources().unwrap()[0].id.clone();
     (dir, case, sid)
 }
+#[test]
+fn schema_seven_tracks_attempts_and_reconciles_interrupted_jobs() {
+    let (dir,c,source)=setup();let root=c.root.clone();let job="synthetic-schedule-job";
+    c.db.execute("INSERT INTO processing_jobs VALUES(?,?,'auto_prepare','queued','{}','',?)",rusqlite::params![job,source,evidence_desk::case::now()]).unwrap();
+    let (priority,attempt,revision):(String,i64,String)=c.db.query_row("SELECT priority,attempt,input_revision FROM job_schedule WHERE job_id=?",[job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(priority,"background");assert_eq!(attempt,0);assert_eq!(revision,c.source(&source).unwrap().sha256);
+    c.db.execute("UPDATE processing_jobs SET status='running' WHERE id=?",[job]).unwrap();
+    assert_eq!(c.db.query_row("SELECT attempt FROM job_schedule WHERE job_id=?",[job],|r|r.get::<_,i64>(0)).unwrap(),1);
+    drop(c);let reopened=Case::open(&root).unwrap();
+    let (status,heartbeat):(String,Option<String>)=reopened.db.query_row("SELECT j.status,s.heartbeat FROM processing_jobs j JOIN job_schedule s ON s.job_id=j.id WHERE j.id=?",[job],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(status,"interrupted");assert!(heartbeat.is_none());
+    reopened.db.execute_batch("DROP TRIGGER job_schedule_insert; DROP TRIGGER job_schedule_status; DROP TABLE job_schedule; PRAGMA user_version=6;").unwrap();
+    drop(reopened);let upgraded=Case::open(&root).unwrap();
+    assert!(root.join("pre-migration-v6.sqlite3").exists());
+    assert_eq!(upgraded.db.query_row("SELECT priority FROM job_schedule WHERE job_id=?",[job],|r|r.get::<_,String>(0)).unwrap(),"background");
+    drop(upgraded);drop(dir);
+}
 fn enable(case: &mut Case) {
     case.save_settings(Settings {
         offline: false,
@@ -1454,7 +1471,7 @@ fn backup_refuses_metadata_preserving_tampering_with_strong_check() {
 /// never outlive the case they were computed in.
 #[test]
 fn opening_a_case_clears_stale_interactive_hashes() {
-    let (dir, mut c, s) = setup();
+    let (_dir, c, s) = setup();
     let root = c.root.clone();
     let _ = c.verify_source(&s);
     let original = c.source_path(&s).unwrap();
@@ -1502,7 +1519,7 @@ fn export_preparation_refuses_metadata_preserving_tampering() {
 /// registered artifact must be caught by a fresh full-hash check.
 #[test]
 fn artifact_reads_reject_metadata_preserving_tampering() {
-    let (dir, mut c, s) = setup();
+    let (_dir, c, s) = setup();
     let bytes = b"synthetic-artifact-payload";
     let hash = evidence_desk::case::digest(bytes);
     let relative = format!("artifacts/{hash}.json");

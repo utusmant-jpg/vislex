@@ -55,6 +55,8 @@ fn overview_navigation_advances_while_full_audio_uses_the_heavy_worker() {
     let job=discovery::next(&mut c).unwrap().unwrap();
     assert_eq!(job.run_id,queued["jobs"][1].as_str().unwrap());
     assert_eq!(job.processor.kind,"video_overview");
+    let dependency:String=c.db.query_row("SELECT dependency_job FROM job_schedule WHERE job_id=?",[&job.processor.job_id],|r|r.get(0)).unwrap();
+    assert_eq!(dependency,job.run_id);
 }
 #[test]
 fn overview_and_ocr_chunks_alternate_across_a_large_case() {

@@ -495,6 +495,20 @@ fn agent_prepared_media_publishes_once_and_records_actual_page_receipt() {
     assert!(agent::receive_prepared(&mut case,&task,&request.transmission,response,&mut media).is_err());
 }
 #[test]
+#[ignore = "Requires packaged worker for agent preparation"]
+fn stopping_chat_cancels_its_prepared_local_worker_before_launch() {
+    use evidence_desk::agent;
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Prepared cancellation fixture").unwrap();
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/statement.pdf");case.import_files(&[path.to_string_lossy().into()],"Synthetic fixture").unwrap();let source=case.sources().unwrap()[0].id.clone();
+    let mut settings=case.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.allow_images=true;settings.model="synthetic".into();case.save_settings(settings).unwrap();
+    let task=agent::start(&mut case,"Inspect page","investigate",vec![source.clone()],vec![],0.).unwrap();let request=agent::prepare_request(&mut case,&task).unwrap();
+    let response=json!({"status":"completed","output":[{"type":"function_call","call_id":"prepared-cancel","name":"inspect_document_page","arguments":json!({"source_id":source,"page":1}).to_string()}]});
+    let jobs=agent::prepare_media(&mut case,&task,&request.transmission,&response).unwrap();assert_eq!(jobs.len(),1);
+    agent::pause(&mut case,&task,"Stopped by user").unwrap();
+    assert!(jobs[0].staging.path().join("cancel.request").exists());
+    assert!(processing::run_prepared(&jobs[0]).is_err());
+}
+#[test]
 #[ignore = "Requires packaged diarization models"]
 fn local_speaker_turns_are_anonymous_scoped_and_timestamped() {
     let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Speaker fixture").unwrap();

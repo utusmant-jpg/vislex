@@ -230,7 +230,7 @@ impl Case {
         let db = Connection::open(root.join("case.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 6, "This case requires a newer application");
+        ensure!(version <= 7, "This case requires a newer application");
         if create {
             db.execute_batch(SCHEMA)?;
         } else {
@@ -271,6 +271,40 @@ impl Case {
                 PRAGMA user_version=6;
                 COMMIT;",
             )?;
+        }
+        if version < 7 {
+            if !create && version >= 6 {db.backup(rusqlite::DatabaseName::Main,root.join("pre-migration-v6.sqlite3"),None)?;}
+            db.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS job_schedule(
+                    job_id TEXT PRIMARY KEY REFERENCES processing_jobs(id),
+                    priority TEXT NOT NULL CHECK(priority IN ('interactive','background')),
+                    attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt>=0),
+                    input_revision TEXT NOT NULL,
+                    dependency_job TEXT,
+                    heartbeat TEXT,
+                    cancel_reason TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO job_schedule(job_id,priority,attempt,input_revision,dependency_job,heartbeat,cancel_reason,updated_at)
+                    SELECT j.id,CASE WHEN j.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index','video_ocr','video_overview','media_inventory') THEN 'background' ELSE 'interactive' END,
+                        CASE WHEN j.status='queued' THEN 0 ELSE 1 END,s.sha256,NULL,CASE WHEN j.status='running' THEN j.created_at ELSE NULL END,
+                        CASE WHEN j.status='cancelled' THEN substr(j.error,1,500) ELSE NULL END,j.created_at
+                    FROM processing_jobs j JOIN sources s ON s.id=j.source_id;
+                CREATE INDEX IF NOT EXISTS job_schedule_priority ON job_schedule(priority,updated_at,job_id);
+                CREATE INDEX IF NOT EXISTS job_schedule_heartbeat ON job_schedule(heartbeat) WHERE heartbeat IS NOT NULL;
+                CREATE TRIGGER IF NOT EXISTS job_schedule_insert AFTER INSERT ON processing_jobs BEGIN
+                    INSERT INTO job_schedule(job_id,priority,attempt,input_revision,dependency_job,heartbeat,cancel_reason,updated_at)
+                    VALUES(NEW.id,CASE WHEN NEW.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index','video_ocr','video_overview','media_inventory') THEN 'background' ELSE 'interactive' END,
+                        CASE WHEN NEW.status='running' THEN 1 ELSE 0 END,(SELECT sha256 FROM sources WHERE id=NEW.source_id),NULL,
+                        CASE WHEN NEW.status='running' THEN NEW.created_at ELSE NULL END,NULL,NEW.created_at);
+                END;
+                CREATE TRIGGER IF NOT EXISTS job_schedule_status AFTER UPDATE OF status ON processing_jobs BEGIN
+                    UPDATE job_schedule SET attempt=attempt+CASE WHEN NEW.status='running' AND OLD.status<>'running' THEN 1 ELSE 0 END,
+                        heartbeat=CASE WHEN NEW.status='running' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,
+                        cancel_reason=CASE WHEN NEW.status='cancelled' THEN substr(NEW.error,1,500) WHEN NEW.status IN ('queued','running') THEN NULL ELSE cancel_reason END,
+                        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE job_id=NEW.id;
+                END;
+                PRAGMA user_version=7; COMMIT;")?;
         }
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;",
@@ -1252,7 +1286,7 @@ pub fn delete_case(root: &Path, confirm: &str) -> Result<Value> {
     )?;
     let db = Connection::open(root.join("case.sqlite3"))?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    ensure!(version <= 6, "This case requires a newer application");
+    ensure!(version <= 7, "This case requires a newer application");
     let name: String = db
         .query_row("SELECT value FROM meta WHERE key='name'", [], |r| r.get(0))
         .optional()

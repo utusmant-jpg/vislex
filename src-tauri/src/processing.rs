@@ -63,6 +63,7 @@ pub struct PreparedJob {
     pub cached:Option<Value>,
 }
 pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<PreparedJob> {
+    let automatic=options["operation"]=="automatic";
     let source = case.source(source_id)?;
     ensure!(
         source.size
@@ -113,6 +114,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     let staging = JobDirectory(tempfile::tempdir_in(case.root.join("staging"))?.keep());
     let mut request = options;
     if ["docx","xlsx","pptx","odt"].contains(&kind) {if let Some(object)=request.as_object_mut(){object.remove("operation");object.remove("crop");}}
+    if automatic {request["scheduler_priority"]=json!("background");}
     if kind=="redaction" {request["source_kind"]=json!(source.kind);}
     request["asr_model"] = json!(case.meta("asr_profile")?.unwrap_or_else(||"tiny".into()));
     request["version"] = json!(1);
@@ -756,6 +758,17 @@ pub fn publish_playback(case:&mut Case, job:&PlaybackJob,result:Result<Value>) -
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+    #[test]
+    fn automatic_office_work_keeps_background_priority_after_normalizing_request() {
+        let dir=tempfile::tempdir().unwrap();
+        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/notes.docx");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic automatic office work").unwrap();
+        case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source_id=case.sources().unwrap()[0].id.clone();
+        let job=prepare_request(&mut case,&source_id,json!({"operation":"automatic"})).unwrap();
+        assert_eq!(job.request["scheduler_priority"],"background");
+        assert!(job.request.get("operation").is_none());
+    }
     fn staged_fixture()->(tempfile::TempDir,Case,PreparedJob,StagedPublication) {
         let dir=tempfile::tempdir().unwrap();
         let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");

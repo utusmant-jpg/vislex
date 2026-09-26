@@ -96,6 +96,9 @@ pub fn next(case:&mut Case)->Result<Option<Job>> {
     let processor=match processing::prepare_request(case,&source,json!({"operation":operation,"start":start,"end":start+60.,"interval":config["interval"]})) {
         Ok(job)=>job,Err(e)=>{case.db.execute("UPDATE processing_jobs SET status='failed',error=? WHERE id=?",params![e.to_string(),run_id])?;return Ok(None)}
     };
+    if processor.cached.is_none() {
+        case.db.execute("UPDATE job_schedule SET dependency_job=? WHERE job_id=?",params![run_id,processor.job_id])?;
+    }
     config["active_job"]=if processor.cached.is_some(){Value::Null}else{json!(processor.job_id)};
     case.db.execute("UPDATE processing_jobs SET status='running',result=? WHERE id=?",params![config.to_string(),run_id])?;
     case.set_meta("discovery_last_kind",&kind)?;

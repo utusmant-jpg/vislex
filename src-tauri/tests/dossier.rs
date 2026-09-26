@@ -655,7 +655,7 @@ fn non_factual_blocks_cannot_smuggle_assertions_or_claims() {
 /// stay readable, but no block can bind to their unaddressable claims.
 #[test]
 fn legacy_claimless_id_dossiers_stay_readable_but_unaddressable() {
-    let (_dir,mut c,s,t)=setup();
+    let (_dir,c,s,t)=setup();
     // Simulate a pre-R03 stored dossier: no claim ids.
     let stored=plan(&s);
     let legacy=json!({"revision":stored["revision"],"scope":stored["scope"],"checks":stored["checks"],"claims":[{"proposition":"The witness reports three knocks.","assessment":"supported_within_scope","supporting":[format!("evidence:{s}#L1-L1")],"contrary":[],"uncertainty":"None.","next_check":"None."}]});

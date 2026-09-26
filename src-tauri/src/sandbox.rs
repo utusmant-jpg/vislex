@@ -75,32 +75,46 @@ fn sid_string(sid: PSID) -> Result<String> {
 // Runtime ACL updates share the packaged directory. Serialize changes so one
 // job cannot lose another job's grant during concurrent recursive ACL updates.
 static ACL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-static WORKER_SLOTS: (std::sync::Mutex<usize>, std::sync::Condvar) =
-    (std::sync::Mutex::new(0), std::sync::Condvar::new());
-static HEAVY_SLOT: (std::sync::Mutex<bool>, std::sync::Condvar) =
-    (std::sync::Mutex::new(false), std::sync::Condvar::new());
-struct HeavyPermit;
-impl HeavyPermit {
-    fn acquire() -> Self {
-        let (lock,wake)=&HEAVY_SLOT;
-        let mut active=lock.lock().unwrap_or_else(|e|e.into_inner());
-        while *active {active=wake.wait(active).unwrap_or_else(|e|e.into_inner());}
-        *active=true;Self
-    }
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum Priority {Interactive,Background}
+#[derive(Clone,Copy)]
+struct Waiter {id:u64,priority:Priority,heavy:bool}
+#[derive(Default)]
+struct ScheduleState {active:usize,heavy_active:bool,waiting:Vec<Waiter>,next_id:u64,interactive_streak:u8}
+static SCHEDULER:std::sync::OnceLock<(std::sync::Mutex<ScheduleState>,std::sync::Condvar)>=std::sync::OnceLock::new();
+fn scheduler()->&'static (std::sync::Mutex<ScheduleState>,std::sync::Condvar){SCHEDULER.get_or_init(||(std::sync::Mutex::new(ScheduleState::default()),std::sync::Condvar::new()))}
+fn selected_waiter(state:&ScheduleState)->Option<u64> {
+    if state.active>=2{return None;}
+    let eligible=state.waiting.iter().filter(|waiter|!waiter.heavy||!state.heavy_active).collect::<Vec<_>>();
+    let interactive=eligible.iter().find(|waiter|waiter.priority==Priority::Interactive);
+    let background=eligible.iter().find(|waiter|waiter.priority==Priority::Background);
+    if state.interactive_streak>=3 {background.or(interactive)}else{interactive.or(background)}.map(|waiter|waiter.id)
 }
-impl Drop for HeavyPermit {
-    fn drop(&mut self) {
-        let (lock,wake)=&HEAVY_SLOT;
-        *lock.lock().unwrap_or_else(|e|e.into_inner())=false;wake.notify_one();
-    }
+fn priority(kind:Option<&str>,operation:Option<&str>)->Priority {
+    if operation==Some("automatic") || matches!(kind,Some("video_ocr"|"video_overview"|"full_audio"|"media_inventory")) {Priority::Background}else{Priority::Interactive}
 }
-struct WorkerPermit;
-impl WorkerPermit {
-    fn acquire() -> Self {
-        let (lock, wake) = &WORKER_SLOTS;
-        let mut active = lock.lock().unwrap_or_else(|e|e.into_inner());
-        while *active >= 2 {active = wake.wait(active).unwrap_or_else(|e|e.into_inner());}
-        *active += 1; Self
+struct SchedulerPermit{heavy:bool}
+impl SchedulerPermit {
+    fn acquire(job:&Path,priority:Priority,heavy:bool)->Result<Self> {
+        let (lock,wake)=scheduler();
+        let mut state=lock.lock().unwrap_or_else(|e|e.into_inner());
+        state.next_id=state.next_id.wrapping_add(1);
+        let id=state.next_id;
+        state.waiting.push(Waiter{id,priority,heavy});
+        loop {
+            if job.join("cancel.request").exists() {
+                state.waiting.retain(|waiter|waiter.id!=id);wake.notify_all();
+                anyhow::bail!("Processing cancelled while waiting for resources");
+            }
+            if selected_waiter(&state)==Some(id) {
+                state.waiting.retain(|waiter|waiter.id!=id);
+                state.active+=1;if heavy{state.heavy_active=true;}
+                if priority==Priority::Interactive{state.interactive_streak=state.interactive_streak.saturating_add(1);}else{state.interactive_streak=0;}
+                wake.notify_all();
+                return Ok(Self{heavy});
+            }
+            let (next,_)=wake.wait_timeout(state,Duration::from_millis(200)).unwrap_or_else(|error|error.into_inner());state=next;
+        }
     }
 }
 fn available_physical_mib() -> Option<u64> {
@@ -118,11 +132,11 @@ fn serial_worker(kind: Option<&str>, physical_available_mib: Option<u64>) -> boo
         _ => false,
     }
 }
-impl Drop for WorkerPermit {
+impl Drop for SchedulerPermit {
     fn drop(&mut self) {
-        let (lock,wake) = &WORKER_SLOTS;
-        let mut active = lock.lock().unwrap_or_else(|e|e.into_inner());
-        *active -= 1; wake.notify_one();
+        let (lock,wake)=scheduler();
+        let mut state=lock.lock().unwrap_or_else(|e|e.into_inner());
+        state.active-=1;if self.heavy{state.heavy_active=false;}wake.notify_all();
     }
 }
 fn acl(path: &Path, sid: &str, rights: &str) -> Result<()> {
@@ -207,19 +221,25 @@ fn quote(arg: &str) -> String {
 pub fn run_worker(executable: &Path, job: &Path, timeout: Duration) -> Result<()> {
     run_worker_with_readonly(executable,job,None,timeout)
 }
+fn update_job_heartbeat(job:&Path) {
+    let manifest=std::fs::read(job.join("manifest.json")).ok().and_then(|raw|serde_json::from_slice::<serde_json::Value>(&raw).ok());
+    let Some(job_id)=manifest.as_ref().and_then(|value|value["job_id"].as_str()) else{return};
+    let Some(case_root)=job.parent().and_then(Path::parent) else{return};
+    let Ok(db)=rusqlite::Connection::open_with_flags(case_root.join("case.sqlite3"),rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE|rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) else{return};
+    let _=db.busy_timeout(Duration::from_millis(100));
+    let _=db.execute("UPDATE job_schedule SET heartbeat=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE job_id=? AND EXISTS(SELECT 1 FROM processing_jobs WHERE id=? AND status='running')",[job_id,job_id]);
+}
 pub fn run_worker_with_readonly(executable:&Path,job:&Path,readonly_input:Option<&Path>,timeout:Duration)->Result<()> {
+    ensure!(executable.is_absolute() && executable.is_file(),"Packaged worker is unavailable");
+    ensure!(job.is_absolute() && job.is_dir(),"Invalid job directory");
     // Decode/OCR/ASR workers can each approach the per-process 2 GiB limit.
     // Reserve their shared slot before a general worker slot so a waiting
     // video job does not prevent a lightweight document job from starting.
     let request=std::fs::read(job.join("request.json")).ok().and_then(|raw|serde_json::from_slice::<serde_json::Value>(&raw).ok());
     let heavy=serial_worker(request.as_ref().and_then(|value|value["kind"].as_str()),available_physical_mib());
-    let _heavy=heavy.then(HeavyPermit::acquire);
-    let _permit=WorkerPermit::acquire();
-    ensure!(
-        executable.is_absolute() && executable.is_file(),
-        "Packaged worker is unavailable"
-    );
-    ensure!(job.is_absolute() && job.is_dir(), "Invalid job directory");
+    let class=if request.as_ref().and_then(|value|value["scheduler_priority"].as_str())==Some("background") {Priority::Background}
+        else {priority(request.as_ref().and_then(|value|value["kind"].as_str()),request.as_ref().and_then(|value|value["operation"].as_str()))};
+    let _permit=SchedulerPermit::acquire(job,class,heavy)?;
     let executable = executable.canonicalize()?;
     let job = job.canonicalize()?;
     let readonly_input=readonly_input.map(Path::canonicalize).transpose()?;
@@ -361,6 +381,8 @@ pub fn run_worker_with_readonly(executable:&Path,job:&Path,readonly_input:Option
             "Could not resume sandboxed worker"
         );
         let started = Instant::now();
+        let mut last_heartbeat=Instant::now();
+        update_job_heartbeat(&job);
         loop {
             ensure!(
                 !job.join("cancel.request").exists(),
@@ -371,6 +393,7 @@ pub fn run_worker_with_readonly(executable:&Path,job:&Path,readonly_input:Option
                 break;
             }
             ensure!(status == WAIT_TIMEOUT, "Worker wait failed");
+            if last_heartbeat.elapsed()>=Duration::from_secs(5){update_job_heartbeat(&job);last_heartbeat=Instant::now();}
             ensure!(
                 started.elapsed() < timeout,
                 "Processing time limit exceeded; worker terminated"
@@ -404,5 +427,25 @@ mod tests {
         assert!(super::serial_worker(Some("video_overview"),None));
         assert!(super::serial_worker(Some("full_audio"),Some(6144)));
         assert!(super::serial_worker(Some("video_ocr"),Some(6144)));
+    }
+    #[test]
+    fn scheduler_prefers_interactive_then_serves_waiting_background() {
+        let mut state=super::ScheduleState::default();
+        state.waiting=vec![super::Waiter{id:1,priority:super::Priority::Background,heavy:false},super::Waiter{id:2,priority:super::Priority::Interactive,heavy:false},super::Waiter{id:3,priority:super::Priority::Background,heavy:false}];
+        assert_eq!(super::selected_waiter(&state),Some(2));
+        state.interactive_streak=3;assert_eq!(super::selected_waiter(&state),Some(1));
+        state.heavy_active=true;state.waiting[0].heavy=true;assert_eq!(super::selected_waiter(&state),Some(3));
+    }
+    #[test]
+    fn queued_worker_cancels_without_waiting_for_busy_permits() {
+        let dir=tempfile::tempdir().unwrap();let job=dir.path().join("queued");std::fs::create_dir(&job).unwrap();
+        let _a=super::SchedulerPermit::acquire(&job,super::Priority::Background,true).unwrap();
+        let _b=super::SchedulerPermit::acquire(&job,super::Priority::Background,false).unwrap();
+        let started=std::time::Instant::now();
+        let waiting=std::thread::spawn({let job=job.clone();move ||super::SchedulerPermit::acquire(&job,super::Priority::Interactive,false)});
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::fs::write(job.join("cancel.request"),b"cancel").unwrap();
+        assert!(waiting.join().unwrap().is_err());
+        assert!(started.elapsed()<std::time::Duration::from_secs(1));
     }
 }
