@@ -576,12 +576,16 @@ pub async fn send(
     provider: Provider,
     key: &str,
     body: Value,
-    mut progress: impl FnMut(Value),
+    progress: impl FnMut(Value),
 ) -> Result<Value> {
     let mut wire = encode(provider, &body)?;
     // The packaged debug acceptance harness may replace the network endpoint
     // with a loopback server. Release builds have no endpoint override.
     if let Some(url) = synthetic_provider_url()? { wire.url = url; }
+    send_wire(provider, key, wire, progress).await
+}
+
+async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progress: impl FnMut(Value)) -> Result<Value> {
     let client = inference_client()?;
     let request = client.post(&wire.url).json(&wire.body);
     let request = match provider {
@@ -780,4 +784,53 @@ pub fn set_direct_media(case:&mut crate::case::Case,enabled:bool)->Result<()> {
 }
 pub fn direct_media_enabled(case:&crate::case::Case)->bool {
     case.meta("gemini_direct_media").ok().flatten().as_deref()==Some("true")
+}
+
+#[cfg(test)]
+mod stream_transport_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn local_sse(events: Vec<Value>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = [0u8; 8192];
+            let _ = socket.read(&mut request).unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").unwrap();
+            for event in events {
+                socket.write_all(format!("data: {event}\n\n").as_bytes()).unwrap();
+                socket.flush().unwrap();
+            }
+        });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn claude_transport_streams_text_but_requires_message_stop() {
+        let events = vec![
+            json!({"type":"message_start","message":{"role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":3}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Synthetic answer"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}),
+            json!({"type":"message_stop"}),
+        ];
+        let (url, server) = local_sse(events.clone());
+        let mut progress = Vec::new();
+        let response = send_wire(Provider::Anthropic, "synthetic-key", WireRequest { url, body: json!({"model":"synthetic-model","stream":true}) }, |delta| progress.push(delta)).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(progress, vec![json!({"text":"Synthetic answer"})]);
+        assert_eq!(response["output"][0]["content"][0]["text"], "Synthetic answer");
+        assert_eq!(response["usage"]["output_tokens"], 2);
+
+        let (url, server) = local_sse(events[..3].to_vec());
+        let mut draft = Vec::new();
+        let error = send_wire(Provider::Anthropic, "synthetic-key", WireRequest { url, body: json!({"model":"synthetic-model","stream":true}) }, |delta| draft.push(delta)).await.unwrap_err();
+        server.join().unwrap();
+        assert_eq!(draft, vec![json!({"text":"Synthetic answer"})]);
+        assert!(error.to_string().contains("without completion"));
+    }
 }
