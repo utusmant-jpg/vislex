@@ -255,5 +255,9 @@ mod staging_tests {
         let staged=stage_redaction_export(&plan).unwrap();
         case.set_meta(&format!("redaction_review:{artifact}"),"{}").unwrap();
         assert!(publish_staged_redaction_export(&mut case,&plan,staged).is_err());assert!(!target.exists());
+        review_redaction(&mut case,&artifact,&[1],"Reviewed again").unwrap();
+        case.set_restricted(&source.id,true).unwrap();
+        assert!(prepare_redaction_export(&case,&artifact,&target).is_err());
+        assert!(!target.exists());
     }
 }
