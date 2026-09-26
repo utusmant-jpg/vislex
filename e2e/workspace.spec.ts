@@ -120,3 +120,27 @@ test('forced-colors mode keeps workspace selection and primary controls visible'
   expect(await activeRail.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
   await expect(page.getByRole('button', { name: 'Create', exact: true })).toBeVisible();
 });
+
+test('review views have keyboard tabs and preserve legal form values', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /Try the sample case/ }).click();
+  await page.keyboard.press('Control+4');
+  const tabs = page.getByRole('tablist', { name: 'Investigation views' });
+  const discrepancy = tabs.getByRole('tab', { name: 'Discrepancies' });
+  await expect(discrepancy).toHaveAttribute('aria-selected', 'true');
+  await discrepancy.focus();
+  await page.keyboard.press('End');
+  const legal = tabs.getByRole('tab', { name: 'Legal workflows' });
+  await expect(legal).toBeFocused();
+  await expect(legal).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('textbox', { name: 'Jurisdiction' }).fill('Ontario');
+  await legal.focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(tabs.getByRole('tab', { name: 'Coverage' })).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(legal).toBeFocused();
+  await expect(page.getByRole('textbox', { name: 'Jurisdiction' })).toHaveValue('Ontario');
+  await page.setViewportSize({ width: 1000, height: 680 });
+  const extent = await page.evaluate(() => ({ content: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+  expect(extent.content).toBeLessThanOrEqual(extent.viewport);
+});
