@@ -433,7 +433,7 @@ fn agent_prepared_media_publishes_once_and_records_actual_page_receipt() {
     let task=agent::start(&mut case,"Inspect page","investigate",vec![source.clone()],vec![],0.).unwrap();let request=agent::prepare_request(&mut case,&task).unwrap();
     let response=json!({"status":"completed","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"function_call","call_id":"prepared-page","name":"inspect_document_page","arguments":json!({"source_id":source,"page":1}).to_string()}]});
     let jobs=agent::prepare_media(&mut case,&task,&request.transmission,&response).unwrap();assert_eq!(jobs.len(),1);
-    let mut media=agent::PreparedMedia{jobs:jobs.into_iter().map(|j|{let output=processing::run_prepared(&j);(j,output)}).collect(),external:true,error:None};
+    let mut media=agent::PreparedMedia{jobs:jobs.into_iter().map(|j|{let staged=processing::stage_prepared(&j,processing::run_prepared(&j));(j,staged)}).collect(),cleanup:vec![],external:true,error:None};
     agent::receive_prepared(&mut case,&task,&request.transmission,response.clone(),&mut media).unwrap();assert!(media.jobs.is_empty());
     assert_eq!(case.actions(&task).unwrap()[0]["status"],"complete");
     assert_eq!(case.db.query_row("SELECT count(*) FROM processing_jobs WHERE kind='pdf_page'",[],|r|r.get::<_,u64>(0)).unwrap(),1);

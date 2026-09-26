@@ -102,13 +102,19 @@ pub fn next(case:&mut Case)->Result<Option<Job>> {
     Ok(Some(Job{run_id,start,processor}))
 }
 pub fn publish(case:&mut Case,job:&Job,result:Result<Value>)->Result<()> {
+    publish_with(case,job,|case|processing::publish_prepared(case,&job.processor,result))
+}
+pub fn publish_staged(case:&mut Case,job:&Job,result:Result<processing::StagedPublication>)->Result<()> {
+    publish_with(case,job,|case|processing::publish_staged(case,&job.processor,result))
+}
+fn publish_with(case:&mut Case,job:&Job,processor_publish:impl FnOnce(&mut Case)->Result<Value>)->Result<()> {
     let state:String=case.db.query_row("SELECT status FROM processing_jobs WHERE id=?",[&job.run_id],|r|r.get(0))?;
     if state=="cancelled" {
         let _=processing::cancel(case,&job.processor.job_id);
         case.db.execute("UPDATE processing_jobs SET status='cancelled',error='Parent discovery run cancelled' WHERE id=? AND status='running'",[&job.processor.job_id])?;
         return Ok(())
     }
-    let result=processing::publish_prepared(case,&job.processor,result);
+    let result=processor_publish(case);
     match result {
         Ok(value)=>{store_chunk(case,&job.run_id,&job.processor.source.id,&job.processor.kind,job.start,&value)?;},
         Err(e)=>{

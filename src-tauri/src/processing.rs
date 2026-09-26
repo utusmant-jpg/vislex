@@ -2,11 +2,15 @@ use crate::case::{digest, file_hash, file_hash_cached, file_hash_strong, id, now
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 
 pub fn worker_path() -> Result<PathBuf> {
     #[cfg(debug_assertions)]
@@ -38,13 +42,16 @@ pub fn process(case: &mut Case, source_id: &str, crop: Option<[u32; 4]>) -> Resu
 }
 pub fn process_request(case: &mut Case, source_id: &str, options: Value) -> Result<Value> {
     let job=prepare_request(case,source_id,options)?;
-    let result=run_prepared(&job);
-    publish_prepared(case,&job,result)
+    let staged=stage_prepared(&job,run_prepared(&job));
+    let result=publish_staged(case,&job,staged);
+    if result.is_ok(){let _=cleanup_published_input(&job);}
+    result
 }
 pub struct JobDirectory(PathBuf);
 impl JobDirectory { pub fn path(&self)->&Path { &self.0 } }
 pub struct PreparedJob {
     pub job_id:String,
+    pub case_root:PathBuf,
     pub source:crate::case::Source,
     pub source_path:PathBuf,
     pub kind:String,
@@ -116,7 +123,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
                 let mut locators=vec![cached["extraction_locator"].as_str().unwrap_or("").to_string()];
                 if let Some(entries)=cached["published"].as_array(){for entry in entries {locators.push(entry["locator"].as_str().unwrap_or("").to_string());}}
                 let intact=locators.iter().all(|locator|locator.split("#artifact:").nth(1).is_some_and(|id|artifact(case,id).is_ok()));
-                if intact {cached["reused"]=json!(true);return Ok(PreparedJob{job_id,source,source_path,kind:kind.into(),worker,staging,request,cached:Some(cached)});}
+                if intact {cached["reused"]=json!(true);return Ok(PreparedJob{job_id,case_root:case.root.clone(),source,source_path,kind:kind.into(),worker,staging,request,cached:Some(cached)});}
             }
         }
     }
@@ -129,7 +136,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         params![job_id, source_id, kind, now()],
     )?;
     case.set_meta(&format!("processing_staging:{job_id}"),&staging.path().strip_prefix(&case.root)?.to_string_lossy().replace('\\',"/"))?;
-    Ok(PreparedJob {job_id,source,source_path,kind:kind.into(),worker,staging,request,cached:None})
+    Ok(PreparedJob {job_id,case_root:case.root.clone(),source,source_path,kind:kind.into(),worker,staging,request,cached:None})
 }
 pub fn run_prepared(job:&PreparedJob)->Result<Value> {
     if let Some(cached)=&job.cached {ensure!(file_hash_strong(&job.source_path)?==job.source.sha256,"Source changed since extraction");return Ok(cached.clone());}
@@ -165,7 +172,7 @@ pub fn resume(case:&mut Case,job_id:&str)->Result<PreparedJob> {
     ensure!(manifest["job_id"]==job_id && manifest["source_id"]==source_id && manifest["source_sha256"]==source.sha256 && manifest["kind"]==kind,"Recovery manifest mismatch");
     ensure!(!path.join("cancel.request").exists(),"Cancelled jobs require a new explicit request");
     let worker=worker_path()?;ensure!(manifest["worker_sha256"].as_str()==Some(file_hash(&worker)?.as_str()),"Worker changed; retry with a new job");
-    let job=PreparedJob{job_id:job_id.into(),source_path:case.source_path(&source_id)?,source,kind,worker,staging:JobDirectory(path),request:manifest["request"].clone(),cached:None};
+    let job=PreparedJob{job_id:job_id.into(),case_root:case.root.clone(),source_path:case.source_path(&source_id)?,source,kind,worker,staging:JobDirectory(path),request:manifest["request"].clone(),cached:None};
     case.db.execute("UPDATE processing_jobs SET status='running',error='' WHERE id=?",[job_id])?;
     case.audit("processing_resumed",json!({"job":job_id}))?;
     Ok(job)
@@ -230,64 +237,179 @@ fn publish_file(source:&Path,destination:&Path,expected:&str)->Result<()> {
     ensure!(file_hash(destination)?==expected,"Published artifact integrity mismatch");
     Ok(())
 }
+fn publish_file_cancellable(source:&Path,destination:&Path,expected:&str,cancel:&Path)->Result<()> {
+    use std::io::Write;
+    if !destination.exists() {
+        let mut staged=tempfile::NamedTempFile::new_in(destination.parent().context("Missing output directory")?)?;
+        let mut input=read_lease(source)?;
+        let mut hash=Sha256::new();let mut buffer=[0u8;1024*1024];
+        loop {
+            ensure!(!cancel.exists(),"Processing cancelled during publication");
+            let count=input.read(&mut buffer)?;if count==0{break;}
+            hash.update(&buffer[..count]);staged.write_all(&buffer[..count])?;
+        }
+        staged.as_file().sync_all()?;
+        ensure!(format!("{:x}",hash.finalize())==expected,"Artifact changed during publication");
+        staged.persist_noclobber(destination)?;
+    }
+    ensure!(!cancel.exists(),"Processing cancelled during publication");
+    ensure!(file_hash(destination)?==expected,"Published artifact integrity mismatch");
+    Ok(())
+}
+struct StagedPreview { hash:String, mime:String, relative:String }
+struct StageDetails {
+    combined:String,
+    raw_hash:String,
+    raw_path:String,
+    previews:Vec<StagedPreview>,
+    worker_hash:String,
+    // Windows read leases deny new writers until the database transaction ends.
+    _leases:Vec<fs::File>,
+}
+pub struct StagedPublication { value:Value, details:Option<StageDetails> }
+fn read_lease(path:&Path)->Result<fs::File> {
+    let mut options=fs::OpenOptions::new();options.read(true);
+    #[cfg(windows)]
+    options.share_mode(1); // FILE_SHARE_READ: no concurrent write or delete handles.
+    Ok(options.open(path)?)
+}
+fn leased_hash(mut file:&fs::File)->Result<String> {
+    let mut hasher=Sha256::new();let mut buffer=[0u8;1024*1024];
+    loop {let n=file.read(&mut buffer)?;if n==0 {break;}hasher.update(&buffer[..n]);}
+    Ok(format!("{:x}",hasher.finalize()))
+}
+fn verified_lease(path:&Path,expected:&str)->Result<fs::File> {
+    let file=read_lease(path)?;
+    ensure!(leased_hash(&file)?==expected,"Published artifact integrity mismatch");
+    Ok(file)
+}
+/// Validate, hash and copy large worker output before acquiring the case mutex.
+/// Content-addressed files left by a crash are revalidated and reused on resume.
+pub fn stage_prepared(job:&PreparedJob,output:Result<Value>)->Result<StagedPublication> {
+    let value=output?;
+    if job.cached.is_some() {return Ok(StagedPublication{value,details:None});}
+    ensure!(!job.staging.path().join("cancel.request").exists(),"Processing cancelled before publication");
+    let manifest:Value=serde_json::from_slice(&fs::read(job.staging.path().join("manifest.json"))?)?;
+    ensure!(manifest["job_id"]==job.job_id && manifest["source_id"]==job.source.id && manifest["source_sha256"]==job.source.sha256 && manifest["kind"]==job.kind,"Job manifest changed before publication");
+    let mut leases=vec![verified_lease(&job.source_path,&job.source.sha256)?];
+    let worker_hash=manifest["worker_sha256"].as_str().context("Worker hash missing from job manifest")?.to_string();
+    leases.push(verified_lease(&job.worker,&worker_hash)?);
+    let pages=value["pages"].as_array().context("Missing source units")?;
+    ensure!(pages.len()<=100000,"Too many source units");
+    let mut combined=String::new();
+    for page in pages {
+        let locator=page["locator"].as_str().context("Missing unit locator")?;
+        ensure!(locator.len()<=512,"Locator too long");
+        let text=page["text"].as_str().context("Missing unit text")?;
+        combined.push_str(&format!("[{locator}]\n{text}\n\n"));
+        ensure!(combined.len()<=10*1024*1024,"Extract exceeds indexing limit");
+    }
+    let raw=serde_json::to_vec(&value)?;let raw_hash=digest(&raw);
+    let raw_path=format!("artifacts/{raw_hash}.json");
+    let raw_destination=job.case_root.join(&raw_path);
+    publish_bytes(&raw_destination,&raw,&raw_hash)?;
+    leases.push(verified_lease(&raw_destination,&raw_hash)?);
+    let previews=value["previews"].as_array().context("Missing preview manifest")?;
+    ensure!(previews.len()<=if job.kind=="redaction" {501}else if ["video_ocr","video_overview"].contains(&job.kind.as_str()){180}else{24},"Too many image artifacts");
+    let staging_root=job.staging.path().canonicalize()?;
+    let mut staged_previews=Vec::new();
+    for entry in previews {
+        ensure!(!job.staging.path().join("cancel.request").exists(),"Processing cancelled during publication");
+        let relative_path=entry["path"].as_str().context("Preview missing path")?;
+        ensure!(crate::case::safe_relative(Path::new(relative_path)),"Invalid preview path");
+        let preview=job.staging.path().join(relative_path);
+        ensure!(preview.canonicalize()?.starts_with(&staging_root),"Preview escaped job directory");
+        ensure!(preview.is_file() && preview.metadata()?.len()<=if job.kind=="playback"{16*1024*1024*1024}else{30*1024*1024},"Invalid preview artifact");
+        ensure!(!fs::symlink_metadata(&preview)?.file_type().is_symlink(),"Worker returned a link");
+        let preview_lease=read_lease(&preview)?;
+        let hash=leased_hash(&preview_lease)?;
+        let mime=if job.kind=="playback" {"video/mp4"} else if job.kind=="redaction" && entry["mime"]=="application/pdf" {"application/pdf"} else {"image/jpeg"};
+        let ext=crate::artifact_registry::extension_for_mime(mime).context("Unregistered artifact format")?;
+        let relative=format!("artifacts/{hash}.{ext}");
+        let destination=job.case_root.join(&relative);
+        publish_file_cancellable(&preview,&destination,&hash,&job.staging.path().join("cancel.request"))?;
+        leases.push(verified_lease(&destination,&hash)?);
+        staged_previews.push(StagedPreview{hash,mime:mime.into(),relative});
+    }
+    let journal=json!({"version":1,"job_id":job.job_id,"source_id":job.source.id,"source_sha256":job.source.sha256,"raw":{"path":raw_path,"sha256":raw_hash},"previews":staged_previews.iter().map(|preview|json!({"path":preview.relative,"sha256":preview.hash})).collect::<Vec<_>>()});
+    let journal_path=job.staging.path().join("publication-journal.json");
+    let mut journal_file=fs::File::create(&journal_path)?;
+    std::io::Write::write_all(&mut journal_file,serde_json::to_string(&journal)?.as_bytes())?;
+    journal_file.sync_all()?;
+    ensure!(!job.staging.path().join("cancel.request").exists(),"Processing cancelled before registration");
+    Ok(StagedPublication{value,details:Some(StageDetails{combined,raw_hash,raw_path,previews:staged_previews,worker_hash,_leases:leases})})
+}
+pub fn publish_staged(case:&mut Case,job:&PreparedJob,staged:Result<StagedPublication>)->Result<Value> {
+    match staged {Ok(staged)=>publish_core(case,job,Ok(staged.value),staged.details),Err(error)=>publish_core(case,job,Err(error),None)}
+}
 pub fn publish_prepared(case:&mut Case,job:&PreparedJob,output:Result<Value>)->Result<Value> {
+    publish_core(case,job,output,None)
+}
+fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Option<StageDetails>)->Result<Value> {
     if job.cached.is_some() {return output;}
+    ensure!(case.root==job.case_root,"Case changed before publication");
     let source=&job.source;let source_id=source.id.as_str();let kind=job.kind.as_str();
     let worker=&job.worker;let staging=&job.staging;let request=&job.request;let job_id=&job.job_id;
+    if staged.is_some() {
+        let current=case.source(source_id)?;
+        ensure!(current.sha256==source.sha256,"Source changed before publication");
+        if request["operation"]=="automatic" {ensure!(!current.restricted,"Source was restricted before publication");}
+        let (registered_source,status):(String,String)=case.db.query_row("SELECT source_id,status FROM processing_jobs WHERE id=?",[job_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        ensure!(registered_source==source_id && status=="running","Processing job changed before publication");
+        let journal_path=staging.path().join("publication-journal.json");
+        ensure!(journal_path.is_file() && journal_path.metadata()?.len()<=100000,"Publication journal is missing or invalid");
+        let journal:Value=serde_json::from_slice(&fs::read(journal_path)?)?;
+        let staged=staged.as_ref().expect("checked staged publication");
+        ensure!(journal["version"]==1 && journal["job_id"]==*job_id && journal["source_id"]==source.id && journal["source_sha256"]==source.sha256 && journal["raw"]["path"]==staged.raw_path && journal["raw"]["sha256"]==staged.raw_hash,"Publication journal changed");
+        ensure!(journal["previews"].as_array().is_some_and(|entries|entries.len()==staged.previews.len() && entries.iter().zip(&staged.previews).all(|(entry,preview)|entry["path"]==preview.relative && entry["sha256"]==preview.hash)),"Publication journal previews changed");
+    }
     case.db.execute_batch("SAVEPOINT publish_processor")?;
     let execute=(||->Result<Value> {
         ensure!(!job.staging.path().join("cancel.request").exists(),"Processing cancelled before publication");
         let value=output?;
-        let pages = value["pages"].as_array().context("Missing source units")?;
-        ensure!(pages.len() <= 100000, "Too many source units");
-        let mut combined = String::new();
-        for page in pages {
-            let locator = page["locator"].as_str().context("Missing unit locator")?;
-            ensure!(locator.len() <= 512, "Locator too long");
-            let text = page["text"].as_str().context("Missing unit text")?;
-            combined.push_str(&format!("[{locator}]\n{text}\n\n"));
-            ensure!(
-                combined.len() <= 10 * 1024 * 1024,
-                "Extract exceeds indexing limit"
-            );
-        }
-        let raw = serde_json::to_vec(&value)?;
-        let raw_hash = digest(&raw);
-        let raw_path = format!("artifacts/{raw_hash}.json");
-        publish_bytes(&case.root.join(&raw_path),&raw,&raw_hash)?;
+        let (combined,raw_hash,raw_path)=if let Some(staged)=staged.as_ref() {
+            (staged.combined.clone(),staged.raw_hash.clone(),staged.raw_path.clone())
+        } else {
+            let pages = value["pages"].as_array().context("Missing source units")?;
+            ensure!(pages.len() <= 100000, "Too many source units");
+            let mut combined = String::new();
+            for page in pages {
+                let locator = page["locator"].as_str().context("Missing unit locator")?;
+                ensure!(locator.len() <= 512, "Locator too long");
+                let text = page["text"].as_str().context("Missing unit text")?;
+                combined.push_str(&format!("[{locator}]\n{text}\n\n"));
+                ensure!(combined.len()<=10*1024*1024,"Extract exceeds indexing limit");
+            }
+            let raw=serde_json::to_vec(&value)?;let raw_hash=digest(&raw);
+            let raw_path=format!("artifacts/{raw_hash}.json");
+            publish_bytes(&case.root.join(&raw_path),&raw,&raw_hash)?;
+            (combined,raw_hash,raw_path)
+        };
         let mut result = value.clone();
         let previews = value["previews"]
             .as_array()
             .context("Missing preview manifest")?;
         ensure!(previews.len() <= if kind=="redaction" {501}else if ["video_ocr","video_overview"].contains(&kind) {180}else{24}, "Too many image artifacts");
+        if let Some(staged)=staged.as_ref(){ensure!(staged.previews.len()==previews.len(),"Staged preview count changed");}
         let mut published = Vec::new();
-        for entry in previews {
-            let relative_path = entry["path"].as_str().context("Preview missing path")?;
-            ensure!(
-                crate::case::safe_relative(Path::new(relative_path)),
-                "Invalid preview path"
-            );
-            let preview = staging.path().join(relative_path);
-            ensure!(
-                preview
-                    .canonicalize()?
-                    .starts_with(staging.path().canonicalize()?),
-                "Preview escaped job directory"
-            );
-            ensure!(
-                preview.is_file() && preview.metadata()?.len() <= if kind == "playback" {16 * 1024 * 1024 * 1024} else {30 * 1024 * 1024},
-                "Invalid preview artifact"
-            );
-            ensure!(
-                !fs::symlink_metadata(&preview)?.file_type().is_symlink(),
-                "Worker returned a link"
-            );
-            let hash = file_hash(&preview)?;
-            let mime=if kind=="playback" {"video/mp4"}else if kind=="redaction" && entry["mime"]=="application/pdf" {"application/pdf"}else{"image/jpeg"};
-            // Publication and restore share the versioned artifact-format registry.
-            let ext=crate::artifact_registry::extension_for_mime(mime).context("Unregistered artifact format")?;
-            let relative = format!("artifacts/{hash}.{ext}");
-            publish_file(&preview,&case.root.join(&relative),&hash)?;
+        for (index,entry) in previews.iter().enumerate() {
+            let (hash,mime,relative)=if let Some(staged)=staged.as_ref() {
+                let preview=staged.previews.get(index).context("Staged preview count changed")?;
+                (preview.hash.clone(),preview.mime.clone(),preview.relative.clone())
+            } else {
+                let relative_path=entry["path"].as_str().context("Preview missing path")?;
+                ensure!(crate::case::safe_relative(Path::new(relative_path)),"Invalid preview path");
+                let preview=staging.path().join(relative_path);
+                ensure!(preview.canonicalize()?.starts_with(staging.path().canonicalize()?),"Preview escaped job directory");
+                ensure!(preview.is_file() && preview.metadata()?.len()<=if kind=="playback"{16*1024*1024*1024}else{30*1024*1024},"Invalid preview artifact");
+                ensure!(!fs::symlink_metadata(&preview)?.file_type().is_symlink(),"Worker returned a link");
+                let hash=file_hash(&preview)?;
+                let mime=if kind=="playback" {"video/mp4"}else if kind=="redaction" && entry["mime"]=="application/pdf" {"application/pdf"}else{"image/jpeg"};
+                let ext=crate::artifact_registry::extension_for_mime(mime).context("Unregistered artifact format")?;
+                let relative=format!("artifacts/{hash}.{ext}");
+                publish_file(&preview,&case.root.join(&relative),&hash)?;
+                (hash,mime.into(),relative)
+            };
             let artifact = id();
             case.db.execute(
                 "INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)",
@@ -317,7 +439,7 @@ pub fn publish_prepared(case:&mut Case,job:&PreparedJob,output:Result<Value>)->R
                 raw_hash,
                 "application/json",
                 raw_path,
-                json!({"kind":kind,"worker_sha256":file_hash(&worker)?,"request":request})
+                json!({"kind":kind,"worker_sha256":if let Some(staged)=staged.as_ref(){staged.worker_hash.clone()}else{file_hash(&worker)?},"request":request})
                     .to_string(),
                 now()
             ],
@@ -365,13 +487,15 @@ pub fn publish_prepared(case:&mut Case,job:&PreparedJob,output:Result<Value>)->R
             case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![value.to_string(),job_id])?;
             // Chunked discovery results are bounded by their own job rows and samples;
             // caching every 60 s chunk in meta would grow the database without reuse.
-            if !["redaction","video_ocr","video_overview"].contains(&kind) {let cache_key=format!("processor_cache:{}",digest(json!([source.id,source.sha256,file_hash_cached(worker)?,request]).to_string().as_bytes()));case.set_meta(&cache_key,&value.to_string())?;}
+            if !["redaction","video_ocr","video_overview"].contains(&kind) {let worker_hash=if let Some(staged)=staged.as_ref(){staged.worker_hash.clone()}else{file_hash_cached(worker)?};let cache_key=format!("processor_cache:{}",digest(json!([source.id,source.sha256,worker_hash,request]).to_string().as_bytes()));case.set_meta(&cache_key,&value.to_string())?;}
             case.audit("source_processed",json!({"source":source_id,"job":job_id,"kind":kind,"request":request}))?;
             case.db.execute_batch("RELEASE publish_processor")?;
             // Registered derivatives are authoritative now. Release the duplicate staged original.
-            let input=job.staging.path().join("input");
-            if let (Ok(path),Ok(root))=(input.canonicalize(),case.root.join("staging").canonicalize()) {
-                if path.starts_with(root)&&fs::symlink_metadata(&input).is_ok_and(|m|!m.file_type().is_symlink()) {let _=fs::remove_file(input);}
+            if staged.is_none() {
+                let input=job.staging.path().join("input");
+                if let (Ok(path),Ok(root))=(input.canonicalize(),case.root.join("staging").canonicalize()) {
+                    if path.starts_with(root)&&fs::symlink_metadata(&input).is_ok_and(|m|!m.file_type().is_symlink()) {let _=fs::remove_file(input);}
+                }
             }
             Ok(value)
         },
@@ -381,6 +505,17 @@ pub fn publish_prepared(case:&mut Case,job:&PreparedJob,output:Result<Value>)->R
             Err(e)
         }
     }
+}
+
+/// Release only the verified duplicate worker input after registration succeeds.
+pub fn cleanup_published_input(job:&PreparedJob)->Result<bool> {
+    let input=job.staging.path().join("input");
+    if !input.exists(){return Ok(false);}
+    ensure!(!fs::symlink_metadata(&input)?.file_type().is_symlink(),"Staged input changed to a link");
+    let path=input.canonicalize()?;
+    ensure!(path.starts_with(job.case_root.join("staging").canonicalize()?),"Staged input escaped case");
+    fs::remove_file(input)?;
+    Ok(true)
 }
 
 pub fn artifact(case: &Case, artifact_id: &str) -> Result<(String, String, PathBuf, Value)> {
@@ -467,6 +602,43 @@ pub fn publish_playback(case:&mut Case, job:&PlaybackJob,result:Result<Value>) -
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+    fn staged_fixture()->(tempfile::TempDir,Case,PreparedJob,StagedPublication) {
+        let dir=tempfile::tempdir().unwrap();
+        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic staged publication").unwrap();
+        case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source_id=case.sources().unwrap().into_iter().find(|item|item.kind=="video").unwrap().id;
+        let job=prepare_request(&mut case,&source_id,json!({"operation":"playback","test":true})).unwrap();
+        fs::write(job.staging.path().join("preview.mp4"),b"synthetic derivative").unwrap();
+        let staged=stage_prepared(&job,Ok(json!({"pages":[],"previews":[{"path":"preview.mp4","mime":"video/mp4"}]}))).unwrap();
+        (dir,case,job,staged)
+    }
+    #[test]
+    fn staged_publication_rejects_cancel_and_duplicate_commit() {
+        let (_dir,mut case,job,staged)=staged_fixture();
+        fs::write(job.staging.path().join("cancel.request"),b"cancel").unwrap();
+        assert!(publish_staged(&mut case,&job,Ok(staged)).is_err());
+        let count:i64=case.db.query_row("SELECT count(*) FROM artifacts WHERE source_id=?",[&job.source.id],|r|r.get(0)).unwrap();
+        assert_eq!(count,0);
+        fs::remove_file(job.staging.path().join("cancel.request")).unwrap();
+        let staged=stage_prepared(&job,Ok(json!({"pages":[],"previews":[{"path":"preview.mp4","mime":"video/mp4"}]}))).unwrap();
+        assert!(publish_staged(&mut case,&job,Ok(staged)).is_err());
+    }
+    #[test]
+    fn staged_publication_requires_exact_journal_and_once_only_registration() {
+        let (_dir,mut case,job,staged)=staged_fixture();
+        let journal=job.staging.path().join("publication-journal.json");
+        let original=fs::read(&journal).unwrap();
+        fs::write(&journal,b"{}").unwrap();
+        assert!(publish_staged(&mut case,&job,Ok(staged)).is_err());
+        fs::write(&journal,original).unwrap();
+        let staged=stage_prepared(&job,Ok(json!({"pages":[],"previews":[{"path":"preview.mp4","mime":"video/mp4"}]}))).unwrap();
+        publish_staged(&mut case,&job,Ok(staged)).unwrap();
+        let staged=stage_prepared(&job,Ok(json!({"pages":[],"previews":[{"path":"preview.mp4","mime":"video/mp4"}]}))).unwrap();
+        assert!(publish_staged(&mut case,&job,Ok(staged)).is_err());
+        let count:i64=case.db.query_row("SELECT count(*) FROM artifacts WHERE source_id=?",[&job.source.id],|r|r.get(0)).unwrap();
+        assert_eq!(count,2);
+    }
     #[test]
     fn artifact_publication_is_idempotent_and_rejects_corrupt_existing_content() {
         let dir=tempfile::tempdir().unwrap();let path=dir.path().join("artifact.json");let content=b"immutable result";let hash=digest(content);
@@ -474,5 +646,26 @@ mod publication_tests {
         fs::write(&path,b"incomplete old output").unwrap();
         assert!(publish_bytes(&path,content,&hash).is_err());
         assert_eq!(fs::read(&path).unwrap(),b"incomplete old output");
+    }
+    #[test]
+    #[ignore = "Measured synthetic publication baseline; writes four 32-MiB derivatives"]
+    fn large_derivative_case_lock_baseline() {
+        let dir=tempfile::tempdir().unwrap();
+        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic publication baseline").unwrap();
+        case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source_id=case.sources().unwrap().into_iter().find(|item|item.kind=="video").unwrap().id;
+        let mut spans=Vec::new();
+        for marker in 1u8..=4 {
+            let job=prepare_request(&mut case,&source_id,json!({"operation":"playback","marker":marker})).unwrap();
+            fs::write(job.staging.path().join("preview.mp4"),vec![marker;32*1024*1024]).unwrap();
+            let output=json!({"pages":[],"previews":[{"path":"preview.mp4","mime":"video/mp4"}]});
+            let staged=stage_prepared(&job,Ok(output)).unwrap();
+            let started=std::time::Instant::now();
+            publish_staged(&mut case,&job,Ok(staged)).unwrap();
+            spans.push(started.elapsed().as_millis());
+        }
+        spans.sort_unstable();
+        println!("Synthetic 32-MiB derivative publication lock spans ms: p50={} p95={} max={}",spans[2],spans[3],spans[3]);
     }
 }

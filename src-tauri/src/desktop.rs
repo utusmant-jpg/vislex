@@ -105,8 +105,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     }
     if action=="resume_processing" {
         let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::processing::resume(case,text(&args,"job_id")?)?)};
-        let output=crate::processing::run_prepared(&job);
-        let result=with_case(app,&case_id,|case|crate::processing::publish_prepared(case,&job,output));
+        let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
+        let result=with_case(app,&case_id,|case|crate::processing::publish_staged(case,&job,staged));
+        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);}
         let _=app.emit("case-changed",());return result;
     }
     if ["save_provider_key","provider_key_status","delete_provider_key"].contains(&action) {
@@ -138,8 +139,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             (case.meta("id")?.unwrap_or_default(),crate::processing::prepare_request(case,source,options)?)
         };
         let _=app.emit("case-changed",());
-        let output=crate::processing::run_prepared(&job);
-        let result=with_case(app,&case_id,|case|crate::processing::publish_prepared(case,&job,output));
+        let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
+        let result=with_case(app,&case_id,|case|crate::processing::publish_staged(case,&job,staged));
+        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);}
         let _=app.emit("case-changed",());
         return result;
     }
@@ -1033,7 +1035,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
                     let registered=with_case(&app,&case_id,|c|agent::prepare_media(c,&task,&prepared.transmission,&value));
                     let (jobs,preparation_error)=match registered {Ok(j)=>(j,None),Err(e)=>(vec![],Some(e.to_string()))};
                     let job_ids=jobs.iter().map(|j|j.job_id.clone()).collect::<Vec<_>>();
-                    let mut media=tauri::async_runtime::spawn_blocking(move || agent::PreparedMedia{jobs:jobs.into_iter().map(|job|{let output=crate::processing::run_prepared(&job);(job,output)}).collect(),external:true,error:preparation_error}).await?;
+                    let mut media=tauri::async_runtime::spawn_blocking(move || agent::PreparedMedia{jobs:jobs.into_iter().map(|job|{let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));(job,staged)}).collect(),cleanup:vec![],external:true,error:preparation_error}).await?;
                     let semantic=with_case(&app,&case_id,|c|{c.set_meta(&format!("semantic_result:{task}"),"")?;agent::prepare_semantic(c,&task,&prepared.transmission,&value)});
                     if let Ok(Some(job))=semantic {
                         let (job,output)=tauri::async_runtime::spawn_blocking(move || {let output=crate::semantic::run(&job);(job,output)}).await?;
@@ -1045,6 +1047,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
                         })?;
                     }
                     let handled=with_case(&app,&case_id,|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
+                    for job in &media.cleanup {let _=crate::processing::cleanup_published_input(job);}
                     with_case(&app,&case_id,|c|{for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}Ok(())})?;
                     let more=handled?;kick_transcriptions(app.clone(),case_id.clone());let _=app.emit("case-changed",());if !more{break;}
                 },
@@ -1316,8 +1319,9 @@ fn run_discovery_lane(app:&tauri::AppHandle,case_id:&str) {
             Ok(None)=>{let pending=with_case(app,case_id,|c|Ok(c.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE s.restricted=0 AND j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index'))",[],|r|r.get::<_,bool>(0))?)).unwrap_or(false);if pending {std::thread::sleep(std::time::Duration::from_millis(500));continue;}break;},
             Err(_)=>break
         };
-        let result=crate::processing::run_prepared(&job.processor);
-        let _=with_case(app,case_id,|c|crate::discovery::publish(c,&job,result));
+        let staged=crate::processing::stage_prepared(&job.processor,crate::processing::run_prepared(&job.processor));
+        let published=with_case(app,case_id,|c|{crate::discovery::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
+        if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);}
         let _=app.emit("case-changed",());
     }
 }
@@ -1330,8 +1334,9 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
         tauri::async_runtime::spawn_blocking(move || {
             loop {
                 let job=match with_case(&app,&case_id,crate::automatic::next) {Ok(Some(job))=>job,_=>break};
-                let result=crate::processing::run_prepared(&job.processor);
-                let _=with_case(&app,&case_id,|c|crate::automatic::publish(c,&job,result));
+                let staged=crate::processing::stage_prepared(&job.processor,crate::processing::run_prepared(&job.processor));
+                let published=with_case(&app,&case_id,|c|{crate::automatic::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
+                if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);}
                 let _=app.emit("case-changed",());
                 let task=with_case(&app,&case_id,|c| {let provider=crate::providers::load(c)?.provider;if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}crate::automatic::start_review(c)});
                 if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});}

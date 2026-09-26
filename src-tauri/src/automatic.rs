@@ -135,6 +135,13 @@ impl PauseKind {
     fn key(self)->&'static str {match self {Self::ChatPreempted=>"chat_preempted",Self::UserStopped=>"user_stopped",Self::Interrupted=>"interrupted",Self::Error=>"error"}}
     fn from_reason(reason:&str)->Self {if reason==CHAT_PREEMPTION {Self::ChatPreempted} else if reason=="Stopped by user" {Self::UserStopped} else if reason.contains("interrupted") {Self::Interrupted} else {Self::Error}}
 }
+pub fn publish_staged(case:&mut Case,job:&Job,result:Result<processing::StagedPublication>)->Result<()> {
+    match processing::publish_staged(case,&job.processor,result) {
+        Ok(value)=>{case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![json!({"extraction_locator":value["extraction_locator"],"coverage":value["metadata"]["coverage"],"limitations":value["limitations"],"model_inspected":false}).to_string(),job.queue_id])?;},
+        Err(e)=>{case.db.execute("UPDATE processing_jobs SET status='failed',error=? WHERE id=?",params![e.to_string(),job.queue_id])?;}
+    }
+    Ok(())
+}
 pub fn record_pause(case:&Case,task:&str,reason:&str)->Result<()> {
     if case.meta(&format!("automatic_task:{task}"))?.as_deref()==Some("true") {
         case.set_meta(&format!("auto_review_pause_kind:{task}"),&json!({"kind":PauseKind::from_reason(reason).key(),"reason":reason}).to_string())?;

@@ -340,7 +340,7 @@ fn validate_inline_citations(case: &Case, content: &str, ids: &[String]) -> Resu
 }
 
 #[derive(Default)]
-pub struct PreparedMedia {pub jobs:Vec<(crate::processing::PreparedJob,Result<Value>)>,pub external:bool,pub error:Option<String>}
+pub struct PreparedMedia {pub jobs:Vec<(crate::processing::PreparedJob,Result<crate::processing::StagedPublication>)>,pub cleanup:Vec<crate::processing::PreparedJob>,pub external:bool,pub error:Option<String>}
 
 /// Validate task authorization before preparing isolated local worker jobs.
 pub fn prepare_media(case: &mut Case, task: &str, transmission: &str, response: &Value) -> Result<Vec<crate::processing::PreparedJob>> {
@@ -389,7 +389,7 @@ fn process_media(case:&mut Case,source:&str,options:Value,prepared:&mut Prepared
     if let Some(index)=prepared.jobs.iter().position(|(job,_)| {
         let mut request=job.request.clone();request.as_object_mut().unwrap().remove("kind");request.as_object_mut().unwrap().remove("version");request.as_object_mut().unwrap().remove("asr_model");
         job.source.id==source && request==options
-    }) {let (job,result)=prepared.jobs.remove(index);crate::processing::publish_prepared(case,&job,result)}
+    }) {let (job,result)=prepared.jobs.remove(index);let value=crate::processing::publish_staged(case,&job,result)?;prepared.cleanup.push(job);Ok(value)}
     else {ensure!(!prepared.external,"{}",prepared.error.as_deref().unwrap_or("No matching prepared worker job; retry as a single tool call"));crate::processing::process_request(case,source,options)}
 }
 pub fn execute_tool(case: &mut Case, task: &str, name: &str, args: &Value) -> Result<Value> {
