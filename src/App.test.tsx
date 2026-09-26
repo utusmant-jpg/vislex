@@ -97,6 +97,20 @@ it('keeps unsaved editor drafts inside their original case', async () => {
   await waitFor(()=>expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('Case A unsaved draft'));
 });
 
+it('keeps an unsaved draft when switching working file tabs without sending it', async () => {
+  const first:RecordSummary={id:'tab-one',title:'First note',kind:'note',revision:1,actor:'human',review:'unreviewed',protected:false,stale:false,updated_at:'now',dependencies:[]};
+  const second={...first,id:'tab-two',title:'Second note'};
+  api.mockImplementation(async (action:string,args:{record_id:string})=>action==='record_detail'?{...(args.record_id==='tab-one'?first:second),content:args.record_id==='tab-one'?'First saved':'Second saved'}:null);
+  const props={caseId:'synthetic-case',run:(fn:()=>Promise<void>)=>{void fn();},refresh:async()=>undefined,onSource:vi.fn()};
+  const view=render(<RecordDetailPanel summary={first} {...props}/>);
+  fireEvent.change(await screen.findByRole('textbox',{name:'Working file content'}),{target:{value:'Private unsaved draft'}});
+  view.rerender(<RecordDetailPanel summary={second} {...props}/>);
+  await waitFor(()=>expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('Second saved'));
+  view.rerender(<RecordDetailPanel summary={first} {...props}/>);
+  await waitFor(()=>expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('Private unsaved draft'));
+  expect(api).not.toHaveBeenCalledWith('write_record',expect.anything());
+});
+
 it('opens a record preview citation and states that export uses saved text', async () => {
   const summary:RecordSummary={id:'record-1',title:'Synthetic note',kind:'note',revision:1,actor:'human',review:'unreviewed',protected:false,stale:false,updated_at:'now',dependencies:['source-one']};
   api.mockImplementation(async (action:string)=>action==='record_detail'?{...summary,content:'See evidence:source-one#R1L5-L5'}:null);
@@ -135,6 +149,10 @@ it('opens the clicked palette search hit at its exact historical locator', async
   fireEvent.keyDown(reopened,{key:'ArrowDown'});
   fireEvent.keyDown(reopened,{key:'Enter'});
   await waitFor(()=>expect(api).toHaveBeenCalledWith('read_extract_revision',{source_id:'source-one',revision:1,start:9,count:200}));
+  fireEvent.click(screen.getByRole('button',{name:'Previous location'}));
+  await waitFor(()=>expect(api.mock.calls.filter(([action,args])=>action==='read_extract_revision' && args.start===5).length).toBeGreaterThan(1));
+  fireEvent.click(screen.getByRole('button',{name:'Next location'}));
+  await waitFor(()=>expect(api.mock.calls.filter(([action,args])=>action==='read_extract_revision' && args.start===9).length).toBeGreaterThan(1));
 });
 
 it('takes a selected historical text range to Chat and focuses the composer', async () => {

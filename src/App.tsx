@@ -203,6 +203,8 @@ export default function App() {
   const caseEpoch = useRef(0);
   const refreshSequence = useRef(0);
   const [selection, setSelection] = useState<Selection>(null);
+  const [navigationHistory, setNavigationHistory] = useState<{ entries: NonNullable<Selection>[]; index: number }>({ entries: [], index: -1 });
+  const movingInHistory = useRef(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [paletteIndex, setPaletteIndex] = useState(0);
@@ -261,7 +263,7 @@ export default function App() {
     setProjects(previous => { const next = [{ id: snapshot.id, name: snapshot.name, root: snapshot.root }, ...previous.filter(project => project.id !== snapshot.id)]; localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; });
     const saved = localStorage.getItem(`vislex-conversation:${snapshot.id}`);
     setConversationId(saved ?? (snapshot.tasks[0]?.conversation_id ?? snapshot.tasks[0]?.id ?? null));
-    setSelection(null); setOpenTabs([]); seenViewer.current = snapshot.viewer_request?.id ?? null;
+    setSelection(null); setOpenTabs([]); setNavigationHistory({ entries: [], index: -1 }); movingInHistory.current = false; seenViewer.current = snapshot.viewer_request?.id ?? null;
     setView('chat');
     setStorage(null);
     void api<Record<string, number>>('storage_usage').then(setStorage).catch(() => undefined);
@@ -283,6 +285,26 @@ export default function App() {
       return found ? tabs.map(tab => tab.type === selection.type && tab.id === selection.id ? selection : tab) : [...tabs, selection];
     });
   }, [selection]);
+
+  useEffect(() => {
+    if (!selection || !snapshot || !([...snapshot.sources, ...snapshot.records].some(item => item.id === selection.id))) return;
+    if (movingInHistory.current) { movingInHistory.current = false; return; }
+    setNavigationHistory(previous => {
+      const current = previous.entries[previous.index];
+      if (current?.type === selection.type && current.id === selection.id && current.locator === selection.locator) return previous;
+      const entries = [...previous.entries.slice(0, previous.index + 1), selection].slice(-100);
+      return { entries, index: entries.length - 1 };
+    });
+  }, [selection, snapshot?.id]);
+
+  function moveInHistory(delta: number) {
+    const index = navigationHistory.index + delta;
+    const target = navigationHistory.entries[index];
+    if (!target) return;
+    movingInHistory.current = true;
+    setNavigationHistory(previous => ({ ...previous, index }));
+    setSelection(target);
+  }
 
   useEffect(() => {
     const request = snapshot?.viewer_request;
@@ -537,6 +559,8 @@ export default function App() {
 
         <main className="main-panel" hidden={!selection}>
           <div className="tab-strip" role="tablist" aria-label="Open files">
+            <button className="icon-button" aria-label="Previous location" disabled={navigationHistory.index <= 0} onClick={() => moveInHistory(-1)}>←</button>
+            <button className="icon-button" aria-label="Next location" disabled={navigationHistory.index >= navigationHistory.entries.length - 1} onClick={() => moveInHistory(1)}>→</button>
             {openTabs.map(tab => {
               const tabTitle = tab.type === 'source' ? snapshot?.sources.find(item => item.id === tab.id)?.name : snapshot?.records.find(item => item.id === tab.id)?.title;
               return <ContextMenu key={tab.id} items={[
