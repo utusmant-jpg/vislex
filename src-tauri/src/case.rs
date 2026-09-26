@@ -93,6 +93,17 @@ pub fn clear_file_hash_cache() {
     }
 }
 
+fn is_link_or_reparse(path: &Path) -> Result<bool> {
+    let metadata = fs::symlink_metadata(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        Ok(metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0)
+    }
+    #[cfg(not(windows))]
+    { Ok(metadata.file_type().is_symlink()) }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Source {
     pub id: String,
@@ -492,9 +503,13 @@ impl Case {
             s.sha256.len() == 64 && s.sha256.chars().all(|c| c.is_ascii_hexdigit()),
             "Invalid source hash"
         );
-        let root = self.root.join("originals").canonicalize()?;
-        let path = root
-            .join(&s.sha256)
+        let original_root = self.root.join("originals");
+        ensure!(!is_link_or_reparse(&original_root)?, "Original storage is a link or reparse point");
+        let root = original_root.canonicalize()?;
+        ensure!(root.starts_with(&self.root), "Original storage escaped the case");
+        let original = root.join(&s.sha256);
+        ensure!(!is_link_or_reparse(&original)?, "Original is a link or reparse point");
+        let path = original
             .canonicalize()
             .context("Original is missing")?;
         ensure!(

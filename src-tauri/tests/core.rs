@@ -1475,6 +1475,48 @@ fn strong_verification_rejects_same_size_same_mtime_tampering() {
     assert!(c.verify_source(&s).is_err());
 }
 
+#[cfg(windows)]
+#[test]
+fn folder_import_skips_junctions_into_other_directories() {
+    let dir=tempfile::tempdir().unwrap();
+    let case_root=dir.path().join("case");
+    let selected=dir.path().join("selected");
+    let outside=dir.path().join("outside");
+    std::fs::create_dir_all(&case_root).unwrap();
+    std::fs::create_dir_all(&selected).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(selected.join("permitted.txt"),"permitted").unwrap();
+    std::fs::write(outside.join("private.txt"),"outside the selected folder").unwrap();
+    let link=selected.join("linked-outside");
+    let output=std::process::Command::new("cmd").args(["/C","mklink","/J"])
+        .arg(&link).arg(&outside).output().unwrap();
+    assert!(output.status.success(),"junction fixture unavailable: {}",String::from_utf8_lossy(&output.stderr));
+    let (paths,skipped)=evidence_desk::case::folder_paths(&case_root,&selected).unwrap();
+    assert_eq!(paths.len(),1);
+    assert!(paths[0].ends_with("permitted.txt"));
+    assert!(skipped.iter().any(|entry|entry["reason"]=="link or reparse point"));
+}
+
+#[cfg(windows)]
+#[test]
+fn original_storage_junction_cannot_redirect_a_registered_source() {
+    let (dir,c,s)=setup();
+    let original=c.source_path(&s).unwrap();
+    let outside=dir.path().join("outside-originals");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::copy(&original,outside.join(original.file_name().unwrap())).unwrap();
+    let originals=c.root.join("originals");
+    let saved=c.root.join("originals-saved");
+    std::fs::rename(&originals,&saved).unwrap();
+    let output=std::process::Command::new("cmd").args(["/C","mklink","/J"])
+        .arg(&originals).arg(&outside).output().unwrap();
+    assert!(output.status.success(),"junction fixture unavailable: {}",String::from_utf8_lossy(&output.stderr));
+    let result=c.source_path(&s);
+    std::fs::remove_dir(&originals).unwrap();
+    std::fs::rename(&saved,&originals).unwrap();
+    assert!(result.unwrap_err().to_string().contains("link or reparse point"));
+}
+
 /// R07 — encrypted backup is an exact-snapshot promise: a metadata-preserving
 /// tamper must abort the backup even though interactive reads still serve.
 #[test]
