@@ -696,8 +696,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "evidence_list" => crate::evidence::list(c,args["source_id"].as_str(),args["kind"].as_str(),args["offset"].as_u64().unwrap_or(0) as usize)?,
         "evidence_read" => crate::evidence::read(c,text(&args,"id")?,args["revision"].as_i64())?,
-        "evidence_write" => crate::evidence::write(c,serde_json::from_value(args["object"].clone())?,"human")?,
-        "evidence_review" => {crate::evidence::review(c,text(&args,"id")?,args["revision"].as_i64().context("Missing revision")?,text(&args,"review")?)?;Value::Null},
+        "evidence_write" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding update");crate::evidence::write(c,serde_json::from_value(args["object"].clone())?,"human")?},
+        "evidence_review" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding review");crate::evidence::review(c,text(&args,"id")?,args["revision"].as_i64().context("Missing revision")?,text(&args,"review")?)?;Value::Null},
         "evidence_search" => crate::evidence::search(c,text(&args,"query")?,args["offset"].as_u64().unwrap_or(0) as usize)?,
         "fit_clock" => crate::evidence::fit_clock(&serde_json::from_value::<Vec<crate::evidence::Anchor>>(args["anchors"].clone())?)?,
         "team_status" => crate::teams::status(c,text(&args,"task_id")?)?,
@@ -709,6 +709,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "read_dossier" => crate::dossier::view(c,text(&args,"task_id")?)?,
         "review_dossier_claim" => crate::dossier::human_review(c,text(&args,"task_id")?,args["revision"].as_u64().context("Missing dossier revision")?,usize::try_from(args["claim_index"].as_u64().context("Missing claim index")?)?,text(&args,"decision")?,text(&args,"note")?)?,
         "save_ai_settings" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before settings update");
             crate::automatic::preempt_for_chat(c)?;
             c.db.execute_batch("SAVEPOINT ai_settings")?;
             let result=(||->anyhow::Result<()> {
@@ -726,7 +727,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             Value::Null
         },
         "direct_media_permission" => json!({"enabled":crate::providers::direct_media_enabled(c)}),
-        "set_direct_media_permission" => {let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
+        "set_direct_media_permission" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before media permission update");let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
         "ai_config" => serde_json::to_value(crate::providers::load(c)?)?,
         "save_ai_config" => {crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
         "save_settings" => {

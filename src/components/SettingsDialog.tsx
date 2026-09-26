@@ -83,11 +83,12 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       // exactly as configured above.
       if (settings.allow_images && !settings.allow_text) throw new Error('Image analysis always sends accompanying text; grant text before images.');
       await api('save_ai_settings', {
+        case_id: snapshot.id,
         config: { ...config, provider: lead.provider, pool: profiles.filter((p, i) => i !== primary && p.model) },
         settings: { ...settings, model: lead.model },
       });
       if (directMedia !== null && directMedia !== initialDirectMedia) {
-        await api('set_direct_media_permission', { enabled: directMedia });
+        await api('set_direct_media_permission', { case_id: snapshot.id, enabled: directMedia });
       }
       await refresh(); onClose();
     } catch (e) { if (mounted.current) setError(String(e)); }

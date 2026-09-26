@@ -22,6 +22,8 @@ try {
     if(-not $ready){throw 'Native WebView debugging port did not start.'}
     $output=& node (Join-Path $PSScriptRoot 'native-cdp-eval.mjs') $Port (Join-Path $PSScriptRoot 'native-integrity-acceptance.js') $repo (Join-Path $repo 'artifacts\native-integrity-acceptance.png')
     if($LASTEXITCODE -ne 0){throw ($output -join "`n")}
+    $result=$output | ConvertFrom-Json
+    if($result.native_error){throw $result.native_error}
     $output | Set-Content -Encoding utf8 (Join-Path $repo 'artifacts\native-integrity-acceptance.json')
     $output
 } finally {

@@ -79,7 +79,7 @@ it('records a two-source comparison with exact citations and a next check', asyn
   fireEvent.click(screen.getByText('Open first source'));
   expect(onSource).toHaveBeenCalledWith(source.id, 'R1L1-L1');
   fireEvent.click(screen.getByText('Save unreviewed comparison'));
-  await waitFor(() => expect(api).toHaveBeenCalledWith('evidence_write', expect.objectContaining({ object: expect.objectContaining({ kind: 'issue', source_ids: [source.id, second.id], locators: ['evidence:source-one#R1L1-L1', 'evidence:source-two#R1L2-L2'] }) })));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('evidence_write', expect.objectContaining({ case_id: 'case-one', object: expect.objectContaining({ kind: 'issue', source_ids: [source.id, second.id], locators: ['evidence:source-one#R1L1-L1', 'evidence:source-two#R1L2-L2'] }) })));
   const saved = api.mock.calls.find(([name]) => name === 'evidence_write')![1].object;
   expect(JSON.parse(saved.content)).toMatchObject({ category: 'uncertain_clock', next_check: 'Compare verified clock anchors.' });
 });
@@ -100,7 +100,7 @@ it('builds a draft from an accepted finding with revision and source dependencie
   fireEvent.change(form.getByLabelText('Exact citation'), { target: { value: 'evidence:source-one#R1L1-L1' } });
   fireEvent.change(form.getByLabelText('Accepted finding on this page (optional)'), { target: { value: 'accepted-one:3' } });
   fireEvent.click(screen.getByText('Save unreviewed work product'));
-  await waitFor(() => expect(api).toHaveBeenCalledWith('evidence_write', expect.objectContaining({ object: expect.objectContaining({ kind: 'draft', dependencies: [{ id: 'accepted-one', revision: 3 }], locators: ['evidence:source-one#R1L1-L1'] }) })));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('evidence_write', expect.objectContaining({ case_id: 'case-one', object: expect.objectContaining({ kind: 'draft', dependencies: [{ id: 'accepted-one', revision: 3 }], locators: ['evidence:source-one#R1L1-L1'] }) })));
   const saved = api.mock.calls.find(([name]) => name === 'evidence_write')![1].object;
   expect(JSON.parse(saved.content)).toMatchObject({ workflow: 'draft', jurisdiction: 'Ontario', rows: [{ paragraph: '1', text: 'The record places the event near 10:00.', citations: ['evidence:source-one#R1L1-L1'], authority_ids: [] }] });
 });
