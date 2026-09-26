@@ -278,7 +278,7 @@ fn leased_hash(mut file:&fs::File)->Result<String> {
     loop {let n=file.read(&mut buffer)?;if n==0 {break;}hasher.update(&buffer[..n]);}
     Ok(format!("{:x}",hasher.finalize()))
 }
-fn verified_lease(path:&Path,expected:&str)->Result<fs::File> {
+pub(crate) fn verified_lease(path:&Path,expected:&str)->Result<fs::File> {
     let file=read_lease(path)?;
     ensure!(leased_hash(&file)?==expected,"Published artifact integrity mismatch");
     Ok(file)
@@ -340,7 +340,13 @@ pub fn stage_prepared(job:&PreparedJob,output:Result<Value>)->Result<StagedPubli
     Ok(StagedPublication{value,details:Some(StageDetails{combined,raw_hash,raw_path,previews:staged_previews,worker_hash,_leases:leases})})
 }
 pub fn publish_staged(case:&mut Case,job:&PreparedJob,staged:Result<StagedPublication>)->Result<Value> {
-    match staged {Ok(staged)=>publish_core(case,job,Ok(staged.value),staged.details),Err(error)=>publish_core(case,job,Err(error),None)}
+    let result=match staged {Ok(staged)=>publish_core(case,job,Ok(staged.value),staged.details),Err(error)=>publish_core(case,job,Err(error),None)};
+    if let Err(error)=&result {
+        if case.root==job.case_root {
+            case.db.execute("UPDATE processing_jobs SET status=?,error=? WHERE id=? AND status='running'",params![if job.staging.path().join("cancel.request").exists(){"cancelled"}else{"failed"},error.to_string(),job.job_id])?;
+        }
+    }
+    result
 }
 pub fn publish_prepared(case:&mut Case,job:&PreparedJob,output:Result<Value>)->Result<Value> {
     publish_core(case,job,output,None)
@@ -672,8 +678,9 @@ mod publication_tests {
         fs::write(&journal,b"{}").unwrap();
         assert!(publish_staged(&mut case,&job,Ok(staged)).is_err());
         fs::write(&journal,original).unwrap();
-        let staged=stage_prepared(&job,Ok(json!({"pages":[],"previews":[{"path":"preview.mp4","mime":"video/mp4"}]}))).unwrap();
-        publish_staged(&mut case,&job,Ok(staged)).unwrap();
+        let recovered=resume(&mut case,&job.job_id).unwrap();
+        let staged=stage_prepared(&recovered,Ok(json!({"pages":[],"previews":[{"path":"preview.mp4","mime":"video/mp4"}]}))).unwrap();
+        publish_staged(&mut case,&recovered,Ok(staged)).unwrap();
         let staged=stage_prepared(&job,Ok(json!({"pages":[],"previews":[{"path":"preview.mp4","mime":"video/mp4"}]}))).unwrap();
         assert!(publish_staged(&mut case,&job,Ok(staged)).is_err());
         let count:i64=case.db.query_row("SELECT count(*) FROM artifacts WHERE source_id=?",[&job.source.id],|r|r.get(0)).unwrap();

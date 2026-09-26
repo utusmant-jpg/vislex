@@ -111,17 +111,24 @@ pub fn dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Value> {
     let plan=prepare_dossier_bundle(case,task,path)?;
     publish_dossier_bundle(case,&plan,write_dossier_bundle(&plan,path),path)
 }
-pub struct DocumentExport {pub staging:tempfile::TempDir,pub record:Record,pub target:PathBuf,pub format:String,pub dependencies:Vec<(String,String)>}
+pub struct DocumentExport {pub staging:tempfile::TempDir,pub record:Record,pub target:PathBuf,pub format:String,pub dependencies:Vec<(String,String,PathBuf)>}
 pub fn prepare_document_at_revision(case:&Case,record:&str,expected_revision:Option<i64>,target:&Path)->Result<DocumentExport> {
     if let Some(expected)=expected_revision {ensure!(case.record(record)?.revision==expected,"Record changed since export was selected; refresh and try again");}
     prepare_document(case,record,target)
 }
+pub fn prepare_document_deferred_at_revision(case:&Case,record:&str,expected_revision:Option<i64>,target:&Path)->Result<DocumentExport> {
+    if let Some(expected)=expected_revision {ensure!(case.record(record)?.revision==expected,"Record changed since export was selected; refresh and try again");}
+    prepare_document_inner(case,record,target,false)
+}
 pub fn prepare_document(case:&Case,record:&str,target:&Path)->Result<DocumentExport> {
+    prepare_document_inner(case,record,target,true)
+}
+fn prepare_document_inner(case:&Case,record:&str,target:&Path,verify_bytes:bool)->Result<DocumentExport> {
     destination(case,target)?;let record=case.record(record)?;
     // Pin the exact content hash of each restricted-checked dependency at
     // preparation time so publication can revalidate it.
     let mut dependencies=Vec::new();
-    for source in &record.dependencies {ensure!(!case.source(source)?.restricted,"Restricted source dependency");case.verify_source_strong(source)?;dependencies.push((source.clone(),case.source(source)?.sha256));}
+    for source in &record.dependencies {ensure!(!case.source(source)?.restricted,"Restricted source dependency");if verify_bytes{case.verify_source_strong(source)?;}dependencies.push((source.clone(),case.source(source)?.sha256,case.source_path(source)?));}
     let format=target.extension().and_then(|s|s.to_str()).unwrap_or("").to_lowercase();ensure!(["docx","pdf"].contains(&format.as_str()),"Use .docx or .pdf");
     let staging=tempfile::tempdir_in(case.root.join("staging"))?;
     let request=json!({"version":1,"kind":"document_export","format":format,"title":record.title,"content":record.content,"status":format!("DRAFT — {} — revision {} — stale: {}. Not a sanitized disclosure package.",record.review,record.revision,record.stale)});
@@ -136,9 +143,29 @@ pub fn run_document(job:&DocumentExport)->Result<()> {
     let output:Value=serde_json::from_slice(&fs::read(job.staging.path().join("result.json"))?)?;
     ensure!(output["status"]=="complete","{}",output["error"].as_str().unwrap_or("Export failed"));Ok(())
 }
+pub struct StagedDocument {file:tempfile::NamedTempFile,hash:String,_leases:Vec<fs::File>}
+pub fn stage_document(job:&DocumentExport)->Result<StagedDocument> {
+    let mut leases=Vec::new();
+    for (_,hash,path) in &job.dependencies {leases.push(crate::processing::verified_lease(path,hash)?);}
+    let output=job.staging.path().join(format!("document.{}",job.format));
+    ensure!(output.metadata()?.len()<=32*1024*1024,"Export too large");
+    let mut staged=tempfile::NamedTempFile::new_in(job.target.parent().context("Missing parent")?)?;
+    std::io::copy(&mut fs::File::open(output)?,staged.as_file_mut())?;staged.flush()?;staged.as_file().sync_all()?;
+    let hash=file_hash(staged.path())?;
+    Ok(StagedDocument{file:staged,hash,_leases:leases})
+}
+pub fn publish_staged_document(case:&mut Case,job:&DocumentExport,staged:StagedDocument)->Result<Value> {
+    destination(case,&job.target)?;
+    let current=case.record(&job.record.id)?;
+    ensure!(current.revision==job.record.revision && current.stale==job.record.stale && current.review==job.record.review,"Draft or review status changed during export");
+    for (source,pinned,_) in &job.dependencies {ensure!(!case.source(source)?.restricted,"Source became restricted");ensure!(case.source(source)?.sha256==*pinned,"Source dependency changed during export");}
+    staged.file.persist_noclobber(&job.target)?;
+    case.audit("document_draft_exported",json!({"record":job.record.id,"revision":job.record.revision,"sha256":staged.hash}))?;
+    Ok(json!({"path":job.target,"sha256":staged.hash}))
+}
 pub fn publish_document(case:&mut Case,job:&DocumentExport)->Result<Value> {
     destination(case,&job.target)?;let current=case.record(&job.record.id)?;ensure!(current.revision==job.record.revision && current.stale==job.record.stale && current.review==job.record.review,"Draft or review status changed during export");
-    for (source,pinned) in &job.dependencies {ensure!(!case.source(source)?.restricted,"Source became restricted");ensure!(case.source(source)?.sha256==*pinned,"Source dependency changed during export");case.verify_source_strong(source)?;}
+    for (source,pinned,_) in &job.dependencies {ensure!(!case.source(source)?.restricted,"Source became restricted");ensure!(case.source(source)?.sha256==*pinned,"Source dependency changed during export");case.verify_source_strong(source)?;}
     let output=job.staging.path().join(format!("document.{}",job.format));
     ensure!(output.metadata()?.len()<=32*1024*1024,"Export too large");
     let mut staged=tempfile::NamedTempFile::new_in(job.target.parent().context("Missing parent")?)?;
@@ -169,4 +196,21 @@ pub fn export_redaction(case:&mut Case,artifact:&str,target:&Path)->Result<Value
     std::io::copy(&mut fs::File::open(path)?,stage.as_file_mut())?;stage.as_file().sync_all()?;ensure!(file_hash(stage.path())?==hash,"Export integrity failure");stage.persist_noclobber(target)?;
     case.audit("redaction_exported",json!({"artifact":artifact,"sha256":hash,"review":review}))?;
     Ok(json!({"path":target,"sha256":hash,"included_original":false}))
+}
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+    #[test]
+    fn staged_document_rechecks_revision_before_atomic_export() {
+        let dir=tempfile::tempdir().unwrap();
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic export").unwrap();
+        let record=case.write_record(None,0,"Notes","note","first","human","unreviewed",None,vec![]).unwrap();
+        let target=dir.path().join("notes.pdf");
+        let job=prepare_document_at_revision(&case,&record.id,Some(record.revision),&target).unwrap();
+        fs::write(job.staging.path().join("document.pdf"),b"synthetic PDF export").unwrap();
+        let staged=stage_document(&job).unwrap();
+        case.write_record(Some(&record.id),record.revision,"Notes","note","changed","human","unreviewed",None,vec![]).unwrap();
+        assert!(publish_staged_document(&mut case,&job,staged).is_err());
+        assert!(!target.exists());
+    }
 }

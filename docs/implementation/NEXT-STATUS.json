@@ -149,7 +149,20 @@
       "note": "Routine polling uses case_summary; recovery snapshot limits source, record, task and job lists to first pages with exact totals and current failures. Keyset/rowid pages are case fenced; mutable source/record pages additionally require the audit epoch. Older items remain accessible through list controls or exact detail fetch, including citations and source pickers. The 500-record fixture tests no duplicates/skips and query-plan indexes. Current UI counts reflect total case scope."
     },
     "R09": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "e9bb0fc, 0fd6966; final document staging commit pending",
+      "evidence": "Processor, discovery, automatic and agent media artifacts now hash/copy to content-addressed storage outside the case mutex; staged journal and read leases gate short registration. Playback derivative and document draft export use the same staged pattern.",
+      "measurements": "Four synthetic 32 MiB derivatives: old publication lock p50 795 ms, p95/max 1031 ms; staged registration p50/p95/max 5 ms on this Windows host. Sample size 4; not a release-wide latency claim.",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after processor staging, before playback/document edits",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml staged_publication -> exit 0, cancellation, journal tamper/recovery and duplicate registration",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml playback_staging_registers_once -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml staged_document_rechecks_revision -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after staged playback/document and strong-preparation compatibility fix",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0"
+      ],
+      "unrun_checks": "Transcription, dossier bundle, redaction and legacy direct processing paths still do heavy work under the case lock. Full crash boundary, disk-full, case-close concurrency, x64 packaged acceptance and large tiers remain open. Do not mark verified.",
+      "note": "Unregistered content-addressed outputs are retained for recovery inventory; cancelled and failed staged jobs stay visible. Legacy document preparation keeps immediate strong verification while desktop staging checks source bytes outside the mutex."
     },
     "R10": {
       "state": "pending"
