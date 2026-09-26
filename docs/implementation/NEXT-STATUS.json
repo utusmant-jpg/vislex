@@ -196,7 +196,8 @@
       "commands": [
         "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0",
         "scripts/package-development.ps1 -OutputName 'VisLex 0.3.0-dev19' -> exit 0",
-        "scripts/native-acceptance.ps1 -Port 9349 -BinaryPath artifacts/VisLex 0.3.0-dev19/VisLex.exe -> exit 0"
+        "scripts/native-acceptance.ps1 -Port 9349 -BinaryPath artifacts/VisLex 0.3.0-dev19/VisLex.exe -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, 192 passed including all 21 Windows AppContainer sandbox tests, 12 discovery tests and worker_video_e2e"
       ],
       "observed": "6 synthetic originals imported; video OCR and overview each returned 4 samples; DOCX and XLSX extracted; semantic search returned 30 results; DOCX/PDF exports hashed; unreviewed redaction denied; playback provenance and chat rendering present; 0 provider calls. Snapshot samples 6.1-70.4 ms; discovery snapshot samples 7.2-93 ms, single journey only.",
       "unrun_checks": "This debug journey bypasses normal consent and provider paths; it is not the R04 production settings journey or a release build. No two live provider chats, full-duration video review, live-case export/restore/reopen, or small/medium/large performance comparison was run. R23 remains open.",
