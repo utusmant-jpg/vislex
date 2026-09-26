@@ -221,6 +221,7 @@ it('opens a record preview citation and states that export uses saved text', asy
 
 it('opens the clicked palette search hit at its exact historical locator', async () => {
   const current=snapshot();
+  current.session_epoch=9;
   current.sources=[{id:'source-one',name:'Statement.txt',sha256:'hash',size:100,mime:'text/plain',kind:'text',status:'text ready',restricted:false,occurrences:1,created_at:'now'}];
   api.mockImplementation(async (action:string)=>action==='snapshot'?current:action==='hybrid_search'?{results:[
     {source_id:'source-one',name:'First hit',excerpt:'first',locator:'evidence:source-one#R1L5-L5'},
@@ -232,6 +233,7 @@ it('opens the clicked palette search hit at its exact historical locator', async
   const search=screen.getByRole('combobox',{name:/Search case/});
   fireEvent.change(search,{target:{value:'hit'}});
   fireEvent.click(screen.getByRole('button',{name:/Search text & meaning/}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('hybrid_search',{case_id:'synthetic-case',session_epoch:9,query:'hit'}));
   fireEvent.click(await screen.findByRole('option',{name:/First hit/}));
   expect(screen.getByRole('tab',{name:'Statement.txt'}).getAttribute('aria-selected')).toBe('true');
   await waitFor(()=>expect(api).toHaveBeenCalledWith('read_extract_revision',{source_id:'source-one',revision:1,start:5,count:200}));

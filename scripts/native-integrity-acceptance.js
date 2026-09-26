@@ -33,13 +33,31 @@
   try { await invoke('delete_case', { case_id: reopened.id, session_epoch: reopened.session_epoch, path: `${root}/fixtures/generated`, confirm: reopened.name }); }
   catch (error) { wrongDeleteTargetDenied = String(error).includes('Delete target is not the open case'); }
   if (!wrongDeleteTargetDenied) throw new Error('Deletion accepted a different folder');
-  const imported = await invoke('import_files', { case_id: created.id, paths: [fixture], production: 'Synthetic integrity' });
+  const imported = await invoke('import_files', { case_id: created.id, session_epoch: reopened.session_epoch, paths: [fixture], production: 'Synthetic integrity' });
   if (imported.items[0]?.status !== 'imported') throw new Error('Synthetic import failed');
   const snapshot = await invoke('snapshot');
   if (!Number.isSafeInteger(snapshot.event_seq) || snapshot.event_seq < reopenedSummary.event_seq) throw new Error('Case event sequence went backwards');
   const source = snapshot.sources[0];
   if (!source || source.size !== 256 * 1024 * 1024) throw new Error('Synthetic source size mismatch');
   const mandatorySessionActions = [
+    ['fetch_public_authority', { url: 'https://www.govinfo.gov/content/pkg/test/html/test.htm', title: 'Synthetic', jurisdiction: 'test', relevant_date: '2026-09-26' }],
+    ['hybrid_search', { query: 'synthetic' }],
+    ['export_word', { record_id: 'missing', path: `${root}/artifacts/rejected-document-${run}.pdf` }],
+    ['export_record', { record_id: 'missing', path: `${root}/artifacts/rejected-record-${run}.md` }],
+    ['import_files', { paths: [fixture], production: 'Rejected old session' }],
+    ['import_folder', { path: `${root}/fixtures/generated`, production: 'Rejected old session' }],
+    ['process_source', { source_id: 'missing' }],
+    ['probe_pdf', { source_id: 'missing' }],
+    ['render_page', { source_id: 'missing', page: 1 }],
+    ['transcribe_source', { source_id: 'missing' }],
+    ['scan_sound_events', { source_id: 'missing' }],
+    ['prepare_redaction', { source_id: 'missing', boxes: [] }],
+    ['diarize_source', { source_id: 'missing' }],
+    ['step_video_frame', { source_id: 'missing', target: 0, direction: 'next' }],
+    ['playback_proxy', { source_id: 'missing' }],
+    ['verify_source', { source_id: 'missing' }],
+    ['backup', { path: `${root}/artifacts/rejected-backup-${run}.age`, password: 'synthetic-passphrase-only' }],
+    ['export_dossier_bundle', { task_id: 'missing', path: `${root}/artifacts/rejected-package-${run}` }],
     ['resume_processing', { job_id: 'missing' }],
     ['resume_transcription', { job_id: 'missing' }],
     ['queue_video_discovery', { source_id: 'missing', interval: 5 }],
@@ -165,7 +183,7 @@
   }
   const started = performance.now();
   let finished = false;
-  const verification = invoke('verify_source', { source_id: source.id }).finally(() => { finished = true; });
+  const verification = invoke('verify_source', { case_id: snapshot.id, session_epoch: reopened.session_epoch, source_id: source.id }).finally(() => { finished = true; });
   const summaries = [];
   for (let i = 0; i < 12; i++) {
     const before = performance.now();

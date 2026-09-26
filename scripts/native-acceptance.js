@@ -5,7 +5,7 @@
   const run=Date.now().toString();
   await invoke('create_case',{path:root+'/artifacts/acceptance-'+run,name:'Synthetic native acceptance '+run});
   const initial=await invoke('snapshot');
-  const imported=await invoke('import_files',{case_id:initial.id,paths:['statement.pdf','statement.txt','photograph.png','variable-timing.mp4','notes.docx','table.xlsx'].map(n=>root+'/fixtures/generated/'+n),production:'Synthetic acceptance'});
+  const imported=await invoke('import_files',{case_id:initial.id,session_epoch:initial.session_epoch,paths:['statement.pdf','statement.txt','photograph.png','variable-timing.mp4','notes.docx','table.xlsx'].map(n=>root+'/fixtures/generated/'+n),production:'Synthetic acceptance'});
   if(imported.items.some(i=>i.status!=='imported'))throw new Error('Fixture import failed');
   let snapshot=await invoke('snapshot');
   const caseSummary=await invoke('case_summary',{case_id:snapshot.id});
@@ -19,14 +19,14 @@
   let crossCaseSourceDenied=false;try{await invoke('source_page',{case_id:'another-case',generation:snapshot.generation,audit_seq:snapshot.counts.audit_seq});}catch{crossCaseSourceDenied=true;}
   if(!crossCaseSourceDenied)throw new Error('A stale case was allowed to list sources');
   const pdf=snapshot.sources.find(s=>s.kind==='pdf');const photo=snapshot.sources.find(s=>s.kind==='image');const video=snapshot.sources.find(s=>s.kind==='video');
-  const process=invoke('process_source',{case_id:snapshot.id,source_id:pdf.id});const latencies=[];
+  const process=invoke('process_source',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,source_id:pdf.id});const latencies=[];
   for(let i=0;i<5;i++){const t=performance.now();await invoke('snapshot');latencies.push(performance.now()-t);}
   await process;
   const documents=[];
   for(const name of ['notes.docx','table.xlsx']) {
     const source=snapshot.sources.find(s=>s.name===name);
-    const first=await invoke('process_source',{case_id:snapshot.id,source_id:source.id});
-    const second=await invoke('process_source',{case_id:snapshot.id,source_id:source.id});
+    const first=await invoke('process_source',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,source_id:source.id});
+    const second=await invoke('process_source',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,source_id:source.id});
     const text=await invoke('read_text',{source_id:source.id,start:1,count:200});
     if(!second.reused || first.extraction_locator!==second.extraction_locator || !text.total_lines)throw new Error('Document extraction/cache failed: '+name);
     documents.push({name,total_lines:text.total_lines,reused:second.reused});
@@ -63,7 +63,7 @@
     if(!result.samples.length||!Number.isFinite(result.samples[0].metadata.pts))throw new Error('Missing timestamped discovery samples');
     discovery.push({kind,samples:result.samples.length,pts:result.samples[0].metadata.pts});
   }
-  const search=await invoke('hybrid_search',{query:'witness'});
+  const search=await invoke('hybrid_search',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,query:'witness'});
   if(!search.results.length && !search.lexical_results?.length)throw new Error('No saved or lexical lead for the exact synthetic fixture term');
   // Automatic local transcription can change the case generation. Wait for it before testing an exact-revision export.
   for(let i=0;i<240;i++){const current=await invoke('snapshot');if(!current.jobs.some(j=>j.kind==='full_audio'&&['running','queued'].includes(j.status)))break;if(i===239)throw new Error('Automatic transcripts did not settle');await new Promise(resolve=>setTimeout(resolve,500));}
@@ -78,14 +78,14 @@
   let staleDetailDenied=false;try{await invoke('record_detail',{case_id:'other-case',record_id:record.id,revision:record.revision});}catch{staleDetailDenied=true;}
   if(!staleDetailDenied)throw new Error('Cross-case record detail was accepted');
   const exports=[];
-  for(const ext of ['docx','pdf'])exports.push(await invoke('export_word',{case_id:snapshot.id,record_id:record.id,path:root+'/artifacts/acceptance-'+run+'.'+ext}));
+  for(const ext of ['docx','pdf'])exports.push(await invoke('export_word',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,record_id:record.id,path:root+'/artifacts/acceptance-'+run+'.'+ext}));
   let crossCaseExportDenied=false;try{await invoke('export_record',{case_id:'old-case',record_id:record.id,expected_revision:record.revision,path:root+'/artifacts/wrong-case-'+run+'.md'});}catch{crossCaseExportDenied=true;}
   if(!crossCaseExportDenied)throw new Error('Export accepted a stale case identity');
-  const redaction=await invoke('prepare_redaction',{case_id:snapshot.id,source_id:photo.id,boxes:[{page:1,x:0,y:0,width:100,height:30}]});
+  const redaction=await invoke('prepare_redaction',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,source_id:photo.id,boxes:[{page:1,x:0,y:0,width:100,height:30}]});
   const derivative=redaction.published.find(p=>p.metadata.mime==='application/pdf');
   let denied=false;try{await invoke('export_redaction',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,artifact_id:derivative.artifact_id,path:root+'/artifacts/unreviewed-'+run+'.pdf'});}catch(error){denied=String(error).includes('Human page review is required');}
   if(!denied)throw new Error('Unreviewed redaction export was allowed');
-  const proxy=await invoke('playback_proxy',{source_id:video.id});const info=await invoke('artifact_info',{artifact_id:proxy.artifact_id});
+  const proxy=await invoke('playback_proxy',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,source_id:video.id});const info=await invoke('artifact_info',{artifact_id:proxy.artifact_id});
   if(info.metadata.player_origin_seconds!==0)throw new Error('Playback lacks explicit origin');
   const waitFor=async(predicate,label)=>{for(let i=0;i<100;i++){const found=predicate();if(found)return found;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('UI did not show '+label);};
   // Chat rows append a relative-time label inside the button, so match the exact tooltip title instead of concatenated text.

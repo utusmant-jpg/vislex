@@ -672,8 +672,10 @@ export default function App() {
   }
   function searchPalette() {
     if (query.trim() && snapshot) {
+      const epoch = caseEpoch.current;
       run(async () => {
-        const response = await api<{ results: SearchResult[]; remaining_passages: number }>('hybrid_search', { query });
+        const response = await api<{ results: SearchResult[]; remaining_passages: number }>('hybrid_search', { ...caseGuard(snapshot), query });
+        if (caseEpoch.current !== epoch) return;
         setResults(response.results);
         if (response.remaining_passages > 0) notify.info('Indexing in progress', `${response.remaining_passages} passages remain unindexed; current results cover indexed text only. Repeat semantic search to continue indexing.`);
       });

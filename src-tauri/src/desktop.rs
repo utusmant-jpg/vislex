@@ -103,7 +103,7 @@ fn key_entry() -> anyhow::Result<keyring::Entry> { provider_key_entry(crate::pro
 
 async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<Value, String> {
     if action=="fetch_public_authority" {
-        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before authority retrieval");anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),url))})();
+        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before authority retrieval");require_session_epoch(&state,&args)?;anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),url))})();
         let (case_id,epoch,url)=prepared.map_err(|e|e.to_string())?;
         let download=crate::authority::retrieve(&url).await.map_err(|e|e.to_string())?;
         let value=with_case_expected(&app,&case_id,Some(epoch),|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
@@ -131,12 +131,12 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
 fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result<Value> {
 
     if action=="hybrid_search" {
-        let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::semantic::prepare_query(case,text(&args,"query")?,scope)?)};
+        let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before search");require_session_epoch(&state,&args)?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::semantic::prepare_query(case,text(&args,"query")?,scope)?)};
         let result=crate::semantic::run(&job)?;
         return with_case_expected(app,&case_id,Some(epoch),|case|crate::semantic::publish(case,&job,result));
     }
     if action=="export_word" {
-        let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");let record_id=text(&args,"record_id")?;let expected=export_revision(&args)?;(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::exports::prepare_document_deferred_at_revision(case,record_id,expected,Path::new(text(&args,"path")?))?)};
+        let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");require_session_epoch(&state,&args)?;let record_id=text(&args,"record_id")?;let expected=export_revision(&args)?;(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::exports::prepare_document_deferred_at_revision(case,record_id,expected,Path::new(text(&args,"path")?))?)};
         crate::exports::run_document(&job)?;
         let staged=crate::exports::stage_document(&job)?;
         return with_case_expected(app,&case_id,Some(epoch),|case|crate::exports::publish_staged_document(case,&job,staged));
@@ -174,6 +174,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             ensure_session_epoch(&state,&args)?;
             let source=text(&args,"source_id")?;
             anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before source processing");
+            require_session_epoch(&state,&args)?;
             if ["scan_sound_events","step_video_frame"].contains(&action) {anyhow::ensure!(!case.source(source)?.restricted,"Restricted source");}
             let options=match action {
                 "render_page"=>json!({"operation":"render_page","page":args["page"]}),
@@ -232,6 +233,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             let c=guard.as_mut().ok_or_else(||anyhow::anyhow!("Open a case first"))?;
             ensure_session_epoch(&state,&args)?;
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before playback processing");
+            require_session_epoch(&state,&args)?;
 
             let source=text(&args,"source_id")?;
 
@@ -269,6 +272,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let state=app.state::<AppState>();
             let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before verification");
+            require_session_epoch(&state,&args)?;
             let source=c.source(&source_id)?;
             (c.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),c.source_path(&source_id)?,source.sha256)
         };
@@ -287,6 +292,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_mut().context("Open a case first")?;ensure_session_epoch(&state,&args)?;
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before backup");
+            require_session_epoch(&state,&args)?;
             (c.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),backup::prepare_backup_deferred(c,&destination,text(&args,"password")?)?)
         };
         // Archive hashing, tarring and encryption run without the case lock so chat,
@@ -305,6 +311,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_mut().context("Open a case first")?;ensure_session_epoch(&state,&args)?;
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before reviewed package export");
+            require_session_epoch(&state,&args)?;
             (c.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::exports::prepare_dossier_bundle(c,text(&args,"task_id")?,&destination)?)
         };
         // Copying cited originals into the package runs without the case lock.
@@ -818,6 +825,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "export_record" => {
 
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");
+            require_session_epoch(&state,&args)?;
             let record_id=text(&args, "record_id")?;
             if let Some(expected)=export_revision(&args)? {c.export_record_at_revision(record_id,expected,Path::new(text(&args,"path")?))?;}
             else {c.export_record(record_id,Path::new(text(&args,"path")?))?;}
@@ -1551,7 +1559,7 @@ fn import_background(app:&tauri::AppHandle,action:&str,args:Value)->anyhow::Resu
     anyhow::ensure!(state.importing.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).is_ok(),"An import is already active");
     struct Lease<'a>(&'a AtomicBool);impl Drop for Lease<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
     let _lease=Lease(&state.importing);
-    let (root,case_id)={let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before import");(case.root.clone(),case.meta("id")?.unwrap_or_default())};
+    let (root,case_id)={let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before import");require_session_epoch(&state,&args)?;(case.root.clone(),case.meta("id")?.unwrap_or_default())};
     let (paths,skipped)=if action=="import_folder" {crate::case::folder_paths(&root,Path::new(text(&args,"path")?))?}else{(serde_json::from_value::<Vec<String>>(args["paths"].clone())?,vec![])};
     anyhow::ensure!(paths.len()<=10000,"Import at most 10,000 files per batch");
     let production=args["production"].as_str().unwrap_or("Imported evidence");
