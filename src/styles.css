@@ -763,12 +763,13 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 .redaction-stage img { display: block; max-width: 100%; user-select: none; -webkit-user-drag: none; pointer-events: none; }
 .redaction-box-overlay { position: absolute; background: #d6455033; border: 1.5px solid var(--danger); border-radius: 2px; }
 .redaction-box-overlay.drafting { border-style: dashed; }
-.redaction-box-remove { position: absolute; top: -1.5px; right: -1.5px; width: 19px; height: 19px; background: var(--danger); color: #fff; border-radius: 0 2px 0 4px; padding: 0; }
+.redaction-box-remove { position: absolute; top: -1.5px; right: -1.5px; width: 32px; height: 32px; background: var(--danger); color: #fff; border-radius: 0 2px 0 4px; padding: 0; }
 .redaction-hint { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .redaction-boxes { margin: 12px 0; padding: 12px 0; border-top: 1px solid var(--border-subtle); }
 .redaction-box { display: flex; gap: 8px; align-items: flex-end; margin: 8px 0; padding: 8px; flex-wrap: wrap; border: 1px solid var(--border-subtle); border-radius: var(--r-sm); }
 .redaction-box label { min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-faint); }
 .redaction-box input { width: 76px; padding: 4px 7px; font-size: 11.5px; }
+.redaction-box .icon-button { width: 32px; height: 32px; }
 .redaction-review-progress { margin: 16px 0 8px; }
 .redaction-review-page { margin: 8px 0 14px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--r-sm); background: var(--bg-surface-2); }
 .redaction-review-page img { display: block; margin-bottom: 10px; }
