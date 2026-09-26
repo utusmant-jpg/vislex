@@ -380,7 +380,8 @@
       "benchmark_capture_followup": "Raw benchmark capture now fails closed when any source in the case is restricted, because task answers and tool receipts can include out-of-scope source references. Synthetic SQLite regression passed after a red-first failure; no client case was read."
     },
     "R25": {
-      "state": "pending"
+      "state": "pending",
+      "package_manifest_followup": "Standalone scripts/package_manifest.py creates a deterministic commit-tagged SHA-256 and byte-size inventory for every regular file in a fresh package folder and verifies missing, changed or extra files. It refuses links and a second write to the same folder. Two synthetic round-trip/tamper tests passed; no exact installer or second-machine package has yet been verified with this tool. The manifest is an integrity inventory, not a signature or complete SBOM."
     },
     "R23": {
       "state": "pending",
