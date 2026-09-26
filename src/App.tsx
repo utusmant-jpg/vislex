@@ -200,6 +200,7 @@ export default function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [projects, setProjects] = useState<{ id: string; name: string; root: string; chats?: { id: string; title: string }[] }[]>(() => { try { return JSON.parse(localStorage.getItem('vislex-projects') ?? '[]'); } catch { return []; } });
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const caseEpoch = useRef(0);
   const [selection, setSelection] = useState<Selection>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[] | null>(null);
@@ -215,7 +216,8 @@ export default function App() {
   const [dropping, setDropping] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
 
-  const refresh = useCallback(async () => { setSnapshot(await api<Snapshot | null>('snapshot')); }, []);
+  const installSnapshot = useCallback((next: Snapshot | null) => { caseEpoch.current += 1; setSnapshot(next); }, []);
+  const refresh = useCallback(async () => { const epoch = caseEpoch.current; const next = await api<Snapshot | null>('snapshot'); if (caseEpoch.current === epoch) setSnapshot(next); }, []);
   const run = useCallback((fn: () => Promise<void>) => {
     setBusy(true);
     void fn().catch(error => notify.fromError('Something went wrong', error)).finally(() => setBusy(false));
@@ -227,13 +229,13 @@ export default function App() {
       void (async () => {
         const current = await api<Snapshot | null>('snapshot');
         const last = localStorage.getItem('vislex-last-case') ?? JSON.parse(localStorage.getItem('vislex-projects') ?? '[]')[0]?.root;
-        setSnapshot(current ?? (native && last ? await api<Snapshot>('open_case', { path: last }) : null));
+        installSnapshot(current ?? (native && last ? await api<Snapshot>('open_case', { path: last }) : null));
       })().catch(error => notify.error('Could not reopen the last case', `${String(error)}. Choose a project from the sidebar.`));
     }
     if (!native) return;
     const cleanup = listen('case-changed', () => { void refresh(); });
     return () => { void cleanup.then(fn => fn()); };
-  }, [refresh]);
+  }, [refresh, installSnapshot]);
 
   useEffect(() => { if (modal) dialog.current?.showModal(); }, [modal]);
   useEffect(() => { if (rename) { setRenameValue(rename.name); renameDialog.current?.showModal(); } }, [rename]);
@@ -364,13 +366,13 @@ export default function App() {
     }
   }
   async function openCase() {
-    if (!native) { setSnapshot(await api<Snapshot>('load_demo')); setSelection(null); return; }
+    if (!native) { installSnapshot(await api<Snapshot>('load_demo')); setSelection(null); return; }
     const path = await open({ directory: true, title: 'Open a VisLex case folder' });
-    if (typeof path === 'string') { setSnapshot(await api<Snapshot>('open_case', { path })); setSelection(null); setView('chat'); }
+    if (typeof path === 'string') { installSnapshot(await api<Snapshot>('open_case', { path })); setSelection(null); setView('chat'); }
   }
   function showModal(type: typeof modal) { setName(''); setPassword(''); setModal(type); }
   async function performModal() {
-    if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; setSnapshot(await api<Snapshot>('create_case', { path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
+    if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
     if (modal === 'note') { const created = await api<WorkingRecord>('write_record', { title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
     if (modal === 'backup') { const path = await save({ defaultPath: 'case-backup.tar.age', filters: [{ name: 'Encrypted backup', extensions: ['age'] }] }); if (!path) return; await api('backup', { path, password }); notify.success('Encrypted backup saved', path); }
     if (modal === 'delete') {
@@ -379,10 +381,10 @@ export default function App() {
       setProjects(previous => { const next = previous.filter(project => project.id !== snapshot.id); localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; });
       if (localStorage.getItem('vislex-last-case') === snapshot.root) localStorage.removeItem('vislex-last-case');
       localStorage.removeItem(`vislex-conversation:${snapshot.id}`);
-      setSnapshot(null); setSelection(null); setOpenTabs([]);
+      installSnapshot(null); setSelection(null); setOpenTabs([]);
       notify.success('Case deleted', `${formatBytes(receipt.bytes)} of case data removed from disk.`);
     }
-    if (modal === 'restore') { const archive = await open({ filters: [{ name: 'Encrypted case', extensions: ['age'] }] }); if (typeof archive !== 'string') return; const parent = await open({ directory: true, title: 'Choose restoration parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a restored case folder name.'); setSnapshot(await api<Snapshot>('restore_case', { archive, path: `${parent}\\${safeName}.ledcase`, password })); setSelection(null); }
+    if (modal === 'restore') { const archive = await open({ filters: [{ name: 'Encrypted case', extensions: ['age'] }] }); if (typeof archive !== 'string') return; const parent = await open({ directory: true, title: 'Choose restoration parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a restored case folder name.'); installSnapshot(await api<Snapshot>('restore_case', { archive, path: `${parent}\\${safeName}.ledcase`, password })); setSelection(null); }
     setPassword(''); setModal(null);
   }
 
@@ -487,8 +489,8 @@ export default function App() {
           <div className="project-list">
             {snapshot ? <div className="project-folder active"><FolderOpen size={15} /><button title={snapshot.root} onClick={() => beginRename('case', snapshot.id, snapshot.name)}>{snapshot.name}</button></div> : null}
             {projects.filter(project => project.id !== snapshot?.id).map(project => <details key={project.id} className="project-group"><summary><FolderOpen size={15} /><span>{project.name}</span></summary>
-              <button className="project-row" title={project.root} onClick={() => run(async () => { setSnapshot(await api<Snapshot>('open_case', { path: project.root })); setView('chat'); })}>Open project</button>
-              {project.chats?.slice(0, 8).map(chat => <button className="project-chat" key={chat.id} onClick={() => run(async () => { const opened = await api<Snapshot>('open_case', { path: project.root }); localStorage.setItem(`vislex-conversation:${project.id}`, chat.id); setSnapshot(opened); setView('chat'); })}>{chat.title}</button>)}
+              <button className="project-row" title={project.root} onClick={() => run(async () => { installSnapshot(await api<Snapshot>('open_case', { path: project.root })); setView('chat'); })}>Open project</button>
+              {project.chats?.slice(0, 8).map(chat => <button className="project-chat" key={chat.id} onClick={() => run(async () => { const opened = await api<Snapshot>('open_case', { path: project.root }); localStorage.setItem(`vislex-conversation:${project.id}`, chat.id); installSnapshot(opened); setView('chat'); })}>{chat.title}</button>)}
             </details>)}
           </div>
           <div className="sidebar-footer">
@@ -516,7 +518,7 @@ export default function App() {
             onCreate={() => showModal('create')}
             onOpen={() => run(openCase)}
             onRestore={() => showModal('restore')}
-            onSample={() => run(async () => { setSnapshot(await api<Snapshot>('load_demo')); })}
+            onSample={() => run(async () => { installSnapshot(await api<Snapshot>('load_demo')); })}
           /> : null}
           {snapshot && view === 'chat' ? <AgentPanel conversationId={conversationId} onConversation={chooseConversation} snapshot={snapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={() => setSettings(true)} focusRequest={focusComposerRequest} /> : null}
           {!snapshot && view !== 'chat' ? <div className="empty-state workspace-view"><FolderOpen size={32} /><h3>Open a case first</h3><p>This workspace becomes available once a case is open.</p></div> : null}

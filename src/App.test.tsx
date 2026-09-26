@@ -20,7 +20,7 @@ function snapshot(): Snapshot {
     issues: [{ task_id: 'task', name: 'save_dossier', error: 'invalid check tool', count: 9, latest_receipt: 'latest', created_at: '' }],
   };
 }
-beforeEach(() => { api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); save.mockReset(); });
+beforeEach(() => { localStorage.clear(); api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); save.mockReset(); });
 afterEach(cleanup);
 
 it('retries the parent discovery run from both failed job cards', async () => {
@@ -141,4 +141,25 @@ it('takes a selected historical text range to Chat and focuses the composer', as
   await waitFor(()=>expect(screen.getByRole('button',{name:'Chat'}).getAttribute('aria-current')).toBe('true'));
   expect(screen.getByRole('textbox',{name:'Agent task'})).toBe(document.activeElement);
   selection.mockRestore();
+});
+
+it('discards a refresh from the previous case after switching projects', async () => {
+  const old=snapshot();
+  const next={...snapshot(),id:'new-case',name:'New case',root:'C:\\new-case'};
+  localStorage.setItem('vislex-projects',JSON.stringify([{id:next.id,name:next.name,root:next.root}]));
+  let resolveOld!:(value:Snapshot)=>void;
+  const late=new Promise<Snapshot>(resolve=>{resolveOld=resolve;});
+  let reads=0;
+  api.mockImplementation(async (action:string)=>action==='snapshot'?(++reads===1?old:late):action==='open_case'?next:action==='storage_usage'?{}:null);
+  render(<App/>);
+  await screen.findAllByText('Synthetic case');
+  fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
+  fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
+  await waitFor(()=>expect(reads).toBe(2));
+  fireEvent.click(screen.getByText('New case',{selector:'summary span'}));
+  fireEvent.click(screen.getByRole('button',{name:'Open project'}));
+  await screen.findAllByText('New case');
+  resolveOld(old);
+  await Promise.resolve();
+  expect(screen.getByText('New case',{selector:'.title-case'})).toBeTruthy();
 });
