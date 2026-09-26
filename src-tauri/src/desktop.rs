@@ -217,6 +217,23 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return result;
 
     }
+    if action=="verify_source" {
+        let source_id=text(&args,"source_id")?.to_owned();
+        let (case_id,path,expected)={
+            let state=app.state::<AppState>();
+            let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+            let c=guard.as_ref().context("Open a case first")?;
+            let source=c.source(&source_id)?;
+            (c.meta("id")?.unwrap_or_default(),c.source_path(&source_id)?,source.sha256)
+        };
+        // Hash the opened original outside the case mutex. On Windows this
+        // read handle denies writes and replacement until the hash completes.
+        anyhow::ensure!(crate::case::file_hash_strong(&path)?==expected,"Original bytes changed: strong integrity check failed");
+        return with_case(app,&case_id,|c|{
+            anyhow::ensure!(c.source(&source_id)?.sha256==expected && c.source_path(&source_id)?==path,"Source changed during verification");
+            Ok(json!({"verified":true,"method":"full-sha256-reread","verified_at":crate::case::now()}))
+        });
+    }
     if action=="backup" {
         let destination=PathBuf::from(text(&args,"path")?);
         let (case_id,plan)={
@@ -624,14 +641,6 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             )?;
 
             Value::Null
-
-        }
-
-        "verify_source" => {
-
-            c.verify_source_strong(text(&args, "source_id")?)?;
-
-            json!({"verified":true,"method":"full-sha256-reread","verified_at":crate::case::now()})
 
         }
 
