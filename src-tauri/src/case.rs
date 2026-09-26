@@ -75,8 +75,20 @@ pub fn file_hash_cached(path: &Path) -> Result<String> {
 /// the verified truth. Tamper-evident against same-length, mtime-preserving
 /// in-place edits that the interactive cache cannot detect.
 pub fn file_hash_strong(path: &Path) -> Result<String> {
-    let hash = file_hash(path)?;
-    let metadata = fs::metadata(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    { use std::os::windows::fs::OpenOptionsExt; options.share_mode(1); }
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    let mut hash_state = Sha256::new();
+    let mut buffer = [0u8; 1024 * 128];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { break; }
+        hash_state.update(&buffer[..count]);
+    }
+    let hash = format!("{:x}", hash_state.finalize());
     let modified = metadata.modified()?;
     let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if let Ok(mut guard) = interactive_cache().lock() {
