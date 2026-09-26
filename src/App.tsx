@@ -342,6 +342,7 @@ export default function App() {
   const [focusComposerRequest, setFocusComposerRequest] = useState(0);
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(false);
+  const settingsReturnFocus = useRef<HTMLElement | null>(null);
   const [modal, setModal] = useState<'create' | 'note' | 'backup' | 'restore' | 'delete' | null>(null);
   const modalReturnFocus = useRef<HTMLElement | null>(null);
   const [name, setName] = useState('');
@@ -377,6 +378,11 @@ export default function App() {
     dialog.current?.showModal();
     return () => { if (modalReturnFocus.current?.isConnected) modalReturnFocus.current.focus(); };
   }, [modal]);
+  useEffect(() => {
+    if (settings) return;
+    if (settingsReturnFocus.current?.isConnected) settingsReturnFocus.current.focus();
+    settingsReturnFocus.current = null;
+  }, [settings]);
   useEffect(() => { if (rename) { setRenameValue(rename.name); renameDialog.current?.showModal(); } }, [rename]);
   useEffect(() => { if (palette) paletteDialog.current?.showModal(); else paletteDialog.current?.close(); }, [palette]);
 
@@ -386,7 +392,7 @@ export default function App() {
       if (modal || rename || settings) return;
       const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPalette(value => !value); return; }
-      if ((event.ctrlKey || event.metaKey) && event.key === ',') { event.preventDefault(); setPalette(false); setSettings(true); return; }
+      if ((event.ctrlKey || event.metaKey) && event.key === ',') { event.preventDefault(); setPalette(false); openSettings(); return; }
       if (typing || !(event.ctrlKey || event.metaKey)) return;
       const index = Number(event.key) - 1;
       if (index >= 0 && index < views.length) { event.preventDefault(); setView(views[index].id); }
@@ -579,6 +585,7 @@ export default function App() {
     if (typeof path === 'string') { installSnapshot(await api<Snapshot>('open_case', { path })); setSelection(null); setView('chat'); }
   }
   function showModal(type: typeof modal) { modalReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setName(''); setPassword(''); setModal(type); }
+  function openSettings() { settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setSettings(true); }
   async function performModal() {
     if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
     if (modal === 'note') { const created = await api<WorkingRecord>('write_record', { title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
@@ -603,7 +610,7 @@ export default function App() {
     { id: 'view-findings', label: 'Go to Findings', run: () => { setView('findings'); setPalette(false); } },
     { id: 'view-review', label: 'Go to Review workbench', run: () => { setView('review'); setPalette(false); } },
     { id: 'view-jobs', label: 'Go to Jobs & issues', run: () => { setView('jobs'); setPalette(false); } },
-    { id: 'settings', label: 'Open settings', run: () => { setPalette(false); setSettings(true); } },
+    { id: 'settings', label: 'Open settings', run: () => { setPalette(false); openSettings(); } },
     { id: 'transcribe-all', label: 'Queue missing full transcripts', run: () => { setPalette(false); run(async () => { await api('transcribe_all'); await refresh(); }); } },
     { id: 'add-files', label: 'Add files to this case', run: () => { setPalette(false); run(importFiles); } },
     { id: 'delete-case', label: 'Delete this case permanently', run: () => { setPalette(false); if (snapshot && native) showModal('delete'); else notify.info('Open a native case to delete it.'); } },
@@ -715,7 +722,7 @@ export default function App() {
               <button className="quiet" onClick={() => run(openCase)}><FolderOpen size={14} />Open</button>
             </div>
             <div className="sidebar-command split">
-              <Tooltip text="Settings" shortcut="Ctrl+,"><button className="quiet" onClick={() => setSettings(true)}><Settings size={15} />Settings</button></Tooltip>
+              <Tooltip text="Settings" shortcut="Ctrl+,"><button className="quiet" onClick={openSettings}><Settings size={15} />Settings</button></Tooltip>
               <ThemeToggle />
               <details className="case-menu"><summary aria-label="Case options"><MoreHorizontal size={16} /></summary><div>
                 <button onClick={() => run(importFiles)}>Add files</button>
@@ -736,7 +743,7 @@ export default function App() {
             onRestore={() => showModal('restore')}
             onSample={() => run(async () => { installSnapshot(await api<Snapshot>('load_demo')); })}
           /> : null}
-          {visibleSnapshot && view === 'chat' ? <AgentPanel conversationId={conversationId} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={() => setSettings(true)} focusRequest={focusComposerRequest} /> : null}
+          {visibleSnapshot && view === 'chat' ? <AgentPanel conversationId={conversationId} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={openSettings} focusRequest={focusComposerRequest} /> : null}
           {!snapshot && view !== 'chat' ? <div className="empty-state workspace-view"><FolderOpen size={32} /><h3>Open a case first</h3><p>This workspace becomes available once a case is open.</p></div> : null}
           {snapshot && view === 'evidence' ? <EvidenceLibrary
             snapshot={snapshot}

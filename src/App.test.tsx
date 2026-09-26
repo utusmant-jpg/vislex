@@ -352,6 +352,17 @@ it('opens workspace settings with the global shortcut before a case exists', asy
   expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
 });
 
+it('returns focus to the settings trigger after closing preferences', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  const trigger = screen.getByRole('button', { name: 'Settings' });
+  trigger.focus();
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole('button', { name: 'Close settings' }));
+  expect(screen.queryByRole('dialog', { name: 'Workspace settings' })).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+});
+
 it('cancels case creation without calling the backend', async () => {
   api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
   render(<App />);
