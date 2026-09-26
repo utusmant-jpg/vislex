@@ -135,10 +135,10 @@ fn review_input_stamp(case:&Case,source_ids:&[String])->Result<String> {
     let mut statement=case.db.prepare("SELECT source_id,revision FROM extracts")?;
     for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))? {let (id,revision)=row?;revisions.insert(id,revision);}
     let mut latest:std::collections::HashMap<String,std::collections::BTreeMap<String,String>>=std::collections::HashMap::new();
-    let mut statement=case.db.prepare("SELECT source_id,kind,id FROM processing_jobs WHERE status='complete' AND kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') ORDER BY rowid DESC")?;
-    for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))? {
-        let (source,kind,job)=row?;
-        if allowed.contains(source.as_str()) {latest.entry(source).or_default().entry(kind).or_insert(job);}
+    let mut statement=case.db.prepare("SELECT source_id,kind,id,status FROM processing_jobs WHERE kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index') ORDER BY rowid DESC")?;
+    for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))? {
+        let (source,kind,job,status)=row?;
+        if allowed.contains(source.as_str()) {latest.entry(source).or_default().entry(kind).or_insert(format!("{job}:{status}"));}
     }
     let mut transcripts:std::collections::HashMap<String,Vec<String>>=std::collections::HashMap::new();
     for record in case.records()?.into_iter().filter(|record|record.actor=="processor" && record.kind=="transcript") {

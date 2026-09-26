@@ -1092,6 +1092,8 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
     let reviewed_ids=evidence_desk::agent::case_scope(&c).unwrap().0;
     assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_some());
+    c.write_record(None,0,"Own report","note","Saved analysis","agent","automatic output",None,vec![reviewed_ids[0].clone()]).unwrap();
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete","The review's own report must not invalidate it");
     c.write_record(None,0,"Late machine transcript","transcript","New synthetic words","processor","late processing",None,vec![reviewed_ids[0].clone()]).unwrap();
     assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_none(),"New transcript on the same source must invalidate reusable AI context");
     c.publish_extract(&reviewed_ids[0],"Revised synthetic extraction", "test",true).unwrap();
@@ -1106,6 +1108,19 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     let next=evidence_desk::automatic::start_review(&mut c).unwrap();
     assert!(next.is_some()&&next!=Some(task));
     c.verify_audit().unwrap();
+}
+
+#[test]
+fn a_new_failed_processing_attempt_invalidates_old_automatic_completion() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
+    evidence_desk::automatic::start_review(&mut c).unwrap();
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
+    c.db.execute("INSERT INTO processing_jobs VALUES(?1,?2,'auto_prepare','failed','{}','Synthetic failure',?3)",rusqlite::params![evidence_desk::case::id(),sid,evidence_desk::case::now()]).unwrap();
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"planned");
+    assert!(evidence_desk::automatic::completed_review_context(&c,&[sid]).unwrap().is_none());
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_some());
 }
 
 #[test]
