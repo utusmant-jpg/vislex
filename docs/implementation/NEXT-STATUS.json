@@ -239,7 +239,21 @@
       "note": "New queries no longer index up to 256 passages or tell the agent to repeat calls. A low-priority worker indexes revision-pinned extraction lines into existing SQLite storage; saved legacy JSON vectors remain readable, and new vectors use packed f32. Query results include fast scoped lexical leads even before vector completion, with partial currentness clearly labeled. Original sources and live case untouched."
     },
     "R14": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "bc6e7f2",
+      "evidence": "workers/test_exact_frame.py; src-tauri/tests/sandbox.rs exact_video_frame_steps_publish_adjacent_pts_without_recopying_source; src/components/EvidenceViewer.test.tsx proxy/loop/exact-frame interactions",
+      "environment": "Windows x64; rebuilt PyInstaller worker; synthetic 24/30/60 fps and VFR fixtures only",
+      "commands": [
+        "powershell -File scripts/build-worker.ps1 -> exit 0",
+        ".venv-worker/Scripts/python.exe -m unittest discover -s workers -p 'test_*.py' -> exit 0, 21 tests; includes 24/30/60 fps and VFR adjacent PTS",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox exact_video_frame_steps_publish_adjacent_pts_without_recopying_source -- --include-ignored --nocapture -> exit 0; two exact frames in AppContainer, citations valid, one verified source copy reused",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 25 native AppContainer tests and one video worker end-to-end test",
+        "npm test -> exit 0, 65 passed in 13 files after an earlier concurrent-load run timed out in an unrelated App test; npm run build -> exit 0",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Self-review checked source policy epoch, restricted-source recheck, lease reuse, proxy listener identity, invalid loop bounds, and stale asynchronous exact-frame responses. No independent reviewer was available for this slice.",
+      "unrun_checks": "Exact packaged UI journey with original-to-proxy transition and track offsets; native 24/30/60 fixtures (Python decoder tests cover these but native test covers VFR); synchronized replay against accepted clock mapping; memory/disk and cancellation timing. Filmstrip refresh uses a 150-second window and first 22 results but has not been evaluated for dense scenes. Do not mark verified.",
+      "note": "Browser 33 ms buttons are labeled approximate. Dedicated exact buttons decode the preceding or following frame from the original source, publish a PTS-bearing artifact/citation, and show the derivative. Browser requestVideoFrameCallback supplies mediaTime when available. Controls initialize and rebind on proxy replacement, ignore keyboard shortcuts in form fields, and reject invalid A/B order. Original source files untouched."
     },
     "R15": {
       "state": "pending"
