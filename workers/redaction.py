@@ -32,41 +32,65 @@ def redact(job: Path, request: dict) -> dict:
     else:
         raise ValueError('This redaction adapter supports PDFs and single-frame images')
     if count > 500 or any(box['page'] > count for box in boxes):
+        if document is not None:
+            document.close()
         raise ValueError('Page count or rectangle page exceeds supported bounds')
     previews, pages = [], []
     from reportlab.pdfgen import canvas
-    pdf = canvas.Canvas(str(job / 'redacted.pdf'), pageCompression=1)
-    pdf.setTitle('Reviewed redaction derivative')
-    pdf.setAuthor('VisLex')
-    for number in range(1, count + 1):
-        if (job / 'cancel.request').exists():
-            raise RuntimeError('Redaction cancelled')
+    try:
+        pdf = canvas.Canvas(str(job / 'redacted.pdf'), pageCompression=1)
+        pdf.setTitle('Reviewed redaction derivative')
+        pdf.setAuthor('VisLex')
+        for number in range(1, count + 1):
+            if (job / 'cancel.request').exists():
+                raise RuntimeError('Redaction cancelled')
+            if document is not None:
+                page = document[number - 1]
+                try:
+                    width, height = page.get_size()
+                    if width * height * 4 > 40_000_000:
+                        raise ValueError('Page exceeds raster redaction limit')
+                    bitmap = page.render(scale=2)
+                    try:
+                        rendered = bitmap.to_pil()
+                        try:
+                            image = rendered.convert('RGB')
+                        finally:
+                            rendered.close()
+                    finally:
+                        bitmap.close()
+                finally:
+                    page.close()
+                scale = 2
+            else:
+                with Image.open(source) as original:
+                    corrected = ImageOps.exif_transpose(original)
+                    try:
+                        image = corrected.convert('RGB')
+                    finally:
+                        corrected.close()
+                width, height = image.size
+                scale = 1
+            try:
+                draw = ImageDraw.Draw(image)
+                applied = [box for box in boxes if box['page'] == number]
+                for box in applied:
+                    if box['x'] + box['width'] > width or box['y'] + box['height'] > height:
+                        raise ValueError(f'Rectangle exceeds page {number} dimensions {width} by {height}')
+                    # Round outward and mask an extra pixel so no antialiased boundary survives.
+                    draw.rectangle((max(0, math.floor(box['x'] * scale) - 1), max(0, math.floor(box['y'] * scale) - 1), min(image.width, math.ceil((box['x'] + box['width']) * scale) + 1), min(image.height, math.ceil((box['y'] + box['height']) * scale) + 1)), fill='black')
+                filename = f'redacted-{number:04d}.jpg'
+                image.save(job / filename, format='JPEG', quality=100, subsampling=0, exif=b'')
+                pdf.setPageSize((width, height))
+                pdf.drawInlineImage(image, 0, 0, width=width, height=height)
+                pdf.showPage()
+                previews.append({'path': filename, 'mime': 'image/jpeg', 'page': number, 'redaction': True, 'rectangles': len(applied), 'width': width, 'height': height})
+                pages.append({'locator': f'redacted-page:{number}', 'text': f'Rasterized page {number}; {len(applied)} rectangles applied.', 'method': 'fresh raster redaction; not OCR'})
+            finally:
+                image.close()
+        pdf.save()
+    finally:
         if document is not None:
-            page = document[number - 1]
-            width, height = page.get_size()
-            if width * height * 4 > 40_000_000:
-                raise ValueError('Page exceeds raster redaction limit')
-            image = page.render(scale=2).to_pil().convert('RGB')
-            scale = 2
-        else:
-            with Image.open(source) as original:
-                image = ImageOps.exif_transpose(original).convert('RGB')
-            width, height = image.size
-            scale = 1
-        draw = ImageDraw.Draw(image)
-        applied = [box for box in boxes if box['page'] == number]
-        for box in applied:
-            if box['x'] + box['width'] > width or box['y'] + box['height'] > height:
-                raise ValueError(f'Rectangle exceeds page {number} dimensions {width} by {height}')
-            # Round outward and mask an extra pixel so no antialiased boundary survives.
-            draw.rectangle((max(0, math.floor(box['x'] * scale) - 1), max(0, math.floor(box['y'] * scale) - 1), min(image.width, math.ceil((box['x'] + box['width']) * scale) + 1), min(image.height, math.ceil((box['y'] + box['height']) * scale) + 1)), fill='black')
-        filename = f'redacted-{number:04d}.jpg'
-        image.save(job / filename, format='JPEG', quality=100, subsampling=0, exif=b'')
-        pdf.setPageSize((width, height))
-        pdf.drawInlineImage(image, 0, 0, width=width, height=height)
-        pdf.showPage()
-        previews.append({'path': filename, 'mime': 'image/jpeg', 'page': number, 'redaction': True, 'rectangles': len(applied), 'width': width, 'height': height})
-        pages.append({'locator': f'redacted-page:{number}', 'text': f'Rasterized page {number}; {len(applied)} rectangles applied.', 'method': 'fresh raster redaction; not OCR'})
-    pdf.save()
+            document.close()
     previews.append({'path': 'redacted.pdf', 'mime': 'application/pdf', 'redaction': True, 'page_count': count})
     return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': {'redaction': True, 'page_count': count, 'boxes': boxes, 'hidden_text_copied': False, 'attachments_copied': False, 'review': 'required'}, 'previews': previews, 'limitations': ['Review every rendered page before export. The system does not discover all sensitive content.', 'PDF coordinates use points from the displayed top-left; image coordinates use orientation-corrected pixels.', 'Originals and original content remain in the private case. Only export the reviewed derivative.']}
