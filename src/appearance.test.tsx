@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { ThemeProvider, ToastStack, Tooltip, notify, useTheme } from './ui';
+import { ContextMenu, ThemeProvider, ToastStack, Tooltip, notify, useTheme } from './ui';
 import PaneDivider from './components/PaneDivider';
 
 function AppearanceProbe() {
@@ -76,4 +76,16 @@ it('shows a keyboard tooltip with an accessible description and dismisses it on 
   fireEvent.keyDown(trigger, { key: 'Escape' });
   expect(screen.queryByRole('tooltip')).toBeNull();
   expect(trigger.hasAttribute('aria-describedby')).toBe(false);
+});
+
+it('opens a context menu from the keyboard and restores focus on Escape', () => {
+  render(<ContextMenu items={[{ label: 'Open evidence', onSelect: vi.fn() }]}><button>Evidence row</button></ContextMenu>);
+  const trigger = screen.getByRole('button', { name: 'Evidence row' });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: 'F10', shiftKey: true });
+  const menu = screen.getByRole('menu', { name: 'Actions' });
+  expect(screen.getByRole('menuitem', { name: 'Open evidence' })).toBeTruthy();
+  fireEvent.keyDown(menu, { key: 'Escape' });
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(document.activeElement).toBe(trigger);
 });

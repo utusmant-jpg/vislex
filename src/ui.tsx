@@ -126,11 +126,12 @@ export type MenuItem =
 function menuNode(items: MenuItem[], close: () => void, highlight: number, setHighlight: (index: number) => void) {
   const selectable: number[] = [];
   const body = items.map((item, index) => {
-    if (item === 'separator') return <div className="menu-separator" key={index} />;
+    if (item === 'separator') return <div className="menu-separator" role="separator" key={index} />;
     if (!item.disabled) selectable.push(index);
     return <button
       key={index}
       className={`menu-item ${item.danger ? 'danger' : ''} ${highlight === index ? 'highlighted' : ''}`}
+      role="menuitem"
       disabled={item.disabled}
       onMouseEnter={() => setHighlight(index)}
       onClick={() => { close(); item.onSelect(); }}>
@@ -142,6 +143,8 @@ function menuNode(items: MenuItem[], close: () => void, highlight: number, setHi
 
 export function MenuPanel({ items, onClose, style, className }: { items: MenuItem[]; onClose: () => void; style?: React.CSSProperties; className?: string }) {
   const [highlight, setHighlight] = useState(-1);
+  const returnFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  useEffect(() => () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }, []);
   const { body, selectable } = menuNode(items, onClose, highlight, setHighlight);
   const move = (direction: 1 | -1) => {
     if (!selectable.length) return;
@@ -155,9 +158,11 @@ export function MenuPanel({ items, onClose, style, className }: { items: MenuIte
       className={`menu-panel ${className ?? ''}`}
       style={style}
       role="menu"
+      aria-label="Actions"
       onKeyDown={event => {
         if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
         else if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
+        else if (event.key === 'Escape') { event.preventDefault(); onClose(); }
         else if (event.key === 'Enter' && highlight >= 0) { event.preventDefault(); const item = items[highlight]; onClose(); if (item !== 'separator' && !item.disabled) item.onSelect(); }
       }}
       tabIndex={-1}
@@ -169,7 +174,7 @@ export function MenuPanel({ items, onClose, style, className }: { items: MenuIte
 
 export function ContextMenu({ items, children }: { items: MenuItem[]; children: ReactElement }) {
   const [point, setPoint] = useState<{ x: number; y: number } | null>(null);
-  const original = children.props as { onContextMenu?: (event: React.MouseEvent) => void };
+  const original = children.props as { onContextMenu?: (event: React.MouseEvent) => void; onKeyDown?: (event: React.KeyboardEvent) => void };
   const clamped = (x: number, y: number) => ({ x: Math.min(x, window.innerWidth - 230), y: Math.min(y, window.innerHeight - 40 - items.length * 34) });
   return <>
     {cloneElement(children, {
@@ -178,6 +183,13 @@ export function ContextMenu({ items, children }: { items: MenuItem[]; children: 
         if (event.defaultPrevented) return;
         event.preventDefault();
         setPoint(clamped(event.clientX, event.clientY));
+      },
+      onKeyDown: (event: React.KeyboardEvent) => {
+        original.onKeyDown?.(event);
+        if (event.defaultPrevented || !(event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        setPoint(clamped(rect.left + 12, rect.bottom));
       },
     } as Record<string, unknown>)}
     {point ? <MenuPanel items={items} onClose={() => setPoint(null)} style={{ left: point.x, top: point.y, position: 'fixed' }} /> : null}
