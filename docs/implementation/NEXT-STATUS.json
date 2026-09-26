@@ -137,16 +137,21 @@
       "note": "apply_app_settings saves exactly the chosen policy (no forced online/text/images/standard/zero-budget); ai-defaults.json carries consent_version 2 and unmarked legacy files are ignored at create_case only; direct media has a visible audited opt-in; offline emergency-stop copy is truthful about in-flight requests; reopen/restore protection preserved. Dev20 packaged exe SHA256 E678396D5109DC7199BE1C2C8C94FF78F22D768BD5555137946A05C44E147056. Native UI test used no test-mode bypass and restored the machine ai-defaults.json bytes in finally. Synthetic case retained in artifacts. Model switching and backup/restore are covered by Rust acceptance tests."
     },
     "R05": {
-      "state": "implemented",
+      "state": "verified",
       "commit": "9f5576e",
       "evidence": "src-tauri/src/automatic.rs per-task completion event and typed pause marker; src-tauri/src/agent.rs pause recording; src-tauri/tests/core.rs repeat-reconciliation, partial completion, same-source revision, own-report, late response and continuation regressions",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 73 passed",
-        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, 194 passed before final typed-pause and late-response commits; focused tests after those commits passed"
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, 194 passed before final typed-pause and late-response commits; focused tests after those commits passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 78 passed at 2e256c7",
+        "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0; executable SHA256 8E5EBC70CDBC130692013D3071BD356E0AB8C220816CBEE718ADC099F7960730",
+        "powershell -NoProfile -File scripts/native-provider-race.ps1 -> exit 0 twice; final run 1790457345850"
       ],
       "reviewer": "Single-owner separate code review pass: task ID scopes completion events; pause marker is tied to exact reason and falls back for legacy tasks; late response receives only on paused old task and cannot publish into new task.",
-      "unrun_checks": "Delayed synthetic transport scheduling and a packaged UI run of this exact R05 commit remain open; run epoch is identified by task ID rather than a separate durable counter. Full declared-check completion through a real provider run remains unverified.",
+      "unrun_checks": "A real provider's full declared-check completion remains unverified and belongs to the release gate. The coordinator run epoch is the distinct task ID, not a separate durable counter.",
+      "verification_commit": "2e256c7",
+      "verification_evidence": "Debug packaged Tauri bridge with loopback-only synthetic provider transport: first response delayed four seconds, original task stopped with its transmission uncertain, continuation sent a second request and completed from response 2. After the delayed response arrived, original stayed paused and continuation answer excluded response 1. Synthetic case DB readback showed old transmission uncertain and new transmission received. The mock saw exactly two requests and no held response at test end. Source, original evidence and user credentials were untouched. A separate owner reviewed the diff manually; no independent agent review occurred.",
       "note": "Finished run status now honors saved dossier outcome as well as visual coverage. Partial run audits once; a repaired global fingerprint cannot repeat the same task event. Same-source transcript/extract and newer failed processing invalidate currentness; own report does not."
     },
     "R06": {
