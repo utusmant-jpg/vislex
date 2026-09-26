@@ -619,10 +619,10 @@ pub async fn send(
     while let Some(chunk) = response.chunk().await? {
         for event in stream.push(&chunk)? {
             if provider == Provider::Anthropic {
+                if let Some(value) = claude.push(&event)? { return Ok(value); }
                 if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta" {
                     progress(json!({"text":event["delta"]["text"]}));
                 }
-                if let Some(value) = claude.push(&event)? { return Ok(value); }
                 continue;
             }
             match event["type"].as_str().unwrap_or("") {
