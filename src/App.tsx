@@ -386,7 +386,7 @@ export default function App() {
   const dialog = useRef<HTMLDialogElement>(null);
 
   const installSnapshot = useCallback((next: Snapshot | null) => { caseEpoch.current += 1; activeSnapshot.current = next; setSnapshot(next); }, []);
-  const refresh = useCallback(async () => { const epoch = caseEpoch.current; const sequence = ++refreshSequence.current; const next = await api<Snapshot | null>('snapshot'); if (caseEpoch.current === epoch && refreshSequence.current === sequence) { activeSnapshot.current = next; setSnapshot(next); } }, []);
+  const refresh = useCallback(async () => { const epoch = caseEpoch.current; const sequence = ++refreshSequence.current; const next = await api<Snapshot | null>('snapshot'); if (caseEpoch.current === epoch && refreshSequence.current === sequence) { const previous = activeSnapshot.current; if (previous?.id !== next?.id || previous?.session_epoch !== next?.session_epoch) caseEpoch.current += 1; activeSnapshot.current = next; setSnapshot(next); } }, []);
   const run = useCallback((fn: () => Promise<void>) => {
     setBusy(true);
     void fn().catch(error => notify.fromError('Something went wrong', error)).finally(() => setBusy(false));

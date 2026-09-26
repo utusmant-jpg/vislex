@@ -13,7 +13,7 @@ function fixture() {
   return { listen, emit, callbacks };
 }
 
-it('refreshes once for the active session and ignores stale, duplicate, and other-case envelopes', async () => {
+it('refreshes once for the active session, ignores stale envelopes, and discovers a newer case', async () => {
   vi.useFakeTimers();
   const bus = fixture();
   const refresh = vi.fn().mockResolvedValue(undefined);
@@ -26,12 +26,25 @@ it('refreshes once for the active session and ignores stale, duplicate, and othe
   bus.emit('case-changed');
   bus.emit('case-event', { case_id: 'case-a', session_epoch: 1, event_seq: 7 });
   bus.emit('case-changed');
-  bus.emit('case-event', { case_id: 'case-b', session_epoch: 5, event_seq: 8 });
+  bus.emit('case-event', { case_id: 'case-b', session_epoch: 3, event_seq: 8 });
   bus.emit('case-changed');
   expect(refresh).toHaveBeenCalledTimes(1);
+  bus.emit('case-event', { case_id: 'case-b', session_epoch: 5, event_seq: 9 });
+  bus.emit('case-changed');
+  expect(refresh).toHaveBeenCalledTimes(2);
   expect(summary).not.toHaveBeenCalled();
   stop();
   expect(bus.callbacks.size).toBe(0);
+});
+
+it('discovers a case opened through the native bridge before React has a snapshot', async () => {
+  const bus = fixture();
+  const refresh = vi.fn().mockResolvedValue(undefined);
+  const stop = await subscribeCaseChanges(bus.listen, () => null, refresh, vi.fn());
+  bus.emit('case-event', { case_id: 'new-case', session_epoch: 1, event_seq: 1 });
+  bus.emit('case-changed');
+  expect(refresh).toHaveBeenCalledTimes(1);
+  stop();
 });
 
 it('reconciles a sequence gap with a bounded summary before refreshing', async () => {

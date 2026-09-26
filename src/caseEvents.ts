@@ -28,7 +28,11 @@ export async function subscribeCaseChanges(
     if (pairExpiry) clearTimeout(pairExpiry);
     pairExpiry = setTimeout(() => { pairedLegacy = 0; pairExpiry = null; }, 250);
     const current = getCurrent();
-    if (!current || current.id !== value.case_id || current.session_epoch !== value.session_epoch) return;
+    if (!current || (typeof current.session_epoch === 'number' && value.session_epoch > current.session_epoch)) {
+      void refresh().catch(() => undefined);
+      return;
+    }
+    if (current.id !== value.case_id || current.session_epoch !== value.session_epoch) return;
     const identity = `${current.id}:${current.session_epoch}`;
     const known = identity === lastIdentity ? Math.max(lastSeen, current.event_seq ?? 0) : current.event_seq ?? 0;
     if (value.event_seq <= known) return;
