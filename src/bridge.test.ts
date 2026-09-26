@@ -41,4 +41,14 @@ describe('browser preview isolation', () => {
     expect(page.revision).toBe(1);
     expect(page.locator).toBe('evidence:demo-statement#R1L5-L7');
   });
+  it('provides a stable case-scoped summary and advances it after memory-only edits', async () => {
+    await api('load_demo');
+    const before = await api<{ case_id: string; audit_seq: number; source_count: number }>('case_summary', { case_id: 'synthetic-demo' });
+    expect(before).toMatchObject({ case_id: 'synthetic-demo', audit_seq: 0, source_count: 1 });
+    expect(await api('case_summary', { case_id: 'synthetic-demo' })).toEqual(before);
+    await expect(api('case_summary', { case_id: 'other-case' })).rejects.toThrow('Case changed');
+    await api('write_record', { case_id: 'synthetic-demo', record_id: 'demo-note', base_revision: 1, title: 'Initial review notes', kind: 'note', content: 'Synthetic edit', source_ids: [] });
+    const after = await api<{ audit_seq: number }>('case_summary', { case_id: 'synthetic-demo' });
+    expect(after.audit_seq).toBe(before.audit_seq + 1);
+  });
 });

@@ -46,6 +46,7 @@ const demoSource: Source = { id: 'demo-statement', name: '01 · Witness statemen
 
 type DemoSnapshot=Omit<Snapshot,'records'> & {records:WorkingRecord[]};
 let demo: DemoSnapshot | null = null;
+let demoAuditSeq = 0;
 
 export function sampleSnapshot(): DemoSnapshot {
 
@@ -61,7 +62,7 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
 
   if (action === 'snapshot') result = demo;
 
-  else if (action === 'load_demo') { demo = sampleSnapshot(); result = demo; }
+  else if (action === 'load_demo') { demo = sampleSnapshot(); demoAuditSeq = 0; result = demo; }
 
   else if (action === 'close_case') { demo = null; result = null; }
 
@@ -72,6 +73,10 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
 
   else if (!demo) throw new Error('Open the synthetic sample, or run the desktop app for real case storage.');
 
+  else if (action === 'case_summary') {
+    if (args.case_id !== demo.id) throw new Error('Case changed');
+    result = { case_id: demo.id, generation: demo.generation, audit_seq: demoAuditSeq, action_rowid: 0, transmission_rowid: 0, viewer_request_hash: null, task_update: '', tasks_running: 0, tasks_paused: 0, tasks_complete: 0, source_count: demo.sources.length, source_bytes: demo.sources.reduce((sum, source) => sum + source.size, 0), record_count: demo.records.length, task_count: 0, job_count: 0, jobs_queued: 0, jobs_running: 0, jobs_failed: 0, jobs_attention: 0, jobs_complete: 0, chat_pause: null };
+  }
   else if (action === 'read_text') { const lines = sampleText.split('\n'); const start = Number(args.start ?? 1); const end = Math.min(start - 1 + Number(args.count ?? 200), lines.length); result = { text: lines.slice(start - 1, end).join('\n'), start, end, total_lines: lines.length, revision: 1, locator: `evidence:demo-statement#R1L${start}-L${end}`, truncated_long_lines: false }; }
   else if (action === 'record_detail') { const record = demo.records.find(r => r.id === args.record_id); if (args.case_id !== demo.id || !record || record.revision !== args.revision) throw new Error('Case or record revision changed'); result = record; }
 
@@ -85,14 +90,14 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
 
     const record: WorkingRecord = { id: old?.id ?? crypto.randomUUID(), title: String(args.title), kind: String(args.kind), content: String(args.content), revision: Number(args.base_revision) + 1, actor: 'human', review: 'unreviewed', protected: old?.protected ?? false, stale: false, updated_at: new Date().toISOString(), dependencies: args.source_ids as string[] ?? [] };
 
-    demo.records = [record, ...demo.records.filter(r => r.id !== record.id)]; result = record;
+    demo.records = [record, ...demo.records.filter(r => r.id !== record.id)]; demoAuditSeq++; result = record;
 
-  } else if (action === 'set_restricted') { demo.sources = demo.sources.map(s => s.id === args.source_id ? { ...s, restricted: Boolean(args.restricted) } : s); }
+  } else if (action === 'set_restricted') { demo.sources = demo.sources.map(s => s.id === args.source_id ? { ...s, restricted: Boolean(args.restricted) } : s); demoAuditSeq++; }
 
-  else if (action === 'review_record') { demo.records = demo.records.map(r => r.id === args.record_id ? { ...r, ...(typeof args.protected === 'boolean' ? { protected: args.protected } : { review: 'human-reviewed' }) } : r); }
+  else if (action === 'review_record') { demo.records = demo.records.map(r => r.id === args.record_id ? { ...r, ...(typeof args.protected === 'boolean' ? { protected: args.protected } : { review: 'human-reviewed' }) } : r); demoAuditSeq++; }
 
   else if (action === 'save_ai_settings') { throw new Error('AI configuration requires the Windows desktop app.'); }
-  else if (action === 'save_settings') { demo.settings = args.settings as Snapshot['settings']; }
+  else if (action === 'save_settings') { demo.settings = args.settings as Snapshot['settings']; demoAuditSeq++; }
 
   else if (action === 'revisions') { const r = demo.records.find(r => r.id === args.record_id); result = r ? [{ ...r, reason: 'Browser sample — history is not persisted', created_at: r.updated_at }] : []; }
 

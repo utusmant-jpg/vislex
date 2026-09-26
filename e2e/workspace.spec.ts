@@ -144,3 +144,11 @@ test('review views have keyboard tabs and preserve legal form values', async ({ 
   const extent = await page.evaluate(() => ({ content: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
   expect(extent.content).toBeLessThanOrEqual(extent.viewport);
 });
+
+test('synthetic case refresh stays quiet after its background summary poll', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /Try the sample case/ }).click();
+  await page.waitForTimeout(3500);
+  await expect(page.getByText('Case refresh failed')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Harbor Street · sample case' })).toBeVisible();
+});
