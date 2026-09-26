@@ -7,7 +7,7 @@ import AppearanceSettings from './AppearanceSettings';
 import type { AIConfig, AIProfile, ModelOption, Provider, Settings, Snapshot } from '../types';
 
 const companies = Object.keys(providerNames) as Provider[];
-const sections = ['Providers & models', 'Case permissions', 'Review & execution', 'Appearance', 'About'] as const;
+const sections = ['Providers & models', 'Case permissions', 'Appearance', 'About'] as const;
 type Section = typeof sections[number];
 
 function initialProfiles(snapshot: Snapshot): AIProfile[] {
@@ -21,7 +21,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
   const mounted = useRef(true);
   const [section, setSection] = useState<Section>('Providers & models');
   const [settings, setSettings] = useState<Settings>({ ...snapshot.settings });
-  const [config, setConfig] = useState<AIConfig>(snapshot.ai_config ?? defaultConfig);
+  const config: AIConfig = snapshot.ai_config ?? defaultConfig;
   const [directMedia, setDirectMedia] = useState<boolean | null>(null);
   const [initialDirectMedia, setInitialDirectMedia] = useState<boolean | null>(null);
   const [profiles, setProfiles] = useState(() => initialProfiles(snapshot));
@@ -131,26 +131,6 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
             </label>
             <p className="small muted">Direct media transmits an original recording (up to 12 MiB) to Gemini when a task needs it. It is a separate, audited consent; disabling it blocks future transmission only.</p>
           </fieldset> : null}
-          {section === 'Review & execution' ? <div className="settings-section">
-            <p className="small muted">Choose how permitted models check work and whether independent assignments run in parallel. These choices never change case grants.</p>
-            <div className="input-row">
-              <label className="field-label">Review mode
-                <select disabled={!native} value={config.review} onChange={e => setConfig(current => ({ ...current, review: e.target.value as AIConfig['review'] }))}>
-                  <option value="standard">Standard</option>
-                  <option value="independent">Independent check</option>
-                  <option value="challenge">Challenge</option>
-                </select>
-              </label>
-              <label className="field-label">Parallel work
-                <select disabled={!native} value={config.execution} onChange={e => setConfig(current => ({ ...current, execution: e.target.value as AIConfig['execution'] }))}>
-                  <option value="single">Single agent</option>
-                  <option value="parallel">Parallel team</option>
-                  <option value="auto">Let VisLex decide</option>
-                </select>
-              </label>
-            </div>
-            <p className="small muted">Up to three assignments run together. Agents choose scoped work and return evidence for the lead to check. Stop cancels the team.</p>
-          </div> : null}
           {section === 'Providers & models' ? companies.map(provider => <fieldset key={provider} className="provider-card"><legend>{providerNames[provider]}</legend>
             <div className="input-row">
               <input aria-label={`${providerNames[provider]} API key`} type="password" autoComplete="off" value={keys[provider] ?? ''} disabled={loading[provider]} onChange={e => setKeys(s => ({ ...s, [provider]: e.target.value }))} placeholder={stored[provider] ? 'Key saved in Windows Credential Manager' : 'Paste API key'} />
@@ -162,7 +142,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
               <label>Model<select aria-label={`${providerNames[provider]} model ${i + 1}`} value={p.model} onChange={e => { const first = !profiles.some(x => x.model); updateProfile(i, { model: e.target.value }); if (first) setPrimary(i); }}><option value="">{loading[provider] ? 'Loading models…' : 'Select a model'}</option>{p.model && !models[provider]?.some(m => m.id === p.model) ? <option value={p.model}>{p.model} (saved)</option> : null}{models[provider]?.map(m => <option key={m.id} value={m.id}>{m.name === m.id ? m.id : `${m.name} · ${m.id}`}</option>)}</select></label>
               <div className="provider-permissions"><label><input type="radio" name="default-model" checked={primary === i} onChange={() => setPrimary(i)} /> Default chat model</label>{p.model ? <span className="badge">Selected</span> : null}{profiles.filter(x => x.provider === provider).length > 1 && primary !== i ? <button className="quiet" onClick={() => { setProfiles(ps => ps.filter((_, j) => j !== i)); if (primary > i) setPrimary(primary - 1); }}>Remove</button> : null}</div>
               {p.model && primary === i ? <p className="small muted">The default model is governed by the case permissions above — selecting it grants nothing by itself.</p> : null}
-              {p.model && primary !== i ? <div className="provider-grants"><label><input type="checkbox" checked={p.allow_text} onChange={e => updateProfile(i, { allow_text: e.target.checked, allow_images: e.target.checked ? p.allow_images : false })} /> May receive case text</label><label><input type="checkbox" checked={p.allow_images} disabled={!p.allow_text} onChange={e => updateProfile(i, { allow_images: e.target.checked })} /> May receive case images</label><span className="small muted">applies to delegated team work</span></div> : null}
+              {p.model && primary !== i ? <div className="provider-grants"><label><input type="checkbox" checked={p.allow_text} onChange={e => updateProfile(i, { allow_text: e.target.checked, allow_images: e.target.checked ? p.allow_images : false })} /> May receive case text</label><label><input type="checkbox" checked={p.allow_images} disabled={!p.allow_text} onChange={e => updateProfile(i, { allow_images: e.target.checked })} /> May receive case images</label></div> : null}
             </div>)}
             <button className="quiet" disabled={profiles.length >= 16} onClick={() => setProfiles(ps => [...ps, { provider, model: '', allow_text: false, allow_images: false }])}>Add another model</button>
           </fieldset>) : null}
