@@ -100,8 +100,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     }
     if action=="resume_transcription" {
         let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::transcription::resume(case,text(&args,"job_id")?)?)};
-        let output=crate::transcription::run(&job);
-        let value=with_case(app,&case_id,|case|match output {Ok(v)=>crate::transcription::publish(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
+        let staged=crate::transcription::run(&job).and_then(|value|crate::transcription::stage_transcript(&job,value));
+        let value=with_case(app,&case_id,|case|match staged {Ok(v)=>crate::transcription::publish_staged_transcript(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
         let _=app.emit("case-changed",());return value;
     }
     if action=="resume_processing" {
@@ -457,11 +457,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             tauri::async_runtime::spawn_blocking(move || {
 
-                let result = crate::transcription::run(&job).and_then(|value| {
+                let result = crate::transcription::run(&job).and_then(|value| crate::transcription::stage_transcript(&job,value)).and_then(|staged| {
 
                     with_case(&handle, &case_id, |case| {
 
-                        crate::transcription::publish(case, &job, value)
+                        crate::transcription::publish_staged_transcript(case, &job, staged)
 
                     })
 
@@ -944,11 +944,11 @@ fn kick_transcriptions(app: tauri::AppHandle, case_id: String) {
 
         };
 
-        let result = crate::transcription::run(&job).and_then(|value| {
+        let result = crate::transcription::run(&job).and_then(|value| crate::transcription::stage_transcript(&job,value)).and_then(|staged| {
 
             with_case(&app, &case_id, |case| {
 
-                crate::transcription::publish(case, &job, value)
+                crate::transcription::publish_staged_transcript(case, &job, staged)
 
             })
 

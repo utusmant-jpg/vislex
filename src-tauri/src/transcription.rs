@@ -330,6 +330,84 @@ pub fn publish(case: &mut Case, job: &Job, value: Value) -> Result<Value> {
     case.db.execute_batch("RELEASE full_transcript_publish")?;
     result
 }
+struct TranscriptFile {relative:String,hash:String,mime:String}
+pub struct StagedTranscript {
+    value:Value,text:String,files:Vec<TranscriptFile>,artifact:String,locator:String,worker_hash:String,
+    _leases:Vec<fs::File>,
+}
+/// Build and verify transcript derivatives before acquiring the case mutex.
+pub fn stage_transcript(job:&Job,value:Value)->Result<StagedTranscript> {
+    ensure!(!job.staging.join("cancel.request").exists(),"Transcription cancelled before publication");
+    let manifest:Value=serde_json::from_slice(&fs::read(job.staging.join("manifest.json"))?)?;
+    ensure!(manifest["job_id"]==job.id && manifest["source_id"]==job.source.id && manifest["source_sha256"]==job.source.sha256,"Transcription manifest changed");
+    let worker_hash=manifest["worker_sha256"].as_str().context("Missing worker hash")?.to_string();
+    let mut leases=vec![crate::processing::verified_lease(&job.input,&job.source.sha256)?,crate::processing::verified_lease(&job.worker,&worker_hash)?];
+    let pages=value["pages"].as_array().context("Transcript segments missing")?;
+    ensure!(pages.len()<=100000,"Too many transcript segments");
+    let raw=serde_json::to_vec_pretty(&value)?;let raw_hash=digest(&raw);
+    let artifact=job.id.clone();let locator=format!("evidence:{}#artifact:{artifact}",job.source.id);
+    let mut text=format!("# Full transcript: {}\n\nUNREVIEWED MACHINE TRANSCRIPTION · local {} model\nSource SHA-256: {}\nEvidence: {locator}\n\n",job.source.name,job.asr_model,job.source.sha256);
+    if value["metadata"]["no_audio_tracks"]==true {text.push_str("No audio tracks were found in this container. No speech transcript can be produced; visual events remain unreviewed.\n");}
+    if let Some(notes)=value["limitations"].as_array(){for note in notes{text.push_str(&format!("- {}\n",note.as_str().unwrap_or("")));}}
+    text.push('\n');
+    let mut srt_by_track=std::collections::BTreeMap::<u64,String>::new();
+    let mut count_by_track=std::collections::BTreeMap::<u64,usize>::new();
+    for segment in pages {
+        let start=segment["start"].as_f64().context("Missing segment start")?;
+        let end=segment["end"].as_f64().context("Missing segment end")?;
+        ensure!(start.is_finite()&&end.is_finite()&&end>=start&&start>=0.&&end<=43205.,"Invalid transcript interval");
+        let track=segment["track"].as_u64().context("Missing track")?;
+        let content=segment["text"].as_str().context("Missing speech text")?;
+        text.push_str(&format!("[track {track} · {} → {}] {content}\n\n",timestamp(start,false),timestamp(end,false)));
+        let number=count_by_track.entry(track).or_default();*number+=1;
+        srt_by_track.entry(track).or_default().push_str(&format!("{}\n{} --> {}\n{}\n\n",number,timestamp(start,true),timestamp(end,true),content));
+    }
+    ensure!(text.len()<=1024*1024,"Transcript exceeds editable record size limit; raw job output retained");
+    let safe_name:String=job.source.name.chars().take(80).map(|c|if c.is_ascii_alphanumeric()||".-_".contains(c){c}else{'_'}).collect();
+    let stem=format!("{safe_name}-{}-{}",&job.source.id[..8],&job.id[..8]);
+    let case_root=job.staging.parent().context("Missing staging parent")?.parent().context("Missing case root")?;
+    fs::create_dir_all(case_root.join("working/transcripts"))?;
+    let mut contents=vec![(format!("artifacts/{raw_hash}.json"),raw,"application/json".to_string()),(format!("working/transcripts/{stem}.txt"),text.as_bytes().to_vec(),"text/plain".into()),(format!("working/transcripts/{stem}.json"),serde_json::to_vec_pretty(&value)?,"application/json".into())];
+    for (track,srt) in srt_by_track {contents.push((format!("working/transcripts/{stem}.track-{track}.srt"),srt.into_bytes(),"application/x-subrip".into()));}
+    let mut files=Vec::new();
+    for (relative,bytes,mime) in contents {
+        ensure!(!job.staging.join("cancel.request").exists(),"Transcription cancelled during publication");
+        let hash=digest(&bytes);let destination=case_root.join(&relative);
+        if !destination.exists(){let mut temp=tempfile::NamedTempFile::new_in(destination.parent().context("Missing transcript directory")?)?;std::io::Write::write_all(&mut temp,&bytes)?;temp.as_file().sync_all()?;temp.persist_noclobber(&destination)?;}
+        leases.push(crate::processing::verified_lease(&destination,&hash)?);
+        files.push(TranscriptFile{relative,hash,mime});
+    }
+    let journal=json!({"version":1,"job_id":job.id,"source_id":job.source.id,"source_sha256":job.source.sha256,"files":files.iter().map(|f|json!({"path":f.relative,"sha256":f.hash})).collect::<Vec<_>>()});
+    let mut journal_file=fs::File::create(job.staging.join("publication-journal.json"))?;
+    std::io::Write::write_all(&mut journal_file,journal.to_string().as_bytes())?;journal_file.sync_all()?;
+    Ok(StagedTranscript{value,text,files,artifact,locator,worker_hash,_leases:leases})
+}
+pub fn publish_staged_transcript(case:&mut Case,job:&Job,staged:StagedTranscript)->Result<Value> {
+    ensure!(!job.staging.join("cancel.request").exists(),"Transcription cancelled before publication");
+    ensure!(job.staging.parent().and_then(|p|p.parent())==Some(case.root.as_path()),"Case changed before transcription publication");
+    let source=case.source(&job.source.id)?;ensure!(!source.restricted&&source.sha256==job.source.sha256,"Source permission or integrity changed");
+    let state:String=case.db.query_row("SELECT status FROM processing_jobs WHERE id=? AND source_id=?",params![job.id,job.source.id],|r|r.get(0))?;ensure!(state=="running","Transcription is no longer active");
+    let journal_path=job.staging.join("publication-journal.json");ensure!(journal_path.metadata()?.len()<=100000,"Invalid transcript journal");
+    let journal:Value=serde_json::from_slice(&fs::read(journal_path)?)?;
+    ensure!(journal["version"]==1&&journal["job_id"]==job.id&&journal["source_id"]==job.source.id&&journal["source_sha256"]==job.source.sha256,"Transcription journal changed");
+    ensure!(journal["files"].as_array().is_some_and(|items|items.len()==staged.files.len()&&items.iter().zip(&staged.files).all(|(item,file)|item["path"]==file.relative&&item["sha256"]==file.hash)),"Transcription journal files changed");
+    case.db.execute_batch("SAVEPOINT staged_transcript_publish")?;
+    let result=(||->Result<Value>{
+        for (index,file) in staged.files.iter().enumerate(){case.db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)",params![if index==0{staged.artifact.clone()}else{id()},job.source.id,file.hash,file.mime,file.relative,json!({"kind":"full_audio","job":job.id,"worker_sha256":staged.worker_hash}).to_string(),now()])?;}
+        let record=case.write_record(None,0,&format!("Full transcript · {}",job.source.name.chars().take(170).collect::<String>()),"transcript",&staged.text,"processor","All audio tracks decoded to EOF; unreviewed machine transcription",None,vec![job.source.id.clone()])?;
+        case.publish_extract(&job.source.id,&staged.text,"Full local machine transcription; unreviewed",true)?;
+        case.db.execute("UPDATE sources SET status=? WHERE id=?",params![if staged.value["metadata"]["no_audio_tracks"]==true{"no audio tracks · visual review pending"}else{"text transcribed · all audio tracks · unreviewed"},job.source.id])?;
+        case.db.execute("UPDATE records SET stale=1 WHERE (actor<>'processor' OR kind<>'transcript') AND id<>?",[&record.id])?;
+        case.db.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'",[])?;
+        let receipt=json!({"job_id":job.id,"record_id":record.id,"locator":staged.locator,"segments":staged.value["pages"].as_array().map_or(0,Vec::len),"metadata":staged.value["metadata"],"saved_files":staged.files.iter().skip(1).map(|file|&file.relative).collect::<Vec<_>>()});
+        case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![receipt.to_string(),job.id])?;
+        case.audit("full_transcription_completed",receipt.clone())?;
+        Ok(receipt)
+    })();
+    if result.is_err(){case.db.execute_batch("ROLLBACK TO staged_transcript_publish")?;}
+    case.db.execute_batch("RELEASE staged_transcript_publish")?;
+    result
+}
 pub fn fail(case: &mut Case, job: &Job, error: &str) -> Result<()> {
     case.db.execute(
         "UPDATE processing_jobs SET status='failed',error=? WHERE id=?",
@@ -369,6 +447,30 @@ pub fn status(case: &Case, source: &str) -> Result<Value> {
     Ok(
         json!({"job_id":job,"status":state,"progress":progress,"result":result,"error":error,"record":record}),
     )
+}
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+    #[test]
+    fn staged_transcript_is_recoverable_and_registers_once() {
+        let dir=tempfile::tempdir().unwrap();
+        let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic transcript").unwrap();
+        case.import_files(&[input.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source=case.sources().unwrap().into_iter().find(|s|s.kind=="video").unwrap();
+        let job=begin(&mut case,&source.id).unwrap();
+        let value=json!({"pages":[{"start":0.0,"end":1.0,"track":0,"text":"Test speech"}],"metadata":{},"limitations":[]});
+        let staged=stage_transcript(&job,value.clone()).unwrap();
+        let journal=job.staging.join("publication-journal.json");
+        fs::write(&journal,b"{}").unwrap();
+        assert!(publish_staged_transcript(&mut case,&job,staged).is_err());
+        let staged=stage_transcript(&job,value.clone()).unwrap();
+        let receipt=publish_staged_transcript(&mut case,&job,staged).unwrap();
+        assert_eq!(receipt["segments"],1);
+        assert_eq!(case.record(receipt["record_id"].as_str().unwrap()).unwrap().content.contains("Test speech"),true);
+        let staged=stage_transcript(&job,value).unwrap();
+        assert!(publish_staged_transcript(&mut case,&job,staged).is_err());
+    }
 }
 pub fn cancel(case: &Case, source: &str) -> Result<()> {
     if case.db.execute("UPDATE processing_jobs SET status='cancelled',error='Cancelled by user' WHERE source_id=? AND kind='full_audio' AND status='queued'",[source])?>0{return Ok(())}
