@@ -1,4 +1,4 @@
-use crate::case::{Case,Record,file_hash,file_hash_strong,now};
+use crate::case::{Case,Record,file_hash,now};
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
 use std::{fs,path::{Path,PathBuf},io::Write};
@@ -38,11 +38,10 @@ pub fn prepare_dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Dossi
             body.push_str(&format!("<h3>{label}</h3><ul>"));
             for citation in citations {
                 let valid=case.validate_citation(citation)?;let source=valid["source_id"].as_str().context("Missing source")?;
-                ensure!(!case.source(source)?.restricted,"Restricted export dependency");case.verify_source_strong(source)?;
+                ensure!(!case.source(source)?.restricted,"Restricted export dependency");
                 let (from,relative,artifact_id,sha256)=if let Some((_,artifact))=citation.split_once("#artifact:") {
-                    let (_,mime,file,metadata)=crate::processing::artifact(case,artifact)?;
+                    let (_,mime,file,registered,metadata)=crate::processing::artifact_descriptor(case,artifact)?;
                     let extension=crate::artifact_registry::extension_for_mime(&mime).context("Unregistered export artifact format")?;
-                    let registered:String=case.db.query_row("SELECT sha256 FROM artifacts WHERE id=?",[artifact],|r|r.get(0)).context("Artifact registration missing")?;
                     let _=metadata;
                     (file,format!("evidence/{artifact}.{extension}"),Some(artifact.to_string()),registered)
                 } else {(case.source_path(source)?,format!("evidence/{source}.bin"),None,case.source(source)?.sha256.clone())};
@@ -55,16 +54,18 @@ pub fn prepare_dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Dossi
     body.push_str(&format!("<h2>Checks and limitations</h2><pre>{}</pre></html>",escaped(&serde_json::to_string_pretty(&json!({"checks":dossier.checks,"completion":view["completion"]}))?)));
     Ok(DossierPlan{task:task.into(),dossier_revision:dossier.revision,copies,html:body,view,review_receipts})
 }
-pub struct DossierStaging{pub directory:tempfile::TempDir,pub manifest:Value}
+pub struct DossierStaging{_source_leases:Vec<fs::File>,copy_leases:Vec<fs::File>,pub directory:tempfile::TempDir,pub manifest:Value}
 /// Copy cited originals and write the package contents without holding the case lock.
 pub fn write_dossier_bundle(plan:&DossierPlan,path:&Path)->Result<DossierStaging> {
     let stage=tempfile::tempdir_in(path.parent().context("Missing parent")?)?;
     fs::create_dir(stage.path().join("evidence"))?;
     let mut files=std::collections::BTreeMap::new();
+    let mut source_leases=Vec::new();let mut copy_leases=Vec::new();
     for copy in &plan.copies {
+        source_leases.push(crate::processing::verified_lease(&copy.from,&copy.sha256).context("Source lease for dossier export")?);
         let target=stage.path().join(&copy.relative);let mut output=fs::File::create(&target)?;std::io::copy(&mut fs::File::open(&copy.from)?,&mut output)?;output.sync_all()?;drop(output);
-        let hash=file_hash(&target)?;ensure!(hash==file_hash_strong(&copy.from)?,"Evidence changed during export");
-        files.insert(copy.relative.clone(),json!({"sha256":hash,"source_id":copy.source_id,"original_name":copy.name}));
+        copy_leases.push(crate::processing::verified_lease_for_rename(&target,&copy.sha256).context("Staged copy lease for dossier export")?);
+        files.insert(copy.relative.clone(),json!({"sha256":copy.sha256,"source_id":copy.source_id,"original_name":copy.name}));
     }
     fs::write(stage.path().join("index.html"),&plan.html)?;
     fs::write(stage.path().join("dossier.json"),serde_json::to_vec_pretty(&plan.view)?)?;
@@ -72,8 +73,8 @@ pub fn write_dossier_bundle(plan:&DossierPlan,path:&Path)->Result<DossierStaging
     files.insert("dossier.json".into(),json!({"sha256":file_hash(&stage.path().join("dossier.json"))?}));
     let manifest=json!({"version":1,"task":plan.task,"dossier_revision":plan.dossier_revision,"exported_at":now(),"files":files,"redacted":false});
     fs::write(stage.path().join("manifest.json"),serde_json::to_vec_pretty(&manifest)?)?;
-    for file in files.keys().chain(std::iter::once(&"manifest.json".to_string())) {fs::OpenOptions::new().read(true).write(true).open(stage.path().join(file))?.sync_all()?;}
-    Ok(DossierStaging{directory:stage,manifest})
+    for file in ["index.html","dossier.json","manifest.json"] {fs::OpenOptions::new().read(true).write(true).open(stage.path().join(file))?.sync_all()?;}
+    Ok(DossierStaging{_source_leases:source_leases,copy_leases,directory:stage,manifest})
 }
 /// Re-check the exact reviewed snapshot the plan was prepared against, then
 /// atomically publish and audit. An export prepared against one state must not
@@ -91,21 +92,20 @@ pub fn publish_dossier_bundle(case:&mut Case,plan:&DossierPlan,staged:Result<Dos
     }
     for copy in &plan.copies {
         ensure!(!case.source(&copy.source_id)?.restricted,"Source became restricted during export");
-        if copy.artifact_id.is_some() {
-            // Derivative bytes must still match the REGISTERED hash, not merely
-            // the artifact file's current content (processing::artifact strong-
-            // checks the file itself; this certifies what is actually exported).
-            crate::processing::artifact(case,copy.artifact_id.as_deref().unwrap())?;
+        if let Some(artifact)=&copy.artifact_id {
+            let (source,_,path,hash,_)=crate::processing::artifact_descriptor(case,artifact)?;
+            ensure!(source==copy.source_id && path==copy.from && hash==copy.sha256,"Export dependency changed");
         } else {
-            case.verify_source_strong(&copy.source_id)?;
+            ensure!(case.source(&copy.source_id)?.sha256==copy.sha256,"Export dependency changed");
         }
-        let staged_copy=staged.directory.path().join(&copy.relative);
-        ensure!(crate::case::file_hash_strong(&staged_copy)?==copy.sha256,"Exported evidence bytes do not match their registered hash: {}",copy.relative);
     }
     // Same-parent staging permits an atomic directory rename without replacing an existing package.
-    ensure!(!path.exists(),"Destination appeared during export");fs::rename(staged.directory.path(),path)?;
-    case.audit("reviewed_dossier_exported",json!({"task":plan.task,"revision":plan.dossier_revision,"manifest_hash":crate::case::digest(&serde_json::to_vec(&staged.manifest)?)}))?;
-    Ok(json!({"path":path,"manifest":staged.manifest}))
+    ensure!(!path.exists(),"Destination appeared during export");
+    let DossierStaging{_source_leases,copy_leases,directory,manifest}=staged;
+    drop(copy_leases);
+    fs::rename(directory.path(),path)?;
+    case.audit("reviewed_dossier_exported",json!({"task":plan.task,"revision":plan.dossier_revision,"manifest_hash":crate::case::digest(&serde_json::to_vec(&manifest)?)}))?;
+    Ok(json!({"path":path,"manifest":manifest}))
 }
 pub fn dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Value> {
     let plan=prepare_dossier_bundle(case,task,path)?;
@@ -197,6 +197,33 @@ pub fn export_redaction(case:&mut Case,artifact:&str,target:&Path)->Result<Value
     case.audit("redaction_exported",json!({"artifact":artifact,"sha256":hash,"review":review}))?;
     Ok(json!({"path":target,"sha256":hash,"included_original":false}))
 }
+pub struct RedactionExportPlan {artifact:String,source:String,from:PathBuf,hash:String,review:Value,target:PathBuf}
+pub struct StagedRedactionExport {file:tempfile::NamedTempFile,_source_lease:fs::File}
+pub fn prepare_redaction_export(case:&Case,artifact:&str,target:&Path)->Result<RedactionExportPlan> {
+    destination(case,target)?;ensure!(target.extension().and_then(|s|s.to_str()).is_some_and(|s|s.eq_ignore_ascii_case("pdf")),"Use a PDF destination");
+    let (source,mime,from,hash,metadata)=crate::processing::artifact_descriptor(case,artifact)?;
+    ensure!(mime=="application/pdf"&&metadata["redaction"]==true&&!case.source(&source)?.restricted,"Invalid or restricted derivative");
+    let review:Value=serde_json::from_str(&case.meta(&format!("redaction_review:{artifact}"))?.context("Human page review is required")?)?;
+    ensure!(review["sha256"]==hash && review["artifact_id"]==artifact,"Derivative changed since human review");
+    Ok(RedactionExportPlan{artifact:artifact.into(),source,from,hash,review,target:target.into()})
+}
+pub fn stage_redaction_export(plan:&RedactionExportPlan)->Result<StagedRedactionExport> {
+    let source_lease=crate::processing::verified_lease(&plan.from,&plan.hash)?;
+    let mut file=tempfile::NamedTempFile::new_in(plan.target.parent().context("Missing parent")?)?;
+    std::io::copy(&mut fs::File::open(&plan.from)?,file.as_file_mut())?;file.as_file().sync_all()?;
+    ensure!(file_hash(file.path())?==plan.hash,"Export integrity failure");
+    Ok(StagedRedactionExport{file,_source_lease:source_lease})
+}
+pub fn publish_staged_redaction_export(case:&mut Case,plan:&RedactionExportPlan,staged:StagedRedactionExport)->Result<Value> {
+    destination(case,&plan.target)?;
+    let (source,mime,from,hash,metadata)=crate::processing::artifact_descriptor(case,&plan.artifact)?;
+    ensure!(source==plan.source&&from==plan.from&&hash==plan.hash&&mime=="application/pdf"&&metadata["redaction"]==true&&!case.source(&source)?.restricted,"Redaction dependency changed during export");
+    let review:Value=serde_json::from_str(&case.meta(&format!("redaction_review:{}",plan.artifact))?.context("Human page review is required")?)?;
+    ensure!(review==plan.review,"Human review changed during export");
+    staged.file.persist_noclobber(&plan.target)?;
+    case.audit("redaction_exported",json!({"artifact":plan.artifact,"sha256":plan.hash,"review":review}))?;
+    Ok(json!({"path":plan.target,"sha256":plan.hash,"included_original":false}))
+}
 #[cfg(test)]
 mod staging_tests {
     use super::*;
@@ -212,5 +239,21 @@ mod staging_tests {
         case.write_record(Some(&record.id),record.revision,"Notes","note","changed","human","unreviewed",None,vec![]).unwrap();
         assert!(publish_staged_document(&mut case,&job,staged).is_err());
         assert!(!target.exists());
+    }
+    #[test]
+    fn staged_redaction_export_rechecks_human_review() {
+        let dir=tempfile::tempdir().unwrap();
+        let input=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic redaction export").unwrap();
+        case.import_files(&[input.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source=case.sources().unwrap().into_iter().next().unwrap();
+        let artifact=crate::case::id();let bytes=b"synthetic flattened PDF";let hash=crate::case::digest(bytes);
+        let relative=format!("artifacts/{hash}.pdf");fs::write(case.root.join(&relative),bytes).unwrap();
+        case.db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)",rusqlite::params![artifact,source.id,hash,"application/pdf",relative,json!({"redaction":true,"page_count":1}).to_string(),now()]).unwrap();
+        review_redaction(&mut case,&artifact,&[1],"Reviewed").unwrap();
+        let target=dir.path().join("released.pdf");let plan=prepare_redaction_export(&case,&artifact,&target).unwrap();
+        let staged=stage_redaction_export(&plan).unwrap();
+        case.set_meta(&format!("redaction_review:{artifact}"),"{}").unwrap();
+        assert!(publish_staged_redaction_export(&mut case,&plan,staged).is_err());assert!(!target.exists());
     }
 }

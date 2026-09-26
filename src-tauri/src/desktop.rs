@@ -219,10 +219,12 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let state=app.state::<AppState>();
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_mut().context("Open a case first")?;
-            (c.meta("id")?.unwrap_or_default(),backup::prepare_backup(c,&destination,text(&args,"password")?)?)
+            (c.meta("id")?.unwrap_or_default(),backup::prepare_backup_deferred(c,&destination,text(&args,"password")?)?)
         };
         // Archive hashing, tarring and encryption run without the case lock so chat,
         // viewing and cancellation stay responsive during a large backup.
+        let mut plan=plan;
+        backup::verify_backup_plan(&mut plan)?;
         backup::write_archive(&plan,&destination,text(&args,"password")?)?;
         let value=with_case(app,&case_id,|c|backup::finish_backup(c,&plan));
         let _=app.emit("case-changed",());
@@ -241,6 +243,12 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         let value=with_case(app,&case_id,|c|crate::exports::publish_dossier_bundle(c,&plan,staged,&destination));
         let _=app.emit("case-changed",());
         return value;
+    }
+    if action=="export_redaction" {
+        let (case_id,plan)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_redaction_export(case,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?)};
+        let staged=crate::exports::stage_redaction_export(&plan)?;
+        let result=with_case(app,&case_id,|case|crate::exports::publish_staged_redaction_export(case,&plan,staged));
+        let _=app.emit("case-changed",());return result;
     }
 
     let state = app.state::<AppState>();

@@ -150,8 +150,8 @@
     },
     "R09": {
       "state": "implemented",
-      "commit": "e9bb0fc, 0fd6966, 8a26dcd; transcription staging commit pending",
-      "evidence": "Processor, discovery, automatic and agent media artifacts now hash/copy to content-addressed storage outside the case mutex; staged journal and read leases gate short registration. Playback derivative, document draft export and full transcript production paths use staged publication.",
+      "commit": "e9bb0fc, 0fd6966, 8a26dcd, 1b952f9; dossier, redaction and backup staging commit pending",
+      "evidence": "Processor, discovery, automatic and agent media artifacts now hash/copy to content-addressed storage outside the case mutex; staged journal and read leases gate short registration. Playback derivative, document draft, full transcript, dossier, redaction and encrypted backup production paths stage or verify large bytes outside the case mutex.",
       "measurements": "Four synthetic 32 MiB derivatives: old publication lock p50 795 ms, p95/max 1031 ms; staged registration p50/p95/max 5 ms on this Windows host. Sample size 4; not a release-wide latency claim.",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after processor staging, before playback/document edits",
@@ -160,11 +160,14 @@
         "cargo test --locked --manifest-path src-tauri/Cargo.toml staged_document_rechecks_revision -> exit 0",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml staged_transcript_is_recoverable -> exit 0 after stable job-derived artifact ID",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after staged transcription wiring",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 35 tests after deferred evidence hashing and short reviewed-bundle commit",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test backup_artifacts -> exit 0, 10 tests",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 21 native AppContainer tests after dossier/redaction/backup staging",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after staged playback/document and strong-preparation compatibility fix",
         "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0"
       ],
-      "unrun_checks": "Dossier bundle, redaction and legacy direct processing paths still do heavy work under the case lock. Full crash boundary, disk-full, case-close concurrency, x64 packaged acceptance and large tiers remain open. Do not mark verified.",
-      "note": "Unregistered content-addressed outputs are retained for recovery inventory; cancelled and failed staged jobs stay visible. Legacy document preparation keeps immediate strong verification while desktop staging checks source bytes outside the mutex."
+      "unrun_checks": "Legacy direct APIs intentionally retain some in-lock validation for compatibility; desktop production paths use staging. Full crash boundary, disk-full, case-close concurrency, exact x64 packaged acceptance and large tiers remain open. Do not mark verified.",
+      "note": "Unregistered content-addressed outputs are retained for recovery inventory; cancelled and failed staged jobs stay visible. Legacy document and backup preparation keep immediate strong verification while desktop staging checks bytes outside the mutex."
     },
     "R10": {
       "state": "pending"

@@ -15,16 +15,17 @@ pub struct BackupPlan {
     staging: tempfile::TempDir,
     manifest: Vec<u8>,
     db_path: PathBuf,
-    originals: Vec<(PathBuf, String)>,
+    originals: Vec<(PathBuf, String, String)>,
     /// Registered artifacts, including published transcript files registered by
     /// `transcription::publish`. Each canonical path appears once.
-    artifacts: Vec<(PathBuf, String)>,
+    artifacts: Vec<(PathBuf, String, String)>,
     /// `working/transcripts` files present on disk but not registered in the
     /// artifacts table (recovery/unpublished data). Kept in the archive so no
     /// case bytes are lost, but labeled so they are never mistaken for
     /// registered evidence; the database remains the trust anchor.
     transcripts: Vec<(PathBuf, String)>,
     sources: usize,
+    leases:Vec<File>,
 }
 /// Transcript publication names accepted in backup archives. Shared by prepare
 /// and restore so the archive inventory is symmetric.
@@ -37,6 +38,12 @@ fn valid_transcript_entry(name: &str) -> bool {
     })
 }
 pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Result<BackupPlan> {
+    prepare_backup_inner(case,destination,password,true)
+}
+pub fn prepare_backup_deferred(case:&mut Case,destination:&Path,password:&str)->Result<BackupPlan> {
+    prepare_backup_inner(case,destination,password,false)
+}
+fn prepare_backup_inner(case: &mut Case, destination: &Path, password: &str,verify_bytes:bool) -> Result<BackupPlan> {
     ensure!(
         password.chars().count() >= 12,
         "Use a backup passphrase with at least 12 characters"
@@ -67,9 +74,9 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
     let sources = case.sources()?;
     let mut originals = Vec::new();
     for s in &sources {
-        case.verify_source_strong(&s.id)?;
+        if verify_bytes{case.verify_source_strong(&s.id)?;}
         files.push(json!({"path":format!("originals/{}",s.sha256),"sha256":s.sha256}));
-        originals.push((case.source_path(&s.id)?, format!("originals/{}", s.sha256)));
+        originals.push((case.source_path(&s.id)?, format!("originals/{}", s.sha256),s.sha256.clone()));
     }
     let mut stmt = case
         .db
@@ -98,12 +105,9 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
             "Artifact registration has conflicting hashes for {path}"
         );
         let absolute = case.root.join(path);
-        ensure!(
-            file_hash_strong(&absolute)? == *hash,
-            "Artifact failed backup integrity check"
-        );
+        if verify_bytes{ensure!(file_hash_strong(&absolute)? == *hash,"Artifact failed backup integrity check");}
         files.push(json!({"path":path,"sha256":hash}));
-        artifact_entries.push((absolute, path.clone()));
+        artifact_entries.push((absolute, path.clone(),hash.clone()));
     }
     // Unregistered transcript files are recovery data, not trusted evidence:
     // included and hash-pinned so no case bytes are lost, labeled as
@@ -140,7 +144,13 @@ pub fn prepare_backup(case: &mut Case, destination: &Path, password: &str) -> Re
     let manifest = serde_json::to_vec_pretty(
         &json!({"format":"local-evidence-desk","version":1,"artifact_formats":crate::artifact_registry::ARTIFACT_FORMAT_VERSION,"created_at":now(),"files":files,"originals_included":true}),
     )?;
-    Ok(BackupPlan{staging: temp, manifest, db_path, originals, artifacts: artifact_entries, transcripts, sources: sources.len()})
+    Ok(BackupPlan{staging: temp, manifest, db_path, originals, artifacts: artifact_entries, transcripts, sources: sources.len(),leases:Vec::new()})
+}
+pub fn verify_backup_plan(plan:&mut BackupPlan)->Result<()> {
+    for (path,_,hash) in plan.originals.iter().chain(&plan.artifacts) {
+        plan.leases.push(crate::processing::verified_lease(path,hash)?);
+    }
+    Ok(())
 }
 /// Encrypt and write the archive without holding the case lock.
 pub fn write_archive(plan: &BackupPlan, destination: &Path, password: &str) -> Result<()> {
@@ -150,10 +160,10 @@ pub fn write_archive(plan: &BackupPlan, destination: &Path, password: &str) -> R
         let writer = encryptor.wrap_output(output.as_file_mut())?;
         let mut archive = tar::Builder::new(writer);
         archive.append_path_with_name(&plan.db_path, "case.sqlite3")?;
-        for (absolute, name) in &plan.originals {
+        for (absolute, name, _) in &plan.originals {
             archive.append_path_with_name(absolute, name)?;
         }
-        for (absolute, name) in &plan.artifacts {
+        for (absolute, name, _) in &plan.artifacts {
             archive.append_path_with_name(absolute, name)?;
         }
         for (absolute, name) in &plan.transcripts {
@@ -183,6 +193,25 @@ pub fn backup(case: &mut Case, destination: &Path, password: &str) -> Result<()>
     write_archive(&plan, destination, password)?;
     finish_backup(case, &plan)?;
     Ok(())
+}
+#[cfg(test)]
+mod deferred_tests {
+    use super::*;
+    #[test]
+    fn deferred_backup_verifies_original_before_archive() {
+        let dir=tempfile::tempdir().unwrap();
+        let source=dir.path().join("source.txt");fs::write(&source,b"original evidence").unwrap();
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic backup").unwrap();
+        case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let destination=dir.path().join("case.age");
+        let mut plan=prepare_backup_deferred(&mut case,&destination,"synthetic passphrase").unwrap();
+        let original=case.sources().unwrap().into_iter().next().unwrap();
+        let path=case.source_path(&original.id).unwrap();
+        let mut permissions=fs::metadata(&path).unwrap().permissions();permissions.set_readonly(false);fs::set_permissions(&path,permissions).unwrap();
+        fs::write(path,b"tampered evidence").unwrap();
+        assert!(verify_backup_plan(&mut plan).is_err());
+        assert!(!destination.exists());
+    }
 }
 
 pub fn restore(archive_path: &Path, destination: &Path, password: &str) -> Result<Case> {

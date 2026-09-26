@@ -221,7 +221,9 @@ fn publish_bytes(destination:&Path, bytes:&[u8], expected:&str)->Result<()> {
         let mut staged=tempfile::NamedTempFile::new_in(destination.parent().context("Missing output directory")?)?;
         std::io::Write::write_all(&mut staged,bytes)?;
         staged.as_file().sync_all()?;
-        staged.persist_noclobber(destination)?;
+        if let Err(error)=staged.persist_noclobber(destination) {
+            if error.error.kind()!=std::io::ErrorKind::AlreadyExists {return Err(error.into());}
+        }
     }
     ensure!(file_hash(destination)?==expected,"Published artifact integrity mismatch");
     Ok(())
@@ -232,7 +234,9 @@ fn publish_file(source:&Path,destination:&Path,expected:&str)->Result<()> {
         std::io::copy(&mut fs::File::open(source)?,staged.as_file_mut())?;
         staged.as_file().sync_all()?;
         ensure!(file_hash(staged.path())?==expected,"Artifact changed during publication");
-        staged.persist_noclobber(destination)?;
+        if let Err(error)=staged.persist_noclobber(destination) {
+            if error.error.kind()!=std::io::ErrorKind::AlreadyExists {return Err(error.into());}
+        }
     }
     ensure!(file_hash(destination)?==expected,"Published artifact integrity mismatch");
     Ok(())
@@ -250,7 +254,9 @@ fn publish_file_cancellable(source:&Path,destination:&Path,expected:&str,cancel:
         }
         staged.as_file().sync_all()?;
         ensure!(format!("{:x}",hash.finalize())==expected,"Artifact changed during publication");
-        staged.persist_noclobber(destination)?;
+        if let Err(error)=staged.persist_noclobber(destination) {
+            if error.error.kind()!=std::io::ErrorKind::AlreadyExists {return Err(error.into());}
+        }
     }
     ensure!(!cancel.exists(),"Processing cancelled during publication");
     ensure!(file_hash(destination)?==expected,"Published artifact integrity mismatch");
@@ -280,6 +286,14 @@ fn leased_hash(mut file:&fs::File)->Result<String> {
 }
 pub(crate) fn verified_lease(path:&Path,expected:&str)->Result<fs::File> {
     let file=read_lease(path)?;
+    ensure!(leased_hash(&file)?==expected,"Published artifact integrity mismatch");
+    Ok(file)
+}
+pub(crate) fn verified_lease_for_rename(path:&Path,expected:&str)->Result<fs::File> {
+    let mut options=fs::OpenOptions::new();options.read(true);
+    #[cfg(windows)]
+    options.share_mode(1|4); // Read and delete/rename allowed; writing remains denied.
+    let file=options.open(path)?;
     ensure!(leased_hash(&file)?==expected,"Published artifact integrity mismatch");
     Ok(file)
 }
@@ -525,6 +539,11 @@ pub fn cleanup_published_input(job:&PreparedJob)->Result<bool> {
 }
 
 pub fn artifact(case: &Case, artifact_id: &str) -> Result<(String, String, PathBuf, Value)> {
+    let (source,mime,path,hash,metadata)=artifact_descriptor(case,artifact_id)?;
+    ensure!(file_hash_strong(&path)?==hash,"Artifact integrity check failed");
+    Ok((source,mime,path,metadata))
+}
+pub(crate) fn artifact_descriptor(case:&Case,artifact_id:&str)->Result<(String,String,PathBuf,String,Value)> {
     let (source, mime, path, hash, metadata): (String, String, String, String, String) = case
         .db
         .query_row(
@@ -548,8 +567,7 @@ pub fn artifact(case: &Case, artifact_id: &str) -> Result<(String, String, PathB
                 .is_ok_and(|root| path.starts_with(root)),
         "Artifact outside case"
     );
-    ensure!(file_hash_strong(&path)? == hash, "Artifact integrity check failed");
-    Ok((source, mime, path, serde_json::from_str(&metadata)?))
+    Ok((source, mime, path, hash, serde_json::from_str(&metadata)?))
 }
 /// Prepare playback under the case lock, run outside it, and publish under it again.
 /// This keeps chat, cancellation and viewing responsive during a long conversion.
@@ -712,6 +730,17 @@ mod publication_tests {
         fs::write(&path,b"incomplete old output").unwrap();
         assert!(publish_bytes(&path,content,&hash).is_err());
         assert_eq!(fs::read(&path).unwrap(),b"incomplete old output");
+    }
+    #[test]
+    fn concurrent_identical_derivative_publication_registers_one_good_file() {
+        let dir=tempfile::tempdir().unwrap();let source=dir.path().join("source.bin");let target=dir.path().join("artifact.bin");
+        fs::write(&source,vec![7u8;1024*1024]).unwrap();let hash=file_hash(&source).unwrap();
+        std::thread::scope(|scope| {
+            let first=scope.spawn(||publish_file_cancellable(&source,&target,&hash,&dir.path().join("cancel")));
+            let second=scope.spawn(||publish_file_cancellable(&source,&target,&hash,&dir.path().join("cancel")));
+            first.join().unwrap().unwrap();second.join().unwrap().unwrap();
+        });
+        assert_eq!(file_hash(&target).unwrap(),hash);
     }
     #[test]
     #[ignore = "Measured synthetic publication baseline; writes four 32-MiB derivatives"]
