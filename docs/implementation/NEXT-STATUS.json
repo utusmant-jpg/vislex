@@ -135,15 +135,18 @@
     },
     "R08": {
       "state": "implemented",
-      "commit": "802c7a5",
-      "evidence": "74a9926 bounded task pages, on-demand conversation detail, small case_summary polling and synthetic 500-record/500-task fixture; 802c7a5 backend and renderer case fence for chat commands; native Dev21 cross-case export denial predates final chat-fence build",
+      "commit": "a495879",
+      "evidence": "74a9926 bounded task pages and on-demand conversation detail; 802c7a5 backend and renderer case fence for chat commands; 3541c77 source/record/job page endpoints; 5e31304 first-page snapshot, source and record detail, current-problem job page and traced large fixture; 7deb401 library, Jobs, findings and review continuation UI; a495879 explicit x64 packaging script and bounded native command checks",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 21 AppContainer tests (before final chat fence)",
-        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core large_snapshot_excludes_full_working_record_bodies -> exit 0; baseline 871967 bytes, after 155997 bytes on 500 synthetic records and 500 tasks; 43-44 ms measured",
-        "npm test -> exit 0, 53 passed; npm run build -> exit 0; cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0"
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core large_snapshot_excludes_full_working_record_bodies -- --nocapture -> exit 0; baseline 871967 bytes, current 63285 bytes / 34 ms / 26 traced SQL statements on 500 synthetic 2-KiB records, 500 historical tasks, 121 sources and 101 jobs",
+        "case_summary on same fixture -> 356 bytes / 1 ms / 12 traced SQL statements; old current failure outside first 50 jobs remains in attention_jobs",
+        "npm test -> exit 0, 61 passed (12 files); npm run build -> exit 0; cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites; include-ignored suite rerun in progress after final page changes",
+        "packaged release x64 executable SHA256 624C0C9C14A8DDF23A0ACDA264BE938D70FB77B806FE4E5E1B3842CF5A735E45 passed prior synthetic native source-to-export journey including chat case fence; final paging changes postdate this executable"
       ],
-      "unrun_checks": "Source, record and job lists still use full snapshot; measured query-count and latency distribution absent. A packaged run of the exact final chat-fence build and large-case pagination journey remain open. Do not mark R08 verified yet.",
-      "note": "Ordinary case_summary excludes full text and history. Chat list query is one bounded SQL statement, with full progress/answers only on selected conversation; older chats and turns have keyset continuation. Case identity is checked for export, deletion, summary/detail pages, and chat start/stop/resume/continue. UI discards late old-case responses. The full snapshot is still used for recovery and non-chat lists."
+      "unrun_checks": "Typed envelopes/session epoch and event sequence are not yet applied to every case-mutating desktop command. Current x64 packaging run started before the final paging edits; a packaged UI journey on the exact R08 code and larger 1-GB+ tiers remain open. Do not mark R08 verified yet.",
+      "note": "Routine polling uses case_summary; recovery snapshot limits source, record, task and job lists to first pages with exact totals and current failures. Keyset/rowid pages are case fenced; mutable source/record pages additionally require the audit epoch. Older items remain accessible through list controls or exact detail fetch, including citations and source pickers. The 500-record fixture tests no duplicates/skips and query-plan indexes. Current UI counts reflect total case scope."
     },
     "R09": {
       "state": "pending"
