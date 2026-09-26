@@ -193,6 +193,47 @@ def process(job: Path, request: dict) -> dict:
         notes = ['Unverified machine transcription using the selected local multilingual model; check names, numbers, and faint speech against original audio.', 'Only the selected audio track and interval were decoded. Other tracks remain unprocessed.', 'VAD is disabled. Decoder gaps are accounted separately and zero-filled for timing; silence does not establish absence of events.', 'Transcription is not direct audio understanding, speaker identity, or legal interpretation.']
     elif kind == 'video':
         import av
+        if request.get('operation') == 'frame_at':
+            target = float(request.get('target', -1))
+            direction = request.get('direction')
+            if not math.isfinite(target) or target < 0 or direction not in ('previous', 'next'):
+                raise ValueError('Invalid exact frame request')
+            leased_source = Path(request['source_lease'])
+            with av.open(str(leased_source)) as container:
+                video = next((s for s in container.streams if s.type == 'video'), None)
+                if video is None:
+                    raise ValueError('No decodable video stream')
+                origin = float((video.start_time or 0) * video.time_base)
+                seek_before = max(0., target - (30. if direction == 'previous' else 2.))
+                container.seek(max(0, int((seek_before + origin) * av.time_base)), backward=True)
+                selected = None
+                decoded = 0
+                for frame in container.decode(video):
+                    decoded += 1
+                    if decoded > 10000:
+                        raise ValueError('Exact frame decode limit reached')
+                    if frame.pts is None:
+                        continue
+                    relative = float(frame.pts * frame.time_base) - origin
+                    if direction == 'next' and relative > target + 1e-7:
+                        selected = (frame, relative)
+                        break
+                    if direction == 'previous':
+                        if relative < target - 1e-7:
+                            selected = (frame, relative)
+                        else:
+                            break
+                if selected is None:
+                    raise ValueError('No adjacent decoded frame in the supported seek window')
+                frame, relative = selected
+                image = frame.to_image()
+                original_size = list(image.size)
+                image.thumbnail((1920, 1080))
+                image.save(job / 'exact-frame.jpg', quality=92)
+                previews = [{'path': 'exact-frame.jpg', 'pts': frame.pts, 'time_base': str(frame.time_base), 'source_relative_seconds': relative, 'presentation_seconds': float(frame.pts * frame.time_base), 'original_size': original_size, 'output_size': list(image.size)}]
+                metadata = {'video_stream': video.index, 'origin_seconds': origin, 'requested_time': target, 'direction': direction, 'frames_decoded': decoded, 'selection': 'adjacent decoded presentation frame'}
+            notes = ['Exact adjacent decoded frame PTS from the original recording. The JPEG is a resized derivative; original bytes are preserved.', 'Audio and intervening activity were not inspected.']
+            return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': metadata, 'limitations': notes, 'previews': previews}
         start, end = float(request.get('start', 0)), float(request.get('end', 10))
         interval = float(request.get('interval', 1))
         if not (0 <= start < end and end - start <= 30 and interval >= 0.1 and (end-start)/interval <= 24):
