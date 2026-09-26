@@ -35,7 +35,7 @@ export default function SpeakerTurns({ caseId, sourceId, onSeek, defaultTrack }:
     if (!artifact) return;
     setBusy(true); setError(''); setSaved('');
     try {
-      const next = await api<Annotations>('save_speaker_annotations', { source_id: sourceId, artifact_id: artifact, ...annotations });
+      const next = await api<Annotations>('save_speaker_annotations', { case_id: caseId, source_id: sourceId, artifact_id: artifact, ...annotations });
       setAnnotations(next);
       setSaved('Corrections saved. Identity remains unverified.');
     } catch (e) { setError(String(e)); } finally { setBusy(false); }

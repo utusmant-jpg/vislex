@@ -452,7 +452,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             serde_json::to_value(record)?
         },
         "speaker_annotations" => crate::speaker_annotations::read(c,text(&args,"source_id")?,text(&args,"artifact_id")?)?,
-        "save_speaker_annotations" => crate::speaker_annotations::save(c,text(&args,"source_id")?,text(&args,"artifact_id")?,args["revision"].as_u64().context("Missing annotation revision")?,&args["labels"],&args["turns"])?,
+        "save_speaker_annotations" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before speaker annotations");crate::speaker_annotations::save(c,text(&args,"source_id")?,text(&args,"artifact_id")?,args["revision"].as_u64().context("Missing annotation revision")?,&args["labels"],&args["turns"])?},
         "video_discovery_status" => crate::discovery::status(c,text(&args,"source_id")?)?,
         "browse_video_discovery" => crate::discovery::browse(c,text(&args,"source_id")?,args["kind"].as_str().unwrap_or("video_overview"),args["start"].as_f64().unwrap_or(0.),args["end"].as_f64().unwrap_or(1e12),args["offset"].as_u64().unwrap_or(0),args["query"].as_str().unwrap_or(""))?,
         "queue_video_discovery" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before video discovery queue");let value=crate::discovery::enqueue(c,text(&args,"source_id")?,args["interval"].as_f64().unwrap_or(5.),true)?;kick_discovery(app.clone(),c.meta("id")?.unwrap_or_default());value},
@@ -733,9 +733,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "direct_media_permission" => json!({"enabled":crate::providers::direct_media_enabled(c)}),
         "set_direct_media_permission" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before media permission update");let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
         "ai_config" => serde_json::to_value(crate::providers::load(c)?)?,
-        "save_ai_config" => {crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
+        "save_ai_config" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI configuration update");crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
         "save_settings" => {
-
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before settings update");
             c.save_settings(serde_json::from_value::<Settings>(
 
                 args["settings"].clone(),
@@ -747,7 +747,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "review_redaction" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction review");crate::exports::review_redaction(c,text(&args,"artifact_id")?,&serde_json::from_value::<Vec<u64>>(args["pages"].clone())?,text(&args,"note")?)?},
-        "export_redaction" => crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?,
+        "export_redaction" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction export");crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?},
         "export_record" => {
 
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");

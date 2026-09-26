@@ -57,6 +57,10 @@
     ['transcribe_full', { source_id: source.id }],
     ['resume_transcription', { job_id: 'missing' }],
     ['cancel_transcription', { source_id: source.id }],
+    ['save_speaker_annotations', { source_id: source.id, artifact_id: 'missing', revision: 0, labels: {}, turns: {} }],
+    ['save_ai_config', { config: {} }],
+    ['save_settings', { settings: snapshot.settings }],
+    ['export_redaction', { artifact_id: 'missing', path: `${root}/artifacts/rejected-redaction-${run}.pdf` }],
   ];
   for (const [action, args] of staleCaseActions) {
     let rejected = false;
