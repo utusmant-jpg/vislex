@@ -70,3 +70,25 @@ test('System appearance follows OS changes and reduced motion disables workspace
   await expect(page.getByRole('heading', { name: 'Evidence library' })).toBeVisible();
   expect(await page.locator('.workspace-view').evaluate(element => getComputedStyle(element).animationName)).toBe('none');
 });
+
+test('case lifecycle dialogs keep validation and return keyboard focus', async ({ page }) => {
+  await page.goto('/');
+  const create = page.getByRole('button', { name: /Create a case/ });
+  await create.click();
+  const createDialog = page.getByRole('dialog', { name: 'Create a local case' });
+  await expect(createDialog).toBeVisible();
+  await expect(createDialog.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  await createDialog.getByRole('textbox', { name: 'Case name' }).fill('Synthetic matter');
+  await expect(createDialog.getByRole('button', { name: 'Continue' })).toBeEnabled();
+  await page.keyboard.press('Escape');
+  await expect(createDialog).toBeHidden();
+  await expect(create).toBeFocused();
+  const restore = page.getByRole('button', { name: /Restore a backup/ });
+  await restore.click();
+  const restoreDialog = page.getByRole('dialog', { name: 'Restore a case' });
+  await expect(restoreDialog).toBeVisible();
+  await expect(restoreDialog.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  await restoreDialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(restoreDialog).toBeHidden();
+  await expect(restore).toBeFocused();
+});

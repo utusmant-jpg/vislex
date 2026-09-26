@@ -814,14 +814,14 @@ export default function App() {
 
       {dropping ? <div className="drop-veil" aria-hidden="true"><div className="drop-veil-card"><Plus size={22} /><strong>Drop to import into {snapshot?.name ?? 'a case'}</strong><span>Originals are preserved and hashed. Copies are stored inside the case.</span></div></div> : null}
 
-      {rename ? <dialog ref={renameDialog} className="modal" onCancel={() => setRename(null)}>
+      {rename ? <dialog ref={renameDialog} className="modal" aria-label={`Rename ${rename.kind === 'source' ? 'evidence display name' : rename.kind}`} onCancel={() => setRename(null)}>
         <h2>Rename {rename.kind === 'source' ? 'evidence display name' : rename.kind}</h2>
         <label className="field-label">Name<input autoFocus maxLength={240} value={renameValue} onChange={event => setRenameValue(event.target.value)} /></label>
         <p className="small muted">Original bytes, import receipts, hashes and citations are preserved. Evidence display names retain their file extension.</p>
         <div className="modal-footer"><button className="secondary" onClick={() => setRename(null)}>Cancel</button><button className="primary" disabled={busy || !renameValue.trim()} onClick={() => run(async () => { await api('rename', { kind: rename.kind, id: rename.id, name: renameValue }); await refresh(); setRename(null); })}>Save name</button></div>
       </dialog> : null}
 
-      <dialog ref={paletteDialog} className="modal command-palette" onCancel={() => setPalette(false)}>
+      <dialog ref={paletteDialog} className="modal command-palette" aria-label="Search and commands" onCancel={() => setPalette(false)}>
         <div className="palette-input-row">
           <Search size={16} />
           <input autoFocus role="combobox" aria-autocomplete="list" aria-controls="case-command-results" aria-expanded={paletteItems.length > 0} aria-activedescendant={paletteItems[paletteIndex] ? `case-command-item-${paletteIndex}` : undefined} aria-label={snapshot ? 'Search case — evidence, meaning, chats and commands' : 'Search commands'} value={query} onChange={event => { setQuery(event.target.value); setResults(null); }} onKeyDown={event => {
@@ -855,7 +855,7 @@ export default function App() {
       {settings && snapshot ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
       {settings && !snapshot ? <WorkspacePreferences onClose={() => setSettings(false)} /> : null}
 
-      {modal ? <dialog ref={dialog} className="modal" onCancel={() => { setModal(null); setPassword(''); }}>
+      {modal ? <dialog ref={dialog} className="modal" aria-label={modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : modal === 'delete' ? 'Delete this case permanently' : 'Restore a case'} onCancel={() => { setModal(null); setPassword(''); }}>
         <div className="modal-heading"><h2>{modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : modal === 'delete' ? 'Delete this case permanently' : 'Restore a case'}</h2><button className="icon-button" aria-label="Close dialog" onClick={() => { setModal(null); setPassword(''); }}><X size={20} /></button></div>
         {modal !== 'backup' ? <label className="field-label">{modal === 'note' ? 'Title' : modal === 'delete' ? 'Type the case name to confirm' : 'Case name'}<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder={modal === 'note' ? 'Review notes' : modal === 'delete' ? snapshot?.name ?? '' : 'Matter name or reference'} /></label> : null}
         {modal === 'delete' && snapshot ? <p className="small danger-text">“{snapshot.name}” and its entire folder are erased: originals, working files, chats, review decisions and any case archives stored in {snapshot.root}. This cannot be undone. Export an encrypted backup first if you may need this evidence again.</p> : null}

@@ -17,6 +17,14 @@ test('dark and light startup, settings, and case navigation have no WCAG A/AA vi
     expect(violations, `${name}: ${JSON.stringify(violations)}`).toEqual([]);
   }
   await scan('startup-dark');
+  await page.getByRole('button', { name: /Create a case/ }).click();
+  await expect(page.getByRole('dialog', { name: 'Create a local case' })).toBeVisible();
+  await scan('create-dialog-dark');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /Restore a backup/ }).click();
+  await expect(page.getByRole('dialog', { name: 'Restore a case' })).toBeVisible();
+  await scan('restore-dialog-dark');
+  await page.keyboard.press('Escape');
   await page.keyboard.press('Control+,');
   await expect(page.getByRole('dialog', { name: 'Workspace settings' })).toBeVisible();
   await scan('appearance-settings-dark');
