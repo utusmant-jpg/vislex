@@ -91,6 +91,16 @@ it('shows a current older failure immediately beside recent completed jobs', () 
   expect(screen.getByText('Receipt old-current-failure')).toBeTruthy();
 });
 
+it('shows live job units from a case-scoped progress read', async () => {
+  const current=snapshot();
+  current.jobs=[{...current.jobs![0],id:'running-index',status:'running',error:''}];
+  api.mockImplementation((action:string)=>action==='job_progress'?Promise.resolve({priority:'background',attempt:2,progress:{unit:'seconds indexed',completed:120}}):Promise.resolve(null));
+  render(<JobsCenter snapshot={current} run={fn=>{void fn();}} refresh={async()=>undefined} pollProgress/>);
+  await waitFor(()=>expect(screen.getByRole('status').textContent).toContain('120 seconds indexed'));
+  expect(screen.getByRole('status').textContent).toContain('background · attempt 2');
+  expect(api).toHaveBeenCalledWith('job_progress',{case_id:'synthetic-case',job_id:'running-index'});
+});
+
 it('ignores an older source page returned after switching cases', async () => {
   const oldCase=snapshot();
   oldCase.sources=Array.from({length:50},(_,index):Source=>({id:`old-${index}`,name:`Old ${index}.txt`,sha256:`hash-${index}`,size:1,mime:'text/plain',kind:'text',status:'imported',restricted:false,occurrences:1,created_at:`2026-09-26T10:${String(59-index).padStart(2,'0')}:00Z`}));

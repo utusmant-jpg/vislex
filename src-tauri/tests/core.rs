@@ -40,6 +40,25 @@ fn schema_seven_tracks_attempts_and_reconciles_interrupted_jobs() {
     assert_eq!(upgraded.db.query_row("SELECT priority FROM job_schedule WHERE job_id=?",[job],|r|r.get::<_,String>(0)).unwrap(),"background");
     drop(upgraded);drop(dir);
 }
+#[test]
+fn job_progress_exposes_bounded_units_and_durable_attempt() {
+    let (_dir,c,source)=setup();let job=evidence_desk::case::id();
+    c.db.execute("INSERT INTO processing_jobs VALUES(?,?,'video_ocr_index','queued',?,'',?)",rusqlite::params![job,source,json!({"next_start":120.0}).to_string(),evidence_desk::case::now()]).unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='running' WHERE id=?",[&job]).unwrap();
+    let value=c.job_progress(&job).unwrap();
+    assert_eq!(value["progress"]["unit"],"seconds indexed");
+    assert_eq!(value["progress"]["completed"],120.0);
+    assert_eq!(value["attempt"],1);
+    assert_eq!(value["priority"],"background");
+    let transcript=evidence_desk::case::id();
+    c.db.execute("INSERT INTO processing_jobs VALUES(?,?,'full_audio','running','{}','',?)",rusqlite::params![transcript,source,evidence_desk::case::now()]).unwrap();
+    let staging=c.root.join("staging").join(format!("transcript-{transcript}"));fs::create_dir(&staging).unwrap();
+    fs::write(staging.join("progress.json"),json!({"processed_seconds":37.5,"estimated_seconds":90.0,"segments":4}).to_string()).unwrap();
+    let audio=c.job_progress(&transcript).unwrap();
+    assert_eq!(audio["progress"]["completed"],37.5);
+    assert_eq!(audio["progress"]["total"],90.0);
+    assert!(c.job_progress("../outside").is_err());
+}
 fn enable(case: &mut Case) {
     case.save_settings(Settings {
         offline: false,

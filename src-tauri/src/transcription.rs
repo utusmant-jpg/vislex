@@ -128,6 +128,7 @@ pub fn resume(case:&mut Case,job_id:&str)->Result<Job> {
 pub fn run(job: &Job) -> Result<Value> {
     {
         use std::io::{Read,Write};use sha2::{Digest,Sha256};
+        crate::processing::ensure_copy_capacity(&job.staging,job.source.size)?;
         let mut input=fs::File::open(&job.input)?;let mut output=fs::File::create(job.staging.join("input"))?;
         let mut buffer=vec![0u8;1024*1024];let mut hash=Sha256::new();
         loop {anyhow::ensure!(!job.staging.join("cancel.request").exists(),"Transcription cancelled while copying input");let n=input.read(&mut buffer)?;if n==0{break;}hash.update(&buffer[..n]);output.write_all(&buffer[..n])?;}

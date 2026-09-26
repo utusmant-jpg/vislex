@@ -206,9 +206,16 @@ pub fn recovery_inventory(case:&Case)->Result<Value> {
     Ok(json!({"jobs":jobs,"unregistered_artifacts":unregistered,"policy":"Unregistered files are retained and not exposed as evidence. Resume a registered job to validate and publish its outputs."}))
 }
 /// Stream and hash outside the case lock, checking cancellation between bounded chunks.
+pub(crate) fn ensure_copy_capacity(directory:&Path,bytes:u64)->Result<()> {
+    if let Ok(free)=fs2::available_space(directory) {
+        ensure!(free>=bytes,"Not enough case storage to prepare this file: need {} MiB, available {} MiB",bytes.div_ceil(1024*1024),free/(1024*1024));
+    }
+    Ok(())
+}
 fn copy_input(source:&Path, staging:&Path, expected:&str)->Result<()> {
     use std::io::{Read,Write};
     use sha2::{Digest,Sha256};
+    ensure_copy_capacity(staging,source.metadata()?.len())?;
     let mut input=fs::File::open(source)?;
     let mut output=fs::File::create(staging.join("input"))?;
     let mut hash=Sha256::new();let mut buffer=vec![0u8;1024*1024];
@@ -264,6 +271,7 @@ fn acquire_source_lease(job:&PreparedJob)->Result<Arc<SharedSourceLease>> {
     ensure!(directory.canonicalize()?.starts_with(job.case_root.join("staging").canonicalize()?),"Source lease escaped staging");
     let mut copied_bytes=0u64;
     if !path.exists() {
+        ensure_copy_capacity(directory,job.source.size)?;
         use std::io::Write;
         let mut staged=tempfile::NamedTempFile::new_in(directory)?;
         original.rewind()?;

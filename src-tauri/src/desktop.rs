@@ -400,6 +400,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before job page");
             c.job_page(args["before"].as_i64())?
         },
+        "job_progress" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before job progress");
+            c.job_progress(text(&args,"job_id")?)?
+        },
         "attention_job_page" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before current problems page");
             c.attention_job_page(args["before"].as_i64())?
@@ -867,7 +871,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "search",
 
-        "actions", "issue_history", "record_detail", "record_summary", "source_detail", "task_page", "source_page", "record_page", "job_page", "attention_job_page", "conversation_detail", "case_summary",
+        "actions", "issue_history", "record_detail", "record_summary", "source_detail", "task_page", "source_page", "record_page", "job_page", "job_progress", "attention_job_page", "conversation_detail", "case_summary",
 
         "revisions",
 

@@ -169,7 +169,8 @@ export function RecordDetailPanel({caseId,summary,run,refresh,onSource}:{caseId:
     : <div className="empty-state">{error?<p role="alert">Could not load working file: {error}</p>:<p>Loading working file…</p>}</div>;
 }
 
-export function JobsCenter({ snapshot, run, refresh, onConversation }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onConversation?: (id: string) => void }) {
+export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgress=native }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onConversation?: (id: string) => void; pollProgress?:boolean }) {
+  type JobProgress = {priority:string;attempt:number;progress:null|{unit:string;completed?:number;total?:number;segments?:number;track?:number;tracks?:number}};
   const mounted = useRef(true);
   const currentCaseId = useRef(snapshot.id);
   currentCaseId.current = snapshot.id;
@@ -182,6 +183,19 @@ export function JobsCenter({ snapshot, run, refresh, onConversation }: { snapsho
   const [attentionCursor, setAttentionCursor] = useState<number|null>(snapshot.attention_next_cursor ?? null);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [jobError, setJobError] = useState('');
+  const [progressByJob,setProgressByJob]=useState<Record<string,JobProgress>>({});
+  const runningJobIds=(snapshot.jobs ?? []).filter(job=>job.status==='running').map(job=>job.id).join(',');
+  useEffect(()=>{
+    setProgressByJob({});
+    if(!pollProgress || !runningJobIds)return;
+    let active=true;let timer:ReturnType<typeof setTimeout>;
+    const ids=runningJobIds.split(',');
+    const poll=async()=>{
+      const values=await Promise.allSettled(ids.map(id=>api<JobProgress>('job_progress',{case_id:snapshot.id,job_id:id})));
+      if(active){const next:Record<string,JobProgress>={};values.forEach((value,index)=>{if(value.status==='fulfilled')next[ids[index]]=value.value;});setProgressByJob(next);timer=setTimeout(()=>{void poll();},2000);}
+    };
+    void poll();return()=>{active=false;clearTimeout(timer);};
+  },[snapshot.id,runningJobIds,pollProgress]);
   useEffect(()=>{setOlderJobs([]);setOlderAttention([]);setJobCursor(snapshot.job_next_cursor ?? null);setAttentionCursor(snapshot.attention_next_cursor ?? null);setJobError('');},[snapshot.id]);
   useEffect(()=>{if(!olderJobs.length)setJobCursor(snapshot.job_next_cursor ?? null);},[snapshot.job_next_cursor]);
   useEffect(()=>{if(!olderAttention.length)setAttentionCursor(snapshot.attention_next_cursor ?? null);},[snapshot.attention_next_cursor]);
@@ -234,6 +248,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation }: { snapsho
         <StatusPill state={job.status === 'running' ? 'running' : job.status === 'queued' ? 'queued' : job.status === 'cancelled' ? 'cancelled' : job.status === 'failed' ? 'failed' : 'interrupted'} label={job.status} small />
       </div>
       <p className="small muted">{job.kind}</p>
+      {progressByJob[job.id] ? <p role="status" className="small muted">{progressByJob[job.id].priority} · attempt {progressByJob[job.id].attempt}{typeof progressByJob[job.id].progress?.completed==='number' ? ` · ${Math.floor(progressByJob[job.id].progress!.completed!)} ${progressByJob[job.id].progress!.unit}${typeof progressByJob[job.id].progress?.total==='number' ? ` / ${Math.ceil(progressByJob[job.id].progress!.total!)}` : ''}` : ''}{typeof progressByJob[job.id].progress?.segments==='number' ? ` · ${progressByJob[job.id].progress!.segments} segments` : ''}</p> : null}
       {job.error ? <p role="alert" className="small danger-text">{job.error}</p> : null}
       <div className="input-row">
         {job.kind === 'full_audio' && ['failed', 'interrupted'].includes(job.status) ? <button className="quiet" onClick={() => run(async () => { await api('resume_transcription', { job_id: job.id }); await refresh(); })}>Resume saved chunks</button> : null}

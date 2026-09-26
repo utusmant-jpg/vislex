@@ -1120,6 +1120,23 @@ impl Case {
         for job in &mut jobs {job.as_object_mut().unwrap().remove("cursor");}
         Ok(json!({"jobs":jobs,"next_cursor":next_cursor}))
     }
+    pub fn job_progress(&self,job_id:&str)->Result<Value> {
+        uuid::Uuid::parse_str(job_id)?;
+        let (kind,status,result,priority,attempt,heartbeat):(String,String,String,String,i64,Option<String>)=self.db.query_row(
+            "SELECT j.kind,j.status,j.result,s.priority,s.attempt,s.heartbeat FROM processing_jobs j JOIN job_schedule s ON s.job_id=j.id WHERE j.id=?",
+            [job_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+        let progress=if ["video_ocr_index","video_overview_index"].contains(&kind.as_str()) {
+            let state:Value=serde_json::from_str(&result)?;
+            json!({"unit":"seconds indexed","completed":state["next_start"]})
+        } else if kind=="full_audio" {
+            let path=self.root.join("staging").join(format!("transcript-{job_id}")).join("progress.json");
+            let within_staging=path.canonicalize().ok().zip(self.root.join("staging").canonicalize().ok()).is_some_and(|(file,staging)|file.starts_with(staging));
+            if within_staging && path.metadata().is_ok_and(|metadata|metadata.len()<=65536) && fs::symlink_metadata(&path).is_ok_and(|metadata|!metadata.file_type().is_symlink()) {
+                fs::read(&path).ok().and_then(|raw|serde_json::from_slice::<Value>(&raw).ok()).map(|value|json!({"unit":"seconds processed","completed":value["processed_seconds"],"total":value["estimated_seconds"],"segments":value["segments"],"track":value["track_number"],"tracks":value["track_count"]})).unwrap_or(Value::Null)
+            }else{Value::Null}
+        }else{Value::Null};
+        Ok(json!({"job_id":job_id,"kind":kind,"status":status,"priority":priority,"attempt":attempt,"heartbeat":heartbeat,"progress":progress}))
+    }
     pub fn attention_job_page(&self,before:Option<i64>)->Result<Value> {
         let mut stmt=self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,substr(j.error,1,500),j.created_at,j.rowid FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE j.status IN ('failed','interrupted') AND (?1 IS NULL OR j.rowid<?1) AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) AND NOT EXISTS(SELECT 1 FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id)) ORDER BY j.rowid DESC LIMIT 51")?;
         let mut jobs=stmt.query_map([before],|r|Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":false,"parent_run_id":Value::Null,"cursor":r.get::<_,i64>(7)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
