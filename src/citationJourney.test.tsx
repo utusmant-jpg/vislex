@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Markdown } from './markdown';
 import EvidenceViewer from './components/EvidenceViewer';
 import EvidenceNotebook from './components/EvidenceNotebook';
@@ -58,4 +58,62 @@ it('opens a finding citation at its pinned revision', async () => {
   fireEvent.click(screen.getByTitle('evidence:source-one#R1L5-L5'));
   expect(onSource).toHaveBeenCalledWith('source-one', 'R1L5-L5');
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+it('records a two-source comparison with exact citations and a next check', async () => {
+  const second: Source = { ...source, id: 'source-two', name: 'Interview.txt' };
+  api.mockImplementation(async (action: string) => action === 'evidence_list' ? { objects: [], next_offset: null } : {});
+  const onSource = vi.fn();
+  render(<EvidenceNotebook snapshot={{ id: 'case-one', sources: [source, second] } as Snapshot} onSource={onSource} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByText('Compare two accounts'));
+  const groups = [screen.getByRole('group', { name: 'First account' }), screen.getByRole('group', { name: 'Second account' })];
+  fireEvent.change(screen.getByLabelText('Comparison title'), { target: { value: 'Sequence of events' } });
+  fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'uncertain_clock' } });
+  fireEvent.change(groups[0].querySelector('select')!, { target: { value: source.id } });
+  fireEvent.change(groups[0].querySelector('textarea')!, { target: { value: 'The event was at 10:00.' } });
+  fireEvent.change(groups[0].querySelector('input')!, { target: { value: 'evidence:source-one#R1L1-L1' } });
+  fireEvent.change(groups[1].querySelector('select')!, { target: { value: second.id } });
+  fireEvent.change(groups[1].querySelector('textarea')!, { target: { value: 'The event was near 10:30.' } });
+  fireEvent.change(groups[1].querySelector('input')!, { target: { value: 'evidence:source-two#R1L2-L2' } });
+  fireEvent.change(screen.getByLabelText('Next check'), { target: { value: 'Compare verified clock anchors.' } });
+  fireEvent.click(screen.getByText('Open first source'));
+  expect(onSource).toHaveBeenCalledWith(source.id, 'R1L1-L1');
+  fireEvent.click(screen.getByText('Save unreviewed comparison'));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('evidence_write', expect.objectContaining({ object: expect.objectContaining({ kind: 'issue', source_ids: [source.id, second.id], locators: ['evidence:source-one#R1L1-L1', 'evidence:source-two#R1L2-L2'] }) })));
+  const saved = api.mock.calls.find(([name]) => name === 'evidence_write')![1].object;
+  expect(JSON.parse(saved.content)).toMatchObject({ category: 'uncertain_clock', next_check: 'Compare verified clock anchors.' });
+});
+
+it('builds a draft from an accepted finding with revision and source dependencies', async () => {
+  api.mockImplementation(async (action: string) => action === 'evidence_list' ? { objects: [{ id: 'accepted-one', revision: 3, kind: 'issue', title: 'Accepted sequence', content: 'Checked account comparison', source_ids: [source.id], locators: ['evidence:source-one#R1L1-L1'], review: 'accepted', stale: false, actor: 'human', start_seconds: null, end_seconds: null }], next_offset: null } : {});
+  render(<EvidenceNotebook snapshot={{ id: 'case-one', sources: [source] } as Snapshot} onSource={vi.fn()} onClose={vi.fn()} />);
+  await screen.findByText('Accepted sequence');
+  fireEvent.click(screen.getByText('Prepare an issue, production gap, exhibit or draft'));
+  const form = within(screen.getByText('Prepare an issue, production gap, exhibit or draft').parentElement!.querySelector('form')!);
+  fireEvent.change(screen.getByLabelText('Work product type'), { target: { value: 'draft' } });
+  fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Proposed chronology' } });
+  fireEvent.change(screen.getByLabelText('Jurisdiction'), { target: { value: 'Ontario' } });
+  fireEvent.change(screen.getByLabelText('Relevant date'), { target: { value: '2026-09-26' } });
+  fireEvent.change(screen.getByLabelText('paragraph'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('text'), { target: { value: 'The record places the event near 10:00.' } });
+  fireEvent.change(form.getByLabelText('Source'), { target: { value: source.id } });
+  fireEvent.change(form.getByLabelText('Exact citation'), { target: { value: 'evidence:source-one#R1L1-L1' } });
+  fireEvent.change(form.getByLabelText('Accepted finding on this page (optional)'), { target: { value: 'accepted-one:3' } });
+  fireEvent.click(screen.getByText('Save unreviewed work product'));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('evidence_write', expect.objectContaining({ object: expect.objectContaining({ kind: 'draft', dependencies: [{ id: 'accepted-one', revision: 3 }], locators: ['evidence:source-one#R1L1-L1'] }) })));
+  const saved = api.mock.calls.find(([name]) => name === 'evidence_write')![1].object;
+  expect(JSON.parse(saved.content)).toMatchObject({ workflow: 'draft', jurisdiction: 'Ontario', rows: [{ paragraph: '1', text: 'The record places the event near 10:00.', citations: ['evidence:source-one#R1L1-L1'], authority_ids: [] }] });
+});
+
+it('shows saved comparison and work product fields while keeping provenance available', async () => {
+  api.mockImplementation(async (action: string) => action === 'evidence_list' ? { objects: [
+    { id: 'issue-one', revision: 1, kind: 'issue', title: 'Account conflict', content: JSON.stringify({ schema: 'witness_comparison_v1', category: 'omission', first: 'Mentions a call', second: 'Does not mention the call', next_check: 'Inspect call records' }), source_ids: [source.id], locators: [], review: 'unreviewed', stale: false, actor: 'human', start_seconds: null, end_seconds: null },
+    { id: 'draft-one', revision: 1, kind: 'draft', title: 'Proposed paragraph', content: JSON.stringify({ workflow: 'draft', jurisdiction: 'Ontario', relevant_date: '2026-09-26', rows: [{ paragraph: '1', text: 'A proposed sentence', citations: [], authority_ids: [] }], authority_limits: [] }), source_ids: [source.id], locators: [], review: 'unreviewed', stale: false, actor: 'human', start_seconds: null, end_seconds: null }
+  ], next_offset: null } : {});
+  render(<EvidenceNotebook snapshot={{ id: 'case-one', sources: [source] } as Snapshot} onSource={vi.fn()} onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByText('Account conflict'));
+  expect(screen.getByText('Inspect call records')).toBeTruthy();
+  fireEvent.click(screen.getByText('Proposed paragraph'));
+  expect(screen.getByText('A proposed sentence')).toBeTruthy();
+  expect(screen.getAllByText('Raw provenance')).toHaveLength(2);
 });
