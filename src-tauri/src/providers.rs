@@ -371,10 +371,14 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
     }
     let mut output = Vec::new();
     if provider == Provider::Anthropic {
-        ensure!(
-            ["end_turn", "tool_use"].contains(&response["stop_reason"].as_str().unwrap_or("")),
-            "Claude response was incomplete or refused"
-        );
+        match response["stop_reason"].as_str() {
+            Some("end_turn" | "tool_use") => {},
+            Some("max_tokens") => bail!("Claude response incomplete: output token limit reached"),
+            Some("model_context_window_exceeded") => bail!("Claude response incomplete: context window exceeded"),
+            Some("refusal") => bail!("Claude refused the response"),
+            Some("pause_turn") => bail!("Claude paused before completing the response"),
+            _ => bail!("Claude did not complete the response"),
+        }
         for part in response["content"]
             .as_array()
             .context("Missing Claude content")?
@@ -389,10 +393,14 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
         return Ok(json!({"status":"completed","output":output,"usage":response["usage"]}));
     }
     let candidate = &response["candidates"][0];
-    ensure!(
-        candidate["finishReason"] == "STOP",
-        "Gemini response was incomplete or blocked"
-    );
+    match candidate["finishReason"].as_str() {
+        Some("STOP") => {},
+        Some("MAX_TOKENS") => bail!("Gemini response incomplete: output token limit reached"),
+        Some("SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" | "IMAGE_SAFETY" | "LANGUAGE") => bail!("Gemini response blocked by provider policy"),
+        Some("MALFORMED_FUNCTION_CALL") => bail!("Gemini returned a malformed function call"),
+        _ if response["promptFeedback"]["blockReason"].as_str().is_some_and(|reason| ["SAFETY","BLOCKLIST","PROHIBITED_CONTENT","IMAGE_SAFETY"].contains(&reason)) => bail!("Gemini prompt blocked by provider policy"),
+        _ => bail!("Gemini did not complete the response"),
+    }
     for part in candidate["content"]["parts"]
         .as_array()
         .context("Missing Gemini content")?
