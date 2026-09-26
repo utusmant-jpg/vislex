@@ -64,7 +64,7 @@ it('shows a failed automatic review even when its original chat is hidden', asyn
   expect(screen.getByText('Automatic case analysis')).toBeTruthy();
   expect(screen.queryByText('No active processing jobs')).toBeNull();
   fireEvent.click(screen.getByRole('button',{name:'Continue saved review'}));
-  await waitFor(()=>expect(api).toHaveBeenCalledWith('continue_paused_task',{task_id:'hidden-review'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('continue_paused_task',{case_id:'synthetic-case',task_id:'hidden-review'}));
   expect(onConversation).toHaveBeenCalledWith('continued-review');
 });
 

@@ -687,6 +687,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "start_task" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat started");
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let selected = if let (Some(provider), Some(model)) = (args.get("provider"), args["model"].as_str()) {
@@ -752,6 +753,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "stop_task" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat stopped");
 
             agent::pause(c, text(&args, "task_id")?, "Stopped by user")?;
 
@@ -760,6 +762,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "resume_task" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat resumed");
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let task = text(&args, "task_id")?.to_string();
@@ -783,6 +786,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "continue_paused_task" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat continued");
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
             let old=text(&args,"task_id")?;
             let profile=crate::providers::task_profile(c,old)?;

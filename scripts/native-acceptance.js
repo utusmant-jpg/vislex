@@ -21,7 +21,10 @@
     documents.push({name,total_lines:text.total_lines,reused:second.reused});
   }
   await invoke('save_settings',{settings:{...snapshot.settings,offline:false,allow_text:true,model:'synthetic'}});
-  const inventoryTask=await invoke('start_task',{prompt:'how many files we have?'});
+  let crossCaseChatDenied=false;
+  try { await invoke('start_task',{case_id:'another-case',prompt:'how many files we have?'}); } catch { crossCaseChatDenied=true; }
+  if(!crossCaseChatDenied)throw new Error('A stale case was allowed to start a chat');
+  const inventoryTask=await invoke('start_task',{case_id:snapshot.id,prompt:'how many files we have?'});
   const inventorySnapshot=await invoke('snapshot');
   const inventory=inventorySnapshot.tasks.find(t=>t.id===inventoryTask.task_id);
   if(inventory?.status!=='complete' || inventory.answer!=='You have 6 original files in this case.' || inventory.input_tokens || inventory.output_tokens)throw new Error('Inventory did not finish without model calls');

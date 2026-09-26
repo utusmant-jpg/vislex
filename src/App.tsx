@@ -132,6 +132,10 @@ export function RecordDetailPanel({caseId,summary,run,refresh,onSource}:{caseId:
 }
 
 export function JobsCenter({ snapshot, run, refresh, onConversation }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onConversation?: (id: string) => void }) {
+  const mounted = useRef(true);
+  const currentCaseId = useRef(snapshot.id);
+  currentCaseId.current = snapshot.id;
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [storage, setStorage] = useState<Record<string, number> | null>(null);
   const [reclaimed, setReclaimed] = useState<number | null>(null);
   useEffect(() => {
@@ -150,9 +154,9 @@ export function JobsCenter({ snapshot, run, refresh, onConversation }: { snapsho
       {review?.review_state === 'failed' ? <p className="small danger-text">Saved progress is available. Continue in a new task to keep uncertain requests untouched.</p> : null}
       {review?.review_state === 'paused' ? <p className="small muted">The review is paused. Saved progress remains available.</p> : null}
       {review?.review_state !== 'running' ? <button className="quiet" onClick={() => run(async () => {
-        const result=await api<{task_id:string;conversation_id:string}>('continue_paused_task',{task_id:review!.review_task});
+        const result=await api<{task_id:string;conversation_id:string}>('continue_paused_task',{case_id:snapshot.id,task_id:review!.review_task});
         await refresh();
-        onConversation?.(result.conversation_id);
+        if (mounted.current && currentCaseId.current === snapshot.id) onConversation?.(result.conversation_id);
       })}>Continue saved review</button> : null}
       <code>Task {review!.review_task}</code>
     </article> : null}

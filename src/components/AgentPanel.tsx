@@ -140,6 +140,8 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const availableModels = useMemo(() => snapshot ? configuredProfiles(snapshot).filter(profile => profile.allow_text) : [], [snapshot]);
   const selectedProfile: AIProfile | undefined = availableModels.find(profile => profileKey(profile) === selectedModel) ?? availableModels[0];
   const [sending, setSending] = useState(false);
+  const currentCaseId = useRef(snapshot?.id);
+  currentCaseId.current = snapshot?.id;
   const [live, setLive] = useState<{ task: string; transmission: string; text: string; activity: string; characters: number } | null>(null);
   const [skipContext, setSkipContext] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
@@ -224,12 +226,14 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
       try {
         const viewerContext = buildViewerAttachment(selection, getViewerContext(), skipContext);
         const result = await api<{ task_id: string; conversation_id: string }>('start_task', {
+          case_id: snapshot.id,
           prompt,
           provider: selectedProfile!.provider,
           model: selectedProfile!.model,
           parent_task_id: task?.id ?? null,
           viewer_context: viewerContext,
         });
+        if (currentCaseId.current !== snapshot.id) return;
         draft('');
         following.current = true;
         onConversation(result.conversation_id ?? result.task_id);
@@ -280,9 +284,11 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
             </div>
           </> : null}
           {turn.error ? <div className="notice error" role="alert">{turn.error}<br /><small>Receipt: {turn.id}</small></div> : null}
-          {turn.status === 'paused' && !chatBlocked ? <button className="quiet resume-button" onClick={() => run(async () => { await api('resume_task', { task_id: turn.id }); await refresh(); })}><Play size={12} />Resume work</button> : null}
+          {turn.status === 'paused' && !chatBlocked ? <button className="quiet resume-button" onClick={() => run(async () => { await api('resume_task', { case_id: snapshot?.id, task_id: turn.id }); await refresh(); })}><Play size={12} />Resume work</button> : null}
           {turn.id === task?.id && turn.status === 'paused' && !!turn.error && !chatBlocked ? <button className="quiet resume-button" onClick={() => run(async () => {
-            const result = await api<{task_id:string;conversation_id:string}>('continue_paused_task', { task_id: turn.id });
+            const caseId = snapshot?.id;
+            const result = await api<{task_id:string;conversation_id:string}>('continue_paused_task', { case_id: caseId, task_id: turn.id });
+            if (currentCaseId.current !== caseId) return;
             onConversation(result.conversation_id);
             await refresh();
           })}>Continue in new task</button> : null}
@@ -320,7 +326,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           />
           <div className="spacer" />
           {running
-            ? <Tooltip text="Stop the current investigation"><button className="send stop" aria-label="Stop investigation" onClick={() => run(async () => { await api('stop_task', { task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
+            ? <Tooltip text="Stop the current investigation"><button className="send stop" aria-label="Stop investigation" onClick={() => run(async () => { await api('stop_task', { case_id: snapshot?.id, task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
             : <Tooltip text={chatBlocked ? 'Waiting for case preparation' : 'Send message (Enter)'}><button className="send" aria-label="Send message" disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile} onClick={submit}><ArrowUp size={18} /></button></Tooltip>}
         </div>
       </div>

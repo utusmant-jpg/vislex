@@ -38,7 +38,7 @@ describe('chat composer interaction', () => {
     const job = { id: 'job-1', source_id: 'source-1', name: 'source.txt', kind: 'auto_prepare', status: 'running', error: '', created_at: '2026-09-22T00:00:00Z', superseded: false };
     const view = panel(snapshot([task('other-task', 'other-chat'), task('current-task', 'current-chat')]), 'current-chat');
     fireEvent.click(screen.getByRole('button', { name: 'Stop investigation' }));
-    await waitFor(() => expect(api).toHaveBeenCalledWith('stop_task', { task_id: 'current-task' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('stop_task', { case_id: 'case-1', task_id: 'current-task' }));
     view.rerender(<AgentPanel snapshot={snapshot([], [job])} selection={null} conversationId={null} refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={vi.fn()} />);
     fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Ask after preparation' } });
     expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);
@@ -68,7 +68,7 @@ describe('chat composer interaction', () => {
     api.mockImplementation(async (action:string) => action === 'continue_paused_task' ? { task_id: 'new-task', conversation_id: 'current-chat' } : action === 'conversation_detail' ? { tasks: [paused], has_older: false } : null);
     const { onConversation, refresh } = panel(snapshot([paused]), 'current-chat');
     fireEvent.click(screen.getByRole('button', { name: 'Continue in new task' }));
-    await waitFor(() => expect(api).toHaveBeenCalledWith('continue_paused_task', { task_id: 'old-task' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('continue_paused_task', { case_id: 'case-1', task_id: 'old-task' }));
     expect(api).not.toHaveBeenCalledWith('resume_task', expect.anything());
     expect(onConversation).toHaveBeenCalledWith('current-chat');
     expect(refresh).toHaveBeenCalled();
@@ -103,5 +103,19 @@ describe('chat composer interaction', () => {
     expect(screen.getByText('Recent saved answer')).toBeTruthy();
     expect(api).toHaveBeenCalledWith('conversation_detail',{case_id:'case-1',conversation_id:'shared-chat',before:{created_at:recent.created_at,id:recent.id}});
     expect(screen.queryByRole('button',{name:'Load earlier messages'})).toBeNull();
+  });
+
+  it('does not select a late chat response after the case changes', async () => {
+    let resolveStart!:(value:{task_id:string;conversation_id:string})=>void;
+    const start=new Promise<{task_id:string;conversation_id:string}>(resolve=>{resolveStart=resolve;});
+    api.mockImplementation((action:string)=>action==='start_task'?start:Promise.resolve(null));
+    const view=panel(snapshot([]));
+    fireEvent.change(screen.getByRole('textbox',{name:'Agent task'}),{target:{value:'Question for case one'}});
+    fireEvent.click(screen.getByRole('button',{name:'Send message'}));
+    await waitFor(()=>expect(api).toHaveBeenCalledWith('start_task',expect.objectContaining({case_id:'case-1',prompt:'Question for case one'})));
+    view.rerender(<AgentPanel snapshot={{...snapshot([]),id:'case-2'}} selection={null} conversationId={null} refresh={view.refresh} run={fn=>{void fn();}} onSource={vi.fn()} onSettings={vi.fn()} onConversation={view.onConversation}/>);
+    resolveStart({task_id:'old-task',conversation_id:'old-chat'});
+    await Promise.resolve();
+    expect(view.onConversation).not.toHaveBeenCalled();
   });
 });

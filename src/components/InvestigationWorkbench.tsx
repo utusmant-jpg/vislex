@@ -14,6 +14,8 @@ type Clock = {id:string;title:string;revision:number;review:string;stale:boolean
 type Replay = {recordings:{source_id:string;name:string;clock_id:string;clock_revision:number;fit:ClockMapping;artifact?:string}[];incident_range:[number,number];note:string};
 
 export default function InvestigationWorkbench({snapshot,onClose,onSource,onConversation}:{snapshot:Snapshot;onClose:()=>void;onSource:(id:string,locator?:string)=>void;onConversation:(id:string)=>void}) {
+  const mounted=useRef(true);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const players=useRef<(HTMLVideoElement|null)[]>([]);
   const [coverage,setCoverage]=useState<Coverage|null>(null);const [coverageOffset,setCoverageOffset]=useState(0);
   useEffect(()=>{let active=true;void api<Coverage>('coverage_map',{offset:coverageOffset}).then(v=>{if(active)setCoverage(v);}).catch(e=>{if(active)setError(String(e));});return()=>{active=false;};},[snapshot.id,snapshot.generation,coverageOffset]);
@@ -27,7 +29,7 @@ export default function InvestigationWorkbench({snapshot,onClose,onSource,onConv
   useEffect(()=>{let active=true;setDesk(null);setError('');void Promise.all([api<Desk>('investigation_workbench',{offset}),api<{objects:Clock[]}>('evidence_list',{kind:'clock',offset:0})]).then(([d,c])=>{if(active){setDesk(d);setClocks(c.objects);}}).catch(e=>{if(active)setError(String(e));});return()=>{active=false;};},[snapshot.id,evidenceVersion,offset,revision]);
   useEffect(()=>{players.current.forEach(p=>p?.pause());setPlaying(false);setReplay(null);},[evidenceVersion]);
   async function action(fn:()=>Promise<void>){setBusy(true);setError('');try{await fn();}catch(e){setError(String(e));}finally{setBusy(false);}}
-  async function investigate(prompt:string){const result=await api<{conversation_id:string}>('start_task',{prompt});onConversation(result.conversation_id);onClose();}
+  async function investigate(prompt:string){const result=await api<{conversation_id:string}>('start_task',{case_id:snapshot.id,prompt});if(mounted.current){onConversation(result.conversation_id);onClose();}}
   function links(values:string[]){return values.map(value=>{const c=citationParts(value);return c?<CitationChip key={value} value={value} onOpen={(id,locator)=>{onSource(id,locator);onClose();}}/>:null;});}
   function seek(time:number){if(!replay)return;setIncident(time);replay.recordings.forEach((r,i)=>{const position=incidentToSource(time,r.fit);const p=players.current[i];if(p&&position)p.currentTime=position.seconds;});}
   function pause(){players.current.forEach(p=>p?.pause());setPlaying(false);}
