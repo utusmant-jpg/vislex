@@ -9,7 +9,7 @@ vi.mock('../bridge', () => ({ api, native: true }));
 vi.mock('../ui', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn(), density: 'comfortable', setDensity: vi.fn() }) }));
 
 const snapshot: Snapshot = {
-  id: 'synthetic-case', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1,
+  id: 'synthetic-case', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1, session_epoch: 8,
   sources: [], records: [], tasks: [],
   ai_config: { provider: 'openai', execution: 'single', review: 'challenge', pool: [] },
   settings: { offline: false, allow_text: true, allow_images: true, model: 'saved-model' },
@@ -36,8 +36,9 @@ it('saves the exact case grants and review mode chosen in the dialog', async () 
   await waitFor(() => expect(onClose).toHaveBeenCalled());
   expect(api).toHaveBeenCalledWith('save_ai_settings', {
     case_id: 'synthetic-case',
+    session_epoch: 8,
     config: { provider: 'openai', execution: 'single', review: 'challenge', pool: [] },
     settings: { offline: true, allow_text: false, allow_images: false, model: 'saved-model' },
   });
-  expect(api).toHaveBeenCalledWith('set_direct_media_permission', { case_id: 'synthetic-case', enabled: true });
+  expect(api).toHaveBeenCalledWith('set_direct_media_permission', { case_id: 'synthetic-case', session_epoch: 8, enabled: true });
 });

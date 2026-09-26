@@ -5,7 +5,7 @@ import AgentPanel from './AgentPanel';
 import type { Snapshot, Task } from '../types';
 
 const api = vi.hoisted(() => vi.fn());
-const progress = vi.hoisted(() => ({ listeners: [] as ((event: { payload: { case_id: string; task_id: string; transmission_id: string; delta: { text: string; characters: number } } }) => void)[] }));
+const progress = vi.hoisted(() => ({ listeners: [] as ((event: { payload: { case_id: string; session_epoch?: number; task_id: string; transmission_id: string; delta: { text: string; characters: number } } }) => void)[] }));
 vi.mock('../bridge', () => ({ api, native: true, citationParts: () => null }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async (_name: string, listener: (typeof progress.listeners)[number]) => { progress.listeners.push(listener); return () => { progress.listeners = progress.listeners.filter(item => item !== listener); }; } }));
 
@@ -66,6 +66,14 @@ describe('chat composer interaction', () => {
     expect(screen.queryByText('AI assessment')).toBeNull();
   });
 
+  it('sends the captured open-case epoch with a new task', async () => {
+    const data = snapshot(); data.session_epoch = 12;
+    panel(data);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Inspect the source' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('start_task', expect.objectContaining({ case_id: 'case-1', session_epoch: 12, prompt: 'Inspect the source' })));
+  });
+
   it('keeps every streamed character beyond 64 KiB through batched updates', async () => {
     panel(snapshot([task('long-task', 'long-chat')]), 'long-chat');
     await waitFor(() => expect(progress.listeners.length).toBeGreaterThan(0));
@@ -78,6 +86,17 @@ describe('chat composer interaction', () => {
     expect(rendered).toContain('PREFIX_');
     expect(rendered).toContain(prefix.slice(-40));
     expect(rendered).toContain('FINAL_SEGMENT');
+  });
+
+  it('ignores progress from a prior opening of the same case', async () => {
+    const data = snapshot([task('epoch-task', 'epoch-chat')]); data.session_epoch = 14;
+    panel(data, 'epoch-chat');
+    await waitFor(() => expect(progress.listeners.length).toBeGreaterThan(0));
+    const stream = progress.listeners.at(-1)!;
+    stream({ payload: { case_id: 'case-1', session_epoch: 13, task_id: 'epoch-task', transmission_id: 'tx-old', delta: { text: 'Old session text', characters: 16 } } });
+    stream({ payload: { case_id: 'case-1', session_epoch: 14, task_id: 'epoch-task', transmission_id: 'tx-new', delta: { text: 'Current session text', characters: 20 } } });
+    await waitFor(() => expect(document.querySelector('.live-answer')?.textContent).toContain('Current session text'));
+    expect(document.querySelector('.live-answer')?.textContent).not.toContain('Old session text');
   });
 
   it('allows chat after file preparation while automatic review continues', async () => {

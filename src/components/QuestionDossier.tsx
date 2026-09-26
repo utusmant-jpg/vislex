@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, citationParts, native } from '../bridge';
+import { caseSessionArgs } from '../caseSession';
 import { CitationChip, StatusPill } from '../ui';
 
 type Claim = { proposition: string; assessment: string; supporting: string[]; contrary: string[]; uncertainty: string; next_check: string };
@@ -12,7 +13,7 @@ type DossierView = {
   coverage?: {contract: {mode:string;purpose:string} | null; units: {requirement:{source_id:string;stage:string;start:number;end:number};missing:[number,number][];complete:boolean}[]};
 };
 
-export default function QuestionDossier({ caseId, taskId, step, status, evidenceVersion, onSource }: { caseId: string; taskId: string; step: number; status: string; evidenceVersion: string; onSource: (id: string, locator?: string) => void }) {
+export default function QuestionDossier({ caseId, sessionEpoch, taskId, step, status, evidenceVersion, onSource }: { caseId: string; sessionEpoch?: number; taskId: string; step: number; status: string; evidenceVersion: string; onSource: (id: string, locator?: string) => void }) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<DossierView | null>(null);
   const [error, setError] = useState('');
@@ -23,9 +24,9 @@ export default function QuestionDossier({ caseId, taskId, step, status, evidence
     if (!open || !native) return;
     let active = true;
     setError(''); setView(null);
-    api<DossierView>('read_dossier', { task_id: taskId }).then(value => { if (active) {setView(value);setNotes({});} }).catch(reason => { if (active) { setError(String(reason)); setView(null); } });
+    api<DossierView>('read_dossier', { ...caseSessionArgs(caseId, sessionEpoch), task_id: taskId }).then(value => { if (active) {setView(value);setNotes({});} }).catch(reason => { if (active) { setError(String(reason)); setView(null); } });
     return () => { active = false; };
-  }, [open, taskId, step, status, refresh, evidenceVersion]);
+  }, [open, caseId, sessionEpoch, taskId, step, status, refresh, evidenceVersion]);
   function citations(values: string[]) {
     return values.length ? values.map((value, index) => {
       const citation = citationParts(value);
@@ -35,7 +36,7 @@ export default function QuestionDossier({ caseId, taskId, step, status, evidence
   async function review(index: number, decision: string) {
     if (!view?.dossier || reviewing !== null) return;
     setReviewing(index); setError('');
-    try { setView(await api<DossierView>('review_dossier_claim', { case_id: caseId, task_id: taskId, revision: view.dossier.revision, claim_index: index, decision, note: notes[index] ?? '' })); }
+    try { setView(await api<DossierView>('review_dossier_claim', { ...caseSessionArgs(caseId, sessionEpoch), task_id: taskId, revision: view.dossier.revision, claim_index: index, decision, note: notes[index] ?? '' })); }
     catch (reason) { setError(String(reason)); }
     finally { setReviewing(null); }
   }

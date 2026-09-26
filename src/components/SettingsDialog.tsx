@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { KeyRound, Save, Trash2, X } from 'lucide-react';
 import { api, native } from '../bridge';
+import { caseSessionArgs } from '../caseSession';
 import { configuredProfiles, defaultConfig, providerNames } from '../aiProfiles';
 import AppearanceSettings from './AppearanceSettings';
 import type { AIConfig, AIProfile, ModelOption, Provider, Settings, Snapshot } from '../types';
@@ -47,18 +48,18 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
     setLoading(s => ({ ...s, [provider]: true })); setCatalogErrors(s => ({ ...s, [provider]: '' }));
     try {
       if (keys[provider]?.trim()) {
-        await api('save_provider_key', { provider, key: keys[provider] });
+        await api('save_provider_key', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), provider, key: keys[provider] });
         if (!mounted.current) return;
         setKeys(s => ({ ...s, [provider]: '' })); setStored(s => ({ ...s, [provider]: true }));
       }
-      const result = await api<ModelOption[]>('provider_models', { provider });
+      const result = await api<ModelOption[]>('provider_models', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), provider });
       if (mounted.current) { setModels(s => ({ ...s, [provider]: result })); if (!result.length) setCatalogErrors(s => ({ ...s, [provider]: 'No chat models were returned for this account.' })); }
     } catch (e) { if (mounted.current) setCatalogErrors(s => ({ ...s, [provider]: String(e) })); }
     finally { if (mounted.current) setLoading(s => ({ ...s, [provider]: false })); }
   }
   async function removeKey(provider: Provider) {
     setCatalogErrors(s => ({ ...s, [provider]: '' }));
-    try { await api('delete_provider_key', { provider }); if (mounted.current) setStored(s => ({ ...s, [provider]: false })); }
+    try { await api('delete_provider_key', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), provider }); if (mounted.current) setStored(s => ({ ...s, [provider]: false })); }
     catch (e) { if (mounted.current) setCatalogErrors(s => ({ ...s, [provider]: String(e) })); }
   }
   async function save() {
@@ -68,7 +69,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       const lead = profiles[primary];
       if (!lead?.model) throw new Error('Select a default model from one of the company dropdowns.');
       for (const provider of companies) {
-        if (keys[provider]?.trim()) { await api('save_provider_key', { provider, key: keys[provider] }); setKeys(s => ({ ...s, [provider]: '' })); setStored(s => ({ ...s, [provider]: true })); }
+        if (keys[provider]?.trim()) { await api('save_provider_key', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), provider, key: keys[provider] }); setKeys(s => ({ ...s, [provider]: '' })); setStored(s => ({ ...s, [provider]: true })); }
       }
       if (!settings.offline) {
         const enabled = [...new Set(profiles.filter(p => p.model).map(p => p.provider))];
@@ -82,12 +83,12 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       // exactly as configured above.
       if (settings.allow_images && !settings.allow_text) throw new Error('Image analysis always sends accompanying text; grant text before images.');
       await api('save_ai_settings', {
-        case_id: snapshot.id,
+        ...caseSessionArgs(snapshot.id, snapshot.session_epoch),
         config: { ...config, provider: lead.provider, pool: profiles.filter((p, i) => i !== primary && p.model) },
         settings: { ...settings, model: lead.model },
       });
       if (directMedia !== null && directMedia !== initialDirectMedia) {
-        await api('set_direct_media_permission', { case_id: snapshot.id, enabled: directMedia });
+        await api('set_direct_media_permission', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), enabled: directMedia });
       }
       await refresh(); onClose();
     } catch (e) { if (mounted.current) setError(String(e)); }

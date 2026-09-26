@@ -775,7 +775,7 @@ export default function App() {
             onRestore={() => showModal('restore')}
             onSample={() => run(async () => { installSnapshot(await api<Snapshot>('load_demo')); })}
           /> : null}
-          {visibleSnapshot && view === 'chat' ? <AgentPanel conversationId={conversationId} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={openSettings} focusRequest={focusComposerRequest} /> : null}
+          {visibleSnapshot && view === 'chat' ? <AgentPanel key={`${snapshot!.id}:${snapshot!.session_epoch ?? 'preview'}`} conversationId={conversationId} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={openSettings} focusRequest={focusComposerRequest} /> : null}
           {!snapshot && view !== 'chat' ? <div className="empty-state workspace-view"><FolderOpen size={32} /><h3>Open a case first</h3><p>This workspace becomes available once a case is open.</p></div> : null}
           {snapshot && view === 'evidence' ? <EvidenceLibrary
             snapshot={snapshot}
@@ -786,8 +786,8 @@ export default function App() {
             onRename={(id, value) => beginRename('source', id, value)}
             onRestrict={(id, restricted) => run(async () => { await api('set_restricted', { ...caseGuard(snapshot), source_id: id, restricted }); await refresh(); })}
           /> : null}
-          {visibleSnapshot && view === 'findings' ? <Suspense fallback={<WorkspaceLoading label="Opening findings…" />}><EvidenceNotebook key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} /></Suspense> : null}
-          {visibleSnapshot && view === 'review' ? <Suspense fallback={<WorkspaceLoading label="Opening review…" />}><InvestigationWorkbench key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /></Suspense> : null}
+          {visibleSnapshot && view === 'findings' ? <Suspense fallback={<WorkspaceLoading label="Opening findings…" />}><EvidenceNotebook key={`${snapshot!.id}:${snapshot!.session_epoch ?? 'preview'}`} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} /></Suspense> : null}
+          {visibleSnapshot && view === 'review' ? <Suspense fallback={<WorkspaceLoading label="Opening review…" />}><InvestigationWorkbench key={`${snapshot!.id}:${snapshot!.session_epoch ?? 'preview'}`} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /></Suspense> : null}
           {snapshot && view === 'jobs' ? <JobsCenter snapshot={snapshot} run={run} refresh={refresh} onConversation={id => { setConversationId(id); setView('chat'); }} /> : null}
         </div>
 
@@ -869,7 +869,7 @@ export default function App() {
         <div className="palette-footer"><span>↑↓ navigate</span><span>↵ open</span><span>Esc close</span></div>
       </dialog>
 
-      {settings && snapshot ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
+      {settings && snapshot ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog key={`${snapshot.id}:${snapshot.session_epoch ?? 'preview'}`} snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
       {settings && !snapshot ? <WorkspacePreferences onClose={() => setSettings(false)} /> : null}
 
       {modal ? <dialog ref={dialog} className="modal" aria-label={modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : modal === 'delete' ? 'Delete this case permanently' : 'Restore a case'} onCancel={() => { setModal(null); setPassword(''); }}>
