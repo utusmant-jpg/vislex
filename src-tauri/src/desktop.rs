@@ -69,6 +69,11 @@ fn provider_key_entry(provider: crate::providers::Provider) -> anyhow::Result<ke
     )?)
 
 }
+fn require_session_epoch(state: &AppState, args: &Value) -> anyhow::Result<()> {
+    let epoch = args["session_epoch"].as_u64().context("Missing session_epoch")?;
+    anyhow::ensure!(epoch == state.session_epoch.load(std::sync::atomic::Ordering::SeqCst), "Case session changed; refresh before continuing");
+    Ok(())
+}
 
 fn provider_key_for_case(provider: crate::providers::Provider) -> anyhow::Result<String> {
     if crate::providers::synthetic_provider_url()?.is_some() {
@@ -729,8 +734,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "evidence_list" => crate::evidence::list(c,args["source_id"].as_str(),args["kind"].as_str(),args["offset"].as_u64().unwrap_or(0) as usize)?,
         "evidence_read" => crate::evidence::read(c,text(&args,"id")?,args["revision"].as_i64())?,
-        "evidence_write" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding update");crate::evidence::write(c,serde_json::from_value(args["object"].clone())?,"human")?},
-        "evidence_review" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding review");crate::evidence::review(c,text(&args,"id")?,args["revision"].as_i64().context("Missing revision")?,text(&args,"review")?)?;Value::Null},
+        "evidence_write" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding update");require_session_epoch(&state,&args)?;crate::evidence::write(c,serde_json::from_value(args["object"].clone())?,"human")?},
+        "evidence_review" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding review");require_session_epoch(&state,&args)?;crate::evidence::review(c,text(&args,"id")?,args["revision"].as_i64().context("Missing revision")?,text(&args,"review")?)?;Value::Null},
         "evidence_search" => crate::evidence::search(c,text(&args,"query")?,args["offset"].as_u64().unwrap_or(0) as usize)?,
         "fit_clock" => crate::evidence::fit_clock(&serde_json::from_value::<Vec<crate::evidence::Anchor>>(args["anchors"].clone())?)?,
         "team_status" => crate::teams::status(c,text(&args,"task_id")?)?,
