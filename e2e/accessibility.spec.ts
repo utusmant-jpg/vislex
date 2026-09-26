@@ -30,4 +30,33 @@ test('dark and light startup, settings, and case navigation have no WCAG A/AA vi
   await page.keyboard.press('Control+2');
   await expect(page.getByRole('heading', { name: 'Evidence library' })).toBeVisible();
   await scan('evidence-library-light');
+  for (const [shortcut, heading, name] of [
+    ['Control+3', 'Findings & clock proposals', 'findings-light'],
+    ['Control+4', 'Investigation workbench', 'review-light'],
+    ['Control+5', 'Jobs & issues', 'jobs-light'],
+  ]) {
+    await page.keyboard.press(shortcut);
+    await expect(page.getByRole('heading', { name: heading })).toBeVisible();
+    await scan(name);
+  }
+  await page.keyboard.press('Control+,');
+  for (const section of ['Providers & models', 'Case permissions', 'Review & execution', 'Appearance', 'About']) {
+    await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: section }).click();
+    await scan(`settings-${section.toLowerCase().replaceAll(/[^a-z]+/g, '-')}-light`);
+  }
+  await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'Appearance' }).click();
+  await page.getByRole('button', { name: 'Dark', exact: true }).click();
+  await scan('appearance-settings-dark-case');
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  for (const [shortcut, heading, name] of [
+    ['Control+1', 'Harbor Street · sample case', 'chat-dark'],
+    ['Control+2', 'Evidence library', 'evidence-library-dark'],
+    ['Control+3', 'Findings & clock proposals', 'findings-dark'],
+    ['Control+4', 'Investigation workbench', 'review-dark'],
+    ['Control+5', 'Jobs & issues', 'jobs-dark'],
+  ]) {
+    await page.keyboard.press(shortcut);
+    await expect(page.getByRole('heading', { name: heading })).toBeVisible();
+    await scan(name);
+  }
 });

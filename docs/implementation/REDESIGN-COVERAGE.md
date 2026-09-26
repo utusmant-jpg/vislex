@@ -7,17 +7,17 @@ Only synthetic browser data may be used for design captures. A row is **verified
 |---|---|---|---|
 | Startup, create, open, restore, recent cases, sample preview | `App` | In progress: new tokens and two-column entry layout | Native dialogs, missing folders, synthetic walkthrough |
 | Case rename, import files/folders, note, backup, delete | `App`, `FolderImport` | Pending | Confirmations, failure preservation, native lifecycle |
-| Titlebar, five workspace shortcuts, sidebar, chats, projects | `App` | In progress: collapse and layout presets | Keyboard, narrow widths, persisted state |
+| Titlebar, five workspace shortcuts, sidebar, chats, projects | `App` | In progress: collapse, persisted adjustable width, and layout presets | Native focus and case switching |
 | Search/command palette, source and command results | `App` | Implemented: keyboard result semantics, case-independent settings command | Native focus and case switch; exact locator DOM tests pass |
 | Conversation list, history paging, delete/undo | `App`, `AgentPanel` | Pending | Interaction tests |
-| Composer, context, model, send/stop, drafts | `AgentPanel` | In progress: auto-growing input, case summary and task suggestions | IME, draft retention, blocked reasons, streaming |
+| Composer, context, model, send/stop, drafts | `AgentPanel` | In progress: auto-growing input, case summary, task suggestions, isolated frame-batched stream | Native IME, draft retention, blocked reasons, streaming responsiveness |
 | Tool receipts, team activity, error, resume/continue | `AgentPanel` | In progress: clearer saved/running/paused/error labels | Existing functional tests and native journey |
 | Evidence and working-file library, filter, paging, restriction | `EvidenceLibrary` | In progress: responsive filter controls | Paged rows, restriction, case fences |
 | Viewer tabs, back/forward, source locator | `App`, `EvidenceViewer` | In progress: keyboard-resizable pane, narrow return | Exact revision and scroll preservation |
 | Text/image/PDF, copy citation, zoom and limits | `EvidenceViewer` | Pending | Native and historical citation journey |
 | Audio/video controls and discovery | `EvidenceViewer`, discovery components | R14 exact-frame control and native worker integration cherry-picked; visual redesign pending | Packaged transport, frame/clock gates on combined candidate |
-| Transcript, speaker turns, corrections | `FullTranscript`, `SpeakerTurns` | Pending; retain R12 | Long segment paging and correction review |
-| Record editor, revision conflicts, saved export | `RecordEditor` | Existing UI retained; editor loaded on demand | Review invalidation and export |
+| Transcript, speaker turns, corrections | `FullTranscript`, `SpeakerTurns` | R16 loaded-row bound integrated; visual polish pending | Long segment paging and correction review |
+| Record editor, revision conflicts, saved export | `RecordEditor` | R16 case/record draft isolation integrated; editor loaded on demand | Review invalidation and export |
 | Findings and notebook object kinds | `EvidenceNotebook` | Existing UI retained; notebook loaded on demand | All kinds, dependencies, citations |
 | Discrepancy, changed, replay, coverage, legal review | `InvestigationWorkbench`, `QuestionDossier` | Pending | Human decisions and uncertainty |
 | Redaction and restricted derivative export | `RedactionPanel` | Pending | Derivative-only native export |
@@ -48,8 +48,8 @@ Source audited at [`3428d9a6214619d3514312886d59a36400747b7d`](https://github.co
 
 ## Baseline and current evidence
 
-At base `298ab42`: 63 frontend tests passed; production bundle 446.74 kB JS (131.61 kB gzip) and 56.54 kB CSS (11.18 kB gzip). With R13/R14 integrated through `8889fe8`, 77 frontend tests pass, the initial JavaScript is 406.94 kB (121.24 kB gzip), and CSS is 62.49 kB (12.35 kB gzip). Settings, findings, review, and record editing now load on demand. This is a payload comparison, not a measured startup or interaction-speed gain. Browser inspection used only the built-in synthetic case in light and dark modes; it exposed a missing `case_summary` preview fixture, reported to the bridge owner. Browser UI inspection is not packaged Windows verification.
+At base `298ab42`: 63 frontend tests passed; production bundle 446.74 kB JS (131.61 kB gzip) and 56.54 kB CSS (11.18 kB gzip). With R13–R16 integrated through `c2e3904`, 89 frontend tests pass; initial JavaScript is 413.64 kB (123.01 kB gzip), and CSS is 66.19 kB (12.94 kB gzip). Settings, findings, review, and record editing load on demand. This is a payload comparison, not a measured startup or interaction-speed gain. Edge/Playwright synthetic tests cover navigation and four desktop viewport sizes; axe-core WCAG A/AA scans pass for both themes on startup, five workspaces, and all settings sections under reduced motion. A >64 KiB streamed draft test preserves its prefix and final segment. These checks do not constitute a packaged Windows or screen-reader verification. The browser preview still lacks a `case_summary` fixture, reported to the bridge owner.
 
-The non-ignored Rust/core suite passed with `VISLEX_WORKER_PATH` pointing to the existing local development worker, both before and after cherry-picking R13/R14. The first run without that resource failed six processor-dependent tests because the isolated checkout had no ignored worker assets. Desktop-feature `cargo check --locked` passed after linking the ignored worktree resource directory to the same local worker, and passed again after integration. Neither check verifies the packaged redesign or the still-changing R15 functionality work.
+The non-ignored Rust/core suite passed with `VISLEX_WORKER_PATH` pointing to the existing local development worker, both before and after cherry-picking R13/R14. The first run without that resource failed six processor-dependent tests because the isolated checkout had no ignored worker assets. Desktop-feature `cargo check --locked` passed after linking the ignored worktree resource directory to the same local worker, and passed again after R13/R14 integration. Rust checks have not yet been rerun after R15/R16 cherry-picks in this worktree. These checks do not verify the packaged redesign or the still-changing R17 functionality work.
 
 Bundled asset: Inter Variable from [rsms/inter](https://github.com/rsms/inter), SIL Open Font License 1.1; local license at `src/assets/fonts/Inter-LICENSE.txt`, SHA-256 `693B77D4F32EE9B8BFC995589B5FAD5E99ADF2832738661F5402F9978429A8E3`. No runtime font request is made.

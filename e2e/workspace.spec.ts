@@ -41,3 +41,20 @@ test('narrow navigation and command palette remain reachable', async ({ page }, 
   await expect(page.getByRole('combobox', { name: 'Search commands' })).toBeHidden();
   await page.screenshot({ path: testInfo.outputPath('workspace-narrow.png') });
 });
+
+test('workspace has no page-level horizontal overflow at target desktop sizes', async ({ page }, testInfo) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /Try the sample case/ }).click();
+  for (const [width, height] of [[1000, 680], [1280, 720], [1500, 960], [1920, 1080]]) {
+    await page.setViewportSize({ width, height });
+    for (const shortcut of ['Control+1', 'Control+2', 'Control+3', 'Control+4', 'Control+5']) {
+      await page.keyboard.press(shortcut);
+      const extent = await page.evaluate(() => ({ content: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+      expect(extent.content, `${width}×${height} ${shortcut}: ${JSON.stringify(extent)}`).toBeLessThanOrEqual(extent.viewport);
+    }
+    await page.locator('.workspace-view').evaluate(async element => {
+      await Promise.all(element.getAnimations().map(animation => animation.finished));
+    });
+    await page.screenshot({ path: testInfo.outputPath(`workspace-${width}x${height}.png`) });
+  }
+});
