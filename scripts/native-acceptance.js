@@ -7,9 +7,14 @@
   const initial=await invoke('snapshot');
   const imported=await invoke('import_files',{case_id:initial.id,paths:['statement.pdf','statement.txt','photograph.png','variable-timing.mp4','notes.docx','table.xlsx'].map(n=>root+'/fixtures/generated/'+n),production:'Synthetic acceptance'});
   if(imported.items.some(i=>i.status!=='imported'))throw new Error('Fixture import failed');
-  const snapshot=await invoke('snapshot');
+  let snapshot=await invoke('snapshot');
   const caseSummary=await invoke('case_summary',{case_id:snapshot.id});
-  const firstSources=await invoke('source_page',{case_id:snapshot.id,generation:snapshot.generation,audit_seq:snapshot.counts.audit_seq});
+  let firstSources;
+  for(let attempt=0;attempt<8;attempt++){
+    snapshot=await invoke('snapshot');
+    try{firstSources=await invoke('source_page',{case_id:snapshot.id,generation:snapshot.generation,audit_seq:snapshot.counts.audit_seq});break;}
+    catch(error){if(!String(error).includes('Case changed before source page')||attempt===7)throw error;}
+  }
   if(caseSummary.source_count!==6||firstSources.sources.length!==6||firstSources.next_cursor!==null)throw new Error('Bounded source list did not match imported originals');
   let crossCaseSourceDenied=false;try{await invoke('source_page',{case_id:'another-case',generation:snapshot.generation,audit_seq:snapshot.counts.audit_seq});}catch{crossCaseSourceDenied=true;}
   if(!crossCaseSourceDenied)throw new Error('A stale case was allowed to list sources');
