@@ -331,7 +331,8 @@
     "R18": {
       "state": "pending",
       "worker_followup": "d648afc adds synthetic exported-byte checks for hidden PDF text, attachment and source metadata removal, pixel masking, rotated PDF page geometry, EXIF-oriented image coordinates, wrong-page and out-of-bounds rectangles. Initial test failed twice on Windows because PDFium retained the input handle after success and validation errors; the worker now closes page, bitmap, image and document resources. Focused 4/4 and full worker 27/27 Python tests passed; git diff --check passed. Single-owner diff review only; no independent visual review. This is a partial R18 slice, not release verification.",
-      "unrun_checks": "Packaged AppContainer worker on this exact commit, large multipage cancellation/resource tier, reviewed-output hash and revocation matrix, backup/restore round trip on the exact packaged worker, visual inspection and disclosure-package boundary acceptance remain open. R15/R17 prerequisites are implemented, not verified."
+      "review_followup": "46fce03 adds a cancelled three-page PDF test: no review PDF or page preview is published and Windows temp cleanup succeeds. 043b31e extends staged export review testing: after a fresh review, restricting the parent source blocks preparation and creates no output. Focused Rust export test passed; full worker 28/28 and backup_artifacts 10/10 passed on Windows. The backup suite includes reviewed redaction artifact restore and changed-hash refusal. These tests do not substitute for packaged worker or visual review.",
+      "unrun_checks": "Packaged AppContainer worker on this exact commit, large multipage cancellation/resource tier, reviewed-output hash and revocation matrix through the exact packaged UI, visual inspection and disclosure-package boundary acceptance remain open. R15/R17 prerequisites are implemented, not verified."
     },
     "R19": {
       "state": "implemented",
