@@ -301,13 +301,12 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
     if action == "delete_case" {
         let target = PathBuf::from(text(&args, "path")?);
-        // Only the open case itself needs a quiet case and an early close, which
-        // releases the exclusive lock before removal; any other case is untouched.
-        let resolved = target.canonicalize().ok();
-        if let Some(c) = guard.as_ref() {
-            if resolved.as_deref() == Some(c.root.as_path()) {
-                anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the current import before deleting this case");
-                let running: i64 = c.db.query_row(
+        let c = guard.as_ref().context("Open the case before deleting it")?;
+        anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before deletion");
+        anyhow::ensure!(args["session_epoch"].as_u64().context("Missing session_epoch")? == state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),"Case session changed before deletion");
+        anyhow::ensure!(target.canonicalize()? == c.root,"Delete target is not the open case");
+        anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the current import before deleting this case");
+        let running: i64 = c.db.query_row(
 
                     "SELECT (SELECT count(*) FROM tasks WHERE status='running')+(SELECT count(*) FROM processing_jobs WHERE status='running')",
 
@@ -316,13 +315,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                     |r| r.get(0),
 
                 )?;
-                anyhow::ensure!(running == 0,"Stop active tasks and processing jobs before deleting this case");
-                let old_root=c.root.clone();
-                *guard = None;
-                state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
-                crate::processing::invalidate_case_leases(&old_root);
-            }
-        }
+        anyhow::ensure!(running == 0,"Stop active tasks and processing jobs before deleting this case");
+        let old_root=c.root.clone();
+        *guard = None;
+        state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        crate::processing::invalidate_case_leases(&old_root);
         let receipt = crate::case::delete_case(&target, text(&args, "confirm")?)?;
         let _ = app.emit("case-changed", ());
         return Ok(receipt);

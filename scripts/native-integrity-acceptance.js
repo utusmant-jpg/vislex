@@ -18,6 +18,14 @@
   try { await invoke('save_settings', { case_id: reopened.id, session_epoch: created.session_epoch, settings: reopened.settings }); }
   catch (error) { staleSessionDenied = String(error).includes('Case session changed'); }
   if (!staleSessionDenied) throw new Error('Stale same-case session changed settings after reopen');
+  let staleDeleteDenied = false;
+  try { await invoke('delete_case', { case_id: reopened.id, session_epoch: created.session_epoch, path: casePath, confirm: reopened.name }); }
+  catch (error) { staleDeleteDenied = String(error).includes('Case session changed'); }
+  if (!staleDeleteDenied) throw new Error('Stale same-case session deleted the reopened case');
+  let wrongDeleteTargetDenied = false;
+  try { await invoke('delete_case', { case_id: reopened.id, session_epoch: reopened.session_epoch, path: `${root}/fixtures/generated`, confirm: reopened.name }); }
+  catch (error) { wrongDeleteTargetDenied = String(error).includes('Delete target is not the open case'); }
+  if (!wrongDeleteTargetDenied) throw new Error('Deletion accepted a different folder');
   const imported = await invoke('import_files', { case_id: created.id, paths: [fixture], production: 'Synthetic integrity' });
   if (imported.items[0]?.status !== 'imported') throw new Error('Synthetic import failed');
   const snapshot = await invoke('snapshot');
@@ -108,5 +116,5 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
+  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, stale_delete_denied: staleDeleteDenied, wrong_delete_target_denied: wrongDeleteTargetDenied, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
 })().catch(error => ({ native_error: String(error), stack: String(error?.stack ?? '') }))
