@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, BookOpen, ChevronDown, CircleDot, FilePenLine, Film, Flag, Layers, ListChecks,
   LoaderCircle, MessageSquareQuote, Play, Scale, ScanLine, Search, Settings2, Sparkles, Square, Wrench,
 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { api, native } from '../bridge';
+import { caseSessionArgs } from '../caseSession';
 import { configuredProfiles, profileKey } from '../aiProfiles';
 import type { Action, AIProfile, Snapshot, Selection, Task } from '../types';
 import { Markdown } from '../markdown';
@@ -42,7 +43,7 @@ function taskState(turn: Task): 'running' | 'paused' | 'complete' | 'failed' | '
 }
 
 /** Per-turn activity: every message keeps its receipt ledger, not just the latest. */
-function TurnActivity({ turn, onSource, live }: { turn: Task; onSource: (id: string, locator?: string) => void; live: string | null }) {
+function TurnActivity({ turn, onSource }: { turn: Task; onSource: (id: string, locator?: string) => void }) {
   const [open, setOpen] = useState(false);
   const [actions, setActions] = useState<Action[] | null>(null);
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -72,7 +73,6 @@ function TurnActivity({ turn, onSource, live }: { turn: Task; onSource: (id: str
       <ChevronDown size={12} />
     </button>
     {open ? <>
-      {live ? <div className="activity-live"><LoaderCircle size={12} className="spin" /><span>{live}</span></div> : null}
       {teamError ? <p className="small danger-text" role="alert">Team status unavailable: {teamError}</p> : null}
       {team.length ? <div className="team-cards">
         <p className="small muted">Agent team · {team.filter(member => member.status === 'complete').length}/{team.length} assignments complete. Separate working contexts — not independent corroboration or human approval.</p>
@@ -109,6 +109,39 @@ function TurnActivity({ turn, onSource, live }: { turn: Task; onSource: (id: str
   </div>;
 }
 
+/** Keep high-frequency Tauri deltas out of the workspace and preserve the entire draft. */
+function LiveResponse({ caseId, sessionEpoch, taskId, onSource, scroll, following }: { caseId: string; sessionEpoch?: number; taskId: string; onSource: (id: string, locator?: string) => void; scroll: { current: HTMLDivElement | null }; following: { current: boolean } }) {
+  const [live, setLive] = useState({ transmission: '', text: '', activity: 'Receiving response', characters: 0 });
+  const liveRef = useRef(live);
+  useEffect(() => {
+    if (!native) return;
+    let active = true;
+    let frame = 0;
+    let pending: typeof live | null = null;
+    const cleanup = listen<{ case_id: string; session_epoch?: number; task_id: string; transmission_id: string; delta: { text?: string; activity?: string; characters?: number } }>('agent-progress', ({ payload: event }) => {
+      if (!active || event.case_id !== caseId || event.task_id !== taskId || (typeof sessionEpoch === 'number' && event.session_epoch !== sessionEpoch)) return;
+      const base = pending ?? liveRef.current;
+      const current = base.transmission === event.transmission_id ? base : { transmission: event.transmission_id, text: '', activity: 'Receiving response', characters: 0 };
+      pending = { ...current, text: current.text + (event.delta.text ?? ''), activity: event.delta.activity?.replaceAll('_', ' ') ?? current.activity, characters: current.characters + (event.delta.characters ?? 0) };
+      if (!frame) frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (pending) { liveRef.current = pending; setLive(pending); pending = null; }
+      });
+    });
+    return () => { active = false; if (frame) cancelAnimationFrame(frame); void cleanup.then(unlisten => unlisten()); };
+  }, [caseId, sessionEpoch, taskId]);
+  useLayoutEffect(() => {
+    if (following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [live.text, following, scroll]);
+  return <>
+    {live.characters ? <div className="activity-live"><LoaderCircle size={12} className="spin" /><span>{live.activity} · {live.characters.toLocaleString()} characters received</span></div> : null}
+    {live.text ? <div className="live-answer">
+      <p className="live-answer-caption">Live draft — not yet citation-validated</p>
+      <Markdown text={live.text} onSource={onSource} caret />
+    </div> : null}
+  </>;
+}
+
 function RunStatus({ turn }: { turn: Task }) {
   const now = useNow(true);
   const elapsed = Math.max(0, Math.floor((now - Date.parse(turn.created_at)) / 1000));
@@ -140,37 +173,45 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const availableModels = useMemo(() => snapshot ? configuredProfiles(snapshot).filter(profile => profile.allow_text) : [], [snapshot]);
   const selectedProfile: AIProfile | undefined = availableModels.find(profile => profileKey(profile) === selectedModel) ?? availableModels[0];
   const [sending, setSending] = useState(false);
-  const currentCaseId = useRef(snapshot?.id);
-  currentCaseId.current = snapshot?.id;
-  const [live, setLive] = useState<{ task: string; transmission: string; text: string; activity: string; characters: number } | null>(null);
+  const sessionKey = snapshot ? `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}` : null;
+  const currentCaseId = useRef(sessionKey);
+  currentCaseId.current = sessionKey;
   const [skipContext, setSkipContext] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const input = composer.current;
+    if (!input) return;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+    input.style.overflowY = input.scrollHeight > 220 ? 'auto' : 'hidden';
+  }, [prompt]);
   const following = useRef(true);
   const [showJump, setShowJump] = useState(false);
-  const [conversationDetail, setConversationDetail] = useState<{ caseId: string; conversationId: string; tasks: Task[]; nextCursor: { created_at: string; id: string } | null } | null>(null);
+  const [conversationDetail, setConversationDetail] = useState<{ sessionKey: string; conversationId: string; tasks: Task[]; nextCursor: { created_at: string; id: string } | null } | null>(null);
   const [loadingOlderTurns, setLoadingOlderTurns] = useState(false);
   const summarySignature = (snapshot?.tasks ?? []).filter(turn => (turn.conversation_id ?? turn.id) === conversationId).map(turn => `${turn.id}:${turn.status}:${turn.step}:${turn.answer.length}`).join('|');
   useEffect(() => {
     if (!snapshot || !conversationId) { setConversationDetail(null); return; }
     let active = true;
-    api<{ tasks: Task[]; next_cursor: { created_at: string; id: string } | null }>('conversation_detail', { case_id: snapshot.id, conversation_id: conversationId })
-      .then(detail => { if (active) setConversationDetail(detail && Array.isArray(detail.tasks) ? { caseId: snapshot.id, conversationId, tasks: detail.tasks, nextCursor: detail.next_cursor ?? null } : null); })
+    api<{ tasks: Task[]; next_cursor: { created_at: string; id: string } | null }>('conversation_detail', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), conversation_id: conversationId })
+      .then(detail => { if (active) setConversationDetail(detail && Array.isArray(detail.tasks) ? { sessionKey: sessionKey!, conversationId, tasks: detail.tasks, nextCursor: detail.next_cursor ?? null } : null); })
       .catch(() => { if (active) setConversationDetail(null); });
     return () => { active = false; };
-  }, [snapshot?.id, conversationId, summarySignature]);
-  const turns = (conversationDetail && conversationDetail.caseId === snapshot?.id && conversationDetail.conversationId === conversationId
+  }, [sessionKey, conversationId, summarySignature]);
+  const turns = (conversationDetail && conversationDetail.sessionKey === sessionKey && conversationDetail.conversationId === conversationId
     ? conversationDetail.tasks : (snapshot?.tasks ?? []).filter(turn => (turn.conversation_id ?? turn.id) === conversationId)).slice().reverse();
   function loadOlderTurns() {
     if (!snapshot || !conversationId || !conversationDetail?.nextCursor || loadingOlderTurns) return;
     const caseId = snapshot.id;
+    const caseSession = sessionKey;
     const conversation = conversationId;
     const cursor = conversationDetail.nextCursor;
     setLoadingOlderTurns(true);
     run(async () => {
       try {
-        const page = await api<{ tasks: Task[]; next_cursor: { created_at: string; id: string } | null }>('conversation_detail', { case_id: caseId, conversation_id: conversation, before: cursor });
-        setConversationDetail(current => current?.caseId === caseId && current.conversationId === conversation && current.nextCursor?.id === cursor.id
+        const page = await api<{ tasks: Task[]; next_cursor: { created_at: string; id: string } | null }>('conversation_detail', { ...caseSessionArgs(caseId, snapshot.session_epoch), conversation_id: conversation, before: cursor });
+        setConversationDetail(current => current?.sessionKey === caseSession && current.conversationId === conversation && current.nextCursor?.id === cursor.id
           ? { ...current, tasks: [...current.tasks, ...page.tasks.filter(task => !current.tasks.some(existing => existing.id === task.id))], nextCursor: page.next_cursor ?? null } : current);
       } finally { setLoadingOlderTurns(false); }
     });
@@ -181,23 +222,9 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const processingFailed = fileJobs.some(job => ['failed', 'interrupted'].includes(job.status));
   const processingPending = fileJobs.some(job => ['queued', 'running'].includes(job.status));
   const chatBlocked = !!running || (snapshot?.counts ? !!snapshot.counts.chat_pause : !processingFailed && processingPending);
-  const liveTaskIds = turns.filter(turn => turn.status === 'running').map(turn => turn.id).join(',');
 
   useEffect(() => { setSelectedModel(sessionStorage.getItem(modelKey(snapshot?.id, conversationId)) ?? ''); }, [snapshot?.id, conversationId]);
   useEffect(() => {
-    if (!native) return;
-    let active = true;
-    const cleanup = listen<{ case_id: string; task_id: string; transmission_id: string; delta: { text?: string; activity?: string; characters?: number } }>('agent-progress', ({ payload: event }) => {
-      if (!active || event.case_id !== snapshot?.id || !liveTaskIds.split(',').includes(event.task_id)) return;
-      setLive(previous => {
-        const base = previous?.transmission === event.transmission_id ? previous : { task: event.task_id, transmission: event.transmission_id, text: '', activity: 'Receiving response', characters: 0 };
-        return { ...base, text: base.text + (event.delta.text ?? ''), activity: event.delta.activity?.replaceAll('_', ' ') ?? base.activity, characters: base.characters + (event.delta.characters ?? 0) };
-      });
-    });
-    return () => { active = false; void cleanup.then(unlisten => unlisten()); };
-  }, [snapshot?.id, liveTaskIds]);
-  useEffect(() => {
-    setLive(null);
     following.current = true;
     setShowJump(false);
     setSkipContext(false);
@@ -226,14 +253,14 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
       try {
         const viewerContext = buildViewerAttachment(selection, getViewerContext(), skipContext);
         const result = await api<{ task_id: string; conversation_id: string }>('start_task', {
-          case_id: snapshot.id,
+          ...caseSessionArgs(snapshot.id, snapshot.session_epoch),
           prompt,
           provider: selectedProfile!.provider,
           model: selectedProfile!.model,
           parent_task_id: task?.id ?? null,
           viewer_context: viewerContext,
         });
-        if (currentCaseId.current !== snapshot.id) return;
+        if (currentCaseId.current !== sessionKey) return;
         draft('');
         following.current = true;
         onConversation(result.conversation_id ?? result.task_id);
@@ -264,17 +291,20 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
       setShowJump(!following.current && turns.length > 0);
     }}>
       <div className="conversation-content">
-        {conversationDetail && conversationDetail.caseId === snapshot?.id && conversationDetail.conversationId === conversationId && conversationDetail.nextCursor ? <button className="quiet" disabled={loadingOlderTurns} onClick={loadOlderTurns}>{loadingOlderTurns ? 'Loading…' : 'Load earlier messages'}</button> : null}
+        {conversationDetail && conversationDetail.sessionKey === sessionKey && conversationDetail.conversationId === conversationId && conversationDetail.nextCursor ? <button className="quiet" disabled={loadingOlderTurns} onClick={loadOlderTurns}>{loadingOlderTurns ? 'Loading…' : 'Load earlier messages'}</button> : null}
         {turns.length ? turns.map(turn => <article className="conversation-turn" key={turn.id}>
           <div className="user-message">
             {turn.prompt}
             {turn.status === 'running' && turn.id === running?.id ? <LoaderCircle size={12} className="spin user-message-running" /> : null}
           </div>
-          <TurnActivity turn={turn} onSource={onSource} live={turn.status === 'running' && live?.task === turn.id ? `${live.activity} · ${live.characters.toLocaleString()} characters received` : null} />
-          {turn.status === 'running' && live?.task === turn.id && live.text ? <div className="live-answer">
-            <p className="live-answer-caption">Live draft — not yet citation-validated</p>
-            <Markdown text={live.text} onSource={onSource} caret />
-          </div> : null}
+          <div className="assistant-message-head">
+            <span className="assistant-avatar" aria-hidden="true">V</span>
+            <strong>VisLex</strong>
+            <StatusPill state={taskState(turn)} label={turn.status === 'running' ? 'Working' : turn.status === 'paused' ? 'Paused' : turn.error || turn.status === 'failed' ? 'Needs attention' : turn.status === 'complete' ? 'Saved response' : 'Pending'} small />
+            {turn.created_at && Number.isFinite(Date.parse(turn.created_at)) ? <time dateTime={turn.created_at} title={new Date(turn.created_at).toLocaleString()}>{new Date(turn.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}
+          </div>
+          <TurnActivity turn={turn} onSource={onSource} />
+          {turn.status === 'running' && snapshot ? <LiveResponse caseId={snapshot.id} sessionEpoch={snapshot.session_epoch} taskId={turn.id} onSource={onSource} scroll={scroll} following={following} /> : null}
           {turn.answer ? <>
             <Markdown className="answer" text={turn.answer} onSource={onSource} />
             <div className="message-meta">
@@ -284,11 +314,12 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
             </div>
           </> : null}
           {turn.error ? <div className="notice error" role="alert">{turn.error}<br /><small>Receipt: {turn.id}</small></div> : null}
-          {turn.status === 'paused' && !chatBlocked ? <button className="quiet resume-button" onClick={() => run(async () => { await api('resume_task', { case_id: snapshot?.id, task_id: turn.id }); await refresh(); })}><Play size={12} />Resume work</button> : null}
+          {turn.status === 'paused' && !chatBlocked ? <button className="quiet resume-button" onClick={() => run(async () => { if (!snapshot) return; await api('resume_task', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), task_id: turn.id }); await refresh(); })}><Play size={12} />Resume work</button> : null}
           {turn.id === task?.id && turn.status === 'paused' && !!turn.error && !chatBlocked ? <button className="quiet resume-button" onClick={() => run(async () => {
             const caseId = snapshot?.id;
-            const result = await api<{task_id:string;conversation_id:string}>('continue_paused_task', { case_id: caseId, task_id: turn.id });
-            if (currentCaseId.current !== caseId) return;
+            if (!caseId) return;
+            const result = await api<{task_id:string;conversation_id:string}>('continue_paused_task', { ...caseSessionArgs(caseId, snapshot?.session_epoch), task_id: turn.id });
+            if (currentCaseId.current !== sessionKey) return;
             onConversation(result.conversation_id);
             await refresh();
           })}>Continue in new task</button> : null}
@@ -297,9 +328,16 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
             {followUps.map(step => <button key={step} className="follow-up" onClick={() => { draft(`Perform this next check: ${step}`); composer.current?.focus(); }}>{step}</button>)}
           </div> : null}
         </article>) : <div className="agent-welcome">
-          <div className="vislex-glyph"><Sparkles size={26} /></div>
-          <h1>What would you like<br />to uncover?</h1>
-          <p>{snapshot ? `Investigate ${snapshot.name}, compare sources, or build your case.` : 'Open a case to bring your evidence and conversations together.'}</p>
+          <div className="vislex-glyph"><Sparkles size={22} /></div>
+          <div className="eyebrow">CASE WORKSPACE</div>
+          <h1>{snapshot ? snapshot.name : 'Start with a case'}</h1>
+          <p>{snapshot ? 'Explore the evidence, compare accounts, and keep each conclusion tied to its source.' : 'Open a case to bring your evidence and conversations together.'}</p>
+          {snapshot ? <div className="welcome-summary" aria-label="Case at a glance">
+            <div><strong>{snapshot.counts?.source_count ?? snapshot.sources.length}</strong><span>Evidence sources</span></div>
+            <div><strong>{snapshot.counts?.record_count ?? snapshot.records.length}</strong><span>Working files</span></div>
+            <div><strong>{snapshot.sources.filter(source => source.restricted).length}</strong><span>Restricted in this page</span></div>
+          </div> : null}
+          <h2 className="welcome-prompt-label">Suggested starting points</h2>
           <div className="starter-prompts">{starters.map(starter => <button key={starter} onClick={() => { draft(starter); composer.current?.focus(); }}>{starter}<ArrowUp size={14} /></button>)}</div>
         </div>}
       </div>
@@ -326,7 +364,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           />
           <div className="spacer" />
           {running
-            ? <Tooltip text="Stop the current investigation"><button className="send stop" aria-label="Stop investigation" onClick={() => run(async () => { await api('stop_task', { case_id: snapshot?.id, task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
+            ? <Tooltip text="Stop the current investigation"><button className="send stop" aria-label="Stop investigation" onClick={() => run(async () => { if (!snapshot) return; await api('stop_task', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
             : <Tooltip text={chatBlocked ? 'Waiting for case preparation' : 'Send message (Enter)'}><button className="send" aria-label="Send message" disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile} onClick={submit}><ArrowUp size={18} /></button></Tooltip>}
         </div>
       </div>

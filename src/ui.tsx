@@ -1,6 +1,6 @@
 // Design-system primitives shared by every surface: status pills, tooltips, menus,
 // popovers, toasts, skeletons, theme, model picker. Hand-rolled to stay offline.
-import { cloneElement, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { cloneElement, createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle, Check, CheckCircle2, ChevronDown, CircleDashed, Copy, History, LoaderCircle, Lock,
@@ -73,32 +73,45 @@ export function formatClock(seconds: number, withMs = false): string {
 /* --------------------------------- tooltip --------------------------------- */
 
 export function Tooltip({ text, shortcut, children }: { text: string; shortcut?: string; children: ReactElement }) {
+  const id = useId();
   const [point, setPoint] = useState<{ x: number; y: number; below: boolean } | null>(null);
   const timer = useRef<number>(0);
   const target = useRef<HTMLElement | null>(null);
-  const original = children.props as { onMouseEnter?: unknown; onMouseLeave?: unknown; onFocus?: unknown; onBlur?: unknown; ref?: unknown };
-  const show = () => {
+  const original = children.props as {
+    onMouseEnter?: (event: React.MouseEvent) => void; onMouseLeave?: (event: React.MouseEvent) => void;
+    onFocus?: (event: React.FocusEvent) => void; onBlur?: (event: React.FocusEvent) => void;
+    onKeyDown?: (event: React.KeyboardEvent) => void; ref?: React.Ref<HTMLElement>;
+    'aria-describedby'?: string;
+  };
+  const show = (immediate: boolean) => {
     window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => {
+    const display = () => {
       const rect = target.current?.getBoundingClientRect();
-      if (rect) setPoint({ x: rect.left + rect.width / 2, y: rect.top, below: false });
-    }, 450);
+      if (rect) setPoint({ x: Math.max(12, Math.min(window.innerWidth - 12, rect.left + rect.width / 2)), y: rect.top < 48 ? rect.bottom : rect.top, below: rect.top < 48 });
+    };
+    if (immediate) display(); else timer.current = window.setTimeout(display, 400);
   };
   const hide = () => { window.clearTimeout(timer.current); setPoint(null); };
-  useEffect(() => () => window.clearTimeout(timer.current), []);
+  useEffect(() => {
+    window.addEventListener('scroll', hide, true);
+    return () => { window.clearTimeout(timer.current); window.removeEventListener('scroll', hide, true); };
+  }, []);
   return <>
     {cloneElement(children, {
       ref: (node: HTMLElement | null) => {
         target.current = node;
         if (typeof original.ref === 'function') original.ref(node);
+        else if (original.ref && 'current' in original.ref) original.ref.current = node;
       },
-      onMouseEnter: (event: unknown) => { void (original.onMouseEnter as ((e: unknown) => void) | undefined)?.(event); show(); },
-      onMouseLeave: (event: unknown) => { void (original.onMouseLeave as ((e: unknown) => void) | undefined)?.(event); hide(); },
-      onFocus: (event: unknown) => { void (original.onFocus as ((e: unknown) => void) | undefined)?.(event); show(); },
-      onBlur: (event: unknown) => { void (original.onBlur as ((e: unknown) => void) | undefined)?.(event); hide(); },
+      'aria-describedby': point ? [original['aria-describedby'], id].filter(Boolean).join(' ') : original['aria-describedby'],
+      onMouseEnter: (event: React.MouseEvent) => { original.onMouseEnter?.(event); show(false); },
+      onMouseLeave: (event: React.MouseEvent) => { original.onMouseLeave?.(event); hide(); },
+      onFocus: (event: React.FocusEvent) => { original.onFocus?.(event); show(true); },
+      onBlur: (event: React.FocusEvent) => { original.onBlur?.(event); hide(); },
+      onKeyDown: (event: React.KeyboardEvent) => { original.onKeyDown?.(event); if (event.key === 'Escape') hide(); },
     } as Record<string, unknown>)}
     {point ? createPortal(
-      <div className="tooltip" role="tooltip" style={{ left: point.x, top: point.y }} data-below={point.below}>
+      <div id={id} className="tooltip" role="tooltip" style={{ left: point.x, top: point.y }} data-below={point.below}>
         {text}{shortcut ? <kbd>{shortcut}</kbd> : null}
       </div>, document.body) : null}
   </>;
@@ -113,11 +126,12 @@ export type MenuItem =
 function menuNode(items: MenuItem[], close: () => void, highlight: number, setHighlight: (index: number) => void) {
   const selectable: number[] = [];
   const body = items.map((item, index) => {
-    if (item === 'separator') return <div className="menu-separator" key={index} />;
+    if (item === 'separator') return <div className="menu-separator" role="separator" key={index} />;
     if (!item.disabled) selectable.push(index);
     return <button
       key={index}
       className={`menu-item ${item.danger ? 'danger' : ''} ${highlight === index ? 'highlighted' : ''}`}
+      role="menuitem"
       disabled={item.disabled}
       onMouseEnter={() => setHighlight(index)}
       onClick={() => { close(); item.onSelect(); }}>
@@ -129,6 +143,8 @@ function menuNode(items: MenuItem[], close: () => void, highlight: number, setHi
 
 export function MenuPanel({ items, onClose, style, className }: { items: MenuItem[]; onClose: () => void; style?: React.CSSProperties; className?: string }) {
   const [highlight, setHighlight] = useState(-1);
+  const returnFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  useEffect(() => () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }, []);
   const { body, selectable } = menuNode(items, onClose, highlight, setHighlight);
   const move = (direction: 1 | -1) => {
     if (!selectable.length) return;
@@ -142,9 +158,11 @@ export function MenuPanel({ items, onClose, style, className }: { items: MenuIte
       className={`menu-panel ${className ?? ''}`}
       style={style}
       role="menu"
+      aria-label="Actions"
       onKeyDown={event => {
         if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
         else if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
+        else if (event.key === 'Escape') { event.preventDefault(); onClose(); }
         else if (event.key === 'Enter' && highlight >= 0) { event.preventDefault(); const item = items[highlight]; onClose(); if (item !== 'separator' && !item.disabled) item.onSelect(); }
       }}
       tabIndex={-1}
@@ -156,7 +174,7 @@ export function MenuPanel({ items, onClose, style, className }: { items: MenuIte
 
 export function ContextMenu({ items, children }: { items: MenuItem[]; children: ReactElement }) {
   const [point, setPoint] = useState<{ x: number; y: number } | null>(null);
-  const original = children.props as { onContextMenu?: (event: React.MouseEvent) => void };
+  const original = children.props as { onContextMenu?: (event: React.MouseEvent) => void; onKeyDown?: (event: React.KeyboardEvent) => void };
   const clamped = (x: number, y: number) => ({ x: Math.min(x, window.innerWidth - 230), y: Math.min(y, window.innerHeight - 40 - items.length * 34) });
   return <>
     {cloneElement(children, {
@@ -165,6 +183,13 @@ export function ContextMenu({ items, children }: { items: MenuItem[]; children: 
         if (event.defaultPrevented) return;
         event.preventDefault();
         setPoint(clamped(event.clientX, event.clientY));
+      },
+      onKeyDown: (event: React.KeyboardEvent) => {
+        original.onKeyDown?.(event);
+        if (event.defaultPrevented || !(event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        setPoint(clamped(rect.left + 12, rect.bottom));
       },
     } as Record<string, unknown>)}
     {point ? <MenuPanel items={items} onClose={() => setPoint(null)} style={{ left: point.x, top: point.y, position: 'fixed' }} /> : null}
@@ -200,6 +225,8 @@ let toastId = 1;
 function emit() { for (const listener of toastListeners) listener(toastState); }
 
 function push(kind: ToastKind, title: string, detail?: string, action?: ToastEntry['action'], sticky = kind === 'error') {
+  const existing = toastState.find(toast => toast.kind === kind && toast.title === title && toast.detail === detail);
+  if (existing) return existing.id;
   const id = toastId++;
   toastState = [...toastState.slice(-2), { id, kind, title, detail, action }];
   emit();
@@ -247,26 +274,67 @@ export function SkeletonPage() {
 
 /* ---------------------------------- theme ---------------------------------- */
 
-type Theme = 'dark' | 'light';
-const ThemeContext = createContext<{ theme: Theme; setTheme: (theme: Theme) => void }>({ theme: 'dark', setTheme: () => {} });
+export type ThemePreference = 'dark' | 'light' | 'system';
+export type DensityPreference = 'comfortable' | 'compact';
+type ResolvedTheme = 'dark' | 'light';
+const ThemeContext = createContext<{
+  theme: ThemePreference;
+  resolvedTheme: ResolvedTheme;
+  setTheme: (theme: ThemePreference) => void;
+  density: DensityPreference;
+  setDensity: (density: DensityPreference) => void;
+}>({ theme: 'system', resolvedTheme: 'dark', setTheme: () => {}, density: 'comfortable', setDensity: () => {} });
+
+function systemTheme(): ResolvedTheme {
+  return typeof window.matchMedia === 'function' && !window.matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark';
+}
+
+function storedTheme(): ThemePreference {
+  try {
+    const saved = localStorage.getItem('vislex-theme');
+    return saved === 'dark' || saved === 'light' ? saved : 'system';
+  } catch { return 'system'; }
+}
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
-  const setTheme = (next: Theme) => {
+  const [theme, setThemeState] = useState<ThemePreference>(storedTheme);
+  const [system, setSystem] = useState<ResolvedTheme>(systemTheme);
+  const [density, setDensityState] = useState<DensityPreference>(() => {
+    try { return localStorage.getItem('vislex-density') === 'compact' ? 'compact' : 'comfortable'; }
+    catch { return 'comfortable'; }
+  });
+  const resolvedTheme = theme === 'system' ? system : theme;
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const changed = () => setSystem(media.matches ? 'dark' : 'light');
+    changed();
+    media.addEventListener?.('change', changed);
+    return () => media.removeEventListener?.('change', changed);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolvedTheme === 'dark' ? '#111318' : '#f7f8fa');
+  }, [resolvedTheme]);
+  useEffect(() => { document.documentElement.dataset.density = density; }, [density]);
+  const setTheme = (next: ThemePreference) => {
     setThemeState(next);
-    document.documentElement.dataset.theme = next;
     try { localStorage.setItem('vislex-theme', next); } catch { /* storage unavailable */ }
   };
-  return <ThemeContext.Provider value={{ theme, setTheme }}>{children}</ThemeContext.Provider>;
+  const setDensity = (next: DensityPreference) => {
+    setDensityState(next);
+    try { localStorage.setItem('vislex-density', next); } catch { /* storage unavailable */ }
+  };
+  return <ThemeContext.Provider value={{ theme, resolvedTheme, setTheme, density, setDensity }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme() { return useContext(ThemeContext); }
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  return <Tooltip text={theme === 'dark' ? 'Light appearance' : 'Dark appearance'}>
-    <button className="icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-      {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+  const { resolvedTheme, setTheme } = useTheme();
+  return <Tooltip text={resolvedTheme === 'dark' ? 'Light appearance' : 'Dark appearance'}>
+    <button className="icon-button" aria-label="Toggle color theme" onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}>
+      {resolvedTheme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
     </button>
   </Tooltip>;
 }

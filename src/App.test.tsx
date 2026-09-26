@@ -20,16 +20,23 @@ function snapshot(): Snapshot {
     issues: [{ task_id: 'task', name: 'save_dossier', error: 'invalid check tool', count: 9, latest_receipt: 'latest', created_at: '' }],
   };
 }
-beforeEach(() => { localStorage.clear(); api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); save.mockReset(); });
+beforeEach(() => { Object.defineProperty(window, 'innerWidth', { value: 1440, writable: true, configurable: true }); localStorage.clear(); api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); save.mockReset(); });
 afterEach(cleanup);
 
-it('retries the parent discovery run from both failed job cards', async () => {
+it('deduplicates the parent discovery retry across its failed job cards', async () => {
   render(<JobsCenter snapshot={snapshot()} run={fn => { void fn(); }} refresh={async () => undefined} />);
   const buttons = screen.getAllByRole('button', { name: 'Retry index from saved progress' });
   fireEvent.click(buttons[0]); fireEvent.click(buttons[1]);
-  await waitFor(() => expect(api).toHaveBeenCalledTimes(2));
-  expect(api).toHaveBeenNthCalledWith(1, 'retry_video_discovery', { case_id: 'synthetic-case', run_id: 'index-run' });
-  expect(api).toHaveBeenNthCalledWith(2, 'retry_video_discovery', { case_id: 'synthetic-case', run_id: 'index-run' });
+  await waitFor(() => expect(api).toHaveBeenCalledTimes(1));
+  expect(api).toHaveBeenCalledWith('retry_video_discovery', { case_id: 'synthetic-case', run_id: 'index-run' });
+});
+
+it('sends the captured case session on a processing retry', async () => {
+  const current = snapshot();
+  current.session_epoch = 7;
+  render(<JobsCenter snapshot={current} run={fn => { void fn(); }} refresh={async () => undefined} />);
+  fireEvent.click(screen.getAllByRole('button', { name: 'Retry index from saved progress' })[0]);
+  await waitFor(() => expect(api).toHaveBeenCalledWith('retry_video_discovery', { case_id: 'synthetic-case', session_epoch: 7, run_id: 'index-run' }));
 });
 
 it('groups old AI tool errors and loads their receipts only when expanded', async () => {
@@ -89,6 +96,26 @@ it('shows a current older failure immediately beside recent completed jobs', () 
   expect(screen.getByText('Older recording.mp4')).toBeTruthy();
   expect(screen.getByText('Recover from saved index')).toBeTruthy();
   expect(screen.getByText('Receipt old-current-failure')).toBeTruthy();
+  expect(screen.getByText('Receipt recent-success')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Completed & cancelled' }));
+  expect(screen.getByText('Receipt recent-success')).toBeTruthy();
+  expect(screen.queryByText('Older recording.mp4')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Needs attention' }));
+  expect(screen.getByText('Older recording.mp4')).toBeTruthy();
+  expect(screen.queryByText('Receipt recent-success')).toBeNull();
+});
+
+it('ignores an older job page from a prior opening of the same case', async () => {
+  const first = snapshot(); first.session_epoch = 3; first.job_next_cursor = 10;
+  let resolvePage!: (value: { jobs: Snapshot['jobs']; next_cursor: null }) => void;
+  api.mockImplementation((action: string) => action === 'job_page' ? new Promise(resolve => { resolvePage = resolve; }) : Promise.resolve(null));
+  const view = render(<JobsCenter snapshot={first} run={fn => { void fn(); }} refresh={async () => undefined} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Load older jobs' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('job_page', { case_id: first.id, session_epoch: 3, before: 10 }));
+  view.rerender(<JobsCenter snapshot={{ ...first, session_epoch: 4, job_next_cursor: null }} run={fn => { void fn(); }} refresh={async () => undefined} />);
+  resolvePage({ jobs: [{ ...first.jobs![0], id: 'late-old-job', name: 'Prior session job' }], next_cursor: null });
+  await Promise.resolve();
+  expect(screen.queryByText('Prior session job')).toBeNull();
 });
 
 it('shows live job units from a case-scoped progress read', async () => {
@@ -129,7 +156,7 @@ it('shows a failed automatic review even when its original chat is hidden', asyn
   expect(screen.queryByText('No active processing jobs')).toBeNull();
   fireEvent.click(screen.getByRole('button',{name:'Continue saved review'}));
   await waitFor(()=>expect(api).toHaveBeenCalledWith('continue_paused_task',{case_id:'synthetic-case',task_id:'hidden-review'}));
-  expect(onConversation).toHaveBeenCalledWith('continued-review');
+  await waitFor(()=>expect(onConversation).toHaveBeenCalledWith('continued-review'));
 });
 
 it('loads record text on selection and ignores a late result from another case', async () => {
@@ -202,14 +229,14 @@ it('opens the clicked palette search hit at its exact historical locator', async
   render(<App/>);
   await screen.findAllByText('Synthetic case');
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
-  const search=screen.getByRole('textbox',{name:/Search case/});
+  const search=screen.getByRole('combobox',{name:/Search case/});
   fireEvent.change(search,{target:{value:'hit'}});
   fireEvent.click(screen.getByRole('button',{name:/Search text & meaning/}));
-  fireEvent.click(await screen.findByRole('button',{name:/First hit/}));
+  fireEvent.click(await screen.findByRole('option',{name:/First hit/}));
   expect(screen.getByRole('tab',{name:'Statement.txt'}).getAttribute('aria-selected')).toBe('true');
   await waitFor(()=>expect(api).toHaveBeenCalledWith('read_extract_revision',{source_id:'source-one',revision:1,start:5,count:200}));
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
-  const reopened=screen.getByRole('textbox',{name:/Search case/});
+  const reopened=screen.getByRole('combobox',{name:/Search case/});
   fireEvent.keyDown(reopened,{key:'ArrowDown'});
   fireEvent.keyDown(reopened,{key:'Enter'});
   await waitFor(()=>expect(api).toHaveBeenCalledWith('read_extract_revision',{source_id:'source-one',revision:1,start:9,count:200}));
@@ -226,9 +253,9 @@ it('opens a cited source that is outside the first case page', async () => {
   render(<App/>);
   await screen.findAllByText('Synthetic case');
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
-  fireEvent.change(screen.getByRole('textbox',{name:/Search case/}),{target:{value:'older evidence'}});
+  fireEvent.change(screen.getByRole('combobox',{name:/Search case/}),{target:{value:'older evidence'}});
   fireEvent.click(screen.getByRole('button',{name:/Search text & meaning/}));
-  fireEvent.click(await screen.findByRole('button',{name:/Older statement/}));
+  fireEvent.click(await screen.findByRole('option',{name:/Older statement/}));
   await waitFor(()=>expect(api).toHaveBeenCalledWith('source_detail',{case_id:'synthetic-case',source_id:'older-source'}));
   await waitFor(()=>expect(screen.getByRole('tab',{name:'Older statement.txt'})).toBeTruthy());
 });
@@ -259,8 +286,8 @@ it('takes a selected historical text range to Chat and focuses the composer', as
   await screen.findAllByText('Synthetic case');
   fireEvent.click(screen.getByRole('button',{name:'Evidence'}));
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
-  fireEvent.change(screen.getByRole('textbox',{name:/Search case/}),{target:{value:'Statement'}});
-  fireEvent.click(await screen.findByRole('button',{name:'Statement.txt'}));
+  fireEvent.change(screen.getByRole('combobox',{name:/Search case/}),{target:{value:'Statement'}});
+  fireEvent.click(await screen.findByRole('option',{name:'Statement.txt'}));
   await screen.findByText('selected wording');
   fireEvent.mouseUp(screen.getByText('selected wording').closest('.document-page')!);
   fireEvent.click(screen.getByRole('button',{name:/Ask about L1/}));
@@ -302,9 +329,87 @@ it('keeps the latest same-case refresh when an earlier request returns last', as
   fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
   fireEvent.click(await screen.findByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
-  fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
+  fireEvent.click(screen.getAllByRole('button',{name:'Retry index from saved progress'})[0]);
   await screen.findByText('Latest saved name',{selector:'.title-case'});
   resolveEarlier(initial);
   await Promise.resolve();
   expect(screen.getByText('Latest saved name',{selector:'.title-case'})).toBeTruthy();
+});
+
+it('collapses navigation at narrow widths and lets the user reopen it', async () => {
+  window.innerWidth = 1000;
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  const toggle = await screen.findByRole('button', { name: 'Show navigation' });
+  expect(screen.queryByRole('button', { name: 'Create' })).toBeNull();
+  fireEvent.click(toggle);
+  expect(screen.getByRole('button', { name: 'Hide navigation' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Create' })).toBeTruthy();
+});
+
+it('opens appearance and about settings before a case is selected', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
+  expect(screen.getByText('LIVE PREVIEW')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Compact' }));
+  expect(localStorage.getItem('vislex-density')).toBe('compact');
+  expect(screen.getByRole('button', { name: 'Compact' }).getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(screen.getByRole('button', { name: 'About' }));
+  expect(screen.getByText(/Cases are stored in local/)).toBeTruthy();
+});
+
+it('keeps the command palette useful without a case and exposes keyboard selection', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+  const search = screen.getByRole('combobox', { name: 'Search commands' });
+  expect(search.getAttribute('aria-activedescendant')).toBe('case-command-item-0');
+  expect(screen.getByRole('option', { name: /Open settings/ })).toBeTruthy();
+  expect(screen.queryByRole('option', { name: /Delete this case/ })).toBeNull();
+  fireEvent.keyDown(search, { key: 'Enter' });
+  expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
+});
+
+it('opens workspace settings with the global shortcut before a case exists', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  fireEvent.keyDown(window, { key: ',', ctrlKey: true });
+  expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
+});
+
+it('returns focus to the settings trigger after closing preferences', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  const trigger = screen.getByRole('button', { name: 'Settings' });
+  trigger.focus();
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole('button', { name: 'Close settings' }));
+  expect(screen.queryByRole('dialog', { name: 'Workspace settings' })).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+});
+
+it('cancels case creation without calling the backend', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  const trigger = screen.getByRole('button', { name: /Create a case/ });
+  trigger.focus();
+  fireEvent.click(trigger);
+  expect(screen.getByRole('heading', { name: 'Create a local case' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('heading', { name: 'Create a local case' })).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  expect(api).not.toHaveBeenCalledWith('create_case', expect.anything());
+});
+
+it('shows an informational findings preview with no empty-page pagination', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? snapshot() : action === 'storage_usage' ? {} : null);
+  render(<App />);
+  await screen.findAllByText('Synthetic case');
+  fireEvent.click(screen.getByRole('button', { name: 'Findings' }));
+  expect(await screen.findByRole('heading', { name: 'No findings on this page' })).toBeTruthy();
+  expect(screen.getByText(/This browser shows the layout only/)).toBeTruthy();
+  expect(screen.getAllByText(/Structured evidence storage/)).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Previous' })).toBeNull();
 });

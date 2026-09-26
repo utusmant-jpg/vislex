@@ -5,8 +5,9 @@ import AgentPanel from './AgentPanel';
 import type { Snapshot, Task } from '../types';
 
 const api = vi.hoisted(() => vi.fn());
+const progress = vi.hoisted(() => ({ listeners: [] as ((event: { payload: { case_id: string; session_epoch?: number; task_id: string; transmission_id: string; delta: { text: string; characters: number } } }) => void)[] }));
 vi.mock('../bridge', () => ({ api, native: true, citationParts: () => null }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => undefined }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: async (_name: string, listener: (typeof progress.listeners)[number]) => { progress.listeners.push(listener); return () => { progress.listeners = progress.listeners.filter(item => item !== listener); }; } }));
 
 function task(id: string, conversation: string): Task {
   return { id, conversation_id: conversation, prompt: 'Existing question', mode: 'investigate', status: 'running', input_tokens: 0, output_tokens: 0, step: 0, answer: '', error: '', generation: 1, created_at: '2026-09-22T00:00:00Z' };
@@ -22,8 +23,19 @@ function panel(data: Snapshot, conversationId: string | null = null) {
 }
 
 describe('chat composer interaction', () => {
-  beforeEach(() => { api.mockReset(); api.mockResolvedValue({ task_id: 'new-task', conversation_id: 'new-chat' }); });
+  beforeEach(() => { api.mockReset(); api.mockResolvedValue({ task_id: 'new-task', conversation_id: 'new-chat' }); progress.listeners = []; });
   afterEach(cleanup);
+
+  it('shows case counts and puts a suggested check in the composer without sending', () => {
+    const data = snapshot();
+    data.counts = { audit_seq: 1, source_count: 42, source_bytes: 0, record_count: 3, task_count: 0, job_count: 0, jobs_queued: 0, jobs_running: 0, jobs_failed: 0, jobs_attention: 0, jobs_complete: 0 };
+    panel(data);
+    expect(screen.getByRole('heading', { name: 'Synthetic case' })).toBeTruthy();
+    expect(screen.getByLabelText('Case at a glance').textContent).toContain('42Evidence sources');
+    fireEvent.click(screen.getByRole('button', { name: /Build a timeline/ }));
+    expect((screen.getByRole('textbox', { name: 'Agent task' }) as HTMLTextAreaElement).value).toContain('Build a timeline');
+    expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
+  });
 
   it('sends a new chat while another conversation is running', async () => {
     const { onConversation } = panel(snapshot([task('other-task', 'other-chat')]));
@@ -50,7 +62,41 @@ describe('chat composer interaction', () => {
     const completed = { ...task('answered', 'current-chat'), status: 'complete', answer: 'The report describes three knocks.' };
     panel(snapshot([completed]), 'current-chat');
     expect(screen.getByText('The report describes three knocks.')).toBeTruthy();
+    expect(screen.getByText('Saved response')).toBeTruthy();
     expect(screen.queryByText('AI assessment')).toBeNull();
+  });
+
+  it('sends the captured open-case epoch with a new task', async () => {
+    const data = snapshot(); data.session_epoch = 12;
+    panel(data);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Inspect the source' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('start_task', expect.objectContaining({ case_id: 'case-1', session_epoch: 12, prompt: 'Inspect the source' })));
+  });
+
+  it('keeps every streamed character beyond 64 KiB through batched updates', async () => {
+    panel(snapshot([task('long-task', 'long-chat')]), 'long-chat');
+    await waitFor(() => expect(progress.listeners.length).toBeGreaterThan(0));
+    const stream = progress.listeners.at(-1)!;
+    const prefix = `PREFIX_${'evidence '.repeat(9000)}`;
+    stream({ payload: { case_id: 'case-1', task_id: 'long-task', transmission_id: 'tx-1', delta: { text: prefix, characters: prefix.length } } });
+    stream({ payload: { case_id: 'case-1', task_id: 'long-task', transmission_id: 'tx-1', delta: { text: 'FINAL_SEGMENT', characters: 13 } } });
+    await waitFor(() => expect(document.querySelector('.live-answer')?.textContent).toContain('FINAL_SEGMENT'));
+    const rendered = document.querySelector('.live-answer')?.textContent ?? '';
+    expect(rendered).toContain('PREFIX_');
+    expect(rendered).toContain(prefix.slice(-40));
+    expect(rendered).toContain('FINAL_SEGMENT');
+  });
+
+  it('ignores progress from a prior opening of the same case', async () => {
+    const data = snapshot([task('epoch-task', 'epoch-chat')]); data.session_epoch = 14;
+    panel(data, 'epoch-chat');
+    await waitFor(() => expect(progress.listeners.length).toBeGreaterThan(0));
+    const stream = progress.listeners.at(-1)!;
+    stream({ payload: { case_id: 'case-1', session_epoch: 13, task_id: 'epoch-task', transmission_id: 'tx-old', delta: { text: 'Old session text', characters: 16 } } });
+    stream({ payload: { case_id: 'case-1', session_epoch: 14, task_id: 'epoch-task', transmission_id: 'tx-new', delta: { text: 'Current session text', characters: 20 } } });
+    await waitFor(() => expect(document.querySelector('.live-answer')?.textContent).toContain('Current session text'));
+    expect(document.querySelector('.live-answer')?.textContent).not.toContain('Old session text');
   });
 
   it('allows chat after file preparation while automatic review continues', async () => {
