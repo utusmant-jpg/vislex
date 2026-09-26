@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { NotebookPen } from 'lucide-react';
 import { api, native } from '../bridge';
 import type { Snapshot } from '../types';
 import { CitationChip, StatusPill } from '../ui';
@@ -26,7 +27,8 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
   const [fitAnchors, setFitAnchors] = useState<unknown[]>([]);
   useEffect(() => {
     let active = true;
-    if (!native) { setError('Structured evidence storage requires the Windows desktop app.'); return; }
+    if (!native) { setError(''); return; }
+    setError('');
     api<Page>('evidence_list', { kind: kind || null, offset }).then(v => { if (active) setPage(v); }).catch(e => { if (active) setError(String(e)); });
     return () => { active = false; };
   }, [snapshot.id, offset, kind, refresh]);
@@ -51,8 +53,9 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
     <p className="small muted">Statements, observations and hypotheses remain separate. A valid citation identifies a location; human review and factual support remain separate judgments.</p>
     {sourcePages.hasMore?<button className="quiet" disabled={sourcePages.loading} onClick={()=>void sourcePages.loadMore()}>{sourcePages.loading?'Loading…':'Load more sources'}</button>:null}
     {sourcePages.error?<p role="alert" className="small danger-text">Could not load sources: {sourcePages.error}</p>:null}
+    {!native ? <p className="notice notebook-preview-note">Structured evidence storage is available in the Windows desktop app. This browser shows the layout only.</p> : null}
     {error ? <p className="notice error" role="alert">{error}</p> : null}
-    <div className="input-row"><label>Kind<select value={kind} onChange={e => { setKind(e.target.value); setOffset(0); }}><option value="">All kinds</option>{kinds.map(k => <option key={k}>{k}</option>)}</select></label><button className="secondary" disabled={busy || !native} onClick={create}>New object</button><button className="secondary" disabled={busy || !native} onClick={() => setRefresh(v => v + 1)}>Refresh</button></div>
+    <div className="input-row notebook-toolbar"><label>Kind<select value={kind} onChange={e => { setKind(e.target.value); setOffset(0); }}><option value="">All kinds</option>{kinds.map(k => <option key={k}>{k}</option>)}</select></label><div className="spacer"/><button className="secondary" disabled={busy || !native} onClick={create}>New object</button><button className="quiet" disabled={busy || !native} onClick={() => setRefresh(v => v + 1)}>Refresh</button></div>
     {editing ? <form className="object-editor" onSubmit={e => { e.preventDefault(); void action(saveObject); }}>
       <h3>{editing.id ? `Revise object · revision ${editing.revision}` : 'New evidence object'}</h3>
       <div className="form-grid"><label>Kind<select disabled={!!editing.id} value={editing.kind} onChange={e => change({ kind: e.target.value })}>{kinds.map(k => <option key={k}>{k}</option>)}</select></label><label>Title<input required maxLength={300} value={editing.title} onChange={e => change({ title: e.target.value })}/></label></div>
@@ -67,8 +70,8 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
       <div className="input-row"><button type="submit" className="primary" disabled={busy}>Save revision</button><button type="button" className="secondary" disabled={busy} onClick={() => setEditing(null)}>Close editor</button></div>
     </form> : null}
     <div className="object-list">{page.objects.map(o => <details key={`${o.id}:${o.revision}`} className="object-card"><summary><strong>{o.title}</strong><span className="badge">{o.kind}</span><span className="mono small muted">r{o.revision}</span>{o.stale ? <StatusPill state="stale" label="Recheck dependencies" small /> : o.review === 'accepted' ? <StatusPill state="accepted" label="Accepted" small /> : o.review === 'rejected' ? <StatusPill state="failed" label="Rejected" small /> : <StatusPill state="unreviewed" label="Unreviewed" small />}</summary><p className="small muted">{o.actor} · {o.id}</p><pre>{o.content}</pre>{o.locators.length ? <div className="input-row">{o.locators.map((citation, i) => <CitationChip key={i} value={citation} onOpen={(id, locator) => { onSource(id, locator); onClose(); }} />)}</div> : null}<div className="input-row"><button className="secondary" disabled={busy} onClick={() => { setDependencyPreviews([]); setEditing(o); }}>Revise</button>{['accepted', 'rejected', 'unreviewed'].map(review => <button key={review} className="quiet" disabled={busy || o.stale || o.review === review} onClick={() => void action(async () => { await api('evidence_review', { id: o.id, revision: o.revision, review }); setRefresh(v => v + 1); })}>{review === 'accepted' ? 'Accept revision' : review === 'rejected' ? 'Reject revision' : 'Clear review'}</button>)}</div></details>)}</div>
-    {!page.objects.length ? <p>No objects on this page. Create one or ask the investigator to save structured findings.</p> : null}
-    <div className="input-row"><button className="secondary" disabled={offset === 0} onClick={() => setOffset(n => Math.max(0, n - 50))}>Previous</button><span>Page {Math.floor(offset / 50) + 1}</span><button className="secondary" disabled={page.next_offset === null} onClick={() => setOffset(page.next_offset ?? 0)}>Next</button></div>
+    {!page.objects.length ? <div className="empty-state notebook-empty"><NotebookPen size={28}/><h3>No findings on this page</h3><p>Create a structured object or ask VisLex to save an observation. New revisions remain unreviewed until you decide.</p></div> : null}
+    {(offset > 0 || page.next_offset !== null || page.objects.length > 0) ? <div className="input-row notebook-pagination"><button className="secondary" disabled={offset === 0} onClick={() => setOffset(n => Math.max(0, n - 50))}>Previous</button><span>Page {Math.floor(offset / 50) + 1}</span><button className="secondary" disabled={page.next_offset === null} onClick={() => setOffset(page.next_offset ?? 0)}>Next</button></div> : null}
     <SoundDiscovery snapshot={{...snapshot,sources:sourcePages.sources}} onSource={id => { onSource(id); onClose(); }}/>
     <details className="clock-lab"><summary>Clock fit lab · manual anchors</summary><p className="small muted">This creates a mapping proposal. Accepted proposals with independent held-out checks can drive incident replay. Supply independently checked anchors. File timestamps are not automatically capture times. No extrapolation; resets require separate fits.</p>
       <label>Recording<select value={source} onChange={e => setSource(e.target.value)}><option value="">Select recording</option>{sourcePages.sources.filter(s => !s.restricted && ['video', 'audio'].includes(s.kind)).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>

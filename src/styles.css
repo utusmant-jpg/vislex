@@ -832,6 +832,13 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 .dossier-review-actions .quiet:hover:not(:disabled) { border-color: var(--success); color: var(--success); }
 
 .object-list { margin: 10px 0; }
+.notebook-preview-note { background: var(--accent-subtle); border-color: var(--border-strong); color: var(--text-secondary); }
+.notebook-toolbar { padding: 10px 0 13px; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; }
+.notebook-toolbar label { min-width: 180px; }
+.notebook-empty { margin: 22px 0; min-height: 185px; border: 1px dashed var(--border); border-radius: var(--r-md); background: var(--bg-surface-1); }
+.notebook-empty h3 { margin: 10px 0 4px; }
+.notebook-empty p { max-width: 390px; }
+.notebook-pagination { justify-content: center; gap: 14px; margin: 14px 0; color: var(--text-tertiary); font-size: 12px; }
 .object-card { border: 1px solid var(--border); border-radius: var(--r-md); margin: 10px 0; padding: 11px 14px; background: var(--bg-surface-1); }
 .object-card > summary { display: flex; align-items: center; gap: 9px; cursor: pointer; flex-wrap: wrap; list-style: none; }
 .object-card > summary::-webkit-details-marker { display: none; }

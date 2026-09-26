@@ -362,3 +362,14 @@ it('cancels case creation without calling the backend', async () => {
   expect(document.activeElement).toBe(trigger);
   expect(api).not.toHaveBeenCalledWith('create_case', expect.anything());
 });
+
+it('shows an informational findings preview with no empty-page pagination', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? snapshot() : action === 'storage_usage' ? {} : null);
+  render(<App />);
+  await screen.findAllByText('Synthetic case');
+  fireEvent.click(screen.getByRole('button', { name: 'Findings' }));
+  expect(await screen.findByRole('heading', { name: 'No findings on this page' })).toBeTruthy();
+  expect(screen.getByText(/This browser shows the layout only/)).toBeTruthy();
+  expect(screen.getAllByText(/Structured evidence storage/)).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Previous' })).toBeNull();
+});
