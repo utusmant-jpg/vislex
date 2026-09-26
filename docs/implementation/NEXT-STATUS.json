@@ -188,6 +188,19 @@
     }
   },
   "additional_work": {
+    "REVIEW-INPUT-STATE-2026-09-26": {
+      "state": "implemented",
+      "commit": "6720c3f",
+      "evidence": "Automatic review input stamp now includes the latest preparation/discovery attempt and its status, so a later failed attempt invalidates an old completion. A saved AI-authored report does not invalidate its own review.",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core automatic_review -> exit 0, 2 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core a_new_failed_processing_attempt_invalidates_old_automatic_completion -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 71 passed",
+        "git diff --check -> exit 0"
+      ],
+      "unrun_checks": "R05 delayed-provider response/run-epoch interleavings and full declared-check completion remain unverified. No packaged or live-case run after this commit.",
+      "note": "The status change is derived from current job records; source bytes and historical records remain intact."
+    },
     "EXACT-NAVIGATION-2026-09-26": {
       "state": "implemented",
       "commit": "9ca1b35",
