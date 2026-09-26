@@ -360,7 +360,7 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
                 .all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)),
             "Gemini requires a model ID without a path"
         );
-        format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent")
+        format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse")
     };
     Ok(WireRequest { url, body: request })
 }
@@ -478,6 +478,47 @@ pub struct ClaudeStream {
     blocks: std::collections::BTreeMap<usize, Value>,
     open: std::collections::BTreeSet<usize>,
     tool_json: std::collections::BTreeMap<usize, String>,
+}
+
+/// Gemini GenerateContent SSE yields response fragments. Preserve every signed
+/// part in its original position; only adjacent unsigned text may be joined.
+#[derive(Default)]
+pub struct GeminiStream {
+    parts: Vec<Value>,
+    usage: Value,
+}
+impl GeminiStream {
+    pub fn push(&mut self, chunk: &Value) -> Result<(Vec<String>, Option<Value>)> {
+        if !chunk["usageMetadata"].is_null() { self.usage = chunk["usageMetadata"].clone(); }
+        let candidate = &chunk["candidates"][0];
+        if chunk["candidates"].as_array().is_some_and(|items| items.len() > 1) {
+            bail!("Gemini returned multiple candidates for a single-answer request");
+        }
+        let mut deltas = Vec::new();
+        if let Some(parts) = candidate["content"]["parts"].as_array() {
+            for part in parts {
+                ensure!(part.is_object(), "Invalid Gemini stream part");
+                if part["functionCall"].is_object() {
+                    ensure!(part["functionCall"]["name"].as_str().is_some() && part["functionCall"]["args"].is_object(), "Incomplete Gemini function call");
+                }
+                let unsigned_text = part["text"].as_str().is_some() && part["thought"] != true && part["thoughtSignature"].is_null();
+                if unsigned_text && self.parts.last().is_some_and(|last| last["text"].as_str().is_some() && last["thought"] != true && last["thoughtSignature"].is_null()) {
+                    let last = self.parts.last_mut().unwrap();
+                    last["text"] = json!(format!("{}{}", last["text"].as_str().unwrap_or(""), part["text"].as_str().unwrap_or("")));
+                } else {
+                    self.parts.push(part.clone());
+                }
+                if part["thought"] != true {
+                    if let Some(text) = part["text"].as_str().filter(|text| !text.is_empty()) { deltas.push(text.to_string()); }
+                }
+            }
+        }
+        if candidate["finishReason"].as_str().is_some() || chunk["promptFeedback"]["blockReason"].as_str().is_some() {
+            let response = json!({"candidates":[{"finishReason":candidate["finishReason"],"content":{"parts":std::mem::take(&mut self.parts)}}],"promptFeedback":chunk["promptFeedback"],"usageMetadata":self.usage});
+            return Ok((deltas, Some(decode(Provider::Gemini, response)?)));
+        }
+        Ok((deltas, None))
+    }
 }
 impl ClaudeStream {
     pub fn push(&mut self, event: &Value) -> Result<Option<Value>> {
@@ -605,21 +646,9 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
             detail
         );
     }
-    if provider == Provider::Gemini {
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            ensure!(
-                bytes.len() + chunk.len() <= 32 * 1024 * 1024,
-                "Provider response exceeded size limit"
-            );
-            bytes.extend_from_slice(&chunk);
-        }
-        let value = decode(provider, serde_json::from_slice(&bytes)?)?;
-        progress(json!({"activity":"Provider response received; validating evidence tools"}));
-        return Ok(value);
-    }
     let mut stream = crate::agent::ResponseStream::default();
     let mut claude = ClaudeStream::default();
+    let mut gemini = GeminiStream::default();
     while let Some(chunk) = response.chunk().await? {
         for event in stream.push(&chunk)? {
             if provider == Provider::Anthropic {
@@ -627,6 +656,12 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
                 if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta" {
                     progress(json!({"text":event["delta"]["text"]}));
                 }
+                continue;
+            }
+            if provider == Provider::Gemini {
+                let (deltas, completed) = gemini.push(&event)?;
+                for delta in deltas { progress(json!({"text":delta})); }
+                if let Some(value) = completed { return Ok(value); }
                 continue;
             }
             match event["type"].as_str().unwrap_or("") {
@@ -831,6 +866,26 @@ mod stream_transport_tests {
         let error = send_wire(Provider::Anthropic, "synthetic-key", WireRequest { url, body: json!({"model":"synthetic-model","stream":true}) }, |delta| draft.push(delta)).await.unwrap_err();
         server.join().unwrap();
         assert_eq!(draft, vec![json!({"text":"Synthetic answer"})]);
+        assert!(error.to_string().contains("without completion"));
+    }
+
+    #[tokio::test]
+    async fn gemini_transport_keeps_last_signed_part_before_completion() {
+        let events = vec![
+            json!({"candidates":[{"content":{"parts":[{"text":"Synthetic "}]}}]}),
+            json!({"candidates":[{"content":{"parts":[{"text":"answer"},{"text":"","thoughtSignature":"final-sig"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2}}),
+        ];
+        let (url, server) = local_sse(events.clone());
+        let mut progress = Vec::new();
+        let response = send_wire(Provider::Gemini, "synthetic-key", WireRequest { url, body: json!({"contents":[]}) }, |delta| progress.push(delta)).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(progress, vec![json!({"text":"Synthetic "}),json!({"text":"answer"})]);
+        assert_eq!(response["output"][0]["content"][0]["text"], "Synthetic answer");
+        assert_eq!(response["output"][1]["native_part"]["thoughtSignature"], "final-sig");
+
+        let (url, server) = local_sse(events[..1].to_vec());
+        let error = send_wire(Provider::Gemini, "synthetic-key", WireRequest { url, body: json!({"contents":[]}) }, |_| {}).await.unwrap_err();
+        server.join().unwrap();
         assert!(error.to_string().contains("without completion"));
     }
 }
