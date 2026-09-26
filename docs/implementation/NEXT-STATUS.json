@@ -106,7 +106,18 @@
       "note": "Finished run status now honors saved dossier outcome as well as visual coverage. Partial run audits once; a repaired global fingerprint cannot repeat the same task event. Same-source transcript/extract and newer failed processing invalidate currentness; own report does not."
     },
     "R06": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "a96f586",
+      "evidence": "src/App.test.tsx DOM interactions for palette pointer/Enter exact historical hit, Evidence selection to Chat focus, record-preview citation, dirty saved-revision export, case-scoped drafts and working-file tab switch; src/viewerContext.test.ts exact range over viewport; src-tauri/tests/core.rs stale export conflict; src/App.tsx bounded in-memory back/forward location history",
+      "environment": "Windows 10.0.26200 x64; Node 24.14.1; Vitest happy-dom",
+      "commands": [
+        "npm test -> exit 0, 49 passed in 11 files",
+        "npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 73 passed"
+      ],
+      "reviewer": "Single-owner separate read-through: navigation entries stay case-local, retain locator with tab selection, and do not persist draft text in browser storage. Backend expected_revision rejects a concurrent edit.",
+      "unrun_checks": "A packaged UI run of the new history controls is deferred to R23; no live client draft or provider dispatch was used.",
+      "note": "Palette pointer and keyboard share activatePaletteItem. Ask keeps selected revision and moves to Chat before focus. Export explicitly uses the saved revision; dirty text stays in memory and is not silently sent."
     },
     "R07": {
       "state": "implemented",
