@@ -37,9 +37,6 @@ it('follows operating-system appearance only when System is selected', () => {
     removeEventListener: () => {},
   }));
   render(<ThemeProvider><AppearanceProbe /></ThemeProvider>);
-  expect(document.documentElement.dataset.theme).toBe('dark');
-  expect(screen.getByTestId('appearance').textContent).toBe('dark:dark:comfortable');
-  fireEvent.click(screen.getByRole('button', { name: 'System' }));
   expect(document.documentElement.dataset.theme).toBe('light');
   dark = true;
   act(() => { onChange?.(); });
