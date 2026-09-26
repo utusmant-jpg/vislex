@@ -124,19 +124,20 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         };
     }
     if ["import_files","import_folder"].contains(&action) {return import_background(app,action,args);}
-    if ["process_source","render_page","transcribe_source","scan_sound_events","prepare_redaction","diarize_source"].contains(&action) {
+    if ["process_source","render_page","transcribe_source","scan_sound_events","prepare_redaction","diarize_source","step_video_frame"].contains(&action) {
         let (case_id,job)={
             let state=app.state::<AppState>();
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let case=guard.as_mut().context("Open a case first")?;
             let source=text(&args,"source_id")?;
-            if action=="scan_sound_events" {anyhow::ensure!(!case.source(source)?.restricted,"Restricted source");}
+            if ["scan_sound_events","step_video_frame"].contains(&action) {anyhow::ensure!(!case.source(source)?.restricted,"Restricted source");}
             let options=match action {
                 "render_page"=>json!({"operation":"render_page","page":args["page"]}),
                 "diarize_source"=>json!({"operation":"diarize","start":args["start"],"end":args["end"],"track":args["track"]}),
                 "prepare_redaction"=>json!({"operation":"redact","boxes":args["boxes"]}),
                 "transcribe_source"=>json!({"operation":"transcribe","start":args["start"].as_f64().unwrap_or(0.),"end":args["end"].as_f64().unwrap_or(30.),"track":args["track"]}),
                 "scan_sound_events"=>json!({"operation":"sound_events","start":args["start"],"end":args["end"],"track":args["track"],"channel":args["channel"]}),
+                "step_video_frame"=>json!({"operation":"frame_at","target":args["target"],"direction":args["direction"]}),
                 _=>json!({"crop":null}),
             };
             (case.meta("id")?.unwrap_or_default(),crate::processing::prepare_request(case,source,options)?)

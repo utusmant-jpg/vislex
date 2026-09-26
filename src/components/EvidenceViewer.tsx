@@ -19,16 +19,17 @@ export function SourceIcon({ kind, size = 16 }: { kind: string; size?: number })
 
 function formatClockMs(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `${h > 0 ? `${h}:${String(m).padStart(2, '0')}` : m}:${String(Math.floor(s)).padStart(2, '0')}.${String(Math.floor((s % 1) * 1000)).padStart(3, '0')}`;
+  const total=Math.round(seconds*1000);
+  const h=Math.floor(total/3_600_000);
+  const m=Math.floor((total%3_600_000)/60_000);
+  const s=Math.floor((total%60_000)/1000);
+  return `${h > 0 ? `${h}:${String(m).padStart(2, '0')}` : m}:${String(s).padStart(2, '0')}.${String(total%1000).padStart(3, '0')}`;
 }
 
-const FRAME_STEP = 1 / 30;
+const APPROXIMATE_STEP_SECONDS = 1 / 30;
 
 /** Custom forensic transport shared by video and audio. Native controls stay off. */
-function MediaControls({ media, filmstrip, onSeek }: { media: React.RefObject<HTMLMediaElement | null>; filmstrip: { artifact: string; time: number }[] | null; onSeek: (time: number) => void }) {
+function MediaControls({ media, element, filmstrip, onSeek, onExactStep, exactBusy }: { media: React.RefObject<HTMLMediaElement | null>; element: HTMLMediaElement | null; filmstrip: { artifact: string; time: number }[] | null; onSeek: (time: number) => void; onExactStep?: (direction:'previous'|'next')=>void; exactBusy?:boolean }) {
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -37,15 +38,15 @@ function MediaControls({ media, filmstrip, onSeek }: { media: React.RefObject<HT
   const [loopA, setLoopA] = useState<number | null>(null);
   const [loopB, setLoopB] = useState<number | null>(null);
   useEffect(() => {
-    const element = media.current;
     if (!element) return;
     const onTime = () => {
-      setTime(element.currentTime);
-      if (loopA !== null && loopB !== null && element.currentTime >= loopB) element.currentTime = loopA;
+      if (Number.isFinite(element.currentTime)) setTime(element.currentTime);
+      if (loopA !== null && loopB !== null && loopA >= 0 && loopA < loopB && Number.isFinite(loopB) && element.currentTime >= loopB) element.currentTime = loopA;
     };
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
-    const onMeta = () => setDuration(element.duration || 0);
+    const onMeta = () => setDuration(Number.isFinite(element.duration) && element.duration > 0 ? element.duration : 0);
+    onTime();onMeta();setPlaying(!element.paused);setRate(element.playbackRate);setMuted(element.muted);
     element.addEventListener('timeupdate', onTime);
     element.addEventListener('play', onPlay);
     element.addEventListener('pause', onPause);
@@ -58,13 +59,17 @@ function MediaControls({ media, filmstrip, onSeek }: { media: React.RefObject<HT
       element.removeEventListener('loadedmetadata', onMeta);
       element.removeEventListener('durationchange', onMeta);
     };
-  }, [media, loopA, loopB]);
+  }, [element, loopA, loopB]);
   const toggle = () => { const element = media.current; if (!element) return; if (element.paused) void element.play(); else element.pause(); };
-  const skip = (amount: number) => { const element = media.current; if (!element) return; onSeek(Math.max(0, Math.min((element.duration || 0) - 0.01, element.currentTime + amount))); };
-  const frame = (amount: number) => skip(amount * FRAME_STEP);
+  const skip = (amount: number) => { const element = media.current; if (!element || !Number.isFinite(element.currentTime) || !Number.isFinite(element.duration) || element.duration <= 0) return; onSeek(Math.max(0, Math.min(element.duration, element.currentTime + amount))); };
+  const frame = (amount: number) => skip(amount * APPROXIMATE_STEP_SECONDS);
   const applyRate = (next: number) => { setRate(next); if (media.current) media.current.playbackRate = next; };
   const toggleMute = () => { const element = media.current; if (!element) return; element.muted = !element.muted; setMuted(element.muted); };
+  const markA = () => { const value=media.current?.currentTime; if (value===undefined || !Number.isFinite(value) || value<0) return;setLoopA(value);if(loopB!==null && value>=loopB)setLoopB(null); };
+  const markB = () => { const value=media.current?.currentTime; if (value===undefined || !Number.isFinite(value) || value<0) return;setLoopB(value);if(loopA!==null && value<=loopA)setLoopA(null); };
   return <div className="media-controls" onKeyDown={event => {
+    const target=event.target as HTMLElement;
+    if (target.closest('input,select,textarea,[contenteditable="true"]')) return;
     if (event.key === ' ' || event.key === 'k') { event.preventDefault(); toggle(); }
     else if (event.key === 'j') skip(-10);
     else if (event.key === 'l') skip(10);
@@ -72,9 +77,9 @@ function MediaControls({ media, filmstrip, onSeek }: { media: React.RefObject<HT
     else if (event.key === 'ArrowRight') { event.preventDefault(); skip(event.shiftKey ? 1 : 5); }
     else if (event.key === ',') frame(-1);
     else if (event.key === '.') frame(1);
-    else if (event.key === '[') setLoopA(media.current?.currentTime ?? null);
-    else if (event.key === ']') setLoopB(media.current?.currentTime ?? null);
-  }} tabIndex={0} role="group" aria-label="Playback controls — space to play, J K L to shuttle, comma and period to step frames">
+    else if (event.key === '[') markA();
+    else if (event.key === ']') markB();
+  }} tabIndex={0} role="group" aria-label="Playback controls — space to play, J K L to shuttle, comma and period for approximate time steps">
     <div className="media-progress">
       <input
         aria-label="Seek position"
@@ -84,7 +89,7 @@ function MediaControls({ media, filmstrip, onSeek }: { media: React.RefObject<HT
         step={0.01}
         value={Math.min(time, duration || 0)}
         onChange={event => onSeek(Number(event.target.value))}
-        style={loopA !== null && loopB !== null ? { '--loop-a': `${(loopA / (duration || 1)) * 100}%`, '--loop-b': `${(loopB / (duration || 1)) * 100}%` } as React.CSSProperties : undefined}
+        style={loopA !== null && loopB !== null && loopA < loopB && duration > 0 ? { '--loop-a': `${(loopA / duration) * 100}%`, '--loop-b': `${(loopB / duration) * 100}%` } as React.CSSProperties : undefined}
       />
       {loopA !== null && loopB !== null && loopB > loopA ? <span className="loop-range" style={{ left: `${(loopA / (duration || 1)) * 100}%`, width: `${((loopB - loopA) / (duration || 1)) * 100}%` }} /> : null}
     </div>
@@ -95,14 +100,15 @@ function MediaControls({ media, filmstrip, onSeek }: { media: React.RefObject<HT
     </div> : null}
     <div className="media-buttons">
       <Tooltip text="Back 10 seconds (J)"><button className="icon-button" aria-label="Back 10 seconds" onClick={() => skip(-10)}><ChevronsLeft size={16} /></button></Tooltip>
-      <Tooltip text="Back 1 frame (,)"><button className="icon-button" aria-label="Back one frame" onClick={() => frame(-1)}><SkipBack size={14} /></button></Tooltip>
+      <Tooltip text="Back about 33 ms (,)"><button className="icon-button" aria-label="Back about 33 milliseconds" onClick={() => frame(-1)}><SkipBack size={14} /></button></Tooltip>
       <button className="media-play" aria-label={playing ? 'Pause' : 'Play'} onClick={toggle}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
-      <Tooltip text="Forward 1 frame (.)"><button className="icon-button" aria-label="Forward one frame" onClick={() => frame(1)}><SkipForward size={14} /></button></Tooltip>
+      <Tooltip text="Forward about 33 ms (.)"><button className="icon-button" aria-label="Forward about 33 milliseconds" onClick={() => frame(1)}><SkipForward size={14} /></button></Tooltip>
       <Tooltip text="Forward 10 seconds (L)"><button className="icon-button" aria-label="Forward 10 seconds" onClick={() => skip(10)}><ChevronsRight size={16} /></button></Tooltip>
+      {onExactStep ? <><button className="quiet" disabled={exactBusy} onClick={()=>onExactStep('previous')}>Inspect previous decoded frame</button><button className="quiet" disabled={exactBusy} onClick={()=>onExactStep('next')}>Inspect next decoded frame</button></> : null}
       <span className="media-time mono">{formatClockMs(time)} <span className="media-duration">/ {formatClockMs(duration)}</span></span>
       <div className="spacer" />
-      <Tooltip text="Mark loop start ([)"><button className={`media-loop ${loopA !== null ? 'active' : ''}`} aria-label="Mark loop start" onClick={() => setLoopA(media.current?.currentTime ?? null)}>A</button></Tooltip>
-      <Tooltip text="Mark loop end (])"><button className={`media-loop ${loopB !== null ? 'active' : ''}`} aria-label="Mark loop end" onClick={() => setLoopB(media.current?.currentTime ?? null)}>B</button></Tooltip>
+      <Tooltip text="Mark loop start ([)"><button className={`media-loop ${loopA !== null ? 'active' : ''}`} aria-label="Mark loop start" onClick={markA}>A</button></Tooltip>
+      <Tooltip text="Mark loop end (])"><button className={`media-loop ${loopB !== null ? 'active' : ''}`} aria-label="Mark loop end" onClick={markB}>B</button></Tooltip>
       {loopA !== null || loopB !== null ? <button className="quiet" onClick={() => { setLoopA(null); setLoopB(null); }}>Clear loop</button> : null}
       <label className="media-rate">Speed
         <select aria-label="Playback speed" value={rate} onChange={event => applyRate(Number(event.target.value))}>
@@ -139,6 +145,17 @@ function PdfPageView({ index, ratio, artifact, ensure, onVisible, register }: {
 
 export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect, onAsk, caseId }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void; onAsk?: () => void; caseId?:string }) {
   const media = useRef<HTMLMediaElement | null>(null);
+  const [mediaElement,setMediaElement]=useState<HTMLMediaElement|null>(null);
+  const bindMedia=useCallback((node:HTMLMediaElement|null)=>{media.current=node;setMediaElement(node);},[]);
+  const displayedFrameTime=useRef<number|null>(null);
+  useEffect(()=>{
+    displayedFrameTime.current=null;
+    if(!(mediaElement instanceof HTMLVideoElement) || !mediaElement.requestVideoFrameCallback)return;
+    let active=true;let callback=0;
+    const observe=(_now:number,metadata:VideoFrameCallbackMetadata)=>{if(!active)return;if(Number.isFinite(metadata.mediaTime))displayedFrameTime.current=metadata.mediaTime;callback=mediaElement.requestVideoFrameCallback(observe);};
+    callback=mediaElement.requestVideoFrameCallback(observe);
+    return()=>{active=false;mediaElement.cancelVideoFrameCallback?.(callback);};
+  },[mediaElement]);
   const [currentTime, setCurrentTime] = useState(0);
   const [pendingSeek, setPendingSeek] = useState<number | null>(null);
   useEffect(() => { if (pendingSeek !== null && media.current?.readyState) { media.current.currentTime = pendingSeek; setCurrentTime(pendingSeek); setPendingSeek(null); } }, [pendingSeek]);
@@ -161,6 +178,10 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const [playback, setPlayback] = useState<string | null>(null);
   const [needsProxy, setNeedsProxy] = useState(/\.avi$/i.test(source.name));
   const [filmstrip, setFilmstrip] = useState<{ artifact: string; time: number }[] | null>(null);
+  const [exactFrame,setExactFrame]=useState<{artifact:string;locator:string;time:number;pts:number;timeBase:string}|null>(null);
+  const [exactBusy,setExactBusy]=useState(false);
+  const exactRequest=useRef(0);
+  const filmstripWindow = Number.isFinite(currentTime) && currentTime >= 0 ? Math.floor(currentTime / 120) : 0;
   const [askChip, setAskChip] = useState<{ x: number; y: number; a: number; b: number; revision: number } | null>(null);
 
   // PDF continuous-scroll state
@@ -235,7 +256,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     else { setDerived(null); setShowText(source.kind === 'text' || (source.kind === 'other' && source.status.startsWith('text'))); setStart(1); }
   }, [locator, source.id, source.kind, source.status]);
 
-  useEffect(() => { setZoom(1); setRotation(0); setError(''); }, [source.id]);
+  useEffect(() => { exactRequest.current++;setZoom(1); setRotation(0); setError(''); setExactFrame(null);setExactBusy(false); }, [source.id]);
 
   useEffect(() => {
     let active = true; setPage(null);
@@ -255,11 +276,11 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   useEffect(() => {
     if (source.kind !== 'video' || source.restricted) return;
     let active = true;
-    api<{ samples: { artifact_id: string; metadata: { playback_seconds: number } }[] }>('browse_video_discovery', { source_id: source.id, kind: 'video_overview', start: 0, end: 86_400, offset: 0, query: '' })
-      .then(result => { if (active) setFilmstrip(result.samples.slice(0, 22).map(sample => ({ artifact: sample.artifact_id, time: sample.metadata.playback_seconds })).filter(sample => sample.time >= 0)); })
-      .catch(() => setFilmstrip(null));
+    api<{ samples: { artifact_id: string; metadata: { playback_seconds: number } }[] }>('browse_video_discovery', { source_id: source.id, kind: 'video_overview', start: Math.max(0,filmstripWindow*120-30), end: (filmstripWindow+1)*120+30, offset: 0, query: '' })
+      .then(result => { if (active) setFilmstrip(result.samples.slice(0, 22).map(sample => ({ artifact: sample.artifact_id, time: sample.metadata.playback_seconds })).filter(sample => Number.isFinite(sample.time) && sample.time >= 0)); })
+      .catch(() => { if(active)setFilmstrip(null); });
     return () => { active = false; };
-  }, [source.id, source.restricted]);
+  }, [source.id, source.restricted, filmstripWindow]);
 
   const url = evidenceUrl(source.id);
   const playbackUrl = playback ? evidenceUrl(`artifact/${playback}`) : url;
@@ -268,6 +289,23 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     if (pendingSeek !== null && media.current) { media.current.currentTime = pendingSeek; setPendingSeek(null); }
     else if (requestedTime != null && Number.isFinite(requestedTime) && media.current) media.current.currentTime = requestedTime;
   };
+  async function stepExact(direction:'previous'|'next') {
+    const target=exactFrame?.time ?? displayedFrameTime.current ?? media.current?.currentTime;
+    if (exactBusy || target===undefined || !Number.isFinite(target) || target<0) return;
+    const request=++exactRequest.current;
+    setExactBusy(true);media.current?.pause();
+    try {
+      const value=await api<{published:{artifact_id:string;locator:string;metadata:{source_relative_seconds:number;pts:number;time_base:string}}[]}>('step_video_frame',{source_id:source.id,target,direction});
+      if(request!==exactRequest.current)return;
+      const item=value.published[0];
+      if (!item || !Number.isFinite(item.metadata.source_relative_seconds) || !Number.isFinite(item.metadata.pts)) throw new Error('The decoder did not return a timestamped frame.');
+      setExactFrame({artifact:item.artifact_id,locator:item.locator,time:item.metadata.source_relative_seconds,pts:item.metadata.pts,timeBase:item.metadata.time_base});
+      if(media.current)media.current.currentTime=item.metadata.source_relative_seconds;
+      setCurrentTime(item.metadata.source_relative_seconds);
+      setError('');
+    } catch(e) {if(request===exactRequest.current)setError(String(e));}
+    finally {if(request===exactRequest.current)setExactBusy(false);}
+  }
 
   function onTextSelect(event: React.MouseEvent) {
     const selection = window.getSelection();
@@ -345,8 +383,9 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       </div> : null}
 
       {!showText && !derived && source.kind === 'video' ? <video
-        ref={node => { media.current = node; }}
+        ref={bindMedia}
         onTimeUpdate={onTimeUpdate}
+        onPlay={()=>{exactRequest.current++;setExactFrame(null);setExactBusy(false);}}
         onLoadedMetadata={onLoadedMetadata}
         key={playbackUrl}
         src={needsProxy && !playback ? undefined : playbackUrl}
@@ -358,7 +397,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
         <Volume2 size={52} />
         <h2>{source.name}</h2>
         <p className="small muted">{formatBytes(source.size)} · {source.status}</p>
-        <audio ref={node => { media.current = node; }} onTimeUpdate={onTimeUpdate} onLoadedMetadata={onLoadedMetadata} src={url} controls={false} preload="metadata" onError={() => setError('This audio format is not supported by the installed viewer.')} />
+        <audio ref={bindMedia} onTimeUpdate={onTimeUpdate} onLoadedMetadata={onLoadedMetadata} src={url} controls={false} preload="metadata" onError={() => setError('This audio format is not supported by the installed viewer.')} />
       </div> : null}
 
       {!showText && !derived && source.kind === 'other' && !processing ? <div className="empty-content">
@@ -385,7 +424,8 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       <button onClick={() => { void navigator.clipboard.writeText(`evidence:${source.id}#R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); }}>Copy citation (rev {askChip.revision})</button>
     </div> : null}
 
-    {['video', 'audio'].includes(source.kind) && !showText && !derived ? <MediaControls media={media} filmstrip={source.kind === 'video' ? filmstrip : null} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} /> : null}
+    {['video', 'audio'].includes(source.kind) && !showText && !derived ? <MediaControls media={media} element={mediaElement} filmstrip={source.kind === 'video' ? filmstrip : null} onExactStep={source.kind==='video'?direction=>{void stepExact(direction);}:undefined} exactBusy={exactBusy} onSeek={time => { exactRequest.current++;displayedFrameTime.current=null;setExactBusy(false);setExactFrame(null);if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} /> : null}
+    {source.kind==='video' && exactFrame && !showText && !derived ? <div className="exact-frame-inspection" role="region" aria-label="Exact decoded frame"><img src={evidenceUrl(`artifact/${exactFrame.artifact}`)} alt={`Decoded frame at source time ${formatClockMs(exactFrame.time)}`} style={{maxWidth:'100%',maxHeight:'40vh',objectFit:'contain'}} /><p>Decoded source frame at {formatClockMs(exactFrame.time)} · PTS {exactFrame.pts} × {exactFrame.timeBase}. This image is a derivative of one frame.</p><button className="quiet" onClick={()=>void navigator.clipboard.writeText(exactFrame.locator)}>Copy frame citation</button></div> : null}
     {['video', 'audio'].includes(source.kind) ? <FullTranscript caseId={caseId} currentTime={currentTime} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} sourceId={source.id} run={run} refresh={refresh} /> : null}
     {source.kind === 'video' && !source.restricted ? <VideoDiscovery key={source.id} sourceId={source.id} onFrame={id => { setDerived(id); setShowText(false); }} onSeek={time => { setDerived(null); setShowText(false); setPendingSeek(time); }} /> : null}
     {['pdf', 'image'].includes(source.kind) && !source.restricted ? <RedactionPanel sourceId={source.id} kind={source.kind} /> : null}

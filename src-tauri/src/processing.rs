@@ -65,6 +65,10 @@ pub struct PreparedJob {
 pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<PreparedJob> {
     let automatic=options["operation"]=="automatic";
     let source = case.source(source_id)?;
+    if options["operation"]=="frame_at" {
+        let target=options["target"].as_f64().context("Missing frame target")?;
+        ensure!(source.kind=="video" && !source.restricted && target.is_finite() && target>=0. && ["previous","next"].contains(&options["direction"].as_str().unwrap_or("")),"Invalid exact frame request");
+    }
     ensure!(
         source.size
             <= if ["audio", "video"].contains(&source.kind.as_str()) {
@@ -119,7 +123,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     request["asr_model"] = json!(case.meta("asr_profile")?.unwrap_or_else(||"tiny".into()));
     request["version"] = json!(1);
     request["kind"] = json!(kind);
-    if ["video_ocr","video_overview"].contains(&kind) {
+    if ["video_ocr","video_overview"].contains(&kind) || request["operation"]=="frame_at" {
         let epoch=case.meta(&format!("source_policy_epoch:{}",source.id))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
         request["source_lease_epoch"]=json!(epoch);
         request["source_lease"]=json!(case.root.join("staging/source-leases").join(&source.id).join(&source.sha256).join(epoch.to_string()).join("input").to_string_lossy());
@@ -156,7 +160,7 @@ pub fn run_prepared(job:&PreparedJob)->Result<Value> {
         let result:Value=serde_json::from_slice(&fs::read(path)?)?;
         if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash_strong(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
     }
-    let lease=if ["video_ocr","video_overview"].contains(&job.kind.as_str()) {
+    let lease=if ["video_ocr","video_overview"].contains(&job.kind.as_str()) || job.request["operation"]=="frame_at" {
         Some(acquire_source_lease(job)?)
     } else {copy_input(&job.source_path,job.staging.path(),&job.source.sha256)?;None};
     if let Some(lease)=lease.as_ref() {
@@ -469,8 +473,8 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
     if staged.is_some() {
         let current=case.source(source_id)?;
         ensure!(current.sha256==source.sha256,"Source changed before publication");
-        if request["operation"]=="automatic" || ["video_ocr","video_overview"].contains(&kind) {ensure!(!current.restricted,"Source was restricted before publication");}
-        if ["video_ocr","video_overview"].contains(&kind) {
+        if request["operation"]=="automatic" || ["video_ocr","video_overview"].contains(&kind) || request["operation"]=="frame_at" {ensure!(!current.restricted,"Source was restricted before publication");}
+        if ["video_ocr","video_overview"].contains(&kind) || request["operation"]=="frame_at" {
             let epoch=case.meta(&format!("source_policy_epoch:{source_id}"))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
             ensure!(request["source_lease_epoch"].as_u64()==Some(epoch),"Source policy changed before discovery publication");
         }

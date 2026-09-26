@@ -494,6 +494,30 @@ fn agent_prepared_media_publishes_once_and_records_actual_page_receipt() {
     assert_eq!(case.db.query_row("SELECT count(*) FROM coverage_receipts WHERE stage='page_rendered'",[],|r|r.get::<_,u64>(0)).unwrap(),1);
     assert!(agent::receive_prepared(&mut case,&task,&request.transmission,response,&mut media).is_err());
 }
+
+#[test]
+#[ignore = "Requires packaged worker and generated VFR fixture"]
+fn exact_video_frame_steps_publish_adjacent_pts_without_recopying_source() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut case=Case::create(&dir.path().join("case"),"Exact frame fixture").unwrap();
+    let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("fixtures/generated/variable-timing.mp4");
+    case.import_files(&[input.to_string_lossy().into()],"synthetic").unwrap();
+    let source=case.sources().unwrap()[0].id.clone();
+    for (target,direction,expected) in [(0.6,"previous",0.2),(0.6,"next",1.4)] {
+        let value=processing::process_request(&mut case,&source,json!({"operation":"frame_at","target":target,"direction":direction})).unwrap();
+        let frame=&value["published"][0];
+        assert!((frame["metadata"]["source_relative_seconds"].as_f64().unwrap()-expected).abs()<0.001);
+        case.validate_citation(frame["locator"].as_str().unwrap()).unwrap();
+        case.verify_source(&source).unwrap();
+    }
+    let count:i64=case.db.query_row("SELECT COUNT(*) FROM processing_jobs WHERE source_id=? AND kind='video' AND status='complete'",[&source],|r|r.get(0)).unwrap();
+    assert_eq!(count,2);
+    let receipts=fs::read_dir(case.root.join("staging")).unwrap().filter_map(Result::ok).filter_map(|entry|fs::read(entry.path().join("source-lease-receipt.json")).ok()).map(|raw|serde_json::from_slice::<Value>(&raw).unwrap()).collect::<Vec<_>>();
+    assert_eq!(receipts.len(),2);
+    assert_eq!(receipts.iter().filter(|receipt|receipt["copied_bytes_for_job"].as_u64().unwrap_or(0)>0).count(),1);
+    assert_eq!(receipts.iter().filter(|receipt|receipt["reused"]==true).count(),1);
+    assert!(processing::process_request(&mut case,&source,json!({"operation":"frame_at","target":0.6,"direction":"sideways"})).is_err());
+}
 #[test]
 #[ignore = "Requires packaged worker for agent preparation"]
 fn stopping_chat_cancels_its_prepared_local_worker_before_launch() {
