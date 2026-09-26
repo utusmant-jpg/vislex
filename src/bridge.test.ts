@@ -51,4 +51,10 @@ describe('browser preview isolation', () => {
     const after = await api<{ audit_seq: number }>('case_summary', { case_id: 'synthetic-demo' });
     expect(after.audit_seq).toBe(before.audit_seq + 1);
   });
+  it('provides synthetic review reads but keeps native review actions unavailable', async () => {
+    await api('load_demo');
+    expect(await api('investigation_workbench')).toMatchObject({ investigations: [], affected_objects: [] });
+    expect(await api<{ sources: { source_id: string }[] }>('coverage_map')).toMatchObject({ sources: [{ source_id: 'demo-statement' }] });
+    await expect(api('review_redaction', { artifact_id: 'fake' })).rejects.toThrow('native desktop');
+  });
 });
