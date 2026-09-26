@@ -335,7 +335,7 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
     let forced = body["tool_choice"]["name"].as_str();
     let request = if provider == Provider::Anthropic {
         let tools:Vec<_>=defs.iter().map(|t|json!({"name":t["name"],"description":t["description"],"input_schema":t["parameters"]})).collect();
-        let mut value = json!({"model":model,"max_tokens":body["max_output_tokens"],"system":body["instructions"],"messages":messages,"tools":tools,"stream":false});
+        let mut value = json!({"model":model,"max_tokens":body["max_output_tokens"],"system":body["instructions"],"messages":messages,"tools":tools,"stream":true});
         value["tool_choice"] = if let Some(name) = forced {
             json!({"type":"tool","name":name,"disable_parallel_tool_use":true})
         } else {
@@ -471,6 +471,85 @@ pub fn synthetic_provider_url() -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Assemble Claude's SSE blocks without treating partial tool JSON as a call.
+#[derive(Default)]
+pub struct ClaudeStream {
+    message: Option<Value>,
+    blocks: std::collections::BTreeMap<usize, Value>,
+    open: std::collections::BTreeSet<usize>,
+    tool_json: std::collections::BTreeMap<usize, String>,
+}
+impl ClaudeStream {
+    pub fn push(&mut self, event: &Value) -> Result<Option<Value>> {
+        match event["type"].as_str().context("Missing Claude stream event type")? {
+            "ping" => {},
+            "message_start" => {
+                ensure!(self.message.is_none(), "Duplicate Claude message start");
+                let message = event["message"].as_object().context("Missing Claude message")?;
+                self.message = Some(Value::Object(message.clone()));
+            },
+            "content_block_start" => {
+                ensure!(self.message.is_some(), "Claude content before message start");
+                let index = event["index"].as_u64().context("Missing Claude block index")? as usize;
+                ensure!(index < 1000 && !self.blocks.contains_key(&index), "Duplicate or excessive Claude content block");
+                ensure!(event["content_block"].is_object(), "Missing Claude content block");
+                self.blocks.insert(index, event["content_block"].clone());
+                self.open.insert(index);
+            },
+            "content_block_delta" => {
+                let index = event["index"].as_u64().context("Missing Claude block index")? as usize;
+                ensure!(self.open.contains(&index), "Claude delta outside an open block");
+                let block = self.blocks.get_mut(&index).context("Missing Claude block")?;
+                let delta = &event["delta"];
+                match delta["type"].as_str().context("Missing Claude delta type")? {
+                    "text_delta" if block["type"] == "text" => {
+                        block["text"].as_str().context("Missing Claude text")?;
+                        let text = delta["text"].as_str().context("Missing Claude text delta")?;
+                        block["text"] = json!(format!("{}{text}", block["text"].as_str().unwrap_or("")));
+                    },
+                    "input_json_delta" if block["type"] == "tool_use" => {
+                        let fragment = delta["partial_json"].as_str().context("Missing Claude tool delta")?;
+                        if !fragment.is_empty() { self.tool_json.entry(index).or_default().push_str(fragment); }
+                    },
+                    "thinking_delta" if block["type"] == "thinking" => {
+                        let text = delta["thinking"].as_str().context("Missing Claude thought delta")?;
+                        block["thinking"] = json!(format!("{}{text}", block["thinking"].as_str().unwrap_or("")));
+                    },
+                    "signature_delta" if block["type"] == "thinking" => {
+                        block["signature"] = delta["signature"].clone();
+                    },
+                    _ => anyhow::bail!("Unsupported Claude stream delta"),
+                }
+            },
+            "content_block_stop" => {
+                let index = event["index"].as_u64().context("Missing Claude block index")? as usize;
+                ensure!(self.open.remove(&index), "Claude block stop without an open block");
+                if let Some(args) = self.tool_json.remove(&index) {
+                    self.blocks.get_mut(&index).context("Missing Claude tool block")?["input"] = serde_json::from_str(&args).context("Malformed Claude tool arguments")?;
+                }
+            },
+            "message_delta" => {
+                let message = self.message.as_mut().context("Claude message delta before start")?;
+                if !event["delta"]["stop_reason"].is_null() { message["stop_reason"] = event["delta"]["stop_reason"].clone(); }
+                if !event["usage"].is_null() {
+                    let usage = event["usage"].as_object().context("Invalid Claude usage")?;
+                    for (key, value) in usage { message["usage"][key] = value.clone(); }
+                }
+            },
+            "message_stop" => {
+                ensure!(self.open.is_empty(), "Claude message ended with an open content block");
+                let mut message = self.message.take().context("Claude message stop before start")?;
+                ensure!(self.blocks.keys().enumerate().all(|(expected, actual)| expected == *actual), "Claude content block gap");
+                message["content"] = json!(std::mem::take(&mut self.blocks).into_values().collect::<Vec<_>>());
+                return Ok(Some(decode(Provider::Anthropic, message)?));
+            },
+            "error" => anyhow::bail!("Claude stream error: {}", stream_failure_detail(event)),
+            _ => anyhow::bail!("Unsupported Claude stream event"),
+        }
+        Ok(None)
+    }
+}
+
 fn inference_client() -> Result<reqwest::Client> {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     if let Some(client) = CLIENT.get() { return Ok(client.clone()); }
@@ -522,7 +601,7 @@ pub async fn send(
             detail
         );
     }
-    if !matches!(provider, Provider::Openai | Provider::Xai) {
+    if provider == Provider::Gemini {
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await? {
             ensure!(
@@ -536,8 +615,16 @@ pub async fn send(
         return Ok(value);
     }
     let mut stream = crate::agent::ResponseStream::default();
+    let mut claude = ClaudeStream::default();
     while let Some(chunk) = response.chunk().await? {
         for event in stream.push(&chunk)? {
+            if provider == Provider::Anthropic {
+                if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta" {
+                    progress(json!({"text":event["delta"]["text"]}));
+                }
+                if let Some(value) = claude.push(&event)? { return Ok(value); }
+                continue;
+            }
             match event["type"].as_str().unwrap_or("") {
                 "response.completed" => return Ok(event["response"].clone()),
                 "response.failed" | "response.incomplete" | "error" => {
