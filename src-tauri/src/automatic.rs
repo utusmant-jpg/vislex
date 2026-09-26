@@ -129,6 +129,34 @@ pub fn publish(case:&mut Case,job:&Job,result:Result<Value>)->Result<()> {
 /// itself once the user's chat turn is finished. Any other pause (user stop,
 /// application interruption, provider error) stays down until explicitly resumed.
 pub const CHAT_PREEMPTION: &str = "Paused for your chat; automatic analysis will continue afterwards";
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum PauseKind { ChatPreempted, UserStopped, Interrupted, Error }
+impl PauseKind {
+    fn key(self)->&'static str {match self {Self::ChatPreempted=>"chat_preempted",Self::UserStopped=>"user_stopped",Self::Interrupted=>"interrupted",Self::Error=>"error"}}
+    fn from_reason(reason:&str)->Self {if reason==CHAT_PREEMPTION {Self::ChatPreempted} else if reason=="Stopped by user" {Self::UserStopped} else if reason.contains("interrupted") {Self::Interrupted} else {Self::Error}}
+}
+pub fn record_pause(case:&Case,task:&str,reason:&str)->Result<()> {
+    if case.meta(&format!("automatic_task:{task}"))?.as_deref()==Some("true") {
+        case.set_meta(&format!("auto_review_pause_kind:{task}"),&json!({"kind":PauseKind::from_reason(reason).key(),"reason":reason}).to_string())?;
+    }
+    Ok(())
+}
+fn pause_kind(case:&Case,task:&str,reason:&str)->Result<PauseKind> {
+    let derived=PauseKind::from_reason(reason);
+    let saved=case.meta(&format!("auto_review_pause_kind:{task}"))?
+        .and_then(|raw|serde_json::from_str::<Value>(&raw).ok());
+    // The task's current error is authoritative if a legacy coordinator
+    // changed it without writing the typed marker.
+    if let Some(saved)=saved.filter(|saved|saved["reason"]==reason) {
+        return Ok(match saved["kind"].as_str() {
+            Some("chat_preempted")=>PauseKind::ChatPreempted,
+            Some("user_stopped")=>PauseKind::UserStopped,
+            Some("interrupted")=>PauseKind::Interrupted,
+            _=>PauseKind::Error,
+        });
+    }
+    Ok(derived)
+}
 fn declared_checks_complete(case:&Case,task:&str)->Result<bool> {
     Ok(case.meta(&format!("completion:{task}"))?
         .and_then(|raw|serde_json::from_str::<Value>(&raw).ok())
@@ -202,10 +230,12 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
                     let coverage=visual_coverage(case,&task)?;
                     let complete=coverage["complete"]==true && declared_checks_complete(case,&task)?;
                     case.set_meta(&format!("auto_visual_coverage:{task}"),&coverage.to_string())?;
-                    if case.meta("auto_review_fingerprint")?.as_deref()!=Some(fingerprint.as_str()) {
-                        case.set_meta("auto_review_fingerprint",&fingerprint)?;
+                    let event_key=format!("auto_review_finalized:{task}");
+                    if case.meta(&event_key)?.is_none() {
                         case.audit(if complete{"automatic_case_review_completed"}else{"automatic_case_review_partial"},json!({"task":task,"inventory":fingerprint,"visual_coverage":coverage}))?;
+                        case.set_meta(&event_key,if complete{"complete"}else{"partial"})?;
                     }
+                    case.set_meta("auto_review_fingerprint",&fingerprint)?;
                     case.set_meta("auto_review_state",if complete{"complete"}else{"partial"})?;
                     return Ok(None);
                 }
@@ -219,11 +249,11 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
                 // explicit resume. resume() itself refuses to replay a
                 // transmission whose delivery is uncertain.
                 let reason:String=case.db.query_row("SELECT error FROM tasks WHERE id=?",[&task],|r|r.get(0)).unwrap_or_default();
-                if reason==CHAT_PREEMPTION && agent::resume(case,&task).is_ok() {
+                if pause_kind(case,&task,&reason)?==PauseKind::ChatPreempted && agent::resume(case,&task).is_ok() {
                     case.set_meta("auto_review_state","running")?;
                     return Ok(Some(task));
                 }
-                case.set_meta("auto_review_state",if reason=="Stopped by user" || reason==CHAT_PREEMPTION {"paused"} else {"failed"})?;
+                case.set_meta("auto_review_state",if matches!(pause_kind(case,&task,&reason)?,PauseKind::UserStopped|PauseKind::ChatPreempted) {"paused"} else {"failed"})?;
                 return Ok(None);
             }
             _=>{case.set_meta("auto_review_state","failed")?;}
@@ -259,7 +289,7 @@ pub fn status(case:&Case)->Result<Value> {
         Some("running")=>"running",
         Some("paused")=>{
             let reason:String=case.db.query_row("SELECT error FROM tasks WHERE id=?",[task.as_deref().unwrap()],|r|r.get(0)).unwrap_or_default();
-            if reason=="Stopped by user" || reason==CHAT_PREEMPTION {"paused"} else {"failed"}
+            if matches!(pause_kind(case,task.as_deref().unwrap_or_default(),&reason)?,PauseKind::UserStopped|PauseKind::ChatPreempted) {"paused"} else {"failed"}
         },
         Some("complete")=>{
             let dispatched=task.as_ref().and_then(|task|case.meta(&format!("auto_review_inventory:{task}")).ok().flatten().or_else(||case.meta("auto_review_fingerprint").ok().flatten()));

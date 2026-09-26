@@ -241,10 +241,11 @@ pub fn attach_viewer_context(case:&mut Case,task:&str,context:&Value)->Result<()
 }
 pub fn pause(case: &mut Case, task: &str, reason: &str) -> Result<()> {
     case.db.execute("UPDATE tasks SET status='paused',error='Coordinator stopped',updated_at=? WHERE id IN (SELECT task_id FROM agent_assignments WHERE parent_id=?) AND status='running'",params![now(),task])?;
-    case.db.execute(
+    let changed=case.db.execute(
         "UPDATE tasks SET status='paused',error=?,updated_at=? WHERE id=? AND status='running'",
         params![reason, now(), task],
     )?;
+    if changed>0 {crate::automatic::record_pause(case,task,reason)?;}
     Ok(())
 }
 pub fn resume(case: &mut Case, task: &str) -> Result<()> {

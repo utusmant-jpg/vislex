@@ -1087,6 +1087,8 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     // nothing is resent while a transmission's delivery is uncertain.
     evidence_desk::automatic::preempt_for_chat(&mut c).unwrap();
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"paused");
+    let pause:serde_json::Value=serde_json::from_str(&c.meta(&format!("auto_review_pause_kind:{task}")).unwrap().unwrap()).unwrap();
+    assert_eq!(pause["kind"],"chat_preempted");
     // A user stop (or any other pause reason) must not silently restart either.
     c.db.execute("UPDATE tasks SET error='Stopped by user' WHERE id=?",[&task]).unwrap();
     c.db.execute("INSERT INTO transmissions VALUES('tx-uncertain',?,'hash','test-model','[]',0,0,'uncertain',NULL,'2026-09-21T00:00:00Z')",rusqlite::params![task]).unwrap();
@@ -1104,6 +1106,9 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     assert!(c.meta("auto_review_fingerprint").unwrap().is_some());
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
     assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_completed'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    c.set_meta("auto_review_fingerprint","stale-global-marker").unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_completed'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"A repaired currentness marker must not duplicate the run event");
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
     let reviewed_ids=evidence_desk::agent::case_scope(&c).unwrap().0;
     assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_some());
