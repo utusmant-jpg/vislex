@@ -50,12 +50,25 @@
     ['review_redaction', { artifact_id: 'missing', pages: [1], note: 'Rejected old session' }],
     ['save_speaker_annotations', { source_id: source.id, artifact_id: 'missing', revision: 0, labels: {}, turns: {} }],
     ['hybrid_search', { query: 'synthetic' }],
+    ['review_dossier_claim', { task_id: 'missing', revision: 1, claim_index: 0, decision: 'accepted', note: '' }],
+    ['save_ai_settings', { config: {}, settings: snapshot.settings }],
+    ['set_direct_media_permission', { enabled: true }],
+    ['start_task', { prompt: 'Old session should not start a chat' }],
+    ['stop_task', { task_id: 'missing' }],
+    ['resume_task', { task_id: 'missing' }],
+    ['continue_paused_task', { task_id: 'missing' }],
   ];
   for (const [action, args] of staleSessionActions) {
     let rejected = false;
     try { await invoke(action, { case_id: snapshot.id, session_epoch: created.session_epoch, ...args }); }
     catch (error) { rejected = String(error).includes('Case session changed'); }
     if (!rejected) throw new Error(`${action} did not reject an old session before work`);
+  }
+  for (const [action, args] of staleSessionActions.slice(-7)) {
+    let rejected = false;
+    try { await invoke(action, { case_id: snapshot.id, ...args }); }
+    catch (error) { rejected = String(error).includes('Missing session_epoch'); }
+    if (!rejected) throw new Error(`${action} accepted a missing session epoch`);
   }
   let stalePermissionDenied = false;
   try { await invoke('set_direct_media_permission', { case_id: 'closed-synthetic-case', enabled: true }); } catch { stalePermissionDenied = true; }

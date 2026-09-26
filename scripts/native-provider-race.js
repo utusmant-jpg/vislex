@@ -14,6 +14,8 @@
   const root = __WORKSPACE__;
   const run = Date.now().toString();
   const opened = await invoke('create_case', { path: `${root}/artifacts/provider-race-${run}`, name: `Synthetic provider race ${run}` });
+  const imported = await invoke('import_files', { case_id: opened.id, session_epoch: opened.session_epoch, paths: [`${root}/fixtures/generated/statement.txt`], production: 'Synthetic provider race' });
+  if (imported.items[0]?.status !== 'imported') throw new Error('Synthetic provider race source import failed');
   await invoke('save_settings', { case_id: opened.id, session_epoch: opened.session_epoch, settings: { ...opened.settings, offline: false, allow_text: true, model: 'gpt-4.1' } });
   const first = await invoke('start_task', { case_id: opened.id, session_epoch: opened.session_epoch, prompt: 'Give a short synthetic answer.' });
   await wait(async () => { const current = await invoke('snapshot'); return current.tasks.find(t => t.id === first.task_id)?.step >= 1; }, 'first provider request');
@@ -23,6 +25,7 @@
   const second = await invoke('continue_paused_task', { case_id: opened.id, session_epoch: opened.session_epoch, task_id: first.task_id });
   if (second.task_id === first.task_id) throw new Error('Continuation reused the paused task');
   const completed = await wait(async () => { const current = await invoke('snapshot'); const task = current.tasks.find(t => t.id === second.task_id); return task?.status !== 'running' ? task : null; }, 'continuation result');
+  if (completed.status !== 'complete' || !completed.answer?.includes('Synthetic provider answer 2')) throw new Error(`Continuation did not complete with the second provider response: ${completed.status} ${completed.error ?? ''}`);
   // Let the original HTTP response arrive after the continuation has finished.
   await new Promise(resolve => setTimeout(resolve, 4500));
   const final = await invoke('snapshot');

@@ -769,9 +769,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "processing_recovery" => crate::processing::recovery_inventory(c)?,
         "read_coverage" => crate::coverage::view(c,text(&args,"task_id")?)?,
         "read_dossier" => crate::dossier::view(c,text(&args,"task_id")?)?,
-        "review_dossier_claim" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before claim review");crate::dossier::human_review(c,text(&args,"task_id")?,args["revision"].as_u64().context("Missing dossier revision")?,usize::try_from(args["claim_index"].as_u64().context("Missing claim index")?)?,text(&args,"decision")?,text(&args,"note")?)?},
+        "review_dossier_claim" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before claim review");require_session_epoch(&state,&args)?;crate::dossier::human_review(c,text(&args,"task_id")?,args["revision"].as_u64().context("Missing dossier revision")?,usize::try_from(args["claim_index"].as_u64().context("Missing claim index")?)?,text(&args,"decision")?,text(&args,"note")?)?},
         "save_ai_settings" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before settings update");
+            require_session_epoch(&state,&args)?;
             crate::automatic::preempt_for_chat(c)?;
             c.db.execute_batch("SAVEPOINT ai_settings")?;
             let result=(||->anyhow::Result<()> {
@@ -789,7 +790,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             Value::Null
         },
         "direct_media_permission" => json!({"enabled":crate::providers::direct_media_enabled(c)}),
-        "set_direct_media_permission" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before media permission update");let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
+        "set_direct_media_permission" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before media permission update");require_session_epoch(&state,&args)?;let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
         "ai_config" => serde_json::to_value(crate::providers::load(c)?)?,
         "save_ai_config" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI configuration update");crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
         "save_settings" => {
@@ -833,6 +834,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "start_task" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat started");
+            require_session_epoch(&state,&args)?;
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let selected = if let (Some(provider), Some(model)) = (args.get("provider"), args["model"].as_str()) {
@@ -897,6 +899,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "stop_task" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat stopped");
+            require_session_epoch(&state,&args)?;
 
             agent::pause(c, text(&args, "task_id")?, "Stopped by user")?;
 
@@ -906,6 +909,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "resume_task" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat resumed");
+            require_session_epoch(&state,&args)?;
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let task = text(&args, "task_id")?.to_string();
@@ -931,6 +935,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "continue_paused_task" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat continued");
+            require_session_epoch(&state,&args)?;
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
             let old=text(&args,"task_id")?;
             let profile=crate::providers::task_profile(c,old)?;

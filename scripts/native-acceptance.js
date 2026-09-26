@@ -37,7 +37,7 @@
   if(!crossCaseChatDenied)throw new Error('A stale case was allowed to start a chat');
   let inventoryTask;
   for(let attempt=0;attempt<600;attempt++) {
-    try { inventoryTask=await invoke('start_task',{case_id:snapshot.id,prompt:'how many files we have?'});break; }
+    try { inventoryTask=await invoke('start_task',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,prompt:'how many files we have?'});break; }
     catch(error) {
       if(!String(error).includes('Files are still being prepared'))throw error;
       await new Promise(resolve=>setTimeout(resolve,500));
