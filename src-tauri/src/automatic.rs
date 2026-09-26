@@ -129,6 +129,11 @@ pub fn publish(case:&mut Case,job:&Job,result:Result<Value>)->Result<()> {
 /// itself once the user's chat turn is finished. Any other pause (user stop,
 /// application interruption, provider error) stays down until explicitly resumed.
 pub const CHAT_PREEMPTION: &str = "Paused for your chat; automatic analysis will continue afterwards";
+fn declared_checks_complete(case:&Case,task:&str)->Result<bool> {
+    Ok(case.meta(&format!("completion:{task}"))?
+        .and_then(|raw|serde_json::from_str::<Value>(&raw).ok())
+        .is_none_or(|completion|completion["outcome"]=="declared_checks_complete"))
+}
 fn review_input_stamp(case:&Case,source_ids:&[String])->Result<String> {
     let allowed:std::collections::HashSet<&str>=source_ids.iter().map(String::as_str).collect();
     let mut revisions=std::collections::HashMap::new();
@@ -195,7 +200,7 @@ pub fn start_review(case:&mut Case)->Result<Option<String>> {
                 let dispatched=case.meta(&format!("auto_review_inventory:{task}"))?.or_else(||case.meta("auto_review_fingerprint").ok().flatten());
                 if dispatched.as_deref()==Some(fingerprint.as_str()) {
                     let coverage=visual_coverage(case,&task)?;
-                    let complete=coverage["complete"]==true;
+                    let complete=coverage["complete"]==true && declared_checks_complete(case,&task)?;
                     case.set_meta(&format!("auto_visual_coverage:{task}"),&coverage.to_string())?;
                     if case.meta("auto_review_fingerprint")?.as_deref()!=Some(fingerprint.as_str()) {
                         case.set_meta("auto_review_fingerprint",&fingerprint)?;
@@ -261,7 +266,7 @@ pub fn status(case:&Case)->Result<Value> {
             let current=case.sources().and_then(|sources|review_input_stamp(case,&sources.into_iter().filter(|source|!source.restricted).map(|source|source.id).collect::<Vec<_>>())).ok();
             if dispatched.is_some() && dispatched==current {
                 let coverage=task.as_ref().and_then(|task|case.meta(&format!("auto_visual_coverage:{task}")).ok().flatten()).and_then(|raw|serde_json::from_str::<Value>(&raw).ok()).or_else(||task.as_ref().and_then(|task|visual_coverage(case,task).ok()));
-                if coverage.as_ref().is_some_and(|coverage|coverage["complete"]==true) {"complete"} else {"partial"}
+                if coverage.as_ref().is_some_and(|coverage|coverage["complete"]==true) && declared_checks_complete(case,task.as_deref().unwrap_or_default())? {"complete"} else {"partial"}
             } else {"planned"}
         }
         _=>"planned",

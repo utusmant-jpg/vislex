@@ -1124,6 +1124,19 @@ fn a_new_failed_processing_attempt_invalidates_old_automatic_completion() {
 }
 
 #[test]
+fn finished_automatic_task_with_unresolved_checks_stays_partial_and_audits_once() {
+    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.set_meta(&format!("completion:{task}"),&json!({"outcome":"partial","gaps":["A source remains uninspected"],"review":"AI-generated / not human reviewed"}).to_string()).unwrap();
+    c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
+    for _ in 0..3 {assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);}
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"partial");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_partial'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_completed'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    c.verify_audit().unwrap();
+}
+
+#[test]
 fn failed_automatic_review_is_not_treated_as_completed_analysis() {
     let (_dir,mut c,_sid)=setup();enable(&mut c);
     let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
