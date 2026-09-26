@@ -23,6 +23,22 @@
   const snapshot = await invoke('snapshot');
   const source = snapshot.sources[0];
   if (!source || source.size !== 256 * 1024 * 1024) throw new Error('Synthetic source size mismatch');
+  const staleSessionActions = [
+    ['import_files', { paths: [fixture], production: 'Rejected old session' }],
+    ['process_source', { source_id: source.id }],
+    ['playback_proxy', { source_id: source.id }],
+    ['verify_source', { source_id: source.id }],
+    ['backup', { path: `${root}/artifacts/rejected-session-backup-${run}.age`, password: 'synthetic-passphrase-only' }],
+    ['export_dossier_bundle', { task_id: 'missing', path: `${root}/artifacts/rejected-session-package-${run}` }],
+    ['export_redaction', { artifact_id: 'missing', path: `${root}/artifacts/rejected-session-redaction-${run}.pdf` }],
+    ['hybrid_search', { query: 'synthetic' }],
+  ];
+  for (const [action, args] of staleSessionActions) {
+    let rejected = false;
+    try { await invoke(action, { case_id: snapshot.id, session_epoch: created.session_epoch, ...args }); }
+    catch (error) { rejected = String(error).includes('Case session changed'); }
+    if (!rejected) throw new Error(`${action} did not reject an old session before work`);
+  }
   let stalePermissionDenied = false;
   try { await invoke('set_direct_media_permission', { case_id: 'closed-synthetic-case', enabled: true }); } catch { stalePermissionDenied = true; }
   if (!stalePermissionDenied) throw new Error('Stale case permission update was accepted');
@@ -92,5 +108,5 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
+  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
 })().catch(error => ({ native_error: String(error), stack: String(error?.stack ?? '') }))
