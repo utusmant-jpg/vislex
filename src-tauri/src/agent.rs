@@ -391,7 +391,7 @@ pub fn prepare_semantic(case:&Case,task:&str,transmission:&str,response:&Value)-
 }
 fn process_media(case:&mut Case,source:&str,options:Value,prepared:&mut PreparedMedia)->Result<Value> {
     if let Some(index)=prepared.jobs.iter().position(|(job,_)| {
-        let mut request=job.request.clone();request.as_object_mut().unwrap().remove("kind");request.as_object_mut().unwrap().remove("version");request.as_object_mut().unwrap().remove("asr_model");
+        let mut request=job.request.clone();for key in ["kind","version","asr_model","source_lease","source_lease_epoch"]{request.as_object_mut().unwrap().remove(key);}
         job.source.id==source && request==options
     }) {let (job,result)=prepared.jobs.remove(index);let value=crate::processing::publish_staged(case,&job,result)?;prepared.cleanup.push(job);Ok(value)}
     else {ensure!(!prepared.external,"{}",prepared.error.as_deref().unwrap_or("No matching prepared worker job; retry as a single tool call"));crate::processing::process_request(case,source,options)}

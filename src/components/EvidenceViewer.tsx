@@ -128,14 +128,10 @@ function PdfPageView({ index, ratio, artifact, ensure, onVisible, register }: {
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
-    const observer = new IntersectionObserver(entries => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) ensure(index);
-        if (entry.intersectionRatio >= 0.4) onVisible(index);
-      }
-    }, { rootMargin: '700px 0px', threshold: [0, 0.4] });
-    observer.observe(node);
-    return () => observer.disconnect();
+    const prefetch = new IntersectionObserver(entries => {if(entries.some(entry=>entry.isIntersecting))ensure(index);}, { rootMargin: '700px 0px', threshold: 0 });
+    const visible = new IntersectionObserver(entries => {if(entries.some(entry=>entry.isIntersecting&&entry.intersectionRatio>=0.4))onVisible(index);}, { rootMargin: '0px', threshold: 0.4 });
+    prefetch.observe(node);visible.observe(node);
+    return () => {prefetch.disconnect();visible.disconnect();};
   }, [index, ensure, onVisible]);
   return <div className="pdf-page" ref={node => { ref.current = node; register(index, node); }} data-page={index} style={{ aspectRatio: `${ratio}` }}>
     {artifact ? <img src={evidenceUrl(`artifact/${artifact}`)} alt={`Page ${index}`} loading="lazy" draggable={false} /> : <div className="pdf-page-skeleton"><Skeleton /></div>}
@@ -187,38 +183,65 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   // PDF continuous-scroll state
   const [pdfCount, setPdfCount] = useState<number | null>(null);
   const [pdfPage, setPdfPage] = useState(requestedPage ?? 1);
+  const [pdfVisiblePage,setPdfVisiblePage]=useState<number|null>(null);
   const [pdfArtifacts, setPdfArtifacts] = useState<Record<number, string>>({});
-  const [pdfRatio, setPdfRatio] = useState(8.5 / 11);
+  const [pdfRatios, setPdfRatios] = useState<Record<number,number>>({});
   const pdfPending = useRef<Set<number>>(new Set());
+  const pdfEpoch=useRef(0);
   const pdfPagesRef = useRef<Map<number, HTMLDivElement>>(new Map());
+  useEffect(()=>{
+    const epoch=++pdfEpoch.current;
+    pdfPending.current=new Set();setPdfCount(null);setPdfArtifacts({});setPdfRatios({});setPdfPage(1);setPdfVisiblePage(null);
+    if(source.kind!=='pdf')return;
+    void api<{metadata:{page_count:number;first_page_size_points:[number,number]}}>('probe_pdf',{source_id:source.id}).then(result=>{
+      if(epoch!==pdfEpoch.current)return;
+      const count=result.metadata.page_count;
+      if(!Number.isSafeInteger(count)||count<1||count>100_000)throw new Error('PDF page count is invalid.');
+      setPdfCount(count);
+      const [width,height]=result.metadata.first_page_size_points ?? [];
+      if(Number.isFinite(width)&&Number.isFinite(height)&&width>0&&height>0)setPdfRatios({1:width/height});
+      if(requestedPage!==null && (!Number.isSafeInteger(requestedPage)||requestedPage<1||requestedPage>count))setError('Requested physical PDF page is outside this document.');
+    }).catch(reason=>{if(epoch===pdfEpoch.current)setError(String(reason));});
+    return()=>{pdfEpoch.current++;};
+  },[source.id,source.kind]);
   const ensurePage = useCallback((target: number) => {
-    setPdfArtifacts(current => {
-      if (current[target] || pdfPending.current.has(target)) return current;
-      pdfPending.current.add(target);
-      void api<{ published: { artifact_id: string; metadata: { page_count: number; page_size_points?: [number, number] } }[]; limitations: string[] }>('render_page', { source_id: source.id, page: target })
-        .then(result => {
-          const published = result.published[0];
-          setPdfArtifacts(existing => ({ ...existing, [target]: published?.artifact_id ?? '' }));
-          if (published?.metadata.page_count) setPdfCount(published.metadata.page_count);
-          if (published?.metadata.page_size_points) setPdfRatio(published.metadata.page_size_points[0] / published.metadata.page_size_points[1]);
-          setLimitations(result.limitations);
-        })
-        .catch(reason => setError(String(reason)))
-        .finally(() => pdfPending.current.delete(target));
-      return current;
-    });
-  }, [source.id]);
+    if(pdfCount===null || !Number.isSafeInteger(target)||target<1||target>pdfCount||pdfArtifacts[target]||pdfPending.current.has(target))return;
+    const epoch=pdfEpoch.current;const pending=pdfPending.current;pending.add(target);
+    void api<{ published: { artifact_id: string; metadata: { page:number;page_count: number; page_size_points?: [number, number] } }[]; limitations: string[] }>('render_page', { source_id: source.id, page: target })
+      .then(result => {
+        if(epoch!==pdfEpoch.current)return;
+        const published=result.published[0];
+        if(!published||published.metadata.page!==target||published.metadata.page_count!==pdfCount)throw new Error('PDF page response does not match the requested document geometry.');
+        setPdfArtifacts(existing => ({ ...existing, [target]: published.artifact_id }));
+        const size=published.metadata.page_size_points;
+        if(size&&Number.isFinite(size[0])&&Number.isFinite(size[1])&&size[0]>0&&size[1]>0)setPdfRatios(current=>({...current,[target]:size[0]/size[1]}));
+        setLimitations(result.limitations);
+      })
+      .catch(reason => {if(epoch===pdfEpoch.current)setError(String(reason));})
+      .finally(() => pending.delete(target));
+  }, [source.id,pdfCount,pdfArtifacts]);
 
-  useEffect(() => { pdfPagesRef.current.get(requestedPage ?? 1)?.scrollIntoView({ block: 'start' }); setPdfPage(requestedPage ?? 1); }, [requestedPage, source.id]);
+  useEffect(() => {
+    if(pdfCount===null)return;
+    const target=requestedPage??1;
+    if(!Number.isSafeInteger(target)||target<1||target>pdfCount)return;
+    setPdfPage(target);
+    requestAnimationFrame(()=>pdfPagesRef.current.get(target)?.scrollIntoView?.({block:'start'}));
+  }, [requestedPage, source.id,pdfCount]);
+  useEffect(()=>{
+    setPdfArtifacts(current=>Object.fromEntries(Object.entries(current).filter(([page])=>Math.abs(Number(page)-pdfPage)<=20)));
+    setPdfRatios(current=>Object.fromEntries(Object.entries(current).filter(([page])=>Number(page)===1||Math.abs(Number(page)-pdfPage)<=20)));
+  },[pdfPage]);
+  const onPdfVisible=useCallback((page:number)=>{setPdfPage(page);setPdfVisiblePage(page);},[]);
 
   // Publish what the viewer is looking at for the composer context (no DOM scraping).
   useEffect(() => {
-    if (source.kind === 'pdf') setViewerContext({ sourceId: source.id, page: pdfPage });
+    if (source.kind === 'pdf') setViewerContext(pdfVisiblePage===null?{sourceId:source.id}:{ sourceId: source.id, page: pdfVisiblePage });
     else if (['video', 'audio'].includes(source.kind)) setViewerContext({ sourceId: source.id, timeSeconds: currentTime });
     else if (showText) setViewerContext({ sourceId: source.id, lineStart: start });
     else setViewerContext({ sourceId: source.id });
     return () => { setViewerContext(null); };
-  }, [source.id, source.kind, pdfPage, currentTime, showText, start]);
+  }, [source.id, source.kind, pdfVisiblePage, currentTime, showText, start]);
   useEffect(() => () => setViewerContext(null), [source.id]);
 
   useEffect(() => {
@@ -318,7 +341,14 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     setAskChip({ x: event.clientX, y: event.clientY, a: Math.min(...numbers), b: Math.max(...numbers), revision: page?.revision ?? 1 });
   }
 
-  const totalPdfPages = pdfCount ?? Math.max((requestedPage ?? 1) + 4, 12);
+  const pdfWindowStart=pdfCount===null?1:Math.max(1,pdfPage-6);
+  const pdfWindowEnd=pdfCount===null?0:Math.min(pdfCount,pdfPage+6);
+  const pdfApproxRatio=pdfRatios[pdfPage]??pdfRatios[1]??8.5/11;
+  const scrollToPdfPage=(target:number)=>{
+    if(pdfCount===null||!Number.isSafeInteger(target)||target<1||target>pdfCount)return;
+    setPdfPage(target);
+    requestAnimationFrame(()=>pdfPagesRef.current.get(target)?.scrollIntoView?.({behavior:'smooth',block:'start'}));
+  };
 
   return <div className="viewer">
     {source.kind === 'image' ? <div className="image-controls">
@@ -330,21 +360,20 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     </div> : null}
 
     {source.kind === 'pdf' ? <div className="pdf-navigation">
-      <Tooltip text="Previous page"><button className="icon-button" aria-label="Previous page" onClick={() => pdfPagesRef.current.get(Math.max(1, pdfPage - 1))?.scrollIntoView({ behavior: 'smooth', block: 'start' })}><ChevronsLeft size={16} /></button></Tooltip>
+      <Tooltip text="Previous physical page"><button className="icon-button" aria-label="Previous page" disabled={pdfCount===null||pdfPage<=1} onClick={() => scrollToPdfPage(pdfPage-1)}><ChevronsLeft size={16} /></button></Tooltip>
       <label className="pdf-page-input">Page
         <input
-          type="number" min={1} max={pdfCount ?? undefined} value={pdfPage}
+          type="number" min={1} max={pdfCount ?? undefined} value={pdfPage} disabled={pdfCount===null}
           aria-label="Current page"
           onChange={event => {
             const target = Number(event.target.value);
-            if (!Number.isFinite(target)) return;
-            setPdfPage(target); ensurePage(target); pdfPagesRef.current.get(target)?.scrollIntoView({ block: 'start' });
+            scrollToPdfPage(target);
           }} />
       </label>
-      <span className="muted small">{pdfCount ? `of ${pdfCount}` : ''}</span>
-      <Tooltip text="Next page"><button className="icon-button" aria-label="Next page" disabled={!!pdfCount && pdfPage >= pdfCount} onClick={() => pdfPagesRef.current.get(pdfPage + 1)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}><ChevronsRight size={16} /></button></Tooltip>
+      <span className="muted small">{pdfCount ? `of ${pdfCount} physical pages` : 'Checking page count…'}</span>
+      <Tooltip text="Next physical page"><button className="icon-button" aria-label="Next page" disabled={pdfCount===null||pdfPage>=pdfCount} onClick={() => scrollToPdfPage(pdfPage+1)}><ChevronsRight size={16} /></button></Tooltip>
       <div className="spacer" />
-      <button className="quiet" onClick={() => run(async () => { await navigator.clipboard.writeText(`evidence:${source.id}#page:${pdfPage}`); })}>Copy page link</button>
+      <button className="quiet" disabled={pdfCount===null} onClick={() => run(async () => { await navigator.clipboard.writeText(`evidence:${source.id}#page:${pdfPage}`); })}>Copy page navigation link (not a citation)</button>
     </div> : null}
 
     <div className={`source-canvas ${source.kind}`}>
@@ -406,16 +435,19 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
         <p>{officeDocument ? 'See the error below, then reopen the file to retry extraction.' : 'This file format does not yet have an inline preview.'}</p>
       </div> : null}
 
-      {!showText && !derived && source.kind === 'pdf' ? <div className="pdf-continuous">
-        {Array.from({ length: totalPdfPages }, (_, index) => index + 1).map(pageNumber => <PdfPageView
+      {!showText && !derived && source.kind === 'pdf' && pdfCount===null && !error ? <div className="document-page"><Skeleton /></div> : null}
+      {!showText && !derived && source.kind === 'pdf' && pdfCount!==null ? <div className="pdf-continuous">
+        {pdfWindowStart>1?<div className="pdf-page-spacer" style={{width:'min(820px, 100%)',aspectRatio:`${pdfApproxRatio/(pdfWindowStart-1)}`}} aria-hidden="true"/>:null}
+        {Array.from({ length: pdfWindowEnd-pdfWindowStart+1 }, (_, index) => pdfWindowStart+index).map(pageNumber => <PdfPageView
           key={pageNumber}
           index={pageNumber}
-          ratio={pdfRatio}
+          ratio={pdfRatios[pageNumber]??pdfApproxRatio}
           artifact={pdfArtifacts[pageNumber] || undefined}
           ensure={ensurePage}
-          onVisible={setPdfPage}
+          onVisible={onPdfVisible}
           register={(number, node) => { if (node) pdfPagesRef.current.set(number, node); else pdfPagesRef.current.delete(number); }}
         />)}
+        {pdfWindowEnd<pdfCount?<div className="pdf-page-spacer" style={{width:'min(820px, 100%)',aspectRatio:`${pdfApproxRatio/(pdfCount-pdfWindowEnd)}`}} aria-hidden="true"/>:null}
       </div> : null}
     </div>
 

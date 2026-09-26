@@ -69,6 +69,9 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         let target=options["target"].as_f64().context("Missing frame target")?;
         ensure!(source.kind=="video" && !source.restricted && target.is_finite() && target>=0. && ["previous","next"].contains(&options["direction"].as_str().unwrap_or("")),"Invalid exact frame request");
     }
+    if options["operation"]=="render_page" {
+        ensure!(source.kind=="pdf" && options["page"].as_u64().is_some_and(|page|page>=1 && page<=100_000),"Invalid physical PDF page");
+    }
     ensure!(
         source.size
             <= if ["audio", "video"].contains(&source.kind.as_str()) {
@@ -87,6 +90,8 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         || (source.kind == "video" && options["operation"] == "transcribe")
     {
         "audio"
+    } else if source.kind == "pdf" && options["operation"] == "probe_pdf" {
+        "pdf_probe"
     } else if source.kind == "pdf" && options["operation"] == "render_page" {
         "pdf_page"
     } else if source.kind == "pdf" {
@@ -123,7 +128,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     request["asr_model"] = json!(case.meta("asr_profile")?.unwrap_or_else(||"tiny".into()));
     request["version"] = json!(1);
     request["kind"] = json!(kind);
-    if ["video_ocr","video_overview"].contains(&kind) || request["operation"]=="frame_at" {
+    if ["video_ocr","video_overview","pdf_probe","pdf_page"].contains(&kind) || request["operation"]=="frame_at" {
         let epoch=case.meta(&format!("source_policy_epoch:{}",source.id))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
         request["source_lease_epoch"]=json!(epoch);
         request["source_lease"]=json!(case.root.join("staging/source-leases").join(&source.id).join(&source.sha256).join(epoch.to_string()).join("input").to_string_lossy());
@@ -160,7 +165,7 @@ pub fn run_prepared(job:&PreparedJob)->Result<Value> {
         let result:Value=serde_json::from_slice(&fs::read(path)?)?;
         if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash_strong(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
     }
-    let lease=if ["video_ocr","video_overview"].contains(&job.kind.as_str()) || job.request["operation"]=="frame_at" {
+    let lease=if ["video_ocr","video_overview","pdf_probe","pdf_page"].contains(&job.kind.as_str()) || job.request["operation"]=="frame_at" {
         Some(acquire_source_lease(job)?)
     } else {copy_input(&job.source_path,job.staging.path(),&job.source.sha256)?;None};
     if let Some(lease)=lease.as_ref() {
@@ -474,7 +479,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
         let current=case.source(source_id)?;
         ensure!(current.sha256==source.sha256,"Source changed before publication");
         if request["operation"]=="automatic" || ["video_ocr","video_overview"].contains(&kind) || request["operation"]=="frame_at" {ensure!(!current.restricted,"Source was restricted before publication");}
-        if ["video_ocr","video_overview"].contains(&kind) || request["operation"]=="frame_at" {
+        if ["video_ocr","video_overview","pdf_probe","pdf_page"].contains(&kind) || request["operation"]=="frame_at" {
             let epoch=case.meta(&format!("source_policy_epoch:{source_id}"))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
             ensure!(request["source_lease_epoch"].as_u64()==Some(epoch),"Source policy changed before discovery publication");
         }
@@ -571,7 +576,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
         result["extraction_locator"] = json!(format!(
             "evidence:{source_id}#artifact:{extraction_artifact}"
         ));
-        if !combined.is_empty() && !["sound_events","redaction","diarization","video_ocr","video_overview"].contains(&kind) {
+        if !combined.is_empty() && !["sound_events","redaction","diarization","video_ocr","video_overview","pdf_probe","pdf_page"].contains(&kind) {
             // Every extraction appends an immutable revision; it becomes the
             // active searchable text only when no extraction is active yet
             // (full-recording transcription supersedes partials separately).
@@ -587,7 +592,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
                 !indexed,
             )?;
         }
-        case.db.execute(
+        if !["pdf_probe","pdf_page"].contains(&kind) {case.db.execute(
             "UPDATE sources SET status=? WHERE id=?",
             params![
                 if ["video_ocr","video_overview"].contains(&kind) {"video discovery indexed · sampled only"} else if kind=="diarization" {"selected speaker turns proposed · not identity"} else if kind=="redaction" {"redaction derivative prepared · review required"} else if kind == "sound_events" {
@@ -603,7 +608,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
                 },
                 source_id
             ],
-        )?;
+        )?;}
         Ok(result)
     })();
     match execute {

@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import EvidenceViewer from './EvidenceViewer';
 import type { Source, TextPage } from '../types';
+import {getViewerContext} from '../viewerContext';
 
 const api = vi.hoisted(() => vi.fn());
 vi.mock('../bridge', () => ({ api, evidenceUrl: (path: string) => path, formatBytes: (size: number) => `${size} B` }));
@@ -12,7 +13,17 @@ vi.mock('./RedactionPanel', () => ({ default: () => null }));
 vi.mock('./VideoDiscovery', () => ({ default: () => null }));
 
 const source: Source = { id: 'source-one', name: 'Synthetic statement.txt', sha256: 'hash', size: 100, mime: 'text/plain', kind: 'text', status: 'text ready', restricted: false, occurrences: 1, created_at: '2026-09-22T00:00:00Z' };
-afterEach(() => { cleanup(); api.mockReset(); });
+afterEach(() => { cleanup(); api.mockReset(); vi.unstubAllGlobals(); });
+
+function observePdfPages() {
+  const visible:{callback:IntersectionObserverCallback;node:Element;owner:IntersectionObserver}[]=[];
+  vi.stubGlobal('IntersectionObserver',class {
+    constructor(private callback:IntersectionObserverCallback,private options?:IntersectionObserverInit){}
+    observe(node:Element){if(this.options?.rootMargin==='0px')visible.push({callback:this.callback,node,owner:this as unknown as IntersectionObserver});else this.callback([{isIntersecting:true,intersectionRatio:0.1,target:node} as IntersectionObserverEntry],this as unknown as IntersectionObserver);}
+    disconnect(){}
+  });
+  return (page:number)=>{for(const watcher of visible){if(Number((watcher.node as HTMLElement).dataset.page)===page)watcher.callback([{isIntersecting:true,intersectionRatio:0.6,target:watcher.node} as IntersectionObserverEntry],watcher.owner);}};
+}
 
 it('opens a pinned citation against its historical revision and marks the wording as superseded', async () => {
   const historical: TextPage = { text: 'Old exact wording', start: 5, end: 5, total_lines: 9, revision: 1, historical: true, locator: 'evidence:source-one#R1L5-L5', truncated_long_lines: false };
@@ -75,4 +86,41 @@ it('steps through exact VFR timestamps and exposes the artifact citation', async
   await waitFor(()=>expect(screen.getByAltText('Decoded frame at source time 0:02.500')).toBeTruthy());
   expect(api).toHaveBeenCalledWith('step_video_frame',{source_id:'source-one',target:1.4,direction:'next'});
   expect(screen.getByRole('button',{name:'Copy frame citation'})).toBeTruthy();
+});
+
+it('probes a one-page PDF before rendering and rejects out-of-range navigation', async () => {
+  observePdfPages();
+  const pdf:Source={...source,kind:'pdf',mime:'application/pdf',name:'One page.pdf'};
+  api.mockImplementation(async (action:string,args:{page?:number})=>action==='probe_pdf'?{metadata:{page_count:1,first_page_size_points:[612,792]}}:action==='render_page'?{published:[{artifact_id:'page-one',metadata:{page:args.page,page_count:1,page_size_points:[612,792]}}],limitations:[]}:{}) ;
+  const view=render(<EvidenceViewer source={pdf} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
+  await waitFor(()=>expect(screen.getByText('of 1 physical pages')).toBeTruthy());
+  await waitFor(()=>expect(view.container.querySelectorAll('.pdf-page')).toHaveLength(1));
+  expect(api).not.toHaveBeenCalledWith('render_page',{source_id:'source-one',page:12});
+  fireEvent.change(screen.getByRole('spinbutton',{name:'Current page'}),{target:{value:'12'}});
+  expect(api).not.toHaveBeenCalledWith('render_page',{source_id:'source-one',page:12});
+  expect(screen.getByRole('button',{name:'Next page'}).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button',{name:'Copy page navigation link (not a citation)'})).toBeTruthy();
+});
+
+it('uses each rendered PDF page geometry in a mixed orientation document', async () => {
+  const showVisible=observePdfPages();
+  const pdf:Source={...source,kind:'pdf',mime:'application/pdf',name:'Mixed pages.pdf'};
+  api.mockImplementation(async (action:string,args:{page?:number})=>action==='probe_pdf'?{metadata:{page_count:2,first_page_size_points:[612,792]}}:action==='render_page'?{published:[{artifact_id:`page-${args.page}`,metadata:{page:args.page,page_count:2,page_size_points:args.page===1?[612,792]:[792,612]}}],limitations:[]}:{}) ;
+  const view=render(<EvidenceViewer source={pdf} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
+  await waitFor(()=>expect(view.container.querySelector('[data-page="2"]')?.getAttribute('style')).toContain('aspect-ratio: 1.294'));
+  expect(getViewerContext()?.page).toBeUndefined();
+  showVisible(2);
+  await waitFor(()=>expect(getViewerContext()?.page).toBe(2));
+});
+
+it('keeps a very large PDF viewer window bounded and jumps to a valid physical page', async () => {
+  observePdfPages();
+  const pdf:Source={...source,kind:'pdf',mime:'application/pdf',name:'Large.pdf'};
+  api.mockImplementation(async (action:string,args:{page?:number})=>action==='probe_pdf'?{metadata:{page_count:10000,first_page_size_points:[612,792]}}:action==='render_page'?{published:[{artifact_id:`page-${args.page}`,metadata:{page:args.page,page_count:10000,page_size_points:[612,792]}}],limitations:[]}:{}) ;
+  const view=render(<EvidenceViewer source={pdf} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
+  await waitFor(()=>expect(screen.getByText('of 10000 physical pages')).toBeTruthy());
+  expect(view.container.querySelectorAll('.pdf-page').length).toBeLessThanOrEqual(13);
+  fireEvent.change(screen.getByRole('spinbutton',{name:'Current page'}),{target:{value:'5000'}});
+  await waitFor(()=>expect(view.container.querySelector('[data-page="5000"]')).toBeTruthy());
+  expect(view.container.querySelectorAll('.pdf-page').length).toBeLessThanOrEqual(13);
 });

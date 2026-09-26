@@ -518,6 +518,31 @@ fn exact_video_frame_steps_publish_adjacent_pts_without_recopying_source() {
     assert_eq!(receipts.iter().filter(|receipt|receipt["reused"]==true).count(),1);
     assert!(processing::process_request(&mut case,&source,json!({"operation":"frame_at","target":0.6,"direction":"sideways"})).is_err());
 }
+
+#[test]
+#[ignore = "Requires packaged worker and generated one-page PDF"]
+fn pdf_probe_prevents_page_twelve_guess_and_reuses_one_source_lease() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut case=Case::create(&dir.path().join("case"),"PDF geometry fixture").unwrap();
+    let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("fixtures/generated/statement.pdf");
+    case.import_files(&[input.to_string_lossy().into()],"synthetic").unwrap();
+    let source=case.sources().unwrap()[0].id.clone();
+    let original_status=case.source(&source).unwrap().status;
+    let probe=processing::process_request(&mut case,&source,json!({"operation":"probe_pdf"})).unwrap();
+    assert_eq!(probe["metadata"]["page_count"],1);
+    assert_eq!(case.source(&source).unwrap().status,original_status);
+    assert!(processing::process_request(&mut case,&source,json!({"operation":"render_page","page":0})).is_err());
+    assert!(processing::process_request(&mut case,&source,json!({"operation":"render_page","page":-1})).is_err());
+    let rendered=processing::process_request(&mut case,&source,json!({"operation":"render_page","page":1})).unwrap();
+    assert_eq!(rendered["published"][0]["metadata"]["page_count"],1);
+    assert_eq!(case.source(&source).unwrap().status,original_status);
+    case.validate_citation(rendered["published"][0]["locator"].as_str().unwrap()).unwrap();
+    let receipts=fs::read_dir(case.root.join("staging")).unwrap().filter_map(Result::ok).filter_map(|entry|fs::read(entry.path().join("source-lease-receipt.json")).ok()).map(|raw|serde_json::from_slice::<Value>(&raw).unwrap()).collect::<Vec<_>>();
+    assert_eq!(receipts.len(),2);
+    assert_eq!(receipts.iter().filter(|receipt|receipt["copied_bytes_for_job"].as_u64().unwrap_or(0)>0).count(),1);
+    assert_eq!(receipts.iter().filter(|receipt|receipt["reused"]==true).count(),1);
+    case.verify_source(&source).unwrap();
+}
 #[test]
 #[ignore = "Requires packaged worker for agent preparation"]
 fn stopping_chat_cancels_its_prepared_local_worker_before_launch() {

@@ -270,21 +270,36 @@ def process(job: Path, request: dict) -> dict:
                     break
             metadata = {'streams': streams, 'video_stream': video.index, 'origin_seconds': origin, 'requested_interval': [start, end], 'sample_interval': interval, 'frames_decoded': decoded, 'sampled_frames': len(previews)}
         notes = ['Ordered sampled frames with actual decoder PTS; gaps between samples were not visually inspected.', 'Frames may be resized to fit 1920x1080. Originals are preserved. Audio was not inspected.', 'No object presence/absence or identity conclusion is established by decoding.']
+    elif kind == 'pdf_probe':
+        import pypdfium2 as pdfium
+        with pdfium.PdfDocument(str(Path(request['source_lease']))) as document:
+            count = len(document)
+            if count < 1:
+                raise ValueError('PDF has no physical pages')
+            first = document[0]
+            metadata = {'page_count': count, 'first_page_size_points': list(first.get_size()), 'numbering': 'physical PDF pages, starting at 1; printed labels may differ'}
+            first.close()
+        notes = ['Page count and geometry are metadata only; no page content was reviewed.']
     elif kind == 'pdf_page':
         import pypdfium2 as pdfium
         number = int(request.get('page', 1))
-        document = pdfium.PdfDocument(str(source))
-        if not 1 <= number <= len(document):
-            raise ValueError('PDF page is outside the document')
-        page = document[number - 1]
-        width, height = page.get_size()
-        scale = min(2.0, 2400/max(width, height))
-        bitmap = page.render(scale=scale)
-        image = bitmap.to_pil().convert('RGB')
-        image.save(job / 'pdf-page.jpg', quality=94)
-        metadata = {'page': number, 'page_count': len(document), 'page_size_points': [width, height], 'render_scale': scale, 'output_size': list(image.size)}
-        previews.append({'path': 'pdf-page.jpg', **metadata})
-        bitmap.close(); page.close(); document.close()
+        with pdfium.PdfDocument(str(Path(request['source_lease']))) as document:
+            if not 1 <= number <= len(document):
+                raise ValueError('PDF page is outside the document')
+            page = document[number - 1]
+            try:
+                width, height = page.get_size()
+                scale = min(2.0, 2400/max(width, height))
+                bitmap = page.render(scale=scale)
+                try:
+                    image = bitmap.to_pil().convert('RGB')
+                    image.save(job / 'pdf-page.jpg', quality=94)
+                finally:
+                    bitmap.close()
+                metadata = {'page': number, 'page_count': len(document), 'page_size_points': [width, height], 'render_scale': scale, 'output_size': list(image.size)}
+                previews.append({'path': 'pdf-page.jpg', **metadata})
+            finally:
+                page.close()
         notes = ['Rendered derivative of the physical PDF page. Printed/Bates labels may differ from the page index.', 'No OCR or interpretation is implied by rendering. Annotations and hidden document structures require separate review.']
     elif kind == 'pdf':
         from pypdf import PdfReader
@@ -366,8 +381,10 @@ def process(job: Path, request: dict) -> dict:
             cached = load_workbook(cached_file, read_only=True, data_only=True, keep_links=False)
             count = 0
             for sheet in formulas:
-                for row in sheet:
-                    for cell in row:
+                cached_rows = iter(cached[sheet.title].iter_rows())
+                for row in sheet.iter_rows():
+                    values = next(cached_rows, ())
+                    for column, cell in enumerate(row):
                         if cell.value is None:
                             continue
                         count += 1
@@ -376,11 +393,11 @@ def process(job: Path, request: dict) -> dict:
                         value = cell.value
                         text = str(value)
                         if cell.data_type == 'f':
-                            text += '\nCached value: ' + str(cached[sheet.title][cell.coordinate].value)
+                            text += '\nCached value: ' + str(values[column].value if column < len(values) else None)
                         pages.append({'locator': f'sheet:{sheet.title}!{cell.coordinate}', 'text': text, 'method': 'openpyxl read-only', 'sheet_state': sheet.sheet_state})
             formulas.close()
             cached.close()
-        notes = ['Formulas are not executed. Cached values may be stale. Row/column visibility and styles require original-workbook review.']
+        notes = ['Formulas are not executed. Cached values may be stale or absent. Row/column visibility and styles require original-workbook review.']
     else:
         raise ValueError('Unsupported processor kind')
     if sum(len(p['text']) for p in pages) > MAX_TEXT:
