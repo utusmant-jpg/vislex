@@ -80,6 +80,31 @@ fn enable(case: &mut Case) {
 }
 
 #[test]
+fn context_compaction_keeps_signed_provider_turn_with_tool_result() {
+    use evidence_desk::providers::{self,Config,Provider};
+    let (_dir,mut c,sid)=setup();
+    providers::save(&mut c,Config{provider:Provider::Gemini,..Default::default()}).unwrap();
+    enable(&mut c);
+    let task=agent::start(&mut c,"Inspect the source","investigate",vec![sid],vec![],0.).unwrap();
+    let history=json!([
+        {"role":"user","content":"Inspect the source"},
+        {"type":"provider_native","provider":"gemini","part":{"text":"private thought","thought":true,"thoughtSignature":"thought-sig"}},
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Inspecting"}],"native_part":{"text":"Inspecting","thoughtSignature":"text-sig"}},
+        {"type":"function_call","call_id":"signed-call","name":"read_text","arguments":"{}","native_part":{"functionCall":{"id":"signed-call","name":"read_text","args":{}},"thoughtSignature":"call-sig"}},
+        {"type":"function_call_output","call_id":"signed-call","output":"x".repeat(110_000)}
+    ]);
+    c.db.execute("UPDATE tasks SET history=? WHERE id=?",rusqlite::params![history.to_string(),task]).unwrap();
+    let prepared=agent::prepare_request(&mut c,&task).unwrap();
+    let wire=providers::encode(Provider::Gemini,&prepared.body).unwrap();
+    let parts=wire.body["contents"].as_array().unwrap().iter()
+        .flat_map(|message|message["parts"].as_array().into_iter().flatten()).collect::<Vec<_>>();
+    for signature in ["thought-sig","text-sig","call-sig"] {
+        assert!(parts.iter().any(|part|part["thoughtSignature"]==signature),"Compaction lost {signature}");
+    }
+    assert!(parts.iter().any(|part|part["functionResponse"]["id"]=="signed-call"));
+}
+
+#[test]
 fn import_deduplicates_bytes_but_preserves_occurrences() {
     let (dir, mut c, s) = setup();
     let p = dir.path().join("copy.txt");

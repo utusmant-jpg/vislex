@@ -1165,7 +1165,12 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
         loop {
             let mut earlier=cut;
             for item in input.iter().skip(cut).filter(|v|v["type"]=="function_call_output") {
-                if let Some(i)=input.iter().position(|v|v["type"]=="function_call"&&v["call_id"]==item["call_id"]) {earlier=earlier.min(i);}
+                if let Some(mut i)=input.iter().position(|v|v["type"]=="function_call"&&v["call_id"]==item["call_id"]) {
+                    // Keep the complete provider turn. Gemini thought signatures
+                    // and Claude thinking blocks can precede the tool call.
+                    while i>0 && (input[i-1]["type"]=="provider_native" || input[i-1]["type"]=="function_call" || input[i-1]["role"]=="assistant") {i-=1;}
+                    earlier=earlier.min(i);
+                }
             }
             if earlier==cut {break} cut=earlier;
         }
