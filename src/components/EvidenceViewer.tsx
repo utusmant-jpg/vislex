@@ -137,7 +137,7 @@ function PdfPageView({ index, ratio, artifact, ensure, onVisible, register }: {
   </div>;
 }
 
-export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect, onAsk }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void; onAsk?: () => void }) {
+export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect, onAsk, caseId }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void; onAsk?: () => void; caseId?:string }) {
   const media = useRef<HTMLMediaElement | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [pendingSeek, setPendingSeek] = useState<number | null>(null);
@@ -386,7 +386,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     </div> : null}
 
     {['video', 'audio'].includes(source.kind) && !showText && !derived ? <MediaControls media={media} filmstrip={source.kind === 'video' ? filmstrip : null} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} /> : null}
-    {['video', 'audio'].includes(source.kind) ? <FullTranscript currentTime={currentTime} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} sourceId={source.id} run={run} refresh={refresh} /> : null}
+    {['video', 'audio'].includes(source.kind) ? <FullTranscript caseId={caseId} currentTime={currentTime} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} sourceId={source.id} run={run} refresh={refresh} /> : null}
     {source.kind === 'video' && !source.restricted ? <VideoDiscovery key={source.id} sourceId={source.id} onFrame={id => { setDerived(id); setShowText(false); }} onSeek={time => { setDerived(null); setShowText(false); setPendingSeek(time); }} /> : null}
     {['pdf', 'image'].includes(source.kind) && !source.restricted ? <RedactionPanel sourceId={source.id} kind={source.kind} /> : null}
     {limitations.length ? <details className="processing-limitations disclosure">

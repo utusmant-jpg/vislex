@@ -6,9 +6,12 @@ import { transcriptPlaybackLine, type TranscriptTiming } from '../review';
 import type { WorkingRecord } from '../types';
 import { StatusPill, Tooltip } from '../ui';
 
-type State = { status: string; error: string; progress: { state?: string; track_number?: number; track_count?: number; processed_seconds?: number; estimated_seconds?: number; segments?: number }; result: { saved_files?: string[]; segments?: number; metadata?: TranscriptTiming & { no_audio_tracks?: boolean } }; record: WorkingRecord | null };
+type State = { job_id:string;status: string; error: string; progress: { state?: string; track_number?: number; track_count?: number; processed_seconds?: number; estimated_seconds?: number; segments?: number }; result: { saved_files?: string[]; segments?: number; segmented?:boolean; metadata?: TranscriptTiming & { no_audio_tracks?: boolean } }; record: WorkingRecord | null };
+type Segment={ordinal:number;track:number;start:number;end:number;text:string;correction?:{id:string;revision:number;text:string;review:'pending'|'accepted'|'rejected'}};
+type SegmentPage={segments:Segment[];next_cursor:number|null};
+function clock(seconds:number){const milliseconds=Math.round(Math.max(0,seconds)*1000);return `${String(Math.floor(milliseconds/3600000)).padStart(2,'0')}:${String(Math.floor(milliseconds/60000)%60).padStart(2,'0')}:${String(Math.floor(milliseconds/1000)%60).padStart(2,'0')}.${String(milliseconds%1000).padStart(3,'0')}`;}
 
-export default function FullTranscript({ sourceId, run, refresh, onSeek, currentTime }: { onSeek: (time: number) => void; currentTime: number; sourceId: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
+export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek, currentTime }: { onSeek: (time: number) => void; currentTime: number; sourceId: string; caseId?:string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
   const [state, setState] = useState<State | null>(null);
   const [version, setVersion] = useState(0);
   const [model, setModel] = useState('tiny');
@@ -16,6 +19,14 @@ export default function FullTranscript({ sourceId, run, refresh, onSeek, current
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('');
   const [follow, setFollow] = useState(true);
+  const [segments,setSegments]=useState<Segment[]>([]);
+  const [segmentCursor,setSegmentCursor]=useState<number|null>(null);
+  const [segmentError,setSegmentError]=useState('');
+  const [loadingSegments,setLoadingSegments]=useState(false);
+  const [editingOrdinal,setEditingOrdinal]=useState<number|null>(null);
+  const [correctionText,setCorrectionText]=useState('');
+  const [correctionReason,setCorrectionReason]=useState('');
+  const segmentKey=useRef('');
   const transcriptRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!native) return;
@@ -23,15 +34,33 @@ export default function FullTranscript({ sourceId, run, refresh, onSeek, current
     const poll = async () => { try { const next = await api<State | null>('full_transcription_status', { source_id: sourceId }); if (!active) return; setState(next); setError(''); } catch (e) { if (active) setError(String(e)); } finally { if (active) timer = setTimeout(() => { void poll(); }, 2000); } };
     void poll(); return () => { active = false; clearTimeout(timer); };
   }, [sourceId, version]);
+  useEffect(()=>{
+    const key=`${caseId}:${sourceId}:${state?.job_id}`;segmentKey.current=key;
+    setSegments([]);setSegmentCursor(null);setSegmentError('');
+    if(!native||!caseId||state?.status!=='complete'||!state.result.segmented)return;
+    let active=true;
+    void api<SegmentPage>('transcript_segment_page',{case_id:caseId,source_id:sourceId,run_id:state.job_id,cursor:null})
+      .then(page=>{if(active){setSegments(page.segments);setSegmentCursor(page.next_cursor);}})
+      .catch(error=>{if(active)setSegmentError(String(error));});
+    return()=>{active=false;};
+  },[caseId,sourceId,state?.job_id,state?.status,state?.result.segmented]);
+  async function loadMoreSegments(){
+    if(!caseId||!state?.job_id||segmentCursor===null||loadingSegments)return;
+    const key=segmentKey.current;setLoadingSegments(true);setSegmentError('');
+    try{const page=await api<SegmentPage>('transcript_segment_page',{case_id:caseId,source_id:sourceId,run_id:state.job_id,cursor:segmentCursor});
+      if(segmentKey.current===key){setSegments(current=>[...current,...page.segments]);setSegmentCursor(page.next_cursor);}
+    }catch(error){if(segmentKey.current===key)setSegmentError(String(error));}
+    finally{if(segmentKey.current===key)setLoadingSegments(false);}
+  }
   const running = state?.status === 'running' || state?.status === 'queued';
   const progress = state?.progress;
-  const lines = state?.record ? state.record.content.split('\n') : [];
+  const lines = state?.record && !state.result.segmented ? state.record.content.split('\n') : [];
   const matches = filter.trim() ? lines.map((line, index) => ({ line, index, hit: line.toLowerCase().includes(filter.trim().toLowerCase()) })) : null;
   const activeRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (!follow || !expanded || !state?.record || filter) return;
     activeRef.current?.scrollIntoView({ block: 'nearest' });
-  }, [currentTime, follow, expanded, state?.record, filter]);
+  }, [currentTime, follow, expanded, state?.record, filter, segments]);
   return <section className="full-transcript">
     <div className="transcript-heading">
       <button className="quiet" onClick={() => setExpanded(value => !value)}>{expanded ? <ChevronDown size={13} /> : <ChevronUp size={13} />}{expanded ? 'Hide transcript' : 'Transcript'}</button>
@@ -39,7 +68,7 @@ export default function FullTranscript({ sourceId, run, refresh, onSeek, current
       <div className="spacer" />
       {state?.record && expanded ? <>
         <Tooltip text={follow ? 'Stop following playback' : 'Follow playback automatically'}><button className={`icon-button ${follow ? 'accent-text' : ''}`} aria-pressed={follow} aria-label={follow ? 'Stop following playback' : 'Follow playback automatically'} onClick={() => setFollow(value => !value)}><ChevronDown size={13} className={follow ? 'follow-icon' : ''} /></button></Tooltip>
-        <div className="transcript-search"><Search size={13} /><input aria-label="Search transcript" placeholder="Search transcript…" value={filter} onChange={event => setFilter(event.target.value)} />{filter ? <span className="small muted">{matches?.filter(entry => entry.hit).length ?? 0} lines</span> : null}</div>
+        <div className="transcript-search"><Search size={13} /><input aria-label="Search transcript" placeholder={state?.result.segmented?'Search loaded segments…':'Search transcript…'} value={filter} onChange={event => setFilter(event.target.value)} />{filter ? <span className="small muted">{state?.result.segmented?segments.filter(segment=>segment.text.toLowerCase().includes(filter.trim().toLowerCase())).length:matches?.filter(entry => entry.hit).length ?? 0} {state?.result.segmented?'loaded segments':'lines'}</span> : null}</div>
       </> : null}
     </div>
     {running ? <div className="notice">{state?.status === 'queued' ? 'Queued behind the current recording…' : progress?.state === 'copying' ? 'Preparing a private processing copy…' : `Track ${progress?.track_number ?? 1} of ${progress?.track_count ?? '?'} · ${Math.floor(progress?.processed_seconds ?? 0)} seconds processed${progress?.estimated_seconds ? ` / approximately ${Math.ceil(progress.estimated_seconds)}` : ''} · ${progress?.segments ?? 0} segments`}<span> You can keep reviewing while this runs.</span></div> : null}
@@ -55,7 +84,36 @@ export default function FullTranscript({ sourceId, run, refresh, onSeek, current
       <button className="quiet" onClick={() => run(async () => { await api('set_asr_profile', { model }); await api('transcribe_full', { source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>Transcribe a new version</button>
     </div> : null}
     {state?.record && expanded && state.result.metadata?.container_origin_seconds === undefined ? <p className="small muted">This older transcript has no playback clock mapping. Retranscribe to enable accurate seek links.</p> : null}
-    {state?.record && expanded ? <div className="full-transcript-text" ref={transcriptRef}>
+    {segmentError ? <p role="alert" className="small danger-text">Could not read transcript segments: {segmentError}</p> : null}
+    {state?.record && expanded && state.result.segmented ? <div className="full-transcript-text" ref={transcriptRef}>
+      <p className="small muted">{state.result.segments ?? 0} saved segments · {segments.length} loaded. Search covers loaded segments.</p>
+      {segments.filter(segment=>!filter.trim()||segment.text.toLowerCase().includes(filter.trim().toLowerCase())).map(segment=>{
+        const line=`[track ${segment.track} · ${clock(segment.start)} → ${clock(segment.end)}] ${segment.text}`;
+        const interval=transcriptPlaybackLine(line,state.result.metadata);
+        const active=interval?currentTime>=interval.start&&currentTime<interval.end:false;
+        return <div key={segment.ordinal} className="transcript-segment">
+          <button className={`transcript-line caption-row ${active?'active':''}`} ref={active?activeRef:undefined} aria-label={`Seek to ${interval?.start ?? segment.start} seconds: ${segment.text}`} onClick={()=>onSeek(interval?.start ?? segment.start)}>
+            <span className="caption-time mono">{line.slice(1,line.indexOf(']'))}</span><span className="caption-text">{segment.text}</span>
+          </button>
+          {segment.correction?<p className="small muted">{segment.correction.review==='accepted'?'Accepted human correction':segment.correction.review==='pending'?'Correction awaiting human review':'Rejected correction'} · version {segment.correction.revision}: {segment.correction.text}</p>:null}
+          {segment.correction?.review==='pending'&&caseId?<div className="input-row">
+            <button className="quiet" onClick={()=>run(async()=>{await api('review_transcript_correction',{case_id:caseId,correction_id:segment.correction!.id,accept:true});setSegments(current=>current.map(item=>item.ordinal===segment.ordinal&&item.correction?{...item,correction:{...item.correction,review:'accepted'}}:item));})}>Accept correction</button>
+            <button className="quiet" onClick={()=>run(async()=>{await api('review_transcript_correction',{case_id:caseId,correction_id:segment.correction!.id,accept:false});setSegments(current=>current.map(item=>item.ordinal===segment.ordinal&&item.correction?{...item,correction:{...item.correction,review:'rejected'}}:item));})}>Reject correction</button>
+          </div>:null}
+          {caseId&&editingOrdinal!==segment.ordinal?<button className="quiet" onClick={()=>{setEditingOrdinal(segment.ordinal);setCorrectionText(segment.correction?.text??segment.text);setCorrectionReason('');}}>Suggest correction</button>:null}
+          {caseId&&editingOrdinal===segment.ordinal?<div className="input-row">
+            <textarea aria-label={`Correct segment ${segment.ordinal}`} value={correctionText} onChange={event=>setCorrectionText(event.target.value)}/>
+            <input aria-label={`Correction reason ${segment.ordinal}`} placeholder="Reason checked against recording" value={correctionReason} onChange={event=>setCorrectionReason(event.target.value)}/>
+            <button className="quiet" disabled={!correctionText.trim()||!correctionReason.trim()} onClick={()=>run(async()=>{
+              const receipt=await api<{id:string;revision:number}>('propose_transcript_correction',{case_id:caseId,source_id:sourceId,run_id:state.job_id,ordinal:segment.ordinal,text:correctionText,reason:correctionReason});
+              setSegments(current=>current.map(item=>item.ordinal===segment.ordinal?{...item,correction:{id:receipt.id,revision:receipt.revision,text:correctionText,review:'pending'}}:item));setEditingOrdinal(null);
+            })}>Save proposal</button>
+            <button className="quiet" onClick={()=>setEditingOrdinal(null)}>Cancel</button>
+          </div>:null}
+        </div>;
+      })}
+      {segmentCursor!==null?<button className="quiet" disabled={loadingSegments} onClick={()=>void loadMoreSegments()}>{loadingSegments?'Loading…':'Load next 25 segments'}</button>:null}
+    </div> : state?.record && expanded ? <div className="full-transcript-text" ref={transcriptRef}>
       {(matches ?? lines.map((line, index) => ({ line, index, hit: false }))).map(({ line, index, hit }) => {
         const interval = transcriptPlaybackLine(line, state.result.metadata);
         const active = interval ? currentTime >= interval.start && currentTime < interval.end : false;

@@ -724,7 +724,7 @@ export default function App() {
               </ContextMenu>;
             })}
           </div>
-          {source ? <EvidenceViewer key={source.id} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} onAsk={() => { setView('chat'); setFocusComposerRequest(value => value + 1); }} /> : null}
+          {source ? <EvidenceViewer key={source.id} caseId={snapshot?.id} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} onAsk={() => { setView('chat'); setFocusComposerRequest(value => value + 1); }} /> : null}
           {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${record.id}`} caseId={snapshot.id} summary={record} run={run} refresh={refresh} onSource={selectSource}/> : null}
         </main>
       </div>
