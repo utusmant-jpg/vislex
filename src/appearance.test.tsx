@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ContextMenu, ThemeProvider, ToastStack, Tooltip, notify, useTheme } from './ui';
 import PaneDivider from './components/PaneDivider';
+import SidebarDivider from './components/SidebarDivider';
 
 function AppearanceProbe() {
   const { theme, resolvedTheme, setTheme, density, setDensity } = useTheme();
@@ -58,6 +59,17 @@ it('resizes the evidence pane from the keyboard and resets its size', () => {
   rerender(<div><PaneDivider viewerWidth={600} onWidthChange={changed} /></div>);
   fireEvent.doubleClick(screen.getByRole('separator', { name: 'Resize evidence pane' }));
   expect(changed).toHaveBeenLastCalledWith(520);
+});
+
+it('bounds sidebar resizing and restores its default width', () => {
+  const changed = vi.fn();
+  const { rerender } = render(<SidebarDivider width={310} onWidthChange={changed} />);
+  const divider = screen.getByRole('separator', { name: 'Resize navigation sidebar' });
+  fireEvent.keyDown(divider, { key: 'ArrowRight', shiftKey: true });
+  expect(changed).toHaveBeenLastCalledWith(320);
+  rerender(<SidebarDivider width={320} onWidthChange={changed} />);
+  fireEvent.doubleClick(divider);
+  expect(changed).toHaveBeenLastCalledWith(248);
 });
 
 it('keeps one actionable notification for a repeatedly polled error', () => {

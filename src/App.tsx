@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -13,6 +13,7 @@ import EvidenceViewer, { SourceIcon } from './components/EvidenceViewer';
 import AgentPanel from './components/AgentPanel';
 import FolderImport from './components/FolderImport';
 import PaneDivider from './components/PaneDivider';
+import SidebarDivider from './components/SidebarDivider';
 import WorkspacePreferences from './components/WorkspacePreferences';
 import { ContextMenu, StatusPill, ThemeProvider, ThemeToggle, ToastStack, Tooltip, notify, relativeTime } from './ui';
 
@@ -290,6 +291,10 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
 export default function App() {
   const [view, setView] = useState<View>('chat');
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('vislex-sidebar') !== 'closed');
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('vislex-sidebar-width'));
+    return Number.isFinite(saved) && saved >= 220 && saved <= 320 ? saved : 248;
+  });
   const [viewerWidth, setViewerWidth] = useState(() => {
     const saved = Number(localStorage.getItem('vislex-viewer-width'));
     return Number.isFinite(saved) && saved >= 360 && saved <= 1000 ? saved : 520;
@@ -307,6 +312,10 @@ export default function App() {
     return () => window.removeEventListener('resize', resized);
   }, []);
   useEffect(() => { localStorage.setItem('vislex-sidebar', sidebarOpen ? 'open' : 'closed'); }, [sidebarOpen]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => localStorage.setItem('vislex-sidebar-width', String(Math.round(sidebarWidth))), 200);
+    return () => window.clearTimeout(timer);
+  }, [sidebarWidth]);
   useEffect(() => {
     const timer = window.setTimeout(() => localStorage.setItem('vislex-viewer-width', String(Math.round(viewerWidth))), 200);
     return () => window.clearTimeout(timer);
@@ -681,7 +690,7 @@ export default function App() {
           <Tooltip text="Search case" shortcut="Ctrl+K"><button className="rail-button" aria-label="Search case" onClick={() => setPalette(true)}><Search size={17} /></button></Tooltip>
         </nav>
 
-        <aside className="sidebar" hidden={!sidebarOpen}>
+        <aside className="sidebar" hidden={!sidebarOpen} style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
           <button className="matter-identity" disabled={!snapshot} title="Rename case (F2)" onClick={() => snapshot && beginRename('case', snapshot.id, snapshot.name)} onKeyDown={event => { if (event.key === 'F2' && snapshot) { event.preventDefault(); beginRename('case', snapshot.id, snapshot.name); } }}>
             <strong>{snapshot?.name ?? 'Open a case'}</strong>
             <small>{snapshot ? `${snapshot.counts?.source_count ?? snapshot.sources.length} sources · ${formatBytes(totalBytes)} · ${pendingCount ? `${pendingCount} jobs pending` : needsAttention ? 'Needs attention' : 'Unreviewed'}` : 'Local evidence workspace'}</small>
@@ -735,6 +744,7 @@ export default function App() {
             </div>
           </div>
         </aside>
+        {sidebarOpen ? <SidebarDivider width={sidebarWidth} onWidthChange={setSidebarWidth} /> : null}
 
         <div className="center-column">
           {!snapshot && view === 'chat' ? <OnboardingHero
