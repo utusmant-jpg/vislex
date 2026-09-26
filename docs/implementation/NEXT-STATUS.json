@@ -37,19 +37,22 @@
     },
     "R02": {
       "state": "implemented",
-      "commit": "981ea720da849251db4c79eb3cfcd17696dc2149",
-      "evidence": "src-tauri/tests/extract_revisions.rs (4 new tests); src/bridge.test.ts, src/markdown.test.ts, src/citationLocator.test.ts (shared grammar fixtures); red-first shown by reverting evidence.rs (test pinned_citation_cannot_validate... FAILED pre-fix)",
+      "commit": "5f42cb8d5cbded83bccfff20dfe587e89bb111d5",
+      "evidence": "src-tauri/tests/extract_revisions.rs (4 new tests); src/bridge.test.ts, src/markdown.test.ts, src/citationLocator.test.ts (shared grammar fixtures); red-first shown by reverting evidence.rs (test pinned_citation_cannot_validate... FAILED pre-fix); 5f42cb8 historical agent read, finding click and record export regressions",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test extract_revisions -> exit 0, 8 passed",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 125 passed, 0 failed, 22 ignored",
         "npm test -> exit 0, 26 passed (6 files)",
         "npm run build -> exit 0 (tsc -b + vite)",
-        "cargo clippy --tests -> no warnings in R02-touched code"
+        "cargo clippy --tests -> no warnings in R02-touched code",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test extract_revisions -> exit 0, 10 passed",
+        "npm test -> exit 0, 47 passed (11 files)",
+        "npm run build -> exit 0"
       ],
       "reviewer": "separate read-only adversarial review agent: PASS with 1 major + minors; major (pinned citation clicks displayed ACTIVE text in EvidenceViewer) FIXED (read_extract_revision fetch + historical banner + chip hover reads pinned revision); grammar canonicalization (no signs/leading zeros) applied to both Rust and TS; verify_source parity added to pinned branch",
-      "unrun_checks": "agent search_passages/semantic producer emission of R-form not directly unit-tested (needs agent-tool harness; grammar pinned in resolver tests); no visual/interaction check of the historical banner (no vision harness); packaged-worker suite still ignored; agent lacks a read_extract_revision tool to read back pinned wording (gap noted for R03/R19)",
-      "note": "Grammar: evidence:SOURCE#R<rev>L<a>-L<b> pinned to immutable extract_revisions (bounds validated against that revision's own text); legacy #L kept and labeled active-text; read_text/read_text_revision emit pinned locators; wording survives supersession, restart, backup/restore (tested). Schema-5 fixture genuinely drops extract_revisions before migration.",
+      "unrun_checks": "Agent search_passages/semantic producer emission of R-form not directly unit-tested. Packaged build and production UI journey for this exact commit not run; live-case citation journey not run.",
+      "note": "Grammar: evidence:SOURCE#R<rev>L<a>-L<b> pinned to immutable extract_revisions (bounds validated against that revision's own text); legacy #L kept and labeled active-text; read_text/read_text_revision emit pinned locators; wording survives supersession, restart, backup/restore (tested). Schema-5 fixture genuinely drops extract_revisions before migration. Agent now has a scoped, bounded read_extract_revision tool; retrieval ledger records its historical revision. Finding click and record export retain the exact pinned locator.",
       "native_check": "Dev-build native smoke run 2026-09-22 against artifacts/VisLex 0.3.0-dev (exe sha256 7a2bbed2... byte-identical to tested build): production path create_case -> import 6 synthetic fixtures -> process_source (sandboxed worker, artifact locator + 2 fidelity limitations) -> read_text emitted #R1L1-L8 revision 1 -> validate_citation returned valid/revision_binding=pinned/revision=1 -> write_record succeeded. The stock scripts/test-native.ps1 offline invariant (fresh case offline) fails on this machine because the user's consent-marked ai-defaults.json (model gpt-5.6-luna, online) legitimately initializes new cases per R04; all other steps passed. UI click-path and visual checks remain unrun."
     },
     "R03": {
@@ -217,7 +220,10 @@
     },
     "CASE-REFRESH-FENCE-2026-09-26": {
       "state": "implemented",
-      "commits": ["20aa09e", "ce77c51"],
+      "commits": [
+        "20aa09e",
+        "ce77c51"
+      ],
       "evidence": "Renderer case epoch discards a snapshot response started before a project switch; request sequence also discards an older same-case response arriving after a newer one. DOM regressions cover both orders.",
       "commands": [
         "npm test -- --run -> exit 0, 45 tests in 11 files",
@@ -269,7 +275,10 @@
     },
     "PHASED-RELIABILITY-2026-09-25": {
       "state": "implemented",
-      "commits": ["91da827", "0480d26"],
+      "commits": [
+        "91da827",
+        "0480d26"
+      ],
       "environment": "Windows 10.0.26200 x64; branch impl/phased-reliability-20260925; source HEAD before changes 4591612",
       "evidence": "Production settings and case snapshot remove AI currency values; new transmissions reserve 0 while token/timing display remains; chat unlocks after preparation even during automatic review; current fingerprinted checkpoints can seed a quick answer; hidden paused automatic chats continue into a visible new conversation; Jobs shows active/failed automatic analysis and its recovery action.",
       "commands": [
@@ -435,7 +444,20 @@
         "Python worker unit tests -> exit 0, 18 passed after overview scaling and scheduling changes",
         "Packaged AppContainer worker_e2e and discovery tests -> exit 0 after 34176b0"
       ],
-      "commits": ["e6c775f", "c41a0df", "1344b82", "81229f2", "de613f7", "34176b0", "fa80948", "630758d", "935864d", "234f03c", "45d3378", "113b3b0"],
+      "commits": [
+        "e6c775f",
+        "c41a0df",
+        "1344b82",
+        "81229f2",
+        "de613f7",
+        "34176b0",
+        "fa80948",
+        "630758d",
+        "935864d",
+        "234f03c",
+        "45d3378",
+        "113b3b0"
+      ],
       "implemented_scope": "Sanitized per-request size metrics, bounded current-review first answer, faster overview scaling, historical Jobs grouping, alternating overview/OCR chunks with one concurrent lane for each, cancelled-discovery finalization, and paused automatic review continuation from current inventory while preserving uncertain delivery",
       "unrun_checks": "The 16 new full-duration video index jobs have not all reached EOF; the visual-bin ledger is pending. No packaged citation/export/reopen journey on this new case, two concurrent provider chats, medium/large tier benchmark, or measured follow-up latency yet. Dev17 contains the coordinated lanes and is now running on the case. This entry is not release verification.",
       "note": "The user redirected validation to a new case from copies of the source folder. No case material or names were committed. The earlier case remains untouched. The encrypted backup restored successfully into a separate folder; both case versions were retained. Full-duration discovery must finish before the paused AI task can be continued from current saved progress."
