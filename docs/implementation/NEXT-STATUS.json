@@ -216,10 +216,12 @@
         "npm test -> exit 0, 63 passed (13 files), including long transcript pagination, seek and correction interaction; npm run build -> exit 0",
         ".venv-worker/Scripts/python.exe -m unittest discover -s workers -p test_*.py -> exit 0, 18 tests",
         "powershell -File scripts/build-worker.ps1 -> exit 0 after bounded journal edit",
+        "npm exec tauri build -- --debug --features desktop --no-bundle; powershell -File scripts/package-development.ps1 -OutputName 'VisLex 0.3.0-r12' -> exit 0; packaged exe SHA256 38E77F890731050EE81D4358BA3EEEFEC2D962B63F18E892327E2384646226DE",
+        "powershell -File scripts/native-acceptance.ps1 -BinaryPath 'artifacts/VisLex 0.3.0-r12/VisLex.exe' -Port 9353 -> exit 0, run 1790445337892: six synthetic sources, both discovery passes, chat, review gates, exports, playback and cross-case fences; zero provider calls",
         "python scripts/vislex_plan.py check -> exit 0, 26 task records structurally valid"
       ],
-      "unrun_checks": "Completed chunks are still private until whole-run publication; interrupted/running partial wording is not yet exposed as qualified progress. Long TXT/JSON/SRT generation still materializes the final value in memory instead of streaming rows. Frontend search covers loaded segments only and follow-playback beyond the loaded page is incomplete. No large-run peak memory measurement or exact packaged R12 desktop journey yet. Do not mark verified.",
-      "note": "The exact x64 installer SHA256 BF3BB503925B88E45DA02063C84ED36E17D984BACD6ADFB96DD1054B9FD51689 predates R12 and the final R11 Jobs changes; its passed synthetic journey is a checkpoint, not R12 acceptance. User originals and live case were untouched."
+      "unrun_checks": "Completed chunks are still private until whole-run publication; interrupted/running partial wording is not yet exposed as qualified progress. Long TXT/JSON/SRT generation still materializes the final value in memory instead of streaming rows. Frontend search covers loaded segments only and follow-playback beyond the loaded page is incomplete. No large-run peak memory measurement or packaged large-transcript UI journey yet. Do not mark verified.",
+      "note": "The exact x64 installer SHA256 BF3BB503925B88E45DA02063C84ED36E17D984BACD6ADFB96DD1054B9FD51689 predates R12 and the final R11 Jobs changes; its passed synthetic journey is a checkpoint. The later R12 debug package passed the native six-source journey, while long-transcript UI behavior is covered by Rust and React tests. User originals and live case were untouched."
     },
     "R13": {
       "state": "pending"
