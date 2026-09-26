@@ -188,6 +188,21 @@
     }
   },
   "additional_work": {
+    "PINNED-CITATION-EXPORT-2026-09-26": {
+      "state": "implemented",
+      "commit": "38b40ff",
+      "evidence": "Record preview citations now navigate to the pinned extraction; a DOM chat-citation journey verifies hover and click read historical wording after active text changes. Passage and semantic producer tests assert revisioned locators. Export UI states and passes the selected saved revision, and the backend rejects an intervening record edit before creating a text or document export.",
+      "commands": [
+        "npm test -- --run -> exit 0, 40 tests in 11 files",
+        "npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core record_export_refuses_a_revision_changed_while_choosing_destination -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox semantic_search_finds_synonyms_and_rejects_changed_permissions -- --include-ignored -> exit 0",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "No packaged UI click/export journey or live case export after this commit. R02 finding/copy/export cross-surface acceptance is not fully rechecked; R06 palette, exact selection, history and tab-switch acceptance still open. Neither task is marked verified by this slice.",
+      "note": "Legacy export callers remain accepted without an expected_revision for compatibility; the current UI supplies it. No case data or original source files changed."
+    },
     "PHASED-RELIABILITY-2026-09-25": {
       "state": "implemented",
       "commits": ["91da827", "0480d26"],
