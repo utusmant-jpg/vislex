@@ -26,6 +26,7 @@ use tauri::{Emitter, Manager};
 pub struct AppState {
 
     case: Mutex<Option<Case>>,
+    session_epoch: std::sync::atomic::AtomicU64,
     importing: std::sync::atomic::AtomicBool,
     semantic_indexing: Mutex<std::collections::HashMap<String,bool>>,
 
@@ -35,6 +36,22 @@ fn text<'a>(v: &'a Value, k: &str) -> anyhow::Result<&'a str> {
 
     v[k].as_str().ok_or_else(|| anyhow::anyhow!("Missing {k}"))
 
+}
+fn stamp_session(mut value: Value, epoch: u64) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("session_epoch".to_string(), json!(epoch));
+    }
+    value
+}
+fn ensure_session_epoch(state: &AppState, args: &Value) -> anyhow::Result<()> {
+    if let Some(epoch) = args.get("session_epoch") {
+        let epoch = epoch.as_u64().context("Invalid session_epoch")?;
+        anyhow::ensure!(
+            epoch == state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),
+            "Case session changed; refresh before continuing"
+        );
+    }
+    Ok(())
 }
 fn export_revision(v:&Value)->anyhow::Result<Option<i64>> {
     if v.get("expected_revision").is_none() {return Ok(None);}
@@ -129,6 +146,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let state=app.state::<AppState>();
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let case=guard.as_mut().context("Open a case first")?;
+            ensure_session_epoch(&state,&args)?;
             let source=text(&args,"source_id")?;
             anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before source processing");
             if ["scan_sound_events","step_video_frame"].contains(&action) {anyhow::ensure!(!case.source(source)?.restricted,"Restricted source");}
@@ -299,6 +317,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 anyhow::ensure!(running == 0,"Stop active tasks and processing jobs before deleting this case");
                 let old_root=c.root.clone();
                 *guard = None;
+                state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
                 crate::processing::invalidate_case_leases(&old_root);
             }
         }
@@ -335,6 +354,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         if action == "close_case" {
             let old_root=guard.as_ref().map(|case|case.root.clone());
             *guard = None;
+            state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
             drop(guard);
             if let Some(root)=old_root {crate::processing::invalidate_case_leases(&root);}
 
@@ -374,11 +394,12 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let old_root=guard.as_ref().map(|case|case.root.clone());
         *guard = Some(c);
+        let session_epoch=state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
         drop(guard);
         if let Some(root)=old_root {crate::processing::invalidate_case_leases(&root);}
         kick_automatic(app.clone(),case_id.clone());
         kick_transcriptions(app.clone(),case_id);
-        return Ok(snapshot);
+        return Ok(stamp_session(snapshot,session_epoch));
 
     }
 
@@ -393,13 +414,14 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         .as_mut()
 
         .ok_or_else(|| anyhow::anyhow!("Open a case first"))?;
+    ensure_session_epoch(&state, &args)?;
 
     let result = match action {
 
-        "snapshot" => c.snapshot()?,
+        "snapshot" => stamp_session(c.snapshot()?,state.session_epoch.load(std::sync::atomic::Ordering::SeqCst)),
         "case_summary" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before summary");
-            c.case_summary()?
+            stamp_session(c.case_summary()?,state.session_epoch.load(std::sync::atomic::Ordering::SeqCst))
         },
         "task_page" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before task page");
@@ -1140,6 +1162,7 @@ pub fn run() {
         .manage(AppState {
 
             case: Mutex::new(None),
+            session_epoch: std::sync::atomic::AtomicU64::new(0),
             importing: std::sync::atomic::AtomicBool::new(false),
             semantic_indexing: Mutex::new(std::collections::HashMap::new()),
 
@@ -1457,7 +1480,7 @@ fn import_background(app:&tauri::AppHandle,action:&str,args:Value)->anyhow::Resu
     anyhow::ensure!(state.importing.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).is_ok(),"An import is already active");
     struct Lease<'a>(&'a AtomicBool);impl Drop for Lease<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
     let _lease=Lease(&state.importing);
-    let (root,case_id)={let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before import");(case.root.clone(),case.meta("id")?.unwrap_or_default())};
+    let (root,case_id)={let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before import");(case.root.clone(),case.meta("id")?.unwrap_or_default())};
     let (paths,skipped)=if action=="import_folder" {crate::case::folder_paths(&root,Path::new(text(&args,"path")?))?}else{(serde_json::from_value::<Vec<String>>(args["paths"].clone())?,vec![])};
     anyhow::ensure!(paths.len()<=10000,"Import at most 10,000 files per batch");
     let production=args["production"].as_str().unwrap_or("Imported evidence");

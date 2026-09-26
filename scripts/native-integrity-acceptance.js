@@ -6,7 +6,18 @@
   const root = __WORKSPACE__;
   const run = Date.now().toString();
   const fixture = `${root}/artifacts/integrity-256m.bin`;
-  const created = await invoke('create_case', { path: `${root}/artifacts/integrity-case-${run}`, name: `Synthetic integrity ${run}` });
+  const casePath = `${root}/artifacts/integrity-case-${run}`;
+  const created = await invoke('create_case', { path: casePath, name: `Synthetic integrity ${run}` });
+  if (!Number.isSafeInteger(created.session_epoch)) throw new Error('Created case did not report a session epoch');
+  await invoke('close_case');
+  const reopened = await invoke('open_case', { path: casePath });
+  if (reopened.id !== created.id || reopened.session_epoch <= created.session_epoch) throw new Error('Same-case reopen did not advance the session epoch');
+  const reopenedSummary = await invoke('case_summary', { case_id: reopened.id });
+  if (reopenedSummary.session_epoch !== reopened.session_epoch) throw new Error('Summary session epoch disagrees with the reopened case');
+  let staleSessionDenied = false;
+  try { await invoke('save_settings', { case_id: reopened.id, session_epoch: created.session_epoch, settings: reopened.settings }); }
+  catch (error) { staleSessionDenied = String(error).includes('Case session changed'); }
+  if (!staleSessionDenied) throw new Error('Stale same-case session changed settings after reopen');
   const imported = await invoke('import_files', { case_id: created.id, paths: [fixture], production: 'Synthetic integrity' });
   if (imported.items[0]?.status !== 'imported') throw new Error('Synthetic import failed');
   const snapshot = await invoke('snapshot');
@@ -81,5 +92,5 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, case_id: snapshot.id };
+  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
 })().catch(error => ({ native_error: String(error), stack: String(error?.stack ?? '') }))
