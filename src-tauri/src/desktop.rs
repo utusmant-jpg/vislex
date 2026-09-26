@@ -671,7 +671,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         )?)?},
 
         "review_record" => {
-
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working record review");
             c.review_record(
 
                 text(&args, "record_id")?,
@@ -688,7 +688,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "revisions" => c.revisions(text(&args, "record_id")?)?,
 
-        "rollback" => serde_json::to_value(c.rollback(
+        "rollback" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working record rollback");serde_json::to_value(c.rollback(
 
             text(&args, "record_id")?,
 
@@ -696,7 +696,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             args["base_revision"].as_i64().unwrap_or(0),
 
-        )?)?,
+        )?)?},
 
         "evidence_list" => crate::evidence::list(c,args["source_id"].as_str(),args["kind"].as_str(),args["offset"].as_u64().unwrap_or(0) as usize)?,
         "evidence_read" => crate::evidence::read(c,text(&args,"id")?,args["revision"].as_i64())?,
