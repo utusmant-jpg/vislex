@@ -4,7 +4,8 @@
   const root=__WORKSPACE__;
   const run=Date.now().toString();
   await invoke('create_case',{path:root+'/artifacts/acceptance-'+run,name:'Synthetic native acceptance '+run});
-  const imported=await invoke('import_files',{paths:['statement.pdf','statement.txt','photograph.png','variable-timing.mp4','notes.docx','table.xlsx'].map(n=>root+'/fixtures/generated/'+n),production:'Synthetic acceptance'});
+  const initial=await invoke('snapshot');
+  const imported=await invoke('import_files',{case_id:initial.id,paths:['statement.pdf','statement.txt','photograph.png','variable-timing.mp4','notes.docx','table.xlsx'].map(n=>root+'/fixtures/generated/'+n),production:'Synthetic acceptance'});
   if(imported.items.some(i=>i.status!=='imported'))throw new Error('Fixture import failed');
   const snapshot=await invoke('snapshot');
   const caseSummary=await invoke('case_summary',{case_id:snapshot.id});
@@ -61,7 +62,7 @@
   if(!search.results.length && !search.lexical_results?.length)throw new Error('No saved or lexical lead for the exact synthetic fixture term');
   // Automatic local transcription can change the case generation. Wait for it before testing an exact-revision export.
   for(let i=0;i<240;i++){const current=await invoke('snapshot');if(!current.jobs.some(j=>j.kind==='full_audio'&&['running','queued'].includes(j.status)))break;if(i===239)throw new Error('Automatic transcripts did not settle');await new Promise(resolve=>setTimeout(resolve,500));}
-  const record=await invoke('write_record',{title:'Synthetic native draft',kind:'report',content:'Synthetic caf\u00e9 draft. Evidence remains unreviewed.',source_ids:[pdf.id]});
+  const record=await invoke('write_record',{case_id:initial.id,title:'Synthetic native draft',kind:'report',content:'Synthetic caf\u00e9 draft. Evidence remains unreviewed.',source_ids:[pdf.id]});
   const compact=await invoke('snapshot');
   const firstRecords=await invoke('record_page',{case_id:compact.id,generation:compact.generation,audit_seq:compact.counts.audit_seq});
   if(!firstRecords.records.some(item=>item.id===record.id))throw new Error('Saved working file missing from bounded record list');
