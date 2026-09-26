@@ -517,9 +517,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "cancel_video_discovery" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before video discovery cancel");crate::discovery::cancel(c,text(&args,"source_id")?)?},
         "cancel_processing" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before processing cancellation");crate::processing::cancel(c,text(&args,"job_id")?)?;Value::Null},
         "storage_usage" => c.storage_usage()?,
-        "reclaim_staging" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before staging cleanup");anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the import before reclaiming staging");c.reclaim_staging()?},
+        "reclaim_staging" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before staging cleanup");require_session_epoch(&state,&args)?;anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the import before reclaiming staging");c.reclaim_staging()?},
 
-        "rename" => { anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before rename"); c.rename(text(&args,"kind")?, args["id"].as_str().unwrap_or(""), text(&args,"name")?)?; Value::Null },
+        "rename" => { anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before rename"); require_session_epoch(&state,&args)?; c.rename(text(&args,"kind")?, args["id"].as_str().unwrap_or(""), text(&args,"name")?)?; Value::Null },
 
         "search" => c.search(
 
@@ -694,6 +694,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "set_restricted" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before restriction update");
+            require_session_epoch(&state,&args)?;
             c.set_restricted(
 
                 text(&args, "source_id")?,
@@ -706,7 +707,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         }
 
-        "write_record" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working record update");serde_json::to_value(c.write_record(
+        "write_record" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working record update");require_session_epoch(&state,&args)?;serde_json::to_value(c.write_record(
 
             args["record_id"].as_str(),
 
@@ -730,6 +731,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "review_record" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working record review");
+            require_session_epoch(&state,&args)?;
             c.review_record(
 
                 text(&args, "record_id")?,
@@ -746,7 +748,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "revisions" => c.revisions(text(&args, "record_id")?)?,
 
-        "rollback" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working record rollback");serde_json::to_value(c.rollback(
+        "rollback" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working record rollback");require_session_epoch(&state,&args)?;serde_json::to_value(c.rollback(
 
             text(&args, "record_id")?,
 
@@ -792,9 +794,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "direct_media_permission" => json!({"enabled":crate::providers::direct_media_enabled(c)}),
         "set_direct_media_permission" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before media permission update");require_session_epoch(&state,&args)?;let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
         "ai_config" => serde_json::to_value(crate::providers::load(c)?)?,
-        "save_ai_config" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI configuration update");crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
+        "save_ai_config" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI configuration update");require_session_epoch(&state,&args)?;crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
         "save_settings" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before settings update");
+            require_session_epoch(&state,&args)?;
             c.save_settings(serde_json::from_value::<Settings>(
 
                 args["settings"].clone(),
@@ -826,6 +829,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "delete_conversation" => {
 
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before conversation update");
+            require_session_epoch(&state,&args)?;
             c.delete_conversation(text(&args,"conversation_id")?,args["deleted"].as_bool().unwrap_or(true))?;
 
             Value::Null

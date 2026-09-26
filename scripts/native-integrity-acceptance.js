@@ -39,6 +39,24 @@
   if (!Number.isSafeInteger(snapshot.event_seq) || snapshot.event_seq < reopenedSummary.event_seq) throw new Error('Case event sequence went backwards');
   const source = snapshot.sources[0];
   if (!source || source.size !== 256 * 1024 * 1024) throw new Error('Synthetic source size mismatch');
+  const mandatorySessionActions = [
+    ['reclaim_staging', {}],
+    ['rename', { kind: 'source', id: 'missing', name: 'Old session rename' }],
+    ['set_restricted', { source_id: 'missing', restricted: true }],
+    ['write_record', { title: 'Old session note', kind: 'note', content: 'No mutation', source_ids: [] }],
+    ['review_record', { record_id: 'missing', revision: 1 }],
+    ['rollback', { record_id: 'missing', target: 1, base_revision: 1 }],
+    ['save_ai_config', { config: {} }],
+    ['save_settings', { settings: reopened.settings }],
+    ['delete_conversation', { conversation_id: 'missing' }],
+    ['review_dossier_claim', { task_id: 'missing', revision: 1, claim_index: 0, decision: 'accepted', note: '' }],
+    ['save_ai_settings', { config: {}, settings: reopened.settings }],
+    ['set_direct_media_permission', { enabled: true }],
+    ['start_task', { prompt: 'Old session should not start a chat' }],
+    ['stop_task', { task_id: 'missing' }],
+    ['resume_task', { task_id: 'missing' }],
+    ['continue_paused_task', { task_id: 'missing' }],
+  ];
   const staleSessionActions = [
     ['import_files', { paths: [fixture], production: 'Rejected old session' }],
     ['process_source', { source_id: source.id }],
@@ -50,13 +68,7 @@
     ['review_redaction', { artifact_id: 'missing', pages: [1], note: 'Rejected old session' }],
     ['save_speaker_annotations', { source_id: source.id, artifact_id: 'missing', revision: 0, labels: {}, turns: {} }],
     ['hybrid_search', { query: 'synthetic' }],
-    ['review_dossier_claim', { task_id: 'missing', revision: 1, claim_index: 0, decision: 'accepted', note: '' }],
-    ['save_ai_settings', { config: {}, settings: snapshot.settings }],
-    ['set_direct_media_permission', { enabled: true }],
-    ['start_task', { prompt: 'Old session should not start a chat' }],
-    ['stop_task', { task_id: 'missing' }],
-    ['resume_task', { task_id: 'missing' }],
-    ['continue_paused_task', { task_id: 'missing' }],
+    ...mandatorySessionActions,
   ];
   for (const [action, args] of staleSessionActions) {
     let rejected = false;
@@ -64,7 +76,7 @@
     catch (error) { rejected = String(error).includes('Case session changed'); }
     if (!rejected) throw new Error(`${action} did not reject an old session before work`);
   }
-  for (const [action, args] of staleSessionActions.slice(-7)) {
+  for (const [action, args] of mandatorySessionActions) {
     let rejected = false;
     try { await invoke(action, { case_id: snapshot.id, ...args }); }
     catch (error) { rejected = String(error).includes('Missing session_epoch'); }

@@ -31,7 +31,7 @@
     if(!second.reused || first.extraction_locator!==second.extraction_locator || !text.total_lines)throw new Error('Document extraction/cache failed: '+name);
     documents.push({name,total_lines:text.total_lines,reused:second.reused});
   }
-  await invoke('save_settings',{case_id:snapshot.id,settings:{...snapshot.settings,offline:false,allow_text:true,model:'synthetic'}});
+  await invoke('save_settings',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,settings:{...snapshot.settings,offline:false,allow_text:true,model:'synthetic'}});
   let crossCaseChatDenied=false;
   try { await invoke('start_task',{case_id:'another-case',prompt:'how many files we have?'}); } catch { crossCaseChatDenied=true; }
   if(!crossCaseChatDenied)throw new Error('A stale case was allowed to start a chat');
@@ -67,7 +67,7 @@
   if(!search.results.length && !search.lexical_results?.length)throw new Error('No saved or lexical lead for the exact synthetic fixture term');
   // Automatic local transcription can change the case generation. Wait for it before testing an exact-revision export.
   for(let i=0;i<240;i++){const current=await invoke('snapshot');if(!current.jobs.some(j=>j.kind==='full_audio'&&['running','queued'].includes(j.status)))break;if(i===239)throw new Error('Automatic transcripts did not settle');await new Promise(resolve=>setTimeout(resolve,500));}
-  const record=await invoke('write_record',{case_id:initial.id,title:'Synthetic native draft',kind:'report',content:'Synthetic caf\u00e9 draft. Evidence remains unreviewed.',source_ids:[pdf.id]});
+  const record=await invoke('write_record',{case_id:initial.id,session_epoch:initial.session_epoch,title:'Synthetic native draft',kind:'report',content:'Synthetic caf\u00e9 draft. Evidence remains unreviewed.',source_ids:[pdf.id]});
   const compact=await invoke('snapshot');
   const firstRecords=await invoke('record_page',{case_id:compact.id,generation:compact.generation,audit_seq:compact.counts.audit_seq});
   if(!firstRecords.records.some(item=>item.id===record.id))throw new Error('Saved working file missing from bounded record list');

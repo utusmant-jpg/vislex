@@ -20,20 +20,31 @@
   }
   await invoke('create_case', { path, name: 'Synthetic consent acceptance' });
   const initial = await invoke('snapshot');
-  await invoke('save_settings', { case_id:initial.id,settings: { ...initial.settings, offline: true, allow_text: false, allow_images: false, model: 'synthetic' } });
+  await invoke('save_settings', { case_id:initial.id,session_epoch:initial.session_epoch,settings: { ...initial.settings, offline: true, allow_text: false, allow_images: false, model: 'synthetic' } });
   const settingsButton = await waitFor(() => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Settings' && !button.disabled), 'Settings button');
   settingsButton.click();
   const dialog = await waitFor(() => document.querySelector('dialog.settings-sheet[open]'), 'Settings dialog');
+  const section = (sheet, title) => {
+    const button = [...sheet.querySelectorAll('.settings-nav button')].find(item => item.textContent.trim() === title);
+    if (!button) throw new Error(`Settings section missing: ${title}`);
+    button.click();
+  };
+  section(dialog, 'Case permissions');
+  await waitFor(() => dialog.querySelector('.case-permissions'), 'case permissions');
   const text = dialog.querySelector('.case-permissions input[type="checkbox"]');
   const images = dialog.querySelectorAll('.case-permissions input[type="checkbox"]')[1];
   if (!text || !images) throw new Error('Case permission controls are missing');
   if (text.checked || images.checked) throw new Error('Settings UI did not show revoked permissions');
   text.click();
   images.click();
+  section(dialog, 'Review & execution');
+  await waitFor(() => dialog.querySelector('select'), 'review controls');
   const review = [...dialog.querySelectorAll('select')].find(select => [...select.options].some(option => option.value === 'challenge'));
   const execution = [...dialog.querySelectorAll('select')].find(select => [...select.options].some(option => option.value === 'single'));
   review.value = 'challenge'; review.dispatchEvent(new Event('change', { bubbles: true }));
   execution.value = 'single'; execution.dispatchEvent(new Event('change', { bubbles: true }));
+  section(dialog, 'Case permissions');
+  await waitFor(() => dialog.querySelector('.case-permissions'), 'direct media permission');
   const directAllow = [...dialog.querySelectorAll('button')].find(button => button.textContent.includes('original audio/video may be sent'));
   await waitFor(() => directAllow && !directAllow.disabled, 'direct media consent');
   directAllow.click();
@@ -46,6 +57,8 @@
   if (!granted.settings.offline || !granted.settings.allow_text || !granted.settings.allow_images || granted.ai_config.review !== 'challenge' || granted.ai_config.execution !== 'single' || !directGranted.enabled) throw new Error('UI choices did not persist exactly: ' + JSON.stringify({ settings: granted.settings, review: granted.ai_config.review, execution: granted.ai_config.execution, direct_media: directGranted.enabled }));
   settingsButton.click();
   const revokeDialog = await waitFor(() => document.querySelector('dialog.settings-sheet[open]'), 'reopened settings');
+  section(revokeDialog, 'Case permissions');
+  await waitFor(() => revokeDialog.querySelector('.case-permissions'), 'reopened case permissions');
   const revokeText = revokeDialog.querySelector('.case-permissions input[type="checkbox"]');
   revokeText.click();
   const directBlock = [...revokeDialog.querySelectorAll('button')].find(button => button.textContent === 'Blocked');
