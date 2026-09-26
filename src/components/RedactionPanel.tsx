@@ -21,13 +21,26 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
   const [outputs, setOutputs] = useState<Derivative[]>([]);
   const [reviewed, setReviewed] = useState<number[]>([]);
   const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'prepare' | 'review' | 'export' | null>(null);
   const [error, setError] = useState('');
   const [accepted, setAccepted] = useState(false);
   const [saved, setSaved] = useState('');
   const imgRef = useRef<HTMLImageElement>(null);
+  const scopeKey = `${caseId ?? ''}:${sessionEpoch ?? ''}:${sourceId}:${kind}`;
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
 
-  async function action(fn: () => Promise<void>) { setBusy(true); setError(''); try { await fn(); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
+  async function action(name: 'prepare' | 'review' | 'export', fn: (isCurrent: () => boolean) => Promise<void>) {
+    const current = () => scopeRef.current === scopeKey;
+    setBusy(name); setError('');
+    try { await fn(current); } catch (e) { if (current()) setError(String(e)); }
+    finally { if (current()) setBusy(null); }
+  }
+
+  useEffect(() => {
+    setDrawMode(false); setBoxes([]); setPage(1); setPageCount(null); setBaseImage(null); setBaseSize(null);
+    setDrag(null); setOutputs([]); setReviewed([]); setNote(''); setBusy(null); setError(''); setAccepted(false); setSaved('');
+  }, [scopeKey]);
 
   // Load the page (or corrected image) that boxes are drawn on.
   useEffect(() => {
@@ -51,7 +64,7 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
         });
     load.catch(e => { if (active) setError(String(e)); }).finally(() => { if (active) setLoadingBase(false); });
     return () => { active = false; };
-  }, [drawMode, sourceId, kind, page]);
+  }, [drawMode, caseId, sessionEpoch, sourceId, kind, page]);
 
   const pages = outputs.filter(output => output.metadata.mime === 'image/jpeg');
   const pdf = outputs.find(output => output.metadata.mime === 'application/pdf');
@@ -78,15 +91,21 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
     setOutputs([]); setReviewed([]); setAccepted(false); setSaved('');
   }
 
-  return <details className="redaction-panel"><summary><SquareDashedMousePointer size={13} />Prepare a reviewed redaction</summary>
-    <p className="small muted">Draw rectangles on the page, or enter exact coordinates. {kind === 'pdf' ? 'Coordinates are PDF points from the top-left of the physical page.' : 'Coordinates are orientation-corrected image pixels.'} The derivative contains flattened page images; original text, attachments and source metadata are not copied. Review every page for missed sensitive content before export.</p>
+  return <details className="redaction-panel"><summary><SquareDashedMousePointer size={15} />Prepare a reviewed redaction</summary>
+    <p className="small muted">Mark sensitive areas, inspect every page of the flattened copy, then accept it before export. The original source remains unchanged.</p>
+    <ol className="redaction-steps" aria-label="Redaction progress">
+      <li className={boxes.length ? 'ready' : ''}>1 <span>Mark areas</span></li>
+      <li className={pdf ? 'ready' : ''}>2 <span>Review every page</span></li>
+      <li className={accepted ? 'ready' : ''}>3 <span>Export copy</span></li>
+    </ol>
+    <p className="small muted redaction-units">{kind === 'pdf' ? 'Coordinates use PDF points from the physical page’s top-left corner.' : 'Coordinates use orientation-corrected image pixels.'} The copy contains flattened page images; original text, attachments, and source metadata are not copied.</p>
 
     <div className="input-row redaction-toolbar">
       <button className={drawMode ? 'primary' : 'secondary'} onClick={() => { setDrawMode(value => !value); setBoxes([]); setOutputs([]); }}>
         {drawMode ? 'Stop drawing' : 'Draw redactions'}
       </button>
-      {kind === 'pdf' && drawMode ? <label className="small">Page
-        <input type="number" min={1} max={pageCount ?? undefined} value={page} onChange={event => setPage(Math.max(1, Number(event.target.value) || 1))} />
+      {kind === 'pdf' && drawMode ? <label className="small">Page {pageCount ? `of ${pageCount}` : ''}
+        <input type="number" min={1} max={pageCount ?? undefined} value={page} onChange={event => setPage(Math.min(pageCount ?? Infinity, Math.max(1, Number(event.target.value) || 1)))} />
       </label> : null}
       {drawMode && pageBoxes.length ? <span className="small muted">{pageBoxes.length} box{pageBoxes.length > 1 ? 'es' : ''} on page {page} · {boxes.length} total</span> : null}
     </div>
@@ -115,26 +134,27 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
       {boxes.map((box, index) => <div className="redaction-box" key={index}>
         <span className="small muted">p{box.page}</span>
         {(['x', 'y', 'width', 'height'] as const).map(field => <label key={field} aria-label={`${field} of rectangle ${index + 1} in ${kind === 'pdf' ? 'points' : 'pixels'}`}>{field[0].toUpperCase()}
-          <input type="number" min={0} step="0.1" value={box[field]} disabled={busy} onChange={event => { const value = Math.max(0, Number(event.target.value) || 0); setBoxes(old => old.map((entry, position) => position === index ? { ...entry, [field]: value } : entry)); setOutputs([]); setAccepted(false); }} />
+          <input type="number" min={0} step="0.1" value={box[field]} disabled={!!busy} onChange={event => { const value = Math.max(0, Number(event.target.value) || 0); setBoxes(old => old.map((entry, position) => position === index ? { ...entry, [field]: value } : entry)); setOutputs([]); setAccepted(false); }} />
         </label>)}
-        <Tooltip text="Remove rectangle"><button className="icon-button" disabled={busy} aria-label={`Remove rectangle ${index + 1}`} onClick={() => setBoxes(old => old.filter((_, position) => position !== index))}><Trash2 size={13} /></button></Tooltip>
+        <Tooltip text="Remove rectangle"><button className="icon-button" disabled={!!busy} aria-label={`Remove rectangle ${index + 1}`} onClick={() => setBoxes(old => old.filter((_, position) => position !== index))}><Trash2 size={13} /></button></Tooltip>
       </div>)}
       <div className="input-row">
-        <button className="quiet" disabled={busy || boxes.length >= 1000} onClick={() => { setOutputs([]); setAccepted(false); setBoxes(old => [...old, { page, x: 40, y: 40, width: 200, height: 24 }]); }}><Plus size={13} />Add rectangle</button>
-        <button className="primary" disabled={busy || !boxes.length} onClick={() => void action(async () => { setOutputs([]); setReviewed([]); setAccepted(false); setSaved(''); const result = await api<{ published: Derivative[] }>('prepare_redaction', { case_id: caseId, session_epoch: sessionEpoch, source_id: sourceId, boxes }); setOutputs(result.published); })}>{busy ? 'Processing…' : 'Build review copy'}</button>
+        <button className="quiet" disabled={!!busy || boxes.length >= 1000} onClick={() => { setOutputs([]); setAccepted(false); setBoxes(old => [...old, { page, x: 40, y: 40, width: 200, height: 24 }]); }}><Plus size={13} />Add rectangle</button>
+        <button className="primary" disabled={!!busy || !boxes.length} onClick={() => void action('prepare', async isCurrent => { setOutputs([]); setReviewed([]); setAccepted(false); setSaved(''); const result = await api<{ published: Derivative[] }>('prepare_redaction', { case_id: caseId, session_epoch: sessionEpoch, source_id: sourceId, boxes }); if (isCurrent()) setOutputs(result.published); })}>{busy === 'prepare' ? 'Building review copy…' : 'Build review copy'}</button>
       </div>
     </div>
 
     {error ? <p role="alert" className="danger-text">{error}</p> : null}
+    {pdf ? <p className="small muted redaction-review-progress" role="status">{reviewed.length} of {pages.length} pages reviewed. Inspect each page for missed sensitive content before accepting.</p> : null}
     {pages.map(jpeg => <section key={jpeg.artifact_id} className="redaction-review-page">
       <img loading="lazy" src={evidenceUrl(`artifact/${jpeg.artifact_id}`)} alt={`Redacted page ${jpeg.metadata.page}`} style={{ width: '100%' }} />
       <label><input type="checkbox" checked={reviewed.includes(jpeg.metadata.page!)} onChange={event => { setAccepted(false); setReviewed(old => event.target.checked ? [...old, jpeg.metadata.page!] : old.filter(value => value !== jpeg.metadata.page!)); }} />I reviewed page {jpeg.metadata.page} for remaining sensitive content</label>
     </section>)}
     {pdf ? <>
-      <label className="field-label">Review note<textarea value={note} maxLength={4000} onChange={event => { setNote(event.target.value); setAccepted(false); }} /></label>
+      <label className="field-label">Review note<textarea value={note} maxLength={4000} onChange={event => { setNote(event.target.value); setAccepted(false); }} placeholder="Record what you checked and any remaining limitation" /></label>
       <div className="input-row">
-        <button className="secondary" disabled={busy || !pages.length || reviewed.length !== pages.length} onClick={() => void action(async () => { await api('review_redaction', { case_id: caseId, session_epoch: sessionEpoch, artifact_id: pdf.artifact_id, pages: reviewed, note }); setAccepted(true); })}>Accept reviewed derivative</button>
-        <button className="primary" disabled={busy || !accepted} onClick={() => void action(async () => { const path = await save({ defaultPath: 'Reviewed redaction.pdf', filters: [{ name: 'Flattened redaction', extensions: ['pdf'] }] }); if (path) { await api('export_redaction', { case_id: caseId, session_epoch: sessionEpoch, artifact_id: pdf.artifact_id, path }); setSaved(path); } })}>Export derivative only</button>
+        <button className="secondary" disabled={!!busy || !pages.length || reviewed.length !== pages.length} onClick={() => void action('review', async isCurrent => { await api('review_redaction', { case_id: caseId, session_epoch: sessionEpoch, artifact_id: pdf.artifact_id, pages: reviewed, note }); if (isCurrent()) setAccepted(true); })}>{busy === 'review' ? 'Accepting reviewed copy…' : 'Accept reviewed derivative'}</button>
+        <button className="primary" disabled={!!busy || !accepted} onClick={() => void action('export', async isCurrent => { const path = await save({ defaultPath: 'Reviewed redaction.pdf', filters: [{ name: 'Flattened redaction', extensions: ['pdf'] }] }); if (path && isCurrent()) { await api('export_redaction', { case_id: caseId, session_epoch: sessionEpoch, artifact_id: pdf.artifact_id, path }); if (isCurrent()) setSaved(path); } })}>{busy === 'export' ? 'Exporting reviewed copy…' : 'Export derivative only'}</button>
       </div>
     </> : null}
     {saved ? <p role="status" className="small success-text">Saved {saved}</p> : null}

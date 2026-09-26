@@ -747,8 +747,16 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 .discovery-grid p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 6px 8px; font-size: 11px; color: var(--text-tertiary); }
 
 /* ----------------------------- 9. redaction -------------------------------- */
-.redaction-panel { margin: 8px 0; font-size: 12.5px; }
-.redaction-toolbar { margin: 8px 0; }
+.redaction-panel { margin: 12px 0; padding: 12px 0; border-top: 1px solid var(--border-subtle); font-size: 12.5px; }
+.redaction-panel > summary { min-height: 32px; color: var(--text-primary); font-weight: 600; }
+.redaction-panel > .small { max-width: 68ch; line-height: 1.55; }
+.redaction-steps { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 16px 0 12px; list-style: none; }
+.redaction-steps li { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; min-height: 32px; border: 1px solid var(--border-subtle); border-radius: var(--r-sm); color: var(--text-secondary); font-size: 11.5px; }
+.redaction-steps li.ready { border-color: var(--accent); color: var(--accent-text); background: var(--accent-subtle); }
+.redaction-steps span { font-weight: 600; }
+.redaction-units { margin: 0 0 14px; }
+.redaction-toolbar { margin: 12px 0; align-items: center; }
+.redaction-toolbar input[type=number] { width: 70px; margin-left: 6px; }
 .redaction-stage-wrap { margin: 10px 0; }
 .redaction-stage { position: relative; display: inline-block; max-width: 100%; border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; touch-action: none; }
 .redaction-stage.drawing { cursor: crosshair; }
@@ -757,11 +765,14 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 .redaction-box-overlay.drafting { border-style: dashed; }
 .redaction-box-remove { position: absolute; top: -1.5px; right: -1.5px; width: 19px; height: 19px; background: var(--danger); color: #fff; border-radius: 0 2px 0 4px; padding: 0; }
 .redaction-hint { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
-.redaction-boxes { margin: 8px 0; }
-.redaction-box { display: flex; gap: 8px; align-items: flex-end; margin: 8px 0; flex-wrap: wrap; }
+.redaction-boxes { margin: 12px 0; padding: 12px 0; border-top: 1px solid var(--border-subtle); }
+.redaction-box { display: flex; gap: 8px; align-items: flex-end; margin: 8px 0; padding: 8px; flex-wrap: wrap; border: 1px solid var(--border-subtle); border-radius: var(--r-sm); }
 .redaction-box label { min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-faint); }
 .redaction-box input { width: 76px; padding: 4px 7px; font-size: 11.5px; }
-.redaction-review-page { margin: 14px 0; }
+.redaction-review-progress { margin: 16px 0 8px; }
+.redaction-review-page { margin: 8px 0 14px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--r-sm); background: var(--bg-surface-2); }
+.redaction-review-page img { display: block; margin-bottom: 10px; }
+.redaction-review-page label { display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; }
 
 /* ---------------------------- 10. workspaces -------------------------------- */
 .workspace-view { flex: 1; min-height: 0; overflow: auto; padding: 26px 34px 40px; animation: fade var(--dur-2) var(--ease-out); }
