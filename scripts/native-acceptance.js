@@ -14,14 +14,14 @@
   let crossCaseSourceDenied=false;try{await invoke('source_page',{case_id:'another-case',generation:snapshot.generation,audit_seq:snapshot.counts.audit_seq});}catch{crossCaseSourceDenied=true;}
   if(!crossCaseSourceDenied)throw new Error('A stale case was allowed to list sources');
   const pdf=snapshot.sources.find(s=>s.kind==='pdf');const photo=snapshot.sources.find(s=>s.kind==='image');const video=snapshot.sources.find(s=>s.kind==='video');
-  const process=invoke('process_source',{source_id:pdf.id});const latencies=[];
+  const process=invoke('process_source',{case_id:snapshot.id,source_id:pdf.id});const latencies=[];
   for(let i=0;i<5;i++){const t=performance.now();await invoke('snapshot');latencies.push(performance.now()-t);}
   await process;
   const documents=[];
   for(const name of ['notes.docx','table.xlsx']) {
     const source=snapshot.sources.find(s=>s.name===name);
-    const first=await invoke('process_source',{source_id:source.id});
-    const second=await invoke('process_source',{source_id:source.id});
+    const first=await invoke('process_source',{case_id:snapshot.id,source_id:source.id});
+    const second=await invoke('process_source',{case_id:snapshot.id,source_id:source.id});
     const text=await invoke('read_text',{source_id:source.id,start:1,count:200});
     if(!second.reused || first.extraction_locator!==second.extraction_locator || !text.total_lines)throw new Error('Document extraction/cache failed: '+name);
     documents.push({name,total_lines:text.total_lines,reused:second.reused});
@@ -42,7 +42,7 @@
   const inventorySnapshot=await invoke('snapshot');
   const inventory=inventorySnapshot.tasks.find(t=>t.id===inventoryTask.task_id);
   if(inventory?.status!=='complete' || inventory.answer!=='You have 6 original files in this case.' || inventory.input_tokens || inventory.output_tokens)throw new Error('Inventory did not finish without model calls');
-  await invoke('queue_video_discovery',{source_id:video.id,interval:1});
+  await invoke('queue_video_discovery',{case_id:snapshot.id,source_id:video.id,interval:1});
   const discoveryLatency=[];
   for(let i=0;i<120;i++) {
     const t=performance.now();await invoke('snapshot');discoveryLatency.push(performance.now()-t);
