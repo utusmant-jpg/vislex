@@ -70,6 +70,13 @@ fn provider_key_entry(provider: crate::providers::Provider) -> anyhow::Result<ke
 
 }
 
+fn provider_key_for_case(provider: crate::providers::Provider) -> anyhow::Result<String> {
+    if crate::providers::synthetic_provider_url()?.is_some() {
+        return Ok("synthetic-local-transport".into());
+    }
+    Ok(provider_key_entry(provider)?.get_password()?)
+}
+
 
 
 fn key_entry() -> anyhow::Result<keyring::Entry> { provider_key_entry(crate::providers::Provider::Openai) }
@@ -804,10 +811,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             } else { crate::providers::task_profile(c, "")? };
             crate::providers::check_permission(c, &selected)?;
             if !agent::is_file_count_question(text(&args,"prompt")?) {
-            provider_key_entry(selected.provider)?
-
-                .get_password()
-
+            provider_key_for_case(selected.provider)
                 .map_err(|_| anyhow::anyhow!("Save an API key in Settings first"))?;
 
             }
@@ -901,7 +905,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
             let old=text(&args,"task_id")?;
             let profile=crate::providers::task_profile(c,old)?;
-            provider_key_entry(profile.provider)?.get_password().map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
+            provider_key_for_case(profile.provider).map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
             let (task,conversation)=agent::continue_paused(c,old)?;
             let case_id=c.meta("id")?.unwrap_or_default();
             let session_epoch=state.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
@@ -1112,7 +1116,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
                 run_team_phase(&app,&case_id,epoch,&task,"review").await?;
             }
             let provider=with_case_expected(&app,&case_id,Some(epoch),|c|Ok(crate::providers::task_profile(c,&task)?.provider))?;
-            let key=provider_key_entry(provider)?.get_password()?;
+            let key=provider_key_for_case(provider)?;
             let prepared=with_case_expected(&app,&case_id,Some(epoch),|c|agent::prepare_request(c,&task))?;
             anyhow::ensure!(prepared.provider==provider,"Provider changed before dispatch");
 
@@ -1405,7 +1409,7 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
         });
         let task=with_case_expected(&app,&case_id,Some(epoch),|c| {
             let provider=crate::providers::load(c)?.provider;
-            if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
+            if provider_key_for_case(provider).is_err(){return Ok(None);}
             crate::automatic::start_review(c)
         });
         if let Ok(Some(task))=task {
@@ -1442,12 +1446,12 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
                 let published=with_case_expected(&app,&case_id,Some(epoch),|c|{crate::automatic::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
                 if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);kick_semantic(app.clone(),case_id.clone());}
                 let _=app.emit("case-changed",());
-                let task=with_case_expected(&app,&case_id,Some(epoch),|c| {let provider=crate::providers::load(c)?.provider;if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}crate::automatic::start_review(c)});
+                let task=with_case_expected(&app,&case_id,Some(epoch),|c| {let provider=crate::providers::load(c)?.provider;if provider_key_for_case(provider).is_err(){return Ok(None);}crate::automatic::start_review(c)});
                 if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});}
             }
             let task=with_case_expected(&app,&case_id,Some(epoch),|c| {
                 let provider=crate::providers::load(c)?.provider;
-                if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
+                if provider_key_for_case(provider).is_err(){return Ok(None);}
                 crate::automatic::start_review(c)
             });
             if let Ok(Some(task))=task {

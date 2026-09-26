@@ -1,7 +1,7 @@
 // A long synthetic native journey should not inherit the short CLI eval timeout.
 import fs from 'node:fs';
 
-const [port, scriptPath, workspace, screenshotPath] = process.argv.slice(2);
+const [port, scriptPath, workspace, screenshotPath, mockPort] = process.argv.slice(2);
 if (!port || !scriptPath || !workspace || !screenshotPath) throw new Error('Native CDP arguments missing');
 const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json());
 const target = targets.find(item => item.type === 'page' && item.title === 'VisLex') ?? targets.find(item => item.type === 'page');
@@ -29,7 +29,7 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
   pending.set(id, { resolve, reject });
   socket.send(JSON.stringify({ id, method, params }));
 });
-const source = fs.readFileSync(scriptPath, 'utf8').replace('__WORKSPACE__', JSON.stringify(workspace.replaceAll('\\', '/')));
+const source = fs.readFileSync(scriptPath, 'utf8').replace('__WORKSPACE__', JSON.stringify(workspace.replaceAll('\\', '/'))).replace('__MOCK_PORT__', mockPort ?? '9362');
 let bridgeReady = false;
 for (let attempt = 0; attempt < 100; attempt++) {
   try {
