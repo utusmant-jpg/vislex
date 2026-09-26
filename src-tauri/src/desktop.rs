@@ -26,7 +26,9 @@ use tauri::{Emitter, Manager};
 pub struct AppState {
 
     case: Mutex<Option<Case>>,
+    active_case_id: Mutex<Option<String>>,
     session_epoch: std::sync::atomic::AtomicU64,
+    event_seq: std::sync::atomic::AtomicU64,
     importing: std::sync::atomic::AtomicBool,
     semantic_indexing: Mutex<std::collections::HashMap<String,bool>>,
 
@@ -37,11 +39,22 @@ fn text<'a>(v: &'a Value, k: &str) -> anyhow::Result<&'a str> {
     v[k].as_str().ok_or_else(|| anyhow::anyhow!("Missing {k}"))
 
 }
-fn stamp_session(mut value: Value, epoch: u64) -> Value {
+fn stamp_session(mut value: Value, state: &AppState) -> Value {
     if let Some(object) = value.as_object_mut() {
-        object.insert("session_epoch".to_string(), json!(epoch));
+        object.insert("session_epoch".to_string(), json!(state.session_epoch.load(std::sync::atomic::Ordering::SeqCst)));
+        object.insert("event_seq".to_string(), json!(state.event_seq.load(std::sync::atomic::Ordering::SeqCst)));
     }
     value
+}
+fn emit_case_changed(app: &tauri::AppHandle) {
+    let state=app.state::<AppState>();
+    let active=state.active_case_id.lock().unwrap_or_else(|e|e.into_inner());
+    let case_id=active.clone();
+    let session_epoch=state.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    drop(active);
+    let event_seq=state.event_seq.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+    let _=app.emit("case-event",json!({"case_id":case_id,"session_epoch":session_epoch,"event_seq":event_seq}));
+    let _=app.emit("case-changed",());
 }
 fn ensure_session_epoch(state: &AppState, args: &Value) -> anyhow::Result<()> {
     if let Some(epoch) = args.get("session_epoch") {
@@ -94,7 +107,7 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
         let (case_id,epoch,url)=prepared.map_err(|e|e.to_string())?;
         let download=crate::authority::retrieve(&url).await.map_err(|e|e.to_string())?;
         let value=with_case_expected(&app,&case_id,Some(epoch),|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
-        kick_automatic(app.clone(),case_id);let _=app.emit("case-changed",());return Ok(value);
+        kick_automatic(app.clone(),case_id);emit_case_changed(&app);return Ok(value);
     }
     // Explicit account metadata lookup: no case material and no case mutex during network I/O.
     if action == "provider_models" {
@@ -133,14 +146,14 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         let staged=crate::transcription::run(&job).and_then(|value|crate::transcription::stage_transcript(&job,value));
         let value=with_case_expected(app,&case_id,Some(epoch),|case|match staged {Ok(v)=>crate::transcription::publish_staged_transcript(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
         if value.is_ok(){kick_semantic(app.clone(),case_id.clone());}
-        let _=app.emit("case-changed",());return value;
+        emit_case_changed(&app);return value;
     }
     if action=="resume_processing" {
         let (case_id,epoch,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before processing resume");(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::processing::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
         let result=with_case_expected(app,&case_id,Some(epoch),|case|crate::processing::publish_staged(case,&job,staged));
         if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
-        let _=app.emit("case-changed",());return result;
+        emit_case_changed(&app);return result;
     }
     if ["save_provider_key","provider_key_status","delete_provider_key"].contains(&action) {
         let provider:crate::providers::Provider=serde_json::from_value(args["provider"].clone())?;
@@ -174,11 +187,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             };
             (case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::processing::prepare_request(case,source,options)?)
         };
-        let _=app.emit("case-changed",());
+        emit_case_changed(&app);
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
         let result=with_case_expected(app,&case_id,Some(epoch),|case|crate::processing::publish_staged(case,&job,staged));
         if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
-        let _=app.emit("case-changed",());
+        emit_case_changed(&app);
         return result;
     }
     if action == "save_api_key" {
@@ -245,7 +258,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let result=crate::processing::publish_staged_playback(c,&job,staged);
 
-        let _=app.emit("case-changed",());
+        emit_case_changed(&app);
 
         return result;
 
@@ -282,7 +295,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         backup::verify_backup_plan(&mut plan)?;
         backup::write_archive(&plan,&destination,text(&args,"password")?)?;
         let value=with_case_expected(app,&case_id,Some(session_epoch),|c|backup::finish_backup(c,&plan));
-        let _=app.emit("case-changed",());
+        emit_case_changed(&app);
         return value;
     }
     if action=="export_dossier_bundle" {
@@ -297,14 +310,14 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         // Copying cited originals into the package runs without the case lock.
         let staged=crate::exports::write_dossier_bundle(&plan,&destination);
         let value=with_case_expected(app,&case_id,Some(session_epoch),|c|crate::exports::publish_dossier_bundle(c,&plan,staged,&destination));
-        let _=app.emit("case-changed",());
+        emit_case_changed(&app);
         return value;
     }
     if action=="export_redaction" {
         let (case_id,session_epoch,plan)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction export");(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::exports::prepare_redaction_export(case,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?)};
         let staged=crate::exports::stage_redaction_export(&plan)?;
         let result=with_case_expected(app,&case_id,Some(session_epoch),|case|crate::exports::publish_staged_redaction_export(case,&plan,staged));
-        let _=app.emit("case-changed",());return result;
+        emit_case_changed(&app);return result;
     }
 
     let state = app.state::<AppState>();
@@ -330,10 +343,13 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         anyhow::ensure!(running == 0,"Stop active tasks and processing jobs before deleting this case");
         let old_root=c.root.clone();
         *guard = None;
+        let mut active=state.active_case_id.lock().unwrap_or_else(|e|e.into_inner());
         state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        *active=None;
+        drop(active);
         crate::processing::invalidate_case_leases(&old_root);
         let receipt = crate::case::delete_case(&target, text(&args, "confirm")?)?;
-        let _ = app.emit("case-changed", ());
+        emit_case_changed(&app);
         return Ok(receipt);
     }
 
@@ -365,9 +381,13 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         if action == "close_case" {
             let old_root=guard.as_ref().map(|case|case.root.clone());
             *guard = None;
+            let mut active=state.active_case_id.lock().unwrap_or_else(|e|e.into_inner());
             state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            *active=None;
+            drop(active);
             drop(guard);
             if let Some(root)=old_root {crate::processing::invalidate_case_leases(&root);}
+            emit_case_changed(&app);
 
             return Ok(Value::Null);
 
@@ -405,12 +425,16 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let old_root=guard.as_ref().map(|case|case.root.clone());
         *guard = Some(c);
-        let session_epoch=state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+        let mut active=state.active_case_id.lock().unwrap_or_else(|e|e.into_inner());
+        state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        *active=Some(case_id.clone());
+        drop(active);
         drop(guard);
         if let Some(root)=old_root {crate::processing::invalidate_case_leases(&root);}
+        emit_case_changed(&app);
         kick_automatic(app.clone(),case_id.clone());
         kick_transcriptions(app.clone(),case_id);
-        return Ok(stamp_session(snapshot,session_epoch));
+        return Ok(stamp_session(snapshot,&state));
 
     }
 
@@ -429,10 +453,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
     let result = match action {
 
-        "snapshot" => stamp_session(c.snapshot()?,state.session_epoch.load(std::sync::atomic::Ordering::SeqCst)),
+        "snapshot" => stamp_session(c.snapshot()?,&state),
         "case_summary" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before summary");
-            stamp_session(c.case_summary()?,state.session_epoch.load(std::sync::atomic::Ordering::SeqCst))
+            stamp_session(c.case_summary()?,&state)
         },
         "task_page" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before task page");
@@ -571,7 +595,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
                 }
 
-                let _ = handle.emit("case-changed", ());
+                emit_case_changed(&handle);
 
                 kick_transcriptions(handle, case_id);
 
@@ -851,7 +875,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             if agent::is_file_count_question(text(&args,"prompt")?) {
                 agent::finish_inventory(c,&task,false)?;
-                let _=app.emit("case-changed",());
+                emit_case_changed(&app);
                 return Ok(json!({"task_id":task,"conversation_id":conversation}));
             }
             let case_id = c.meta("id")?.unwrap_or_default();
@@ -956,7 +980,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
     {
 
-        let _ = app.emit("case-changed", ());
+        emit_case_changed(&app);
 
     }
 
@@ -1083,7 +1107,7 @@ fn kick_transcriptions(app: tauri::AppHandle, case_id: String) {
 
         }
 
-        let _ = app.emit("case-changed", ());
+        emit_case_changed(&app);
 
     });
 
@@ -1125,7 +1149,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
             let prepared=with_case_expected(&app,&case_id,Some(epoch),|c|agent::prepare_request(c,&task))?;
             anyhow::ensure!(prepared.provider==provider,"Provider changed before dispatch");
 
-            let _=app.emit("case-changed",());
+            emit_case_changed(&app);
 
             let response=tokio::select! {
 
@@ -1156,7 +1180,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
                     let handled=with_case_expected(&app,&case_id,Some(epoch),|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
                     for job in &media.cleanup {let _=crate::processing::cleanup_published_input(job);}
                     with_case_expected(&app,&case_id,Some(epoch),|c|{for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}Ok(())})?;
-                    let more=handled?;kick_transcriptions(app.clone(),case_id.clone());let _=app.emit("case-changed",());if !more{break;}
+                    let more=handled?;kick_transcriptions(app.clone(),case_id.clone());emit_case_changed(&app);if !more{break;}
                 },
 
                 Err(error)=>{with_case_expected(&app,&case_id,Some(epoch),|c|{c.db.execute("UPDATE transmissions SET status='uncertain' WHERE id=?",[&prepared.transmission])?;Ok(())})?;return Err(error);}
@@ -1173,7 +1197,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
 
     }
 
-    let _ = app.emit("case-changed", ());
+    emit_case_changed(&app);
 
     })
 }
@@ -1188,7 +1212,9 @@ pub fn run() {
         .manage(AppState {
 
             case: Mutex::new(None),
+            active_case_id: Mutex::new(None),
             session_epoch: std::sync::atomic::AtomicU64::new(0),
+            event_seq: std::sync::atomic::AtomicU64::new(0),
             importing: std::sync::atomic::AtomicBool::new(false),
             semantic_indexing: Mutex::new(std::collections::HashMap::new()),
 
@@ -1418,7 +1444,7 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
             crate::automatic::start_review(c)
         });
         if let Ok(Some(task))=task {
-            let _=app.emit("case-changed",());
+            emit_case_changed(&app);
             tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});
         }
     });
@@ -1433,7 +1459,7 @@ fn run_discovery_lane(app:&tauri::AppHandle,case_id:&str,epoch:u64) {
         let staged=crate::processing::stage_prepared(&job.processor,crate::processing::run_prepared(&job.processor));
         let published=with_case_expected(app,case_id,Some(epoch),|c|{crate::discovery::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
         if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);}
-        let _=app.emit("case-changed",());
+        emit_case_changed(&app);
     }
 }
 fn kick_automatic(app:tauri::AppHandle,case_id:String) {
@@ -1450,7 +1476,7 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
                 let staged=crate::processing::stage_prepared(&job.processor,crate::processing::run_prepared(&job.processor));
                 let published=with_case_expected(&app,&case_id,Some(epoch),|c|{crate::automatic::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
                 if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);kick_semantic(app.clone(),case_id.clone());}
-                let _=app.emit("case-changed",());
+                emit_case_changed(&app);
                 let task=with_case_expected(&app,&case_id,Some(epoch),|c| {let provider=crate::providers::load(c)?.provider;if provider_key_for_case(provider).is_err(){return Ok(None);}crate::automatic::start_review(c)});
                 if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});}
             }
@@ -1460,7 +1486,7 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
                 crate::automatic::start_review(c)
             });
             if let Ok(Some(task))=task {
-                let _=app.emit("case-changed",());
+                emit_case_changed(&app);
                 tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});
             }
         });
@@ -1526,10 +1552,10 @@ fn import_background(app:&tauri::AppHandle,action:&str,args:Value)->anyhow::Resu
             c.db.execute("INSERT INTO imports VALUES(?,?,?,?,?,?)",rusqlite::params![crate::case::id(),path,batch,status,detail.to_string(),crate::case::now()])?;
             Ok(json!({"path":path,"status":status,"detail":detail}))
         })?;
-        items.push(item);let _=app.emit("case-changed",());
+        items.push(item);emit_case_changed(&app);
     }
     with_case(app,&case_id,|c|{c.audit("import_batch",json!({"batch":batch,"items":items}))?;crate::automatic::enqueue(c)})?;
     kick_automatic(app.clone(),case_id.clone());kick_transcriptions(app.clone(),case_id);
-    let _=app.emit("case-changed",());
+    emit_case_changed(&app);
     Ok(json!({"batch":batch,"items":items,"skipped":skipped}))
 }
