@@ -12,7 +12,7 @@ type SegmentPage={segments:Segment[];next_cursor:number|null};
 const VISIBLE_SEGMENTS=200;
 function clock(seconds:number){const milliseconds=Math.round(Math.max(0,seconds)*1000);return `${String(Math.floor(milliseconds/3600000)).padStart(2,'0')}:${String(Math.floor(milliseconds/60000)%60).padStart(2,'0')}:${String(Math.floor(milliseconds/1000)%60).padStart(2,'0')}.${String(milliseconds%1000).padStart(3,'0')}`;}
 
-export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek, currentTime }: { onSeek: (time: number) => void; currentTime: number; sourceId: string; caseId?:string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
+export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, refresh, onSeek, currentTime }: { onSeek: (time: number) => void; currentTime: number; sourceId: string; caseId?:string; sessionEpoch?:number; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
   const [state, setState] = useState<State | null>(null);
   const [version, setVersion] = useState(0);
   const [model, setModel] = useState('tiny');
@@ -42,7 +42,7 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
     setSegments([]);setSegmentCursor(null);setSegmentError('');setSegmentWindowStart(0);
     if(!native||!caseId||state?.status!=='complete'||!state.result.segmented)return;
     let active=true;
-    void api<SegmentPage>('transcript_segment_page',{case_id:caseId,source_id:sourceId,run_id:state.job_id,cursor:null})
+    void api<SegmentPage>('transcript_segment_page',{case_id:caseId,session_epoch:sessionEpoch,source_id:sourceId,run_id:state.job_id,cursor:null})
       .then(page=>{if(active){setSegments(page.segments);setSegmentCursor(page.next_cursor);}})
       .catch(error=>{if(active)setSegmentError(String(error));});
     return()=>{active=false;};
@@ -50,7 +50,7 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
   async function loadMoreSegments(){
     if(!caseId||!state?.job_id||segmentCursor===null||loadingSegments)return;
     const key=segmentKey.current;setLoadingSegments(true);setSegmentError('');
-    try{const page=await api<SegmentPage>('transcript_segment_page',{case_id:caseId,source_id:sourceId,run_id:state.job_id,cursor:segmentCursor});
+    try{const page=await api<SegmentPage>('transcript_segment_page',{case_id:caseId,session_epoch:sessionEpoch,source_id:sourceId,run_id:state.job_id,cursor:segmentCursor});
       if(segmentKey.current===key){setSegments(current=>[...current,...page.segments]);setSegmentWindowStart(filter.trim()?0:Math.max(0,segments.length+page.segments.length-VISIBLE_SEGMENTS));setSegmentCursor(page.next_cursor);}
     }catch(error){if(segmentKey.current===key)setSegmentError(String(error));}
     finally{if(segmentKey.current===key)setLoadingSegments(false);}
@@ -94,7 +94,7 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
     </div>
     {running ? <div className="notice">{state?.status === 'queued' ? 'Queued behind the current recording…' : progress?.state === 'copying' ? 'Preparing a private processing copy…' : `Track ${progress?.track_number ?? 1} of ${progress?.track_count ?? '?'} · ${Math.floor(progress?.processed_seconds ?? 0)} seconds processed${progress?.estimated_seconds ? ` / approximately ${Math.ceil(progress.estimated_seconds)}` : ''} · ${progress?.segments ?? 0} segments`}<span> You can keep reviewing while this runs.</span></div> : null}
     {state?.status === 'failed' || state?.status === 'interrupted' || error ? <div className="notice error">{error || state?.error}</div> : null}
-    {expanded ? <div className="run-status">Unreviewed machine transcription · timestamps are audio-track-relative; seek positions account for track offsets · tracks are not speaker identities.{!state?.record || running ? <button className="quiet" onClick={() => run(async () => { await api(running ? 'cancel_transcription' : 'transcribe_full', { case_id: caseId, source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>{running ? 'Cancel transcription' : 'Transcribe recording'}</button> : null}</div> : null}
+    {expanded ? <div className="run-status">Unreviewed machine transcription · timestamps are audio-track-relative; seek positions account for track offsets · tracks are not speaker identities.{!state?.record || running ? <button className="quiet" onClick={() => run(async () => { await api(running ? 'cancel_transcription' : 'transcribe_full', { case_id: caseId, session_epoch: sessionEpoch, source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>{running ? 'Cancel transcription' : 'Transcribe recording'}</button> : null}</div> : null}
     {expanded && !running && state?.record ? <div className="input-row">
       <label className="small">Next transcription model
         <select value={model} onChange={event => setModel(event.target.value)}>
@@ -102,7 +102,7 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
           <option value="small">Small · higher-capacity local model</option>
         </select>
       </label>
-      <button className="quiet" onClick={() => run(async () => { await api('set_asr_profile', { case_id: caseId, model }); await api('transcribe_full', { case_id: caseId, source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>Transcribe a new version</button>
+      <button className="quiet" onClick={() => run(async () => { await api('set_asr_profile', { case_id: caseId, session_epoch: sessionEpoch, model }); await api('transcribe_full', { case_id: caseId, session_epoch: sessionEpoch, source_id: sourceId }); setVersion(value => value + 1); await refresh(); })}>Transcribe a new version</button>
     </div> : null}
     {state?.record && expanded && state.result.metadata?.container_origin_seconds === undefined ? <p className="small muted">This older transcript has no playback clock mapping. Retranscribe to enable accurate seek links.</p> : null}
     {segmentError ? <p role="alert" className="small danger-text">Could not read transcript segments: {segmentError}</p> : null}
@@ -119,15 +119,15 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
           </button>
           {segment.correction?<p className="small muted">{segment.correction.review==='accepted'?'Accepted human correction':segment.correction.review==='pending'?'Correction awaiting human review':'Rejected correction'} · version {segment.correction.revision}: {segment.correction.text}</p>:null}
           {segment.correction?.review==='pending'&&caseId?<div className="input-row">
-            <button className="quiet" onClick={()=>run(async()=>{await api('review_transcript_correction',{case_id:caseId,correction_id:segment.correction!.id,accept:true});setSegments(current=>current.map(item=>item.ordinal===segment.ordinal&&item.correction?{...item,correction:{...item.correction,review:'accepted'}}:item));})}>Accept correction</button>
-            <button className="quiet" onClick={()=>run(async()=>{await api('review_transcript_correction',{case_id:caseId,correction_id:segment.correction!.id,accept:false});setSegments(current=>current.map(item=>item.ordinal===segment.ordinal&&item.correction?{...item,correction:{...item.correction,review:'rejected'}}:item));})}>Reject correction</button>
+            <button className="quiet" onClick={()=>run(async()=>{await api('review_transcript_correction',{case_id:caseId,session_epoch:sessionEpoch,correction_id:segment.correction!.id,accept:true});setSegments(current=>current.map(item=>item.ordinal===segment.ordinal&&item.correction?{...item,correction:{...item.correction,review:'accepted'}}:item));})}>Accept correction</button>
+            <button className="quiet" onClick={()=>run(async()=>{await api('review_transcript_correction',{case_id:caseId,session_epoch:sessionEpoch,correction_id:segment.correction!.id,accept:false});setSegments(current=>current.map(item=>item.ordinal===segment.ordinal&&item.correction?{...item,correction:{...item.correction,review:'rejected'}}:item));})}>Reject correction</button>
           </div>:null}
           {caseId&&editingOrdinal!==segment.ordinal?<button className="quiet" onClick={()=>{setEditingOrdinal(segment.ordinal);setCorrectionText(segment.correction?.text??segment.text);setCorrectionReason('');}}>Suggest correction</button>:null}
           {caseId&&editingOrdinal===segment.ordinal?<div className="input-row">
             <textarea aria-label={`Correct segment ${segment.ordinal}`} value={correctionText} onChange={event=>setCorrectionText(event.target.value)}/>
             <input aria-label={`Correction reason ${segment.ordinal}`} placeholder="Reason checked against recording" value={correctionReason} onChange={event=>setCorrectionReason(event.target.value)}/>
             <button className="quiet" disabled={!correctionText.trim()||!correctionReason.trim()} onClick={()=>run(async()=>{
-              const receipt=await api<{id:string;revision:number}>('propose_transcript_correction',{case_id:caseId,source_id:sourceId,run_id:state.job_id,ordinal:segment.ordinal,text:correctionText,reason:correctionReason});
+              const receipt=await api<{id:string;revision:number}>('propose_transcript_correction',{case_id:caseId,session_epoch:sessionEpoch,source_id:sourceId,run_id:state.job_id,ordinal:segment.ordinal,text:correctionText,reason:correctionReason});
               setSegments(current=>current.map(item=>item.ordinal===segment.ordinal?{...item,correction:{id:receipt.id,revision:receipt.revision,text:correctionText,review:'pending'}}:item));setEditingOrdinal(null);
             })}>Save proposal</button>
             <button className="quiet" onClick={()=>setEditingOrdinal(null)}>Cancel</button>
@@ -156,6 +156,6 @@ export default function FullTranscript({ sourceId, caseId, run, refresh, onSeek,
       })}
       {legacyWindowStart+VISIBLE_SEGMENTS<legacyRows.length?<button className="quiet" onClick={()=>setLegacyWindowStart(legacyWindowStart+VISIBLE_SEGMENTS)}>Show next 200 transcript lines</button>:null}
     </div> : expanded && !running && !state?.record ? <p className="small muted">No full transcript is available. Transcribe this recording using the control above.</p> : null}
-    {expanded ? <SpeakerTurns key={sourceId} caseId={caseId} sourceId={sourceId} onSeek={onSeek} defaultTrack={state?.result.metadata?.tracks?.[0]?.index} /> : null}
+    {expanded ? <SpeakerTurns key={`${sessionEpoch}:${sourceId}`} caseId={caseId} sessionEpoch={sessionEpoch} sourceId={sourceId} onSeek={onSeek} defaultTrack={state?.result.metadata?.tracks?.[0]?.index} /> : null}
   </section>;
 }

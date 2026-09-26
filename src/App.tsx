@@ -154,18 +154,18 @@ function IssueHistory({ issue }: { issue: NonNullable<Snapshot['issues']>[number
   </details>;
 }
 
-export function RecordDetailPanel({caseId,summary,run,refresh,onSource}:{caseId:string;summary:RecordSummary;run:(fn:()=>Promise<void>)=>void;refresh:()=>Promise<void>;onSource:(id:string,locator?:string)=>void}) {
+export function RecordDetailPanel({caseId,sessionEpoch,summary,run,refresh,onSource}:{caseId:string;sessionEpoch?:number;summary:RecordSummary;run:(fn:()=>Promise<void>)=>void;refresh:()=>Promise<void>;onSource:(id:string,locator?:string)=>void}) {
   const [detail,setDetail]=useState<WorkingRecord|null>(null);
   const [error,setError]=useState('');
   useEffect(()=>{
     let active=true;setDetail(null);setError('');
-    void api<WorkingRecord>('record_detail',{case_id:caseId,record_id:summary.id,revision:summary.revision})
+    void api<WorkingRecord>('record_detail',{case_id:caseId,session_epoch:sessionEpoch,record_id:summary.id,revision:summary.revision})
       .then(record=>{if(active)setDetail(record);})
       .catch(reason=>{if(active)setError(String(reason));});
     return ()=>{active=false;};
-  },[caseId,summary.id,summary.revision,summary.updated_at,summary.protected,summary.review,summary.stale]);
+  },[caseId,sessionEpoch,summary.id,summary.revision,summary.updated_at,summary.protected,summary.review,summary.stale]);
   return detail?.id===summary.id && detail.revision===summary.revision
-    ? <RecordEditor key={`${caseId}:${detail.id}`} caseId={caseId} record={detail} run={run} refresh={refresh} onSource={onSource}/>
+    ? <RecordEditor key={`${caseId}:${sessionEpoch}:${detail.id}`} caseId={caseId} sessionEpoch={sessionEpoch} record={detail} run={run} refresh={refresh} onSource={onSource}/>
     : <div className="empty-state">{error?<p role="alert">Could not load working file: {error}</p>:<p>Loading working file…</p>}</div>;
 }
 
@@ -543,7 +543,7 @@ export default function App() {
     if (modal === 'backup') { if (!snapshot) throw new Error('Open a case first.'); const path = await save({ defaultPath: 'case-backup.tar.age', filters: [{ name: 'Encrypted backup', extensions: ['age'] }] }); if (!path) return; await api('backup', { case_id: snapshot.id, path, password }); notify.success('Encrypted backup saved', path); }
     if (modal === 'delete') {
       if (!snapshot) throw new Error('Open a case first.');
-      const receipt = await api<{ deleted: boolean; bytes: number }>('delete_case', { path: snapshot.root, confirm: name });
+      const receipt = await api<{ deleted: boolean; bytes: number }>('delete_case', { case_id: snapshot.id, session_epoch: snapshot.session_epoch, path: snapshot.root, confirm: name });
       setProjects(previous => { const next = previous.filter(project => project.id !== snapshot.id); localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; });
       if (localStorage.getItem('vislex-last-case') === snapshot.root) localStorage.removeItem('vislex-last-case');
       localStorage.removeItem(`vislex-conversation:${snapshot.id}`);
@@ -670,7 +670,7 @@ export default function App() {
               <ThemeToggle />
               <details className="case-menu"><summary aria-label="Case options"><MoreHorizontal size={16} /></summary><div>
                 <button onClick={() => run(importFiles)}>Add files</button>
-                <FolderImport caseId={snapshot?.id} hasCase={!!snapshot} run={run} refresh={refresh} />
+                <FolderImport caseId={snapshot?.id} sessionEpoch={snapshot?.session_epoch} hasCase={!!snapshot} run={run} refresh={refresh} />
                 <button disabled={!snapshot} onClick={() => showModal('note')}>New note</button>
                 <button disabled={!snapshot} onClick={() => showModal('backup')}>Export case archive</button>
                 <button onClick={() => showModal('restore')}>Restore case archive</button>
@@ -696,7 +696,7 @@ export default function App() {
             onSourceLoaded={items => setExtraSources(current => [...current,...items.filter(item=>!current.some(existing=>existing.id===item.id))])}
             onRecordLoaded={items => setExtraRecords(current => [...current,...items.filter(item=>!current.some(existing=>existing.id===item.id))])}
             onRename={(id, value) => beginRename('source', id, value)}
-            onRestrict={(id, restricted) => run(async () => { await api('set_restricted', { source_id: id, restricted }); await refresh(); })}
+            onRestrict={(id, restricted) => run(async () => { await api('set_restricted', { case_id: snapshot?.id, session_epoch: snapshot?.session_epoch, source_id: id, restricted }); await refresh(); })}
           /> : null}
           {visibleSnapshot && view === 'findings' ? <EvidenceNotebook key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} /> : null}
           {visibleSnapshot && view === 'review' ? <InvestigationWorkbench key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /> : null}
@@ -724,8 +724,8 @@ export default function App() {
               </ContextMenu>;
             })}
           </div>
-          {source ? <EvidenceViewer key={`${snapshot?.id}:${source.id}`} caseId={snapshot?.id} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} onAsk={() => { setView('chat'); setFocusComposerRequest(value => value + 1); }} /> : null}
-          {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${record.id}`} caseId={snapshot.id} summary={record} run={run} refresh={refresh} onSource={selectSource}/> : null}
+          {source ? <EvidenceViewer key={`${snapshot?.id}:${snapshot?.session_epoch}:${source.id}`} caseId={snapshot?.id} sessionEpoch={snapshot?.session_epoch} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} onAsk={() => { setView('chat'); setFocusComposerRequest(value => value + 1); }} /> : null}
+          {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${snapshot.session_epoch}:${record.id}`} caseId={snapshot.id} sessionEpoch={snapshot.session_epoch} summary={record} run={run} refresh={refresh} onSource={selectSource}/> : null}
         </main>
       </div>
 
@@ -745,7 +745,7 @@ export default function App() {
         <h2>Rename {rename.kind === 'source' ? 'evidence display name' : rename.kind}</h2>
         <label className="field-label">Name<input autoFocus maxLength={240} value={renameValue} onChange={event => setRenameValue(event.target.value)} /></label>
         <p className="small muted">Original bytes, import receipts, hashes and citations are preserved. Evidence display names retain their file extension.</p>
-        <div className="modal-footer"><button className="secondary" onClick={() => setRename(null)}>Cancel</button><button className="primary" disabled={busy || !renameValue.trim()} onClick={() => run(async () => { await api('rename', { kind: rename.kind, id: rename.id, name: renameValue }); await refresh(); setRename(null); })}>Save name</button></div>
+        <div className="modal-footer"><button className="secondary" onClick={() => setRename(null)}>Cancel</button><button className="primary" disabled={busy || !renameValue.trim()} onClick={() => run(async () => { await api('rename', { case_id: snapshot?.id, session_epoch: snapshot?.session_epoch, kind: rename.kind, id: rename.id, name: renameValue }); await refresh(); setRename(null); })}>Save name</button></div>
       </dialog> : null}
 
       <dialog ref={paletteDialog} className="modal command-palette" onCancel={() => setPalette(false)}>

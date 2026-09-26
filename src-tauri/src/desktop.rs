@@ -483,7 +483,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "storage_usage" => c.storage_usage()?,
         "reclaim_staging" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before staging cleanup");anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the import before reclaiming staging");c.reclaim_staging()?},
 
-        "rename" => { c.rename(text(&args,"kind")?, args["id"].as_str().unwrap_or(""), text(&args,"name")?)?; Value::Null },
+        "rename" => { anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before rename"); c.rename(text(&args,"kind")?, args["id"].as_str().unwrap_or(""), text(&args,"name")?)?; Value::Null },
 
         "search" => c.search(
 
@@ -657,7 +657,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "set_restricted" => {
-
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before restriction update");
             c.set_restricted(
 
                 text(&args, "source_id")?,
