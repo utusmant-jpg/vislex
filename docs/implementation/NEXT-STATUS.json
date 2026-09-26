@@ -340,6 +340,7 @@
         "git diff --check -> exit 0"
       ],
       "reviewer": "Single-owner separate diff review: Gemini native parts are used only for assistant messages from the Gemini adapter; provider-native thought parts remain hidden from the user answer; original tool call/result IDs remain paired. No independent reviewer yet.",
+      "stop_reason_followup": "9c1bf06 reports allowlisted Claude and Gemini stop reasons separately for truncation, refusal, pause and malformed function calls; unknown provider text is not echoed. Synthetic regression failed first on pause_turn then passed, and master_v4 29/29 passed. Official source checks: https://platform.claude.com/docs/en/api/http/messages and https://ai.google.dev/api/generate-content . No live provider call was made.",
       "unrun_checks": "Full adapter capability table and provider-specific streaming contracts, reusable HTTP client, malformed chunk/refusal/uncertain billing matrices, scoped team merge acceptance, current-model synthetic probes, packaged Windows journey and release build remain open. No real account probe was run. This is not R19 verification."
     },
     "R20": {
