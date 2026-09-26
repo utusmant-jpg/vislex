@@ -7,7 +7,7 @@ import {
   MoreHorizontal, NotebookPen, Plus, Scale, Search, Settings, X,
 } from 'lucide-react';
 import { api, formatBytes, native } from './bridge';
-import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary, Task } from './types';
+import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary, Source, Job, Task } from './types';
 import { suggestedMatterName } from './review';
 import EvidenceViewer, { SourceIcon } from './components/EvidenceViewer';
 import RecordEditor from './components/RecordEditor';
@@ -43,23 +43,59 @@ function OnboardingHero({ onCreate, onOpen, onRestore, onSample }: { onCreate: (
   </div>;
 }
 
-function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRestrict }: { snapshot: Snapshot; onOpen: (id: string) => void; onOpenRecord: (id: string) => void; onRename: (id: string, name: string) => void; onRestrict: (id: string, restricted: boolean) => void }) {
+export function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRestrict, onSourceLoaded, onRecordLoaded }: { snapshot: Snapshot; onOpen: (id: string) => void; onOpenRecord: (id: string) => void; onRename: (id: string, name: string) => void; onRestrict: (id: string, restricted: boolean) => void; onSourceLoaded: (sources: Source[]) => void; onRecordLoaded: (records: RecordSummary[]) => void }) {
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState('');
   const [section, setSection] = useState<'sources' | 'records'>('sources');
-  const kinds = [...new Set(snapshot.sources.map(source => source.kind))];
-  const filteredSources = snapshot.sources.filter(source =>
+  const [olderSources, setOlderSources] = useState<Source[]>([]);
+  const [olderRecords, setOlderRecords] = useState<RecordSummary[]>([]);
+  const [sourceCursor, setSourceCursor] = useState<{created_at:string;id:string}|null|undefined>(undefined);
+  const [recordCursor, setRecordCursor] = useState<{updated_at:string;id:string}|null|undefined>(undefined);
+  const [loading, setLoading] = useState(false);
+  const [pageError, setPageError] = useState('');
+  const pageKey = `${snapshot.id}:${snapshot.generation}:${snapshot.counts?.audit_seq ?? 0}`;
+  const pageKeyRef = useRef(pageKey); pageKeyRef.current = pageKey;
+  useEffect(() => {setOlderSources([]);setOlderRecords([]);setSourceCursor(undefined);setRecordCursor(undefined);setPageError('');},[pageKey]);
+  const sources = [...snapshot.sources, ...olderSources.filter(source => !snapshot.sources.some(current => current.id === source.id))];
+  const records = [...snapshot.records, ...olderRecords.filter(record => !snapshot.records.some(current => current.id === record.id))];
+  const kinds = [...new Set(sources.map(source => source.kind))];
+  const filteredSources = sources.filter(source =>
     (!kind || source.kind === kind) && source.name.toLowerCase().includes(query.toLowerCase()));
-  const filteredRecords = snapshot.records.filter(record => record.title.toLowerCase().includes(query.toLowerCase()));
+  const filteredRecords = records.filter(record => record.title.toLowerCase().includes(query.toLowerCase()));
   const filtered = section === 'sources' ? filteredSources.length : filteredRecords.length;
+  const sourceTotal = snapshot.counts?.source_count ?? sources.length;
+  const recordTotal = snapshot.counts?.record_count ?? records.length;
+  async function loadMore() {
+    if (loading) return;
+    const key = pageKey;
+    setLoading(true);setPageError('');
+    try {
+      if (section === 'sources') {
+        const before = sourceCursor ?? snapshot.source_next_cursor ?? (snapshot.sources.at(-1) ? {created_at:snapshot.sources.at(-1)!.created_at,id:snapshot.sources.at(-1)!.id}:null);
+        if (!before) return;
+        const page=await api<{sources:Source[];next_cursor:{created_at:string;id:string}|null}>('source_page',{case_id:snapshot.id,generation:snapshot.generation,audit_seq:snapshot.counts?.audit_seq ?? 0,before});
+        if (pageKeyRef.current!==key) return;
+        setOlderSources(current=>[...current,...page.sources.filter(source=>!current.some(existing=>existing.id===source.id))]);
+        onSourceLoaded(page.sources);setSourceCursor(page.next_cursor);
+      } else {
+        const before = recordCursor ?? snapshot.record_next_cursor ?? (snapshot.records.at(-1) ? {updated_at:snapshot.records.at(-1)!.updated_at,id:snapshot.records.at(-1)!.id}:null);
+        if (!before) return;
+        const page=await api<{records:RecordSummary[];next_cursor:{updated_at:string;id:string}|null}>('record_page',{case_id:snapshot.id,generation:snapshot.generation,audit_seq:snapshot.counts?.audit_seq ?? 0,before});
+        if (pageKeyRef.current!==key) return;
+        setOlderRecords(current=>[...current,...page.records.filter(record=>!current.some(existing=>existing.id===record.id))]);
+        onRecordLoaded(page.records);setRecordCursor(page.next_cursor);
+      }
+    } catch (error) {if(pageKeyRef.current===key)setPageError(String(error));}
+    finally {if(pageKeyRef.current===key)setLoading(false);}
+  }
   return <section className="workspace-view evidence-library" aria-label="Evidence library">
     <div className="workspace-header">
       <div><div className="eyebrow">EVIDENCE</div><h2>Evidence library</h2></div>
       <div className="spacer" />
-      <span className="small muted">{filtered} of {section === 'sources' ? snapshot.sources.length : snapshot.records.length} {section === 'sources' ? `sources · ${formatBytes(snapshot.sources.reduce((total, source) => total + source.size, 0))}` : 'working files'}</span>
+      <span className="small muted">{filtered} shown of {section === 'sources' ? sourceTotal : recordTotal} {section === 'sources' ? 'sources' : 'working files'}</span>
     </div>
     <div className="library-controls">
-      <div className="search-box"><Search size={14} /><input aria-label="Filter evidence" placeholder={section === 'sources' ? 'Filter by file name…' : 'Filter by title…'} value={query} onChange={event => setQuery(event.target.value)} /></div>
+      <div className="search-box"><Search size={14} /><input aria-label="Filter loaded evidence" placeholder={section === 'sources' ? 'Filter loaded file names…' : 'Filter loaded titles…'} value={query} onChange={event => setQuery(event.target.value)} /></div>
       <div className="segmented">
         <button className={section === 'sources' ? 'selected' : ''} onClick={() => { setSection('sources'); setKind(''); }}>Sources</button>
         <button className={section === 'records' ? 'selected' : ''} onClick={() => { setSection('records'); setKind(''); }}>Working files</button>
@@ -93,6 +129,8 @@ function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRestrict 
         {record.protected ? <StatusPill state="protected" label="Locked" small /> : null}
       </button>)}
     </div> : <div className="empty-state"><NotebookPen size={32} /><h3>No working files yet</h3><p>Notes, reports and transcripts you or the investigator create appear here.</p></div>) : null}
+    {pageError ? <p role="alert" className="small danger-text">Could not load more: {pageError}</p> : null}
+    {(section==='sources' ? sourceCursor!==null && sources.length<sourceTotal : recordCursor!==null && records.length<recordTotal) ? <button className="quiet" disabled={loading} onClick={()=>void loadMore()}>{loading?'Loading…':`Load more ${section==='sources'?'sources':'working files'}`}</button> : null}
   </section>;
 }
 
@@ -138,12 +176,42 @@ export function JobsCenter({ snapshot, run, refresh, onConversation }: { snapsho
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [storage, setStorage] = useState<Record<string, number> | null>(null);
   const [reclaimed, setReclaimed] = useState<number | null>(null);
+  const [olderJobs, setOlderJobs] = useState<Job[]>([]);
+  const [jobCursor, setJobCursor] = useState<number|null>(snapshot.job_next_cursor ?? null);
+  const [olderAttention, setOlderAttention] = useState<Job[]>([]);
+  const [attentionCursor, setAttentionCursor] = useState<number|null>(snapshot.attention_next_cursor ?? null);
+  const [loadingJobs, setLoadingJobs] = useState(false);
+  const [jobError, setJobError] = useState('');
+  useEffect(()=>{setOlderJobs([]);setOlderAttention([]);setJobCursor(snapshot.job_next_cursor ?? null);setAttentionCursor(snapshot.attention_next_cursor ?? null);setJobError('');},[snapshot.id]);
+  useEffect(()=>{if(!olderJobs.length)setJobCursor(snapshot.job_next_cursor ?? null);},[snapshot.job_next_cursor]);
+  useEffect(()=>{if(!olderAttention.length)setAttentionCursor(snapshot.attention_next_cursor ?? null);},[snapshot.attention_next_cursor]);
   useEffect(() => {
     setStorage(null); setReclaimed(null);
     if (native) void api<Record<string, number>>('storage_usage').then(setStorage).catch(() => undefined);
   }, [snapshot.id, snapshot.generation]);
-  const active = snapshot.jobs?.filter(job => !job.superseded && ['queued', 'running', 'failed', 'interrupted', 'cancelled'].includes(job.status)) ?? [];
-  const supersededFailures = snapshot.jobs?.filter(job => job.superseded && ['failed', 'interrupted'].includes(job.status)) ?? [];
+  const jobMap=new Map<string,Job>();
+  for(const job of [...(snapshot.attention_jobs ?? []),...(snapshot.jobs ?? []),...olderAttention,...olderJobs])if(!jobMap.has(job.id))jobMap.set(job.id,job);
+  const jobs=[...jobMap.values()];
+  const active = jobs.filter(job => !job.superseded && ['queued', 'running', 'failed', 'interrupted', 'cancelled'].includes(job.status));
+  const supersededFailures = jobs.filter(job => job.superseded && ['failed', 'interrupted'].includes(job.status));
+  async function loadOlderJobs(){
+    if(jobCursor===null||loadingJobs)return;
+    const caseId=snapshot.id;setLoadingJobs(true);setJobError('');
+    try {const page=await api<{jobs:Job[];next_cursor:number|null}>('job_page',{case_id:caseId,before:jobCursor});
+      if(currentCaseId.current!==caseId)return;
+      setOlderJobs(current=>[...current,...page.jobs.filter(job=>!current.some(existing=>existing.id===job.id))]);setJobCursor(page.next_cursor);
+    }catch(error){if(currentCaseId.current===caseId)setJobError(String(error));}
+    finally{if(currentCaseId.current===caseId)setLoadingJobs(false);}
+  }
+  async function loadOlderAttention(){
+    if(attentionCursor===null||loadingJobs)return;
+    const caseId=snapshot.id;setLoadingJobs(true);setJobError('');
+    try {const page=await api<{jobs:Job[];next_cursor:number|null}>('attention_job_page',{case_id:caseId,before:attentionCursor});
+      if(currentCaseId.current!==caseId)return;
+      setOlderAttention(current=>[...current,...page.jobs.filter(job=>!current.some(existing=>existing.id===job.id))]);setAttentionCursor(page.next_cursor);
+    }catch(error){if(currentCaseId.current===caseId)setJobError(String(error));}
+    finally{if(currentCaseId.current===caseId)setLoadingJobs(false);}
+  }
   const review = snapshot.automatic_analysis;
   const reviewOpen = !!review?.review_task && ['running', 'paused', 'failed'].includes(review.review_state);
   return <section className="workspace-view jobs-center" aria-label="Jobs and issues">
@@ -178,7 +246,10 @@ export function JobsCenter({ snapshot, run, refresh, onConversation }: { snapsho
         })}>{job.parent_run_id || ['video_ocr_index', 'video_overview_index'].includes(job.kind) ? 'Retry index from saved progress' : 'Recover saved job'}</button> : null}
       </div>
       <code>Receipt {job.id}</code>
-    </article>) : !reviewOpen ? <div className="empty-state"><ListChecks size={32} /><h3>No active processing jobs</h3><p>Completed jobs and earlier tool errors remain available in the case history.</p></div> : null}
+    </article>) : !reviewOpen ? <div className="empty-state"><ListChecks size={32} /><h3>{jobCursor!==null?'No active jobs in this page':'No active processing jobs'}</h3><p>Completed jobs and earlier tool errors remain available in the case history.</p></div> : null}
+    {jobError?<p role="alert" className="small danger-text">Could not load older jobs: {jobError}</p>:null}
+    {attentionCursor!==null?<button className="quiet" disabled={loadingJobs} onClick={()=>void loadOlderAttention()}>{loadingJobs?'Loading…':'Load more current problems'}</button>:null}
+    {jobCursor!==null?<button className="quiet" disabled={loadingJobs} onClick={()=>void loadOlderJobs()}>{loadingJobs?'Loading…':'Load older jobs'}</button>:null}
     {supersededFailures.length ? <details className="job-card"><summary>Earlier failures and interruptions replaced by newer runs ({supersededFailures.length})</summary>{supersededFailures.map(job => <article key={job.id}><strong>{job.name}</strong><p className="small muted">{job.kind} · {job.error || job.status}</p><code>Receipt {job.id}</code></article>)}</details> : null}
     {snapshot.issues?.length ? <details className="job-card"><summary>Previous AI tool errors ({snapshot.issues.length} group{snapshot.issues.length === 1 ? '' : 's'})</summary>{snapshot.issues.map(issue => <IssueHistory issue={issue} key={issue.latest_receipt} />)}</details> : null}
     {storage ? <div className="job-card">
@@ -207,11 +278,14 @@ export default function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [projects, setProjects] = useState<{ id: string; name: string; root: string; chats?: { id: string; title: string }[] }[]>(() => { try { return JSON.parse(localStorage.getItem('vislex-projects') ?? '[]'); } catch { return []; } });
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [extraSources, setExtraSources] = useState<Source[]>([]);
+  const [extraRecords, setExtraRecords] = useState<RecordSummary[]>([]);
   const caseEpoch = useRef(0);
   const refreshSequence = useRef(0);
   const [selection, setSelection] = useState<Selection>(null);
   const [navigationHistory, setNavigationHistory] = useState<{ entries: NonNullable<Selection>[]; index: number }>({ entries: [], index: -1 });
   const movingInHistory = useRef(false);
+  useEffect(() => {setExtraSources([]);setExtraRecords([]);},[snapshot?.id,snapshot?.generation,snapshot?.counts?.audit_seq]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [paletteIndex, setPaletteIndex] = useState(0);
@@ -304,7 +378,7 @@ export default function App() {
   }, [selection]);
 
   useEffect(() => {
-    if (!selection || !snapshot || !([...snapshot.sources, ...snapshot.records].some(item => item.id === selection.id))) return;
+    if (!selection || !snapshot || !([...snapshot.sources, ...snapshot.records, ...extraSources, ...extraRecords].some(item => item.id === selection.id))) return;
     if (movingInHistory.current) { movingInHistory.current = false; return; }
     setNavigationHistory(previous => {
       const current = previous.entries[previous.index];
@@ -312,7 +386,21 @@ export default function App() {
       const entries = [...previous.entries.slice(0, previous.index + 1), selection].slice(-100);
       return { entries, index: entries.length - 1 };
     });
-  }, [selection, snapshot?.id]);
+  }, [selection, snapshot?.id, extraSources, extraRecords]);
+
+  useEffect(() => {
+    if (!snapshot || !selection) return;
+    if (selection.type === 'source' && !snapshot.sources.some(item=>item.id===selection.id) && !extraSources.some(item=>item.id===selection.id)) {
+      let active=true;const caseId=snapshot.id;
+      void api<Source>('source_detail',{case_id:caseId,source_id:selection.id}).then(source=>{if(active)setExtraSources(current=>[...current.filter(item=>item.id!==source.id),source]);}).catch(error=>{if(active)notify.fromError('Could not open evidence',error);});
+      return ()=>{active=false;};
+    }
+    if (selection.type === 'record' && !snapshot.records.some(item=>item.id===selection.id) && !extraRecords.some(item=>item.id===selection.id)) {
+      let active=true;const caseId=snapshot.id;
+      void api<RecordSummary>('record_summary',{case_id:caseId,record_id:selection.id}).then(record=>{if(active)setExtraRecords(current=>[...current.filter(item=>item.id!==record.id),record]);}).catch(error=>{if(active)notify.fromError('Could not open working file',error);});
+      return ()=>{active=false;};
+    }
+  },[snapshot?.id,snapshot?.generation,snapshot?.counts?.audit_seq,selection,extraSources,extraRecords]);
 
   function moveInHistory(delta: number) {
     const index = navigationHistory.index + delta;
@@ -379,14 +467,17 @@ export default function App() {
     });
   }
   const allTaskSummaries = [...(snapshot?.tasks ?? []), ...olderTasks.filter(task => !snapshot?.tasks.some(current => current.id === task.id))];
-  const conversations = allTaskSummaries.filter((task, index, all) => all.findIndex(other => (other.conversation_id ?? other.id) === (task.conversation_id ?? task.id)) === index)
-    .map(task => ({
-      id: task.conversation_id ?? task.id,
-      title: task.title ?? allTaskSummaries.filter(other => (other.conversation_id ?? other.id) === (task.conversation_id ?? task.id)).at(-1)?.prompt ?? task.prompt,
-      running: task.status === 'running',
-      when: task.created_at,
-    }));
-  const chatIndex = JSON.stringify(conversations.map(({ id, title }) => ({ id, title })));
+  const conversationRows = new Map<string, { newest: Task; firstPrompt: string }>();
+  for (const task of allTaskSummaries) {
+    const id = task.conversation_id ?? task.id;
+    const row = conversationRows.get(id);
+    if (row) row.firstPrompt = task.prompt;
+    else conversationRows.set(id, { newest: task, firstPrompt: task.prompt });
+  }
+  const conversations = [...conversationRows].map(([id, { newest, firstPrompt }]) => ({
+    id, title: newest.title ?? firstPrompt, running: newest.status === 'running', when: newest.created_at,
+  }));
+  const chatIndex = JSON.stringify(conversations.slice(0,8).map(({ id, title }) => ({ id, title })));
   function loadOlderChats() {
     if (!snapshot || loadingOlder || olderCursor === null) return;
     const before = olderCursor ?? (snapshot.tasks.at(-1) ? { created_at: snapshot.tasks.at(-1)!.created_at, id: snapshot.tasks.at(-1)!.id } : null);
@@ -404,11 +495,13 @@ export default function App() {
     setProjects(previous => { const next = previous.map(project => project.id === snapshot.id ? { ...project, chats: JSON.parse(chatIndex) } : project); localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; });
   }, [snapshot?.id, chatIndex]);
 
-  const source = selection?.type === 'source' ? snapshot?.sources.find(item => item.id === selection.id) : undefined;
-  const record = selection?.type === 'record' ? snapshot?.records.find(item => item.id === selection.id) : undefined;
+  const visibleSnapshot: Snapshot | null = snapshot ? {...snapshot,sources:[...snapshot.sources,...extraSources.filter(item=>!snapshot.sources.some(current=>current.id===item.id))],records:[...snapshot.records,...extraRecords.filter(item=>!snapshot.records.some(current=>current.id===item.id))]} : null;
+  const source = selection?.type === 'source' ? visibleSnapshot?.sources.find(item => item.id === selection.id) : undefined;
+  const record = selection?.type === 'record' ? visibleSnapshot?.records.find(item => item.id === selection.id) : undefined;
   const suggestedName = suggestedMatterName(snapshot?.sources.map(item => item.name) ?? []);
   const pending = snapshot?.jobs?.filter(job => ['queued', 'running'].includes(job.status)) ?? [];
-  const needsAttention = (snapshot?.jobs?.filter(job => !job.superseded && !job.parent_run_id && ['failed', 'interrupted'].includes(job.status)).length ?? 0)
+  const pendingCount = snapshot?.counts ? snapshot.counts.jobs_queued + snapshot.counts.jobs_running : pending.length;
+  const needsAttention = (snapshot?.counts?.jobs_attention ?? snapshot?.jobs?.filter(job => !job.superseded && !job.parent_run_id && ['failed', 'interrupted'].includes(job.status)).length ?? 0)
     + (snapshot?.automatic_analysis?.review_state === 'failed' ? 1 : 0);
   const selectSource = (id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); };
 
@@ -490,7 +583,7 @@ export default function App() {
   }
 
   const statusJob = pending[0];
-  const totalBytes = snapshot?.sources.reduce((total, item) => total + item.size, 0) ?? 0;
+  const totalBytes = snapshot?.counts?.source_bytes ?? snapshot?.sources.reduce((total, item) => total + item.size, 0) ?? 0;
   const totalStorage = storage ? Object.values(storage).reduce((total, bytes) => total + bytes, 0) : 0;
 
   return <ThemeProvider>
@@ -520,7 +613,7 @@ export default function App() {
         <aside className="sidebar">
           <button className="matter-identity" disabled={!snapshot} title="Rename case (F2)" onClick={() => snapshot && beginRename('case', snapshot.id, snapshot.name)} onKeyDown={event => { if (event.key === 'F2' && snapshot) { event.preventDefault(); beginRename('case', snapshot.id, snapshot.name); } }}>
             <strong>{snapshot?.name ?? 'Open a case'}</strong>
-            <small>{snapshot ? `${snapshot.sources.length} sources · ${formatBytes(totalBytes)} · ${pending.length ? `${pending.length} jobs pending` : needsAttention ? 'Needs attention' : 'Unreviewed'}` : 'Local evidence workspace'}</small>
+            <small>{snapshot ? `${snapshot.counts?.source_count ?? snapshot.sources.length} sources · ${formatBytes(totalBytes)} · ${pendingCount ? `${pendingCount} jobs pending` : needsAttention ? 'Needs attention' : 'Unreviewed'}` : 'Local evidence workspace'}</small>
           </button>
           {suggestedName && suggestedName !== snapshot?.name ? <button className="quiet" title="Suggested from PDF filename; confirm against the charging document" onClick={() => snapshot && beginRename('case', snapshot.id, suggestedName)}>Use suggested matter name</button> : null}
           <Tooltip text="Search case" shortcut="Ctrl+K"><button className="sidebar-command" disabled={!snapshot} onClick={() => setPalette(true)}><Search size={15} />Search case<kbd className="shortcut">Ctrl K</kbd></button></Tooltip>
@@ -579,17 +672,19 @@ export default function App() {
             onRestore={() => showModal('restore')}
             onSample={() => run(async () => { installSnapshot(await api<Snapshot>('load_demo')); })}
           /> : null}
-          {snapshot && view === 'chat' ? <AgentPanel conversationId={conversationId} onConversation={chooseConversation} snapshot={snapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={() => setSettings(true)} focusRequest={focusComposerRequest} /> : null}
+          {visibleSnapshot && view === 'chat' ? <AgentPanel conversationId={conversationId} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={() => setSettings(true)} focusRequest={focusComposerRequest} /> : null}
           {!snapshot && view !== 'chat' ? <div className="empty-state workspace-view"><FolderOpen size={32} /><h3>Open a case first</h3><p>This workspace becomes available once a case is open.</p></div> : null}
           {snapshot && view === 'evidence' ? <EvidenceLibrary
             snapshot={snapshot}
             onOpen={id => selectSource(id)}
             onOpenRecord={id => setSelection({ type: 'record', id })}
+            onSourceLoaded={items => setExtraSources(current => [...current,...items.filter(item=>!current.some(existing=>existing.id===item.id))])}
+            onRecordLoaded={items => setExtraRecords(current => [...current,...items.filter(item=>!current.some(existing=>existing.id===item.id))])}
             onRename={(id, value) => beginRename('source', id, value)}
             onRestrict={(id, restricted) => run(async () => { await api('set_restricted', { source_id: id, restricted }); await refresh(); })}
           /> : null}
-          {snapshot && view === 'findings' ? <EvidenceNotebook key={snapshot.id} snapshot={snapshot} onClose={() => setView('chat')} onSource={selectSource} /> : null}
-          {snapshot && view === 'review' ? <InvestigationWorkbench key={snapshot.id} snapshot={snapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /> : null}
+          {visibleSnapshot && view === 'findings' ? <EvidenceNotebook key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} /> : null}
+          {visibleSnapshot && view === 'review' ? <InvestigationWorkbench key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /> : null}
           {snapshot && view === 'jobs' ? <JobsCenter snapshot={snapshot} run={run} refresh={refresh} onConversation={id => { setConversationId(id); setView('chat'); }} /> : null}
         </div>
 
@@ -598,7 +693,7 @@ export default function App() {
             <button className="icon-button" aria-label="Previous location" disabled={navigationHistory.index <= 0} onClick={() => moveInHistory(-1)}>←</button>
             <button className="icon-button" aria-label="Next location" disabled={navigationHistory.index >= navigationHistory.entries.length - 1} onClick={() => moveInHistory(1)}>→</button>
             {openTabs.map(tab => {
-              const tabTitle = tab.type === 'source' ? snapshot?.sources.find(item => item.id === tab.id)?.name : snapshot?.records.find(item => item.id === tab.id)?.title;
+              const tabTitle = tab.type === 'source' ? visibleSnapshot?.sources.find(item => item.id === tab.id)?.name : visibleSnapshot?.records.find(item => item.id === tab.id)?.title;
               return <ContextMenu key={tab.id} items={[
                 { label: 'Close', onSelect: () => closeTab(tab.id) },
                 { label: 'Close others', onSelect: () => { setOpenTabs([tab]); if (!(selection?.id === tab.id)) setSelection(tab); } },
@@ -606,7 +701,7 @@ export default function App() {
               ]}>
                 <div className={`file-tab ${selection?.id === tab.id ? 'active' : ''}`}>
                   <button role="tab" aria-selected={selection?.id === tab.id} title={tabTitle} onClick={() => setSelection(tab)} onAuxClick={event => { if (event.button === 1) closeTab(tab.id); }}>
-                    {tab.type === 'source' ? <SourceIcon kind={snapshot?.sources.find(item => item.id === tab.id)?.kind ?? 'other'} /> : null}
+                    {tab.type === 'source' ? <SourceIcon kind={visibleSnapshot?.sources.find(item => item.id === tab.id)?.kind ?? 'other'} /> : null}
                     <span>{tabTitle}</span>
                   </button>
                   <button className="icon-button" aria-label={`Close ${tabTitle}`} onClick={() => closeTab(tab.id)}><X size={12} /></button>
@@ -622,11 +717,11 @@ export default function App() {
       {snapshot ? <footer className="statusbar">
         <span className="status-jobs" role="status">
           {statusJob ? <><Activity size={12} className="pulse" />{statusJob.name} · {statusJob.kind.replaceAll('_', ' ')}</> : null}
-          {pending.length > 1 ? <span className="small muted">+{pending.length - 1} more</span> : null}
+          {pendingCount > 1 ? <span className="small muted">+{pendingCount - 1} more</span> : null}
         </span>
         {needsAttention ? <button className="status-attention" onClick={() => setView('jobs')}><StatusPill state="needs-attention" label={`${needsAttention} need${needsAttention === 1 ? 's' : ''} attention`} small /></button> : null}
         <div className="spacer" />
-        {snapshot.records.length || totalStorage ? <span className="small muted">{snapshot.records.length === 1 ? '1 working file' : `${snapshot.records.length} working files`}{totalStorage ? ` · ${formatBytes(totalStorage)} on disk` : ''}</span> : null}
+        {(snapshot.counts?.record_count ?? snapshot.records.length) || totalStorage ? <span className="small muted">{(snapshot.counts?.record_count ?? snapshot.records.length) === 1 ? '1 working file' : `${snapshot.counts?.record_count ?? snapshot.records.length} working files`}{totalStorage ? ` · ${formatBytes(totalStorage)} on disk` : ''}</span> : null}
       </footer> : null}
 
       {dropping ? <div className="drop-veil" aria-hidden="true"><div className="drop-veil-card"><Plus size={22} /><strong>Drop to import into {snapshot?.name ?? 'a case'}</strong><span>Originals are preserved and hashed. Copies are stored inside the case.</span></div></div> : null}

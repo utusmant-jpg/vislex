@@ -176,7 +176,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
         {section === 'About' ? <div className="settings-section">
           <p><strong>VisLex</strong> · local evidence workspace</p>
           <p className="small muted">Cases are stored in .ledcase folders on this machine. Originals are copied, hashed and never modified. AI providers are contacted only when you enable them, and case text or images leave this machine solely through those enabled models. Keys live in Windows Credential Manager. No telemetry, hosted file storage, or runtime model downloads.</p>
-          <p className="small muted">Case generation {snapshot.generation} · {snapshot.sources.length} sources · {snapshot.records.length} working files.</p>
+          <p className="small muted">Case generation {snapshot.generation} · {snapshot.counts?.source_count ?? snapshot.sources.length} sources · {snapshot.counts?.record_count ?? snapshot.records.length} working files.</p>
         </div> : null}
 
         {section === 'AI providers' ? <div className="ai-save-footer">

@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import App, { JobsCenter, RecordDetailPanel } from './App';
-import type { Snapshot, RecordSummary, WorkingRecord } from './types';
+import App, { EvidenceLibrary, JobsCenter, RecordDetailPanel } from './App';
+import type { Snapshot, RecordSummary, Source, WorkingRecord } from './types';
 
 const api = vi.hoisted(() => vi.fn());
 const save = vi.hoisted(() => vi.fn());
@@ -52,6 +52,60 @@ it('keeps a failed older run in history while its replacement is queued', () => 
   expect(screen.getByText('Earlier failures and interruptions replaced by newer runs (2)')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Retry index from saved progress' })).toBeNull();
   expect(screen.getAllByText('queued').length).toBeGreaterThan(0);
+});
+
+it('loads an older evidence page and opens its source', async () => {
+  const current=snapshot();
+  current.sources=Array.from({length:50},(_,index):Source=>({id:`source-${index}`,name:`Recent ${index}.txt`,sha256:`sha-${index}`,size:1,mime:'text/plain',kind:'text',status:'imported',restricted:false,occurrences:1,created_at:`2026-09-26T10:${String(59-index).padStart(2,'0')}:00Z`}));
+  current.counts={audit_seq:7,source_count:51,source_bytes:51,record_count:0,task_count:0,job_count:0,jobs_queued:0,jobs_running:0,jobs_failed:0,jobs_attention:0,jobs_complete:0};
+  const older={...current.sources[0],id:'older-source',name:'Older source.txt',created_at:'2026-09-25T00:00:00Z'};
+  api.mockResolvedValue({sources:[older],next_cursor:null});
+  const onOpen=vi.fn();const onSourceLoaded=vi.fn();
+  render(<EvidenceLibrary snapshot={current} onOpen={onOpen} onOpenRecord={vi.fn()} onRename={vi.fn()} onRestrict={vi.fn()} onSourceLoaded={onSourceLoaded} onRecordLoaded={vi.fn()}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Load more sources'}));
+  await waitFor(()=>expect(screen.getByText('Older source.txt')).toBeTruthy());
+  expect(api).toHaveBeenCalledWith('source_page',{case_id:'synthetic-case',generation:1,audit_seq:7,before:{created_at:current.sources[49].created_at,id:'source-49'}});
+  fireEvent.click(screen.getByText('Older source.txt').closest('button')!);
+  expect(onOpen).toHaveBeenCalledWith('older-source');
+  expect(onSourceLoaded).toHaveBeenCalledWith([older]);
+});
+
+it('loads older job receipts from a bounded page', async () => {
+  const current=snapshot();current.job_next_cursor=10;
+  const historical={...current.jobs![0],id:'older-job',name:'older.mp4',status:'failed',superseded:true};
+  api.mockResolvedValue({jobs:[historical],next_cursor:null});
+  render(<JobsCenter snapshot={current} run={fn=>{void fn();}} refresh={async()=>undefined}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Load older jobs'}));
+  await waitFor(()=>expect(screen.getByText('Earlier failures and interruptions replaced by newer runs (1)')).toBeTruthy());
+  expect(api).toHaveBeenCalledWith('job_page',{case_id:'synthetic-case',before:10});
+  expect(screen.queryByRole('button',{name:'Load older jobs'})).toBeNull();
+});
+
+it('shows a current older failure immediately beside recent completed jobs', () => {
+  const current=snapshot();
+  current.jobs=[{...current.jobs![0],id:'recent-success',status:'complete',error:''}];
+  current.attention_jobs=[{...current.jobs[0],id:'old-current-failure',name:'Older recording.mp4',status:'failed',error:'Recover from saved index',superseded:false}];
+  render(<JobsCenter snapshot={current} run={fn=>{void fn();}} refresh={async()=>undefined}/>);
+  expect(screen.getByText('Older recording.mp4')).toBeTruthy();
+  expect(screen.getByText('Recover from saved index')).toBeTruthy();
+  expect(screen.getByText('Receipt old-current-failure')).toBeTruthy();
+});
+
+it('ignores an older source page returned after switching cases', async () => {
+  const oldCase=snapshot();
+  oldCase.sources=Array.from({length:50},(_,index):Source=>({id:`old-${index}`,name:`Old ${index}.txt`,sha256:`hash-${index}`,size:1,mime:'text/plain',kind:'text',status:'imported',restricted:false,occurrences:1,created_at:`2026-09-26T10:${String(59-index).padStart(2,'0')}:00Z`}));
+  oldCase.counts={audit_seq:1,source_count:51,source_bytes:51,record_count:0,task_count:0,job_count:0,jobs_queued:0,jobs_running:0,jobs_failed:0,jobs_attention:0,jobs_complete:0};
+  let resolvePage!:(value:{sources:Source[];next_cursor:null})=>void;
+  api.mockImplementation((action:string)=>action==='source_page'?new Promise(resolve=>{resolvePage=resolve;}):Promise.resolve(null));
+  const loaded=vi.fn();const props={onOpen:vi.fn(),onOpenRecord:vi.fn(),onRename:vi.fn(),onRestrict:vi.fn(),onSourceLoaded:loaded,onRecordLoaded:vi.fn()};
+  const view=render(<EvidenceLibrary snapshot={oldCase} {...props}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Load more sources'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('source_page',expect.objectContaining({case_id:'synthetic-case'})));
+  view.rerender(<EvidenceLibrary snapshot={{...snapshot(),id:'new-case'}} {...props}/>);
+  resolvePage({sources:[{...oldCase.sources[0],id:'late-old',name:'Late old source.txt'}],next_cursor:null});
+  await Promise.resolve();
+  expect(screen.queryByText('Late old source.txt')).toBeNull();
+  expect(loaded).not.toHaveBeenCalled();
 });
 
 it('shows a failed automatic review even when its original chat is hidden', async () => {
@@ -153,6 +207,20 @@ it('opens the clicked palette search hit at its exact historical locator', async
   await waitFor(()=>expect(api.mock.calls.filter(([action,args])=>action==='read_extract_revision' && args.start===5).length).toBeGreaterThan(1));
   fireEvent.click(screen.getByRole('button',{name:'Next location'}));
   await waitFor(()=>expect(api.mock.calls.filter(([action,args])=>action==='read_extract_revision' && args.start===9).length).toBeGreaterThan(1));
+});
+
+it('opens a cited source that is outside the first case page', async () => {
+  const current=snapshot();current.sources=[];current.records=[];current.jobs=[];
+  const older:Source={id:'older-source',name:'Older statement.txt',sha256:'hash',size:20,mime:'text/plain',kind:'text',status:'text ready',restricted:false,occurrences:1,created_at:'2026-09-01T00:00:00Z'};
+  api.mockImplementation(async (action:string)=>action==='snapshot'?current:action==='hybrid_search'?{results:[{source_id:older.id,name:older.name,excerpt:'older evidence',locator:`evidence:${older.id}#R1L2-L2`}],remaining_passages:0}:action==='source_detail'?older:action==='storage_usage'?{}:null);
+  render(<App/>);
+  await screen.findAllByText('Synthetic case');
+  fireEvent.keyDown(window,{key:'k',ctrlKey:true});
+  fireEvent.change(screen.getByRole('textbox',{name:/Search case/}),{target:{value:'older evidence'}});
+  fireEvent.click(screen.getByRole('button',{name:/Search text & meaning/}));
+  fireEvent.click(await screen.findByRole('button',{name:/Older statement/}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('source_detail',{case_id:'synthetic-case',source_id:'older-source'}));
+  await waitFor(()=>expect(screen.getByRole('tab',{name:'Older statement.txt'})).toBeTruthy());
 });
 
 it('loads older chats by cursor and fetches the full selected answer on demand', async () => {

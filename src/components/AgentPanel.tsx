@@ -122,7 +122,7 @@ function starterPrompts(snapshot: Snapshot | null): string[] {
   if (!snapshot?.sources.length) {
     return ['Build a timeline from the evidence', 'Find contradictions across sources', 'Review the videos and summarize key moments'];
   }
-  const count = snapshot.sources.length;
+  const count = snapshot.counts?.source_count ?? snapshot.sources.length;
   const sourceWord = count === 1 ? 'source' : 'sources';
   const recordings = snapshot.sources.filter(source => ['video', 'audio'].includes(source.kind)).length;
   const documents = snapshot.sources.filter(source => ['pdf', 'text', 'other'].includes(source.kind)).length;
@@ -180,7 +180,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const fileJobs = snapshot?.jobs?.filter(job => !job.superseded && ['auto_prepare', 'full_audio', 'video_ocr_index', 'video_overview_index'].includes(job.kind)) ?? [];
   const processingFailed = fileJobs.some(job => ['failed', 'interrupted'].includes(job.status));
   const processingPending = fileJobs.some(job => ['queued', 'running'].includes(job.status));
-  const chatBlocked = !!running || (!processingFailed && processingPending);
+  const chatBlocked = !!running || (snapshot?.counts ? !!snapshot.counts.chat_pause : !processingFailed && processingPending);
   const liveTaskIds = turns.filter(turn => turn.status === 'running').map(turn => turn.id).join(',');
 
   useEffect(() => { setSelectedModel(sessionStorage.getItem(modelKey(snapshot?.id, conversationId)) ?? ''); }, [snapshot?.id, conversationId]);
