@@ -6,6 +6,10 @@
   const root = __WORKSPACE__;
   const run = Date.now().toString();
   const fixture = `${root}/artifacts/integrity-256m.bin`;
+  const emptyPath = `${root}/artifacts/delete-acceptance-${run}`;
+  const empty = await invoke('create_case', { path: emptyPath, name: `Synthetic deletion ${run}` });
+  const deletedEmpty = await invoke('delete_case', { case_id: empty.id, session_epoch: empty.session_epoch, path: emptyPath, confirm: empty.name });
+  if (!deletedEmpty.deleted) throw new Error('Current-session deletion of the isolated empty case failed');
   const casePath = `${root}/artifacts/integrity-case-${run}`;
   const created = await invoke('create_case', { path: casePath, name: `Synthetic integrity ${run}` });
   if (!Number.isSafeInteger(created.session_epoch)) throw new Error('Created case did not report a session epoch');
@@ -118,5 +122,5 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, stale_delete_denied: staleDeleteDenied, wrong_delete_target_denied: wrongDeleteTargetDenied, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
+  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, stale_delete_denied: staleDeleteDenied, wrong_delete_target_denied: wrongDeleteTargetDenied, valid_empty_case_deleted: deletedEmpty.deleted, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
 })().catch(error => ({ native_error: String(error), stack: String(error?.stack ?? '') }))
