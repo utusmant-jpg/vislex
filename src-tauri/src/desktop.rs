@@ -544,6 +544,22 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "full_transcription_status" => crate::transcription::status(c, text(&args, "source_id")?)?,
+        "transcript_segment_page" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript page");
+            crate::transcription::segment_page(c,text(&args,"source_id")?,text(&args,"run_id")?,args["cursor"].as_i64())?
+        },
+        "transcript_segment_detail" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript detail");
+            crate::transcription::segment_detail(c,text(&args,"source_id")?,text(&args,"run_id")?,args["ordinal"].as_i64().context("Missing segment ordinal")?)?
+        },
+        "propose_transcript_correction" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript correction");
+            crate::transcription::save_correction(c,text(&args,"source_id")?,text(&args,"run_id")?,args["ordinal"].as_i64().context("Missing segment ordinal")?,text(&args,"text")?,text(&args,"reason")?)?
+        },
+        "review_transcript_correction" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript review");
+            crate::transcription::review_correction(c,text(&args,"correction_id")?,args["accept"].as_bool().context("Missing review decision")?)?
+        },
 
         "cancel_transcription" => {
 
@@ -864,6 +880,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "ai_config", "direct_media_permission", "investigation_workbench", "coverage_map", "incident_replay", "processing_recovery", "team_status", "read_dossier", "read_coverage", "evidence_list", "evidence_read", "evidence_search", "fit_clock",
 
         "full_transcription_status",
+        "transcript_segment_page",
+        "transcript_segment_detail",
 
         "artifact_info",
 

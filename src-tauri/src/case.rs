@@ -230,7 +230,7 @@ impl Case {
         let db = Connection::open(root.join("case.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 7, "This case requires a newer application");
+        ensure!(version <= 8, "This case requires a newer application");
         if create {
             db.execute_batch(SCHEMA)?;
         } else {
@@ -305,6 +305,40 @@ impl Case {
                         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE job_id=NEW.id;
                 END;
                 PRAGMA user_version=7; COMMIT;")?;
+        }
+        if version < 8 {
+            if !create && version >= 7 {db.backup(rusqlite::DatabaseName::Main,root.join("pre-migration-v7.sqlite3"),None)?;}
+            db.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS transcript_segments(
+                    run_id TEXT NOT NULL REFERENCES processing_jobs(id),
+                    ordinal INTEGER NOT NULL CHECK(ordinal>=0),
+                    source_id TEXT NOT NULL REFERENCES sources(id),
+                    track INTEGER NOT NULL CHECK(track>=0),
+                    start_seconds REAL NOT NULL CHECK(start_seconds>=0),
+                    end_seconds REAL NOT NULL CHECK(end_seconds>=start_seconds),
+                    text TEXT NOT NULL,
+                    words TEXT NOT NULL,
+                    metadata TEXT NOT NULL,
+                    PRIMARY KEY(run_id,ordinal)
+                );
+                CREATE INDEX IF NOT EXISTS transcript_segments_source ON transcript_segments(source_id,run_id,ordinal);
+                CREATE INDEX IF NOT EXISTS transcript_segments_time ON transcript_segments(run_id,track,start_seconds);
+                CREATE TABLE IF NOT EXISTS transcript_corrections(
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    revision INTEGER NOT NULL CHECK(revision>=1),
+                    proposed_text TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    review TEXT NOT NULL CHECK(review IN ('pending','accepted','rejected')),
+                    created_at TEXT NOT NULL,
+                    reviewed_at TEXT,
+                    FOREIGN KEY(run_id,ordinal) REFERENCES transcript_segments(run_id,ordinal),
+                    UNIQUE(run_id,ordinal,revision)
+                );
+                CREATE INDEX IF NOT EXISTS transcript_corrections_latest ON transcript_corrections(run_id,ordinal,revision DESC);
+                PRAGMA user_version=8; COMMIT;")?;
         }
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;",
@@ -1303,7 +1337,7 @@ pub fn delete_case(root: &Path, confirm: &str) -> Result<Value> {
     )?;
     let db = Connection::open(root.join("case.sqlite3"))?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    ensure!(version <= 7, "This case requires a newer application");
+    ensure!(version <= 8, "This case requires a newer application");
     let name: String = db
         .query_row("SELECT value FROM meta WHERE key='name'", [], |r| r.get(0))
         .optional()

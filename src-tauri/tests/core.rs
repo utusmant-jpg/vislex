@@ -59,6 +59,16 @@ fn job_progress_exposes_bounded_units_and_durable_attempt() {
     assert_eq!(audio["progress"]["total"],90.0);
     assert!(c.job_progress("../outside").is_err());
 }
+#[test]
+fn schema_eight_migrates_seven_with_backup_and_empty_segment_store() {
+    let (_dir,c,_source)=setup();let root=c.root.clone();
+    c.db.execute_batch("DROP TABLE transcript_corrections; DROP TABLE transcript_segments; PRAGMA user_version=7;").unwrap();
+    drop(c);
+    let reopened=Case::open(&root).unwrap();
+    assert!(root.join("pre-migration-v7.sqlite3").exists());
+    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),8);
+    assert_eq!(reopened.db.query_row("SELECT count(*) FROM transcript_segments",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+}
 fn enable(case: &mut Case) {
     case.save_settings(Settings {
         offline: false,
