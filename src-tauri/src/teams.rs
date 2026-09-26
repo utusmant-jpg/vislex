@@ -245,8 +245,8 @@ pub fn merge(case: &mut Case, parent: &str, phase: &str) -> Result<()> {
     Ok(())
 }
 pub fn status(case: &Case, parent: &str) -> Result<Value> {
-    let mut stmt=case.db.prepare("SELECT a.task_id,a.role,a.phase,a.provider,a.model,t.status,t.step,t.answer,t.error,t.spent,a.merged FROM agent_assignments a JOIN tasks t ON t.id=a.task_id WHERE a.parent_id=? ORDER BY a.phase,a.role")?;
-    let rows=stmt.query_map([parent],|r|Ok(json!({"id":r.get::<_,String>(0)?,"role":r.get::<_,String>(1)?,"phase":r.get::<_,String>(2)?,"provider":r.get::<_,String>(3)?,"model":r.get::<_,String>(4)?,"status":r.get::<_,String>(5)?,"step":r.get::<_,i64>(6)?,"answer":r.get::<_,String>(7)?,"error":r.get::<_,String>(8)?,"spent":r.get::<_,f64>(9)?,"merged":r.get::<_,bool>(10)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+    let mut stmt=case.db.prepare("SELECT a.task_id,a.role,a.phase,a.provider,a.model,t.status,t.step,t.answer,t.error,a.merged FROM agent_assignments a JOIN tasks t ON t.id=a.task_id WHERE a.parent_id=? ORDER BY a.phase,a.role")?;
+    let rows=stmt.query_map([parent],|r|Ok(json!({"id":r.get::<_,String>(0)?,"role":r.get::<_,String>(1)?,"phase":r.get::<_,String>(2)?,"provider":r.get::<_,String>(3)?,"model":r.get::<_,String>(4)?,"status":r.get::<_,String>(5)?,"step":r.get::<_,i64>(6)?,"answer":r.get::<_,String>(7)?,"error":r.get::<_,String>(8)?,"merged":r.get::<_,bool>(9)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
     Ok(json!(rows))
 }
 

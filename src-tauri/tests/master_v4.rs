@@ -456,6 +456,7 @@ fn same_model_teams_are_blind_idempotent_and_cannot_publish_shared_edits() {
     .unwrap();
     let ids = teams::prepare(&mut c, &parent, "investigate").unwrap();
     assert_eq!(ids.len(), 3);
+    assert!(teams::status(&c, &parent).unwrap().as_array().unwrap().iter().all(|member| member.get("spent").is_none()));
     assert_eq!(ids, teams::prepare(&mut c, &parent, "investigate").unwrap());
     for child in &ids {
         assert_eq!(
