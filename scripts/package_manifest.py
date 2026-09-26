@@ -2,18 +2,24 @@
 import argparse
 import hashlib
 import json
+import stat
 from pathlib import Path
 
 MANIFEST = 'package-manifest.json'
 
 
+def is_link_or_reparse(path):
+    info = path.lstat()
+    return path.is_symlink() or bool(getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0))
+
+
 def inventory(root):
-    if not root.is_dir() or root.is_symlink():
+    if not root.is_dir() or is_link_or_reparse(root):
         raise ValueError('Package root must be a real directory')
     files = {}
     for path in sorted(root.rglob('*')):
-        if path.is_symlink():
-            raise ValueError(f'Package contains a link: {path.relative_to(root)}')
+        if is_link_or_reparse(path):
+            raise ValueError(f'Package contains a link or reparse point: {path.relative_to(root)}')
         if not path.is_file() or path.name == MANIFEST and path.parent == root:
             continue
         relative = path.relative_to(root).as_posix()

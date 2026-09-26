@@ -382,7 +382,7 @@
     },
     "R25": {
       "state": "pending",
-      "package_manifest_followup": "Standalone scripts/package_manifest.py creates a deterministic commit-tagged SHA-256 and byte-size inventory for every regular file in a fresh package folder and verifies missing, changed or extra files. It refuses links and a second write to the same folder. Two synthetic round-trip/tamper tests passed; no exact installer or second-machine package has yet been verified with this tool. The manifest is an integrity inventory, not a signature or complete SBOM."
+      "package_manifest_followup": "Standalone scripts/package_manifest.py creates a deterministic commit-tagged SHA-256 and byte-size inventory for every regular file in a fresh package folder and verifies missing, changed or extra files. It refuses links, Windows junction/reparse points and a second write to the same folder. Three synthetic tests passed, including a real Windows junction to a private sibling folder; no exact installer or second-machine package has yet been verified with this tool. The manifest is an integrity inventory, not a signature or complete SBOM."
     },
     "R23": {
       "state": "pending",
