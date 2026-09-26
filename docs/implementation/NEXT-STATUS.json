@@ -134,7 +134,16 @@
       "note": "file_hash_cached documented as interactive/browsing (evades same-size+same-mtime edits by design); file_hash_strong = fresh full hash refreshing the shared cache, used by explicit Verify, backups, exports (incl. staged-bytes certification vs registered hashes), direct-media transmission, cached-artifact reuse/recovery and artifact reads; cache cleared on Case::open AND create."
     },
     "R08": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "802c7a5",
+      "evidence": "74a9926 bounded task pages, on-demand conversation detail, small case_summary polling and synthetic 500-record/500-task fixture; 802c7a5 backend and renderer case fence for chat commands; native Dev21 cross-case export denial predates final chat-fence build",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 21 AppContainer tests (before final chat fence)",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core large_snapshot_excludes_full_working_record_bodies -> exit 0; baseline 871967 bytes, after 155997 bytes on 500 synthetic records and 500 tasks; 43-44 ms measured",
+        "npm test -> exit 0, 53 passed; npm run build -> exit 0; cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0"
+      ],
+      "unrun_checks": "Source, record and job lists still use full snapshot; measured query-count and latency distribution absent. A packaged run of the exact final chat-fence build and large-case pagination journey remain open. Do not mark R08 verified yet.",
+      "note": "Ordinary case_summary excludes full text and history. Chat list query is one bounded SQL statement, with full progress/answers only on selected conversation; older chats and turns have keyset continuation. Case identity is checked for export, deletion, summary/detail pages, and chat start/stop/resume/continue. UI discards late old-case responses. The full snapshot is still used for recovery and non-chat lists."
     },
     "R09": {
       "state": "pending"
