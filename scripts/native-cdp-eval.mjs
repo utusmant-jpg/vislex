@@ -30,6 +30,15 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
   socket.send(JSON.stringify({ id, method, params }));
 });
 const source = fs.readFileSync(scriptPath, 'utf8').replace('__WORKSPACE__', JSON.stringify(workspace.replaceAll('\\', '/')));
+let bridgeReady = false;
+for (let attempt = 0; attempt < 100; attempt++) {
+  try {
+    const probe = await call('Runtime.evaluate', { expression: 'Boolean(window.__TAURI_INTERNALS__?.invoke)', returnByValue: true });
+    if (probe.result?.value === true) { bridgeReady = true; break; }
+  } catch { /* The WebView can replace its initial navigation context. */ }
+  await new Promise(resolve => setTimeout(resolve, 100));
+}
+if (!bridgeReady) throw new Error('VisLex Tauri bridge did not become ready');
 const deadline = setTimeout(() => {
   for (const { reject } of pending.values()) reject(new Error('Native journey exceeded 15 minutes'));
   pending.clear();

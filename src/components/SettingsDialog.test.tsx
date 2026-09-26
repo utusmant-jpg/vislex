@@ -35,8 +35,9 @@ it('saves the exact case grants and review mode chosen in the dialog', async () 
   fireEvent.click(screen.getByRole('button', { name: 'Save settings & keys' }));
   await waitFor(() => expect(onClose).toHaveBeenCalled());
   expect(api).toHaveBeenCalledWith('save_ai_settings', {
+    case_id: 'synthetic-case',
     config: { provider: 'openai', execution: 'single', review: 'challenge', pool: [] },
     settings: { offline: true, allow_text: false, allow_images: false, model: 'saved-model' },
   });
-  expect(api).toHaveBeenCalledWith('set_direct_media_permission', { enabled: true });
+  expect(api).toHaveBeenCalledWith('set_direct_media_permission', { case_id: 'synthetic-case', enabled: true });
 });
