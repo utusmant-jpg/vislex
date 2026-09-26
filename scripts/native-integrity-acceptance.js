@@ -96,6 +96,8 @@
     ['save_ai_config', { config: {} }],
     ['save_settings', { settings: snapshot.settings }],
     ['export_redaction', { artifact_id: 'missing', path: `${root}/artifacts/rejected-redaction-${run}.pdf` }],
+    ['rename', { kind: 'source', id: source.id, name: 'Rejected rename' }],
+    ['set_restricted', { source_id: source.id, restricted: true }],
   ];
   for (const [action, args] of staleCaseActions) {
     let rejected = false;

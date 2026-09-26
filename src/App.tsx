@@ -168,18 +168,18 @@ function IssueHistory({ issue }: { issue: NonNullable<Snapshot['issues']>[number
   </details>;
 }
 
-export function RecordDetailPanel({caseId,summary,run,refresh,onSource}:{caseId:string;summary:RecordSummary;run:(fn:()=>Promise<void>)=>void;refresh:()=>Promise<void>;onSource:(id:string,locator?:string)=>void}) {
+export function RecordDetailPanel({caseId,sessionEpoch,summary,run,refresh,onSource}:{caseId:string;sessionEpoch?:number;summary:RecordSummary;run:(fn:()=>Promise<void>)=>void;refresh:()=>Promise<void>;onSource:(id:string,locator?:string)=>void}) {
   const [detail,setDetail]=useState<WorkingRecord|null>(null);
   const [error,setError]=useState('');
   useEffect(()=>{
     let active=true;setDetail(null);setError('');
-    void api<WorkingRecord>('record_detail',{case_id:caseId,record_id:summary.id,revision:summary.revision})
+    void api<WorkingRecord>('record_detail',{case_id:caseId,session_epoch:sessionEpoch,record_id:summary.id,revision:summary.revision})
       .then(record=>{if(active)setDetail(record);})
       .catch(reason=>{if(active)setError(String(reason));});
     return ()=>{active=false;};
-  },[caseId,summary.id,summary.revision,summary.updated_at,summary.protected,summary.review,summary.stale]);
+  },[caseId,sessionEpoch,summary.id,summary.revision,summary.updated_at,summary.protected,summary.review,summary.stale]);
   return detail?.id===summary.id && detail.revision===summary.revision
-    ? <Suspense fallback={<WorkspaceLoading label="Opening working file…" />}><RecordEditor key={`${caseId}:${detail.id}`} caseId={caseId} record={detail} run={run} refresh={refresh} onSource={onSource}/></Suspense>
+    ? <Suspense fallback={<WorkspaceLoading label="Opening working file…" />}><RecordEditor key={`${caseId}:${sessionEpoch}:${detail.id}`} caseId={caseId} sessionEpoch={sessionEpoch} record={detail} run={run} refresh={refresh} onSource={onSource}/></Suspense>
     : <div className="empty-state">{error?<p role="alert">Could not load working file: {error}</p>:<p>Loading working file…</p>}</div>;
 }
 
@@ -757,7 +757,7 @@ export default function App() {
               <ThemeToggle />
               <details className="case-menu"><summary aria-label="Case options"><MoreHorizontal size={16} /></summary><div>
                 <button onClick={() => run(importFiles)}>Add files</button>
-                <FolderImport caseId={snapshot?.id} hasCase={!!snapshot} run={run} refresh={refresh} />
+                <FolderImport caseId={snapshot?.id} sessionEpoch={snapshot?.session_epoch} hasCase={!!snapshot} run={run} refresh={refresh} />
                 <button disabled={!snapshot} onClick={() => showModal('note')}>New note</button>
                 <button disabled={!snapshot} onClick={() => showModal('backup')}>Export case archive</button>
                 <button onClick={() => showModal('restore')}>Restore case archive</button>
@@ -814,8 +814,8 @@ export default function App() {
               </ContextMenu>;
             })}
           </div>
-          {source ? <EvidenceViewer key={`${snapshot?.id}:${source.id}`} caseId={snapshot?.id} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} onAsk={() => { setView('chat'); setFocusComposerRequest(value => value + 1); }} /> : null}
-          {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${record.id}`} caseId={snapshot.id} summary={record} run={run} refresh={refresh} onSource={selectSource}/> : null}
+          {source ? <EvidenceViewer key={`${snapshot?.id}:${snapshot?.session_epoch}:${source.id}`} caseId={snapshot?.id} sessionEpoch={snapshot?.session_epoch} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} onAsk={() => { setView('chat'); setFocusComposerRequest(value => value + 1); }} /> : null}
+          {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${snapshot.session_epoch}:${record.id}`} caseId={snapshot.id} sessionEpoch={snapshot.session_epoch} summary={record} run={run} refresh={refresh} onSource={selectSource}/> : null}
         </main>
       </div>
 

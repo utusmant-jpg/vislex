@@ -3,7 +3,7 @@ import {api,evidenceUrl} from '../bridge';
 type Sample={artifact_id:string;locator:string;metadata:{source_relative_seconds:number;playback_seconds:number;scene_boundary:boolean;ocr?:{text:string};ocr_error?:string}};
 type Job={id:string;kind:string;status:string;error:string;result:{next_start:number;has_gaps?:boolean;interval:number}};
 type Index={samples:Sample[];next_offset:number|null;status:{jobs:Job[];note:string}};
-export default function VideoDiscovery({caseId,sourceId,onFrame,onSeek}:{caseId?:string;sourceId:string;onFrame:(id:string)=>void;onSeek:(time:number)=>void}) {
+export default function VideoDiscovery({caseId,sessionEpoch,sourceId,onFrame,onSeek}:{caseId?:string;sessionEpoch?:number;sourceId:string;onFrame:(id:string)=>void;onSeek:(time:number)=>void}) {
  const [kind,setKind]=useState('video_overview'),[offset,setOffset]=useState(0),[data,setData]=useState<Index|null>(null),[error,setError]=useState('');
  const [query,setQuery]=useState(''),[submitted,setSubmitted]=useState(''),[start,setStart]=useState(0),[end,setEnd]=useState(3600),[interval,setInterval]=useState(5);
  const [refresh,setRefresh]=useState(0),[busy,setBusy]=useState(false);
@@ -11,7 +11,7 @@ export default function VideoDiscovery({caseId,sourceId,onFrame,onSeek}:{caseId?
   const load=async()=>{try{const value=await api<Index>('browse_video_discovery',{source_id:sourceId,kind,start,end,offset,query:submitted});if(live){setData(value);setError('');}}catch(e){if(live)setError(String(e));}finally{if(live)timer=setTimeout(()=>void load(),4000);}};
   void load();return()=>{live=false;clearTimeout(timer);};
  },[sourceId,kind,start,end,offset,refresh,submitted]);
- async function action(name:string){setBusy(true);setError('');try{await api(name,{case_id:caseId,source_id:sourceId,interval});setRefresh(n=>n+1);}catch(e){setError(String(e));}finally{setBusy(false);}}
+ async function action(name:string){setBusy(true);setError('');try{await api(name,{case_id:caseId,session_epoch:sessionEpoch,source_id:sourceId,interval});setRefresh(n=>n+1);}catch(e){setError(String(e));}finally{setBusy(false);}}
  const running=data?.status.jobs.some(j=>['queued','running'].includes(j.status));
  return <details className="video-discovery"><summary>Video overview and visible text</summary>
   <p className="small muted">Sampled navigation aids. Actions and text between thumbnails may be missed. Displayed clocks are unverified text.</p>

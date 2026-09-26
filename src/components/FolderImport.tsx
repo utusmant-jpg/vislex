@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { api, native } from '../bridge';
 
-export default function FolderImport({ caseId, hasCase, run, refresh }: { caseId?: string; hasCase: boolean; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
+export default function FolderImport({ caseId, sessionEpoch, hasCase, run, refresh }: { caseId?: string; sessionEpoch?: number; hasCase: boolean; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [path, setPath] = useState('');
   const [name, setName] = useState('Evidence review');
@@ -18,14 +18,16 @@ export default function FolderImport({ caseId, hasCase, run, refresh }: { caseId
         return;
       }
       let targetCase = caseId;
+      let targetEpoch = sessionEpoch;
       if (!hasCase) {
         const safe = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, '');
         if (!safe) throw new Error('Enter a valid case name');
-        const created = await api<{ id: string }>('create_case', { path: `${path.replace(/[\\/]$/, '')}\\${safe}.ledcase`, name });
+        const created = await api<{ id: string; session_epoch?: number }>('create_case', { path: `${path.replace(/[\\/]$/, '')}\\${safe}.ledcase`, name });
         targetCase = created.id;
+        targetEpoch = created.session_epoch;
       }
       if (!targetCase) throw new Error('Open a case first.');
-      const receipt = await api<{ items: { status: string; detail: { error?: string } }[]; skipped?: { path: string; reason: string }[] }>('import_folder', { case_id: targetCase, path, production: 'Folder import' });
+      const receipt = await api<{ items: { status: string; detail: { error?: string } }[]; skipped?: { path: string; reason: string }[] }>('import_folder', { case_id: targetCase, session_epoch: targetEpoch, path, production: 'Folder import' });
       await refresh();
       const failed = receipt.items.filter(item => item.status === 'failed');
       if (failed.length) throw new Error(`${failed.length} files failed: ${failed.map(item => item.detail.error).join('; ')}`);

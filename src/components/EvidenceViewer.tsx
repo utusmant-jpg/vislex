@@ -139,7 +139,7 @@ function PdfPageView({ index, ratio, artifact, ensure, onVisible, register }: {
   </div>;
 }
 
-export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect, onAsk, caseId }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void; onAsk?: () => void; caseId?:string }) {
+export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect, onAsk, caseId, sessionEpoch }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void; onAsk?: () => void; caseId?:string; sessionEpoch?:number }) {
   const media = useRef<HTMLMediaElement | null>(null);
   const [mediaElement,setMediaElement]=useState<HTMLMediaElement|null>(null);
   const bindMedia=useCallback((node:HTMLMediaElement|null)=>{media.current=node;setMediaElement(node);},[]);
@@ -193,7 +193,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     const epoch=++pdfEpoch.current;
     pdfPending.current=new Set();setPdfCount(null);setPdfArtifacts({});setPdfRatios({});setPdfPage(1);setPdfVisiblePage(null);
     if(source.kind!=='pdf')return;
-    void api<{metadata:{page_count:number;first_page_size_points:[number,number]}}>('probe_pdf',{case_id:caseId,source_id:source.id}).then(result=>{
+    void api<{metadata:{page_count:number;first_page_size_points:[number,number]}}>('probe_pdf',{case_id:caseId,session_epoch:sessionEpoch,source_id:source.id}).then(result=>{
       if(epoch!==pdfEpoch.current)return;
       const count=result.metadata.page_count;
       if(!Number.isSafeInteger(count)||count<1||count>100_000)throw new Error('PDF page count is invalid.');
@@ -203,11 +203,11 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       if(requestedPage!==null && (!Number.isSafeInteger(requestedPage)||requestedPage<1||requestedPage>count))setError('Requested physical PDF page is outside this document.');
     }).catch(reason=>{if(epoch===pdfEpoch.current)setError(String(reason));});
     return()=>{pdfEpoch.current++;};
-  },[caseId,source.id,source.kind]);
+  },[caseId,sessionEpoch,source.id,source.kind]);
   const ensurePage = useCallback((target: number) => {
     if(pdfCount===null || !Number.isSafeInteger(target)||target<1||target>pdfCount||pdfArtifacts[target]||pdfPending.current.has(target))return;
     const epoch=pdfEpoch.current;const pending=pdfPending.current;pending.add(target);
-    void api<{ published: { artifact_id: string; metadata: { page:number;page_count: number; page_size_points?: [number, number] } }[]; limitations: string[] }>('render_page', { case_id: caseId, source_id: source.id, page: target })
+    void api<{ published: { artifact_id: string; metadata: { page:number;page_count: number; page_size_points?: [number, number] } }[]; limitations: string[] }>('render_page', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id, page: target })
       .then(result => {
         if(epoch!==pdfEpoch.current)return;
         const published=result.published[0];
@@ -219,7 +219,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       })
       .catch(reason => {if(epoch===pdfEpoch.current)setError(String(reason));})
       .finally(() => pending.delete(target));
-  }, [caseId,source.id,pdfCount,pdfArtifacts]);
+  }, [caseId,sessionEpoch,source.id,pdfCount,pdfArtifacts]);
 
   useEffect(() => {
     if(pdfCount===null)return;
@@ -247,7 +247,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   useEffect(() => {
     if (!needsProxy || source.kind !== 'video') return;
     let active = true; setProcessing(true); setError('');
-    api<{ artifact_id: string }>('playback_proxy', { source_id: source.id }).then(result => { if (active) setPlayback(result.artifact_id); }).catch(e => { if (active) setError(String(e)); }).finally(() => { if (active) setProcessing(false); });
+    api<{ artifact_id: string }>('playback_proxy', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { if (active) setPlayback(result.artifact_id); }).catch(e => { if (active) setError(String(e)); }).finally(() => { if (active) setProcessing(false); });
     return () => { active = false; };
   }, [source.id, needsProxy]);
 
@@ -255,7 +255,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     if (!officeDocument || locator) return;
     let active = true;
     setProcessing(true);
-    api<{ limitations: string[] }>('process_source', { case_id: caseId, source_id: source.id }).then(result => { if (active) { setShowText(true); setLimitations(result.limitations); void refresh(); } }).catch(e => { if (active) setError(String(e)); }).finally(() => { if (active) setProcessing(false); });
+    api<{ limitations: string[] }>('process_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { if (active) { setShowText(true); setLimitations(result.limitations); void refresh(); } }).catch(e => { if (active) setError(String(e)); }).finally(() => { if (active) setProcessing(false); });
     return () => { active = false; };
   }, [source.id, locator, officeDocument]);
 
@@ -318,7 +318,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     const request=++exactRequest.current;
     setExactBusy(true);media.current?.pause();
     try {
-      const value=await api<{published:{artifact_id:string;locator:string;metadata:{source_relative_seconds:number;pts:number;time_base:string}}[]}>('step_video_frame',{case_id:caseId,source_id:source.id,target,direction});
+      const value=await api<{published:{artifact_id:string;locator:string;metadata:{source_relative_seconds:number;pts:number;time_base:string}}[]}>('step_video_frame',{case_id:caseId,session_epoch:sessionEpoch,source_id:source.id,target,direction});
       if(request!==exactRequest.current)return;
       const item=value.published[0];
       if (!item || !Number.isFinite(item.metadata.source_relative_seconds) || !Number.isFinite(item.metadata.pts)) throw new Error('The decoder did not return a timestamped frame.');
@@ -406,7 +406,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
           onError={() => {
             if (derived) { setError('Image preview failed.'); return; }
             setProcessing(true);
-            void api<{ published: unknown[] }>('process_source', { case_id: caseId, source_id: source.id }).then(result => { setDerived((result.published as { artifact_id?: string }[])?.[0]?.artifact_id ?? null); }).catch(e => setError(String(e))).finally(() => setProcessing(false));
+            void api<{ published: unknown[] }>('process_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { setDerived((result.published as { artifact_id?: string }[])?.[0]?.artifact_id ?? null); }).catch(e => setError(String(e))).finally(() => setProcessing(false));
           }} />
         {derived && source.kind === 'video' ? <button className="quiet back-source" onClick={() => setDerived(null)}>Back to recording</button> : null}
       </div> : null}
@@ -458,9 +458,9 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
 
     {['video', 'audio'].includes(source.kind) && !showText && !derived ? <MediaControls media={media} element={mediaElement} filmstrip={source.kind === 'video' ? filmstrip : null} onExactStep={source.kind==='video'?direction=>{void stepExact(direction);}:undefined} exactBusy={exactBusy} onSeek={time => { exactRequest.current++;displayedFrameTime.current=null;setExactBusy(false);setExactFrame(null);if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} /> : null}
     {source.kind==='video' && exactFrame && !showText && !derived ? <div className="exact-frame-inspection" role="region" aria-label="Exact decoded frame"><img src={evidenceUrl(`artifact/${exactFrame.artifact}`)} alt={`Decoded frame at source time ${formatClockMs(exactFrame.time)}`} style={{maxWidth:'100%',maxHeight:'40vh',objectFit:'contain'}} /><p>Decoded source frame at {formatClockMs(exactFrame.time)} · PTS {exactFrame.pts} × {exactFrame.timeBase}. This image is a derivative of one frame.</p><button className="quiet" onClick={()=>void navigator.clipboard.writeText(exactFrame.locator)}>Copy frame citation</button></div> : null}
-    {['video', 'audio'].includes(source.kind) ? <FullTranscript caseId={caseId} currentTime={currentTime} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} sourceId={source.id} run={run} refresh={refresh} /> : null}
-    {source.kind === 'video' && !source.restricted ? <VideoDiscovery key={source.id} caseId={caseId} sourceId={source.id} onFrame={id => { setDerived(id); setShowText(false); }} onSeek={time => { setDerived(null); setShowText(false); setPendingSeek(time); }} /> : null}
-    {['pdf', 'image'].includes(source.kind) && !source.restricted ? <RedactionPanel caseId={caseId} sourceId={source.id} kind={source.kind} /> : null}
+    {['video', 'audio'].includes(source.kind) ? <FullTranscript caseId={caseId} sessionEpoch={sessionEpoch} currentTime={currentTime} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} sourceId={source.id} run={run} refresh={refresh} /> : null}
+    {source.kind === 'video' && !source.restricted ? <VideoDiscovery key={`${sessionEpoch}:${source.id}`} caseId={caseId} sessionEpoch={sessionEpoch} sourceId={source.id} onFrame={id => { setDerived(id); setShowText(false); }} onSeek={time => { setDerived(null); setShowText(false); setPendingSeek(time); }} /> : null}
+    {['pdf', 'image'].includes(source.kind) && !source.restricted ? <RedactionPanel caseId={caseId} sessionEpoch={sessionEpoch} sourceId={source.id} kind={source.kind} /> : null}
     {limitations.length ? <details className="processing-limitations disclosure">
       <summary><Info size={13} />About this preview<span className="disclosure-count">{limitations.length}</span></summary>
       {limitations.map(limitation => <p key={limitation}>{limitation}</p>)}

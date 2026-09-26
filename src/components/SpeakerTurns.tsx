@@ -7,7 +7,7 @@ type Turn = { start: number; end: number; speaker: string };
 type Annotations = { revision: number; labels: Record<string, string>; turns: Record<string, string[]> };
 type Result = { metadata: { turns: Turn[]; track_index: number; origin_seconds: number; container_origin_seconds: number; gap_seconds: number }; extraction_locator: string; limitations: string[] };
 
-export default function SpeakerTurns({ caseId, sourceId, onSeek, defaultTrack }: { caseId?: string; sourceId: string; defaultTrack?: number; onSeek: (seconds: number) => void }) {
+export default function SpeakerTurns({ caseId, sessionEpoch, sourceId, onSeek, defaultTrack }: { caseId?: string; sessionEpoch?: number; sourceId: string; defaultTrack?: number; onSeek: (seconds: number) => void }) {
   const [start, setStart] = useState(0);
   const [end, setEnd] = useState(60);
   const [track, setTrack] = useState(0);
@@ -35,7 +35,7 @@ export default function SpeakerTurns({ caseId, sourceId, onSeek, defaultTrack }:
     if (!artifact) return;
     setBusy(true); setError(''); setSaved('');
     try {
-      const next = await api<Annotations>('save_speaker_annotations', { case_id: caseId, source_id: sourceId, artifact_id: artifact, ...annotations });
+      const next = await api<Annotations>('save_speaker_annotations', { case_id: caseId, session_epoch: sessionEpoch, source_id: sourceId, artifact_id: artifact, ...annotations });
       setAnnotations(next);
       setSaved('Corrections saved. Identity remains unverified.');
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
@@ -50,7 +50,7 @@ export default function SpeakerTurns({ caseId, sourceId, onSeek, defaultTrack }:
   }, [sourceId]);
   async function analyze() {
     setBusy(true); setError('');
-    try { setResult(await api<Result>('diarize_source', { case_id: caseId, source_id: sourceId, start, end, track })); setOffset(0); }
+    try { setResult(await api<Result>('diarize_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: sourceId, start, end, track })); setOffset(0); }
     catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
   const laneRange = result ? (() => {

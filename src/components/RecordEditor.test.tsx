@@ -49,7 +49,7 @@ it('keeps a draft after a failed save and states its session lifetime',async()=>
 
 it('sends the displayed case ID when reviewing a working file',async()=>{
   api.mockResolvedValue(null);
-  render(<RecordEditor caseId="review-case" record={record('Saved')} {...common}/>);
+  render(<RecordEditor caseId="review-case" sessionEpoch={4} record={record('Saved')} {...common}/>);
   fireEvent.click(screen.getByRole('button',{name:'Mark reviewed'}));
-  await waitFor(()=>expect(api).toHaveBeenCalledWith('review_record',expect.objectContaining({case_id:'review-case',record_id:'same-record',revision:1})));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('review_record',expect.objectContaining({case_id:'review-case',session_epoch:4,record_id:'same-record',revision:1})));
 });
