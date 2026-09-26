@@ -42,7 +42,7 @@ function taskState(turn: Task): 'running' | 'paused' | 'complete' | 'failed' | '
 }
 
 /** Per-turn activity: every message keeps its receipt ledger, not just the latest. */
-function TurnActivity({ turn, onSource, live }: { turn: Task; onSource: (id: string, locator?: string) => void; live: string | null }) {
+function TurnActivity({ turn, onSource }: { turn: Task; onSource: (id: string, locator?: string) => void }) {
   const [open, setOpen] = useState(false);
   const [actions, setActions] = useState<Action[] | null>(null);
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -72,7 +72,6 @@ function TurnActivity({ turn, onSource, live }: { turn: Task; onSource: (id: str
       <ChevronDown size={12} />
     </button>
     {open ? <>
-      {live ? <div className="activity-live"><LoaderCircle size={12} className="spin" /><span>{live}</span></div> : null}
       {teamError ? <p className="small danger-text" role="alert">Team status unavailable: {teamError}</p> : null}
       {team.length ? <div className="team-cards">
         <p className="small muted">Agent team · {team.filter(member => member.status === 'complete').length}/{team.length} assignments complete. Separate working contexts — not independent corroboration or human approval.</p>
@@ -109,6 +108,39 @@ function TurnActivity({ turn, onSource, live }: { turn: Task; onSource: (id: str
   </div>;
 }
 
+/** Keep high-frequency Tauri deltas out of the workspace and preserve the entire draft. */
+function LiveResponse({ caseId, taskId, onSource, scroll, following }: { caseId: string; taskId: string; onSource: (id: string, locator?: string) => void; scroll: { current: HTMLDivElement | null }; following: { current: boolean } }) {
+  const [live, setLive] = useState({ transmission: '', text: '', activity: 'Receiving response', characters: 0 });
+  const liveRef = useRef(live);
+  useEffect(() => {
+    if (!native) return;
+    let active = true;
+    let frame = 0;
+    let pending: typeof live | null = null;
+    const cleanup = listen<{ case_id: string; task_id: string; transmission_id: string; delta: { text?: string; activity?: string; characters?: number } }>('agent-progress', ({ payload: event }) => {
+      if (!active || event.case_id !== caseId || event.task_id !== taskId) return;
+      const base = pending ?? liveRef.current;
+      const current = base.transmission === event.transmission_id ? base : { transmission: event.transmission_id, text: '', activity: 'Receiving response', characters: 0 };
+      pending = { ...current, text: current.text + (event.delta.text ?? ''), activity: event.delta.activity?.replaceAll('_', ' ') ?? current.activity, characters: current.characters + (event.delta.characters ?? 0) };
+      if (!frame) frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (pending) { liveRef.current = pending; setLive(pending); pending = null; }
+      });
+    });
+    return () => { active = false; if (frame) cancelAnimationFrame(frame); void cleanup.then(unlisten => unlisten()); };
+  }, [caseId, taskId]);
+  useLayoutEffect(() => {
+    if (following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [live.text, following, scroll]);
+  return <>
+    {live.characters ? <div className="activity-live"><LoaderCircle size={12} className="spin" /><span>{live.activity} · {live.characters.toLocaleString()} characters received</span></div> : null}
+    {live.text ? <div className="live-answer">
+      <p className="live-answer-caption">Live draft — not yet citation-validated</p>
+      <Markdown text={live.text} onSource={onSource} caret />
+    </div> : null}
+  </>;
+}
+
 function RunStatus({ turn }: { turn: Task }) {
   const now = useNow(true);
   const elapsed = Math.max(0, Math.floor((now - Date.parse(turn.created_at)) / 1000));
@@ -142,7 +174,6 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const [sending, setSending] = useState(false);
   const currentCaseId = useRef(snapshot?.id);
   currentCaseId.current = snapshot?.id;
-  const [live, setLive] = useState<{ task: string; transmission: string; text: string; activity: string; characters: number } | null>(null);
   const [skipContext, setSkipContext] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -188,23 +219,9 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const processingFailed = fileJobs.some(job => ['failed', 'interrupted'].includes(job.status));
   const processingPending = fileJobs.some(job => ['queued', 'running'].includes(job.status));
   const chatBlocked = !!running || (snapshot?.counts ? !!snapshot.counts.chat_pause : !processingFailed && processingPending);
-  const liveTaskIds = turns.filter(turn => turn.status === 'running').map(turn => turn.id).join(',');
 
   useEffect(() => { setSelectedModel(sessionStorage.getItem(modelKey(snapshot?.id, conversationId)) ?? ''); }, [snapshot?.id, conversationId]);
   useEffect(() => {
-    if (!native) return;
-    let active = true;
-    const cleanup = listen<{ case_id: string; task_id: string; transmission_id: string; delta: { text?: string; activity?: string; characters?: number } }>('agent-progress', ({ payload: event }) => {
-      if (!active || event.case_id !== snapshot?.id || !liveTaskIds.split(',').includes(event.task_id)) return;
-      setLive(previous => {
-        const base = previous?.transmission === event.transmission_id ? previous : { task: event.task_id, transmission: event.transmission_id, text: '', activity: 'Receiving response', characters: 0 };
-        return { ...base, text: base.text + (event.delta.text ?? ''), activity: event.delta.activity?.replaceAll('_', ' ') ?? base.activity, characters: base.characters + (event.delta.characters ?? 0) };
-      });
-    });
-    return () => { active = false; void cleanup.then(unlisten => unlisten()); };
-  }, [snapshot?.id, liveTaskIds]);
-  useEffect(() => {
-    setLive(null);
     following.current = true;
     setShowJump(false);
     setSkipContext(false);
@@ -283,11 +300,8 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
             <StatusPill state={taskState(turn)} label={turn.status === 'running' ? 'Working' : turn.status === 'paused' ? 'Paused' : turn.error || turn.status === 'failed' ? 'Needs attention' : turn.status === 'complete' ? 'Saved response' : 'Pending'} small />
             {turn.created_at && Number.isFinite(Date.parse(turn.created_at)) ? <time dateTime={turn.created_at} title={new Date(turn.created_at).toLocaleString()}>{new Date(turn.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}
           </div>
-          <TurnActivity turn={turn} onSource={onSource} live={turn.status === 'running' && live?.task === turn.id ? `${live.activity} · ${live.characters.toLocaleString()} characters received` : null} />
-          {turn.status === 'running' && live?.task === turn.id && live.text ? <div className="live-answer">
-            <p className="live-answer-caption">Live draft — not yet citation-validated</p>
-            <Markdown text={live.text} onSource={onSource} caret />
-          </div> : null}
+          <TurnActivity turn={turn} onSource={onSource} />
+          {turn.status === 'running' && snapshot ? <LiveResponse caseId={snapshot.id} taskId={turn.id} onSource={onSource} scroll={scroll} following={following} /> : null}
           {turn.answer ? <>
             <Markdown className="answer" text={turn.answer} onSource={onSource} />
             <div className="message-meta">

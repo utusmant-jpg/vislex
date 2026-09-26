@@ -1,6 +1,6 @@
 /* ============================================================================
    VisLex design system — "Ink & Evidence"
-   One token-driven theme (dark default, light via [data-theme="light"]).
+   One token-driven theme (System preference; dark and light resolved before paint).
    Sections: 1 tokens · 2 base · 3 shell & chrome · 4 sidebar & rail · 5 chat
    6 primitives (pills/toasts/menus/tooltips) · 7 viewer & media · 8 transcript
    & speakers · 9 redaction · 10 workspaces · 11 settings · 12 responsive
@@ -35,7 +35,7 @@
   --text-primary: #f3f4f6;
   --text-secondary: #aeb6c3;
   --text-tertiary: #8792a2;
-  --text-faint: #6a7585;
+  --text-faint: #8792a2;
 
   --accent: #3b82f6;
   --accent-hover: #60a5fa;
@@ -83,8 +83,8 @@
 
   --text-primary: #17202e;
   --text-secondary: #526072;
-  --text-tertiary: #687689;
-  --text-faint: #8491a2;
+  --text-tertiary: #5e6b7d;
+  --text-faint: #5e6b7d;
 
   --accent: #2563eb;
   --accent-hover: #1d4ed8;

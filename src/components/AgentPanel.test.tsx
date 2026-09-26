@@ -5,8 +5,9 @@ import AgentPanel from './AgentPanel';
 import type { Snapshot, Task } from '../types';
 
 const api = vi.hoisted(() => vi.fn());
+const progress = vi.hoisted(() => ({ listeners: [] as ((event: { payload: { case_id: string; task_id: string; transmission_id: string; delta: { text: string; characters: number } } }) => void)[] }));
 vi.mock('../bridge', () => ({ api, native: true, citationParts: () => null }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => undefined }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: async (_name: string, listener: (typeof progress.listeners)[number]) => { progress.listeners.push(listener); return () => { progress.listeners = progress.listeners.filter(item => item !== listener); }; } }));
 
 function task(id: string, conversation: string): Task {
   return { id, conversation_id: conversation, prompt: 'Existing question', mode: 'investigate', status: 'running', input_tokens: 0, output_tokens: 0, step: 0, answer: '', error: '', generation: 1, created_at: '2026-09-22T00:00:00Z' };
@@ -22,7 +23,7 @@ function panel(data: Snapshot, conversationId: string | null = null) {
 }
 
 describe('chat composer interaction', () => {
-  beforeEach(() => { api.mockReset(); api.mockResolvedValue({ task_id: 'new-task', conversation_id: 'new-chat' }); });
+  beforeEach(() => { api.mockReset(); api.mockResolvedValue({ task_id: 'new-task', conversation_id: 'new-chat' }); progress.listeners = []; });
   afterEach(cleanup);
 
   it('shows case counts and puts a suggested check in the composer without sending', () => {
@@ -63,6 +64,20 @@ describe('chat composer interaction', () => {
     expect(screen.getByText('The report describes three knocks.')).toBeTruthy();
     expect(screen.getByText('Saved response')).toBeTruthy();
     expect(screen.queryByText('AI assessment')).toBeNull();
+  });
+
+  it('keeps every streamed character beyond 64 KiB through batched updates', async () => {
+    panel(snapshot([task('long-task', 'long-chat')]), 'long-chat');
+    await waitFor(() => expect(progress.listeners.length).toBeGreaterThan(0));
+    const stream = progress.listeners.at(-1)!;
+    const prefix = `PREFIX_${'evidence '.repeat(9000)}`;
+    stream({ payload: { case_id: 'case-1', task_id: 'long-task', transmission_id: 'tx-1', delta: { text: prefix, characters: prefix.length } } });
+    stream({ payload: { case_id: 'case-1', task_id: 'long-task', transmission_id: 'tx-1', delta: { text: 'FINAL_SEGMENT', characters: 13 } } });
+    await waitFor(() => expect(document.querySelector('.live-answer')?.textContent).toContain('FINAL_SEGMENT'));
+    const rendered = document.querySelector('.live-answer')?.textContent ?? '';
+    expect(rendered).toContain('PREFIX_');
+    expect(rendered).toContain(prefix.slice(-40));
+    expect(rendered).toContain('FINAL_SEGMENT');
   });
 
   it('allows chat after file preparation while automatic review continues', async () => {
