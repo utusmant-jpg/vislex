@@ -40,6 +40,18 @@
   const source = snapshot.sources[0];
   if (!source || source.size !== 256 * 1024 * 1024) throw new Error('Synthetic source size mismatch');
   const mandatorySessionActions = [
+    ['resume_processing', { job_id: 'missing' }],
+    ['resume_transcription', { job_id: 'missing' }],
+    ['queue_video_discovery', { source_id: 'missing', interval: 5 }],
+    ['retry_video_discovery', { run_id: 'missing' }],
+    ['cancel_video_discovery', { source_id: 'missing' }],
+    ['cancel_processing', { job_id: 'missing' }],
+    ['set_asr_profile', { model: 'tiny' }],
+    ['transcribe_full', { source_id: 'missing' }],
+    ['transcribe_all', {}],
+    ['propose_transcript_correction', { source_id: 'missing', run_id: 'missing', ordinal: 1, text: 'synthetic', reason: 'test' }],
+    ['review_transcript_correction', { correction_id: 'missing', accept: true }],
+    ['cancel_transcription', { source_id: 'missing' }],
     ['reclaim_staging', {}],
     ['rename', { kind: 'source', id: 'missing', name: 'Old session rename' }],
     ['set_restricted', { source_id: 'missing', restricted: true }],

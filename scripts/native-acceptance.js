@@ -47,7 +47,7 @@
   const inventorySnapshot=await invoke('snapshot');
   const inventory=inventorySnapshot.tasks.find(t=>t.id===inventoryTask.task_id);
   if(inventory?.status!=='complete' || inventory.answer!=='You have 6 original files in this case.' || inventory.input_tokens || inventory.output_tokens)throw new Error('Inventory did not finish without model calls');
-  await invoke('queue_video_discovery',{case_id:snapshot.id,source_id:video.id,interval:1});
+  await invoke('queue_video_discovery',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,source_id:video.id,interval:1});
   const discoveryLatency=[];
   for(let i=0;i<120;i++) {
     const t=performance.now();await invoke('snapshot');discoveryLatency.push(performance.now()-t);
@@ -99,5 +99,7 @@
   const draft=await waitFor(()=>[...document.querySelectorAll('button.library-row')].find(b=>b.querySelector('.library-name')?.textContent==='Synthetic native draft'),'working-file entry');draft.click();
   await waitFor(()=>document.querySelector('textarea[aria-label="Working file content"]')?.value===record.content,'lazy working-file detail');
   if(document.querySelector('.saved-progress,.question-dossier,.context-note'))throw new Error('Internal review panels leaked into normal chat');
-  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.counts.source_count,snapshot_bytes:JSON.stringify(snapshot).length,summary_bytes:JSON.stringify(caseSummary).length,snapshot_latency_ms:latencies,semantic_results:search.results.length,lexical_results:search.lexical_results?.length??0,remaining_passages:search.remaining_passages,exports,cross_case_chat_denied:crossCaseChatDenied,cross_case_source_denied:crossCaseSourceDenied,cross_case_export_denied:crossCaseExportDenied,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
+  const blockingDialog=document.querySelector('dialog[open]');
+  if(blockingDialog)throw new Error(`Native journey ended behind an open ${blockingDialog.className} dialog`);
+  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:true,documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.counts.source_count,snapshot_bytes:JSON.stringify(snapshot).length,summary_bytes:JSON.stringify(caseSummary).length,snapshot_latency_ms:latencies,semantic_results:search.results.length,lexical_results:search.lexical_results?.length??0,remaining_passages:search.remaining_passages,exports,cross_case_chat_denied:crossCaseChatDenied,cross_case_source_denied:crossCaseSourceDenied,cross_case_export_denied:crossCaseExportDenied,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
 })()
