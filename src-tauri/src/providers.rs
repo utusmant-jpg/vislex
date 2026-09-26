@@ -442,13 +442,30 @@ async fn provider_rejection(response: &mut reqwest::Response) -> String {
     format!("Check model, credentials, permissions and quota. {message}")
 }
 
+pub fn synthetic_provider_url() -> Result<Option<String>> {
+    #[cfg(debug_assertions)]
+    {
+        if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
+            if let Ok(raw) = std::env::var("VISLEX_TEST_PROVIDER_URL") {
+                let url = reqwest::Url::parse(&raw)?;
+                ensure!(url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "::1")), "Synthetic provider endpoint must be loopback HTTP");
+                return Ok(Some(raw));
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub async fn send(
     provider: Provider,
     key: &str,
     body: Value,
     mut progress: impl FnMut(Value),
 ) -> Result<Value> {
-    let wire = encode(provider, &body)?;
+    let mut wire = encode(provider, &body)?;
+    // The packaged debug acceptance harness may replace the network endpoint
+    // with a loopback server. Release builds have no endpoint override.
+    if let Some(url) = synthetic_provider_url()? { wire.url = url; }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(20))
