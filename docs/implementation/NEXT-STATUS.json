@@ -125,6 +125,7 @@
     "R07": {
       "state": "implemented",
       "commit": "45cfd5c5fe4a3c6fc350bd4566509906cb727089",
+      "followup_commit": "ae31b2f (source lookup rejects a junction or reparse redirect of originals storage or the registered file; native folder-import junction and source-root junction regressions passed)",
       "evidence": "src-tauri/tests/core.rs (same-size/same-mtime tamper caught by strong check; backup refuses metadata-preserving tamper; case-open clears stale cache; export prepare refuses tamper; artifact reads reject tamper) + src-tauri/tests/dossier.rs (replaced-review-receipt export refusal)",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; filetime 0.2 dev-dependency added (lockfile updated offline)",
       "commands": [
@@ -133,7 +134,8 @@
         "cargo clippy --tests -> no warnings in changed code"
       ],
       "reviewer": "adversarial review: FAIL first round (desktop verify command and processing gates not actually switched - aborted edit script; artifact publication surface cached-only; write-time export recheck self-referential; wall-clock receipt identity) - ALL fixed: desktop verify_source command strong with honest method/verified_at response, processing reuse/recovery/artifact gates strong, DossierCopy pins registered sha and publish strong-hashes the STAGED bytes against it, human-review receipts carry unique id pinned by exports; second-round review confirmed interactive callers (read_text, validate_citation, agent pre-gates, restore, worker provenance) are legitimately non-publication; known residuals: file_hash_strong hash->metadata TOCTOU poisons only the documented non-tamper-proof interactive cache; reclaim_staging cleanup path stays cached (non-publication); create/open asymmetry fixed",
-      "unrun_checks": "Windows junction/reparse adversarial fixtures NOT created (requires symlink privilege); hash-bytes/lock-duration measurements NOT taken (no measured baseline this session); packaged-worker suite, native acceptance, visual checks NOT RUN",
+      "unrun_checks": "Hash-bytes and case-lock-duration measurements are not yet recorded for explicit strong verification on a large fixture. A packaged explicit-Verify and replacement-race journey has not run. File-descriptor identity across path replacement remains an acceptance item; keep R07 implemented rather than verified.",
+      "followup_commands": ["cargo test --locked --manifest-path src-tauri/Cargo.toml --test core folder_import_skips_junctions_into_other_directories -> exit 0", "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core original_storage_junction_cannot_redirect_a_registered_source -> exit 0", "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 26 sandbox/AppContainer tests and worker_video_e2e"],
       "note": "file_hash_cached documented as interactive/browsing (evades same-size+same-mtime edits by design); file_hash_strong = fresh full hash refreshing the shared cache, used by explicit Verify, backups, exports (incl. staged-bytes certification vs registered hashes), direct-media transmission, cached-artifact reuse/recovery and artifact reads; cache cleared on Case::open AND create."
     },
     "R08": {
