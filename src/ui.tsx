@@ -283,7 +283,7 @@ const ThemeContext = createContext<{
   setTheme: (theme: ThemePreference) => void;
   density: DensityPreference;
   setDensity: (density: DensityPreference) => void;
-}>({ theme: 'system', resolvedTheme: 'dark', setTheme: () => {}, density: 'comfortable', setDensity: () => {} });
+}>({ theme: 'dark', resolvedTheme: 'dark', setTheme: () => {}, density: 'comfortable', setDensity: () => {} });
 
 function systemTheme(): ResolvedTheme {
   return typeof window.matchMedia === 'function' && !window.matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark';
@@ -292,8 +292,8 @@ function systemTheme(): ResolvedTheme {
 function storedTheme(): ThemePreference {
   try {
     const saved = localStorage.getItem('vislex-theme');
-    return saved === 'dark' || saved === 'light' ? saved : 'system';
-  } catch { return 'system'; }
+    return saved === 'dark' || saved === 'light' || saved === 'system' ? saved : 'dark';
+  } catch { return 'dark'; }
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
