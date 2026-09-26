@@ -102,6 +102,23 @@ class RedactionOutput(unittest.TestCase):
                 self.assertEqual(preview.size, (50, 100))
                 self.assertLess(max(preview.getpixel((x, y))[0] for x in range(5, 18) for y in range(5, 18)), 10)
 
+    def test_cancelled_multipage_job_releases_input_and_publishes_no_pdf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            pdf = canvas.Canvas(str(job / 'input'), pagesize=(200, 100))
+            for page in range(3):
+                pdf.drawString(20, 60, f'Page {page + 1}')
+                pdf.showPage()
+            pdf.save()
+            (job / 'cancel.request').touch()
+            with self.assertRaisesRegex(RuntimeError, 'cancelled'):
+                redact(job, {'source_kind': 'pdf', 'boxes': [
+                    {'page': 1, 'x': 10, 'y': 10, 'width': 50, 'height': 20}
+                ]})
+            self.assertFalse((job / 'redacted-0001.jpg').exists())
+            self.assertFalse((job / 'redacted.pdf').exists())
+            # Windows rejects deletion if PDFium still holds the source handle.
+
 
 if __name__ == '__main__':
     unittest.main()
