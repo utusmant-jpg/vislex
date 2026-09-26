@@ -9,7 +9,7 @@ type Derivative = { artifact_id: string; metadata: { mime: string; page?: number
 
 const round1 = (value: number) => Math.round(value * 10) / 10;
 
-export default function RedactionPanel({ sourceId, kind }: { sourceId: string; kind: string }) {
+export default function RedactionPanel({ caseId, sourceId, kind }: { caseId?: string; sourceId: string; kind: string }) {
   const [drawMode, setDrawMode] = useState(false);
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [page, setPage] = useState(1);
@@ -35,7 +35,7 @@ export default function RedactionPanel({ sourceId, kind }: { sourceId: string; k
     let active = true;
     setLoadingBase(true); setError(''); setBaseImage(null); setBaseSize(null);
     const load = kind === 'pdf'
-      ? api<{ published: { artifact_id: string; metadata: { page_count?: number; page_size_points?: [number, number] } }[] }>('render_page', { source_id: sourceId, page })
+      ? api<{ published: { artifact_id: string; metadata: { page_count?: number; page_size_points?: [number, number] } }[] }>('render_page', { case_id: caseId, source_id: sourceId, page })
         .then(result => {
           if (!active) return;
           const published = result.published[0];
@@ -121,7 +121,7 @@ export default function RedactionPanel({ sourceId, kind }: { sourceId: string; k
       </div>)}
       <div className="input-row">
         <button className="quiet" disabled={busy || boxes.length >= 1000} onClick={() => { setOutputs([]); setAccepted(false); setBoxes(old => [...old, { page, x: 40, y: 40, width: 200, height: 24 }]); }}><Plus size={13} />Add rectangle</button>
-        <button className="primary" disabled={busy || !boxes.length} onClick={() => void action(async () => { setOutputs([]); setReviewed([]); setAccepted(false); setSaved(''); const result = await api<{ published: Derivative[] }>('prepare_redaction', { source_id: sourceId, boxes }); setOutputs(result.published); })}>{busy ? 'Processing…' : 'Build review copy'}</button>
+        <button className="primary" disabled={busy || !boxes.length} onClick={() => void action(async () => { setOutputs([]); setReviewed([]); setAccepted(false); setSaved(''); const result = await api<{ published: Derivative[] }>('prepare_redaction', { case_id: caseId, source_id: sourceId, boxes }); setOutputs(result.published); })}>{busy ? 'Processing…' : 'Build review copy'}</button>
       </div>
     </div>
 
@@ -133,8 +133,8 @@ export default function RedactionPanel({ sourceId, kind }: { sourceId: string; k
     {pdf ? <>
       <label className="field-label">Review note<textarea value={note} maxLength={4000} onChange={event => { setNote(event.target.value); setAccepted(false); }} /></label>
       <div className="input-row">
-        <button className="secondary" disabled={busy || !pages.length || reviewed.length !== pages.length} onClick={() => void action(async () => { await api('review_redaction', { artifact_id: pdf.artifact_id, pages: reviewed, note }); setAccepted(true); })}>Accept reviewed derivative</button>
-        <button className="primary" disabled={busy || !accepted} onClick={() => void action(async () => { const path = await save({ defaultPath: 'Reviewed redaction.pdf', filters: [{ name: 'Flattened redaction', extensions: ['pdf'] }] }); if (path) { await api('export_redaction', { artifact_id: pdf.artifact_id, path }); setSaved(path); } })}>Export derivative only</button>
+        <button className="secondary" disabled={busy || !pages.length || reviewed.length !== pages.length} onClick={() => void action(async () => { await api('review_redaction', { case_id: caseId, artifact_id: pdf.artifact_id, pages: reviewed, note }); setAccepted(true); })}>Accept reviewed derivative</button>
+        <button className="primary" disabled={busy || !accepted} onClick={() => void action(async () => { const path = await save({ defaultPath: 'Reviewed redaction.pdf', filters: [{ name: 'Flattened redaction', extensions: ['pdf'] }] }); if (path) { await api('export_redaction', { case_id: caseId, artifact_id: pdf.artifact_id, path }); setSaved(path); } })}>Export derivative only</button>
       </div>
     </> : null}
     {saved ? <p role="status" className="small success-text">Saved {saved}</p> : null}

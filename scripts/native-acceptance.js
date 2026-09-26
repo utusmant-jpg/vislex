@@ -74,9 +74,9 @@
   for(const ext of ['docx','pdf'])exports.push(await invoke('export_word',{case_id:snapshot.id,record_id:record.id,path:root+'/artifacts/acceptance-'+run+'.'+ext}));
   let crossCaseExportDenied=false;try{await invoke('export_record',{case_id:'old-case',record_id:record.id,expected_revision:record.revision,path:root+'/artifacts/wrong-case-'+run+'.md'});}catch{crossCaseExportDenied=true;}
   if(!crossCaseExportDenied)throw new Error('Export accepted a stale case identity');
-  const redaction=await invoke('prepare_redaction',{source_id:photo.id,boxes:[{page:1,x:0,y:0,width:100,height:30}]});
+  const redaction=await invoke('prepare_redaction',{case_id:snapshot.id,source_id:photo.id,boxes:[{page:1,x:0,y:0,width:100,height:30}]});
   const derivative=redaction.published.find(p=>p.metadata.mime==='application/pdf');
-  let denied=false;try{await invoke('export_redaction',{artifact_id:derivative.artifact_id,path:root+'/artifacts/unreviewed-'+run+'.pdf'});}catch{denied=true;}
+  let denied=false;try{await invoke('export_redaction',{case_id:snapshot.id,artifact_id:derivative.artifact_id,path:root+'/artifacts/unreviewed-'+run+'.pdf'});}catch{denied=true;}
   if(!denied)throw new Error('Unreviewed redaction export was allowed');
   const proxy=await invoke('playback_proxy',{source_id:video.id});const info=await invoke('artifact_info',{artifact_id:proxy.artifact_id});
   if(info.metadata.player_origin_seconds!==0)throw new Error('Playback lacks explicit origin');
