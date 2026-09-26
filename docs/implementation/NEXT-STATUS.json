@@ -36,9 +36,9 @@
       "note": "Real transcription::begin+publish via VISLEX_WORKER_PATH stand-in worker; publish -> backup -> restore -> reopen -> review -> second backup -> second restore verified with hash pinning and unique archive paths."
     },
     "R02": {
-      "state": "implemented",
-      "commit": "5f42cb8d5cbded83bccfff20dfe587e89bb111d5",
-      "evidence": "src-tauri/tests/extract_revisions.rs (4 new tests); src/bridge.test.ts, src/markdown.test.ts, src/citationLocator.test.ts (shared grammar fixtures); red-first shown by reverting evidence.rs (test pinned_citation_cannot_validate... FAILED pre-fix); 5f42cb8 historical agent read, finding click and record export regressions",
+      "state": "verified",
+      "commit": "1250c7b4220d67b21a26f7ab35a29cb2e9bcf65b",
+      "evidence": "src-tauri/tests/extract_revisions.rs (4 new tests); src/bridge.test.ts, src/markdown.test.ts, src/citationLocator.test.ts (shared grammar fixtures); red-first shown by reverting evidence.rs (test pinned_citation_cannot_validate... FAILED pre-fix); 5f42cb8 historical agent read, finding click and record export regressions; src/citationJourney.test.tsx chat, finding and historical copy interactions; packaged Dev20 synthetic source-to-export journey",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test extract_revisions -> exit 0, 8 passed",
@@ -48,12 +48,15 @@
         "cargo clippy --tests -> no warnings in R02-touched code",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test extract_revisions -> exit 0, 10 passed",
         "npm test -> exit 0, 47 passed (11 files)",
-        "npm run build -> exit 0"
+        "npm run build -> exit 0",
+        "npm test -> exit 0, 48 passed (11 files); npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 21 AppContainer tests (194 total before late-response-only test)",
+        "powershell -File scripts/native-acceptance.ps1 -BinaryPath artifacts/VisLex 0.3.0-dev20/VisLex.exe -Port 9342 -> exit 0, six synthetic sources, process/search/chat/preview/export/redaction/discovery; VISLEX_TEST_MODE=1, zero provider calls"
       ],
       "reviewer": "separate read-only adversarial review agent: PASS with 1 major + minors; major (pinned citation clicks displayed ACTIVE text in EvidenceViewer) FIXED (read_extract_revision fetch + historical banner + chip hover reads pinned revision); grammar canonicalization (no signs/leading zeros) applied to both Rust and TS; verify_source parity added to pinned branch",
-      "unrun_checks": "Agent search_passages/semantic producer emission of R-form not directly unit-tested. Packaged build and production UI journey for this exact commit not run; live-case citation journey not run.",
+      "unrun_checks": "Live-case citation review and full release journey remain R23 gates; no real provider call was made in the synthetic native smoke.",
       "note": "Grammar: evidence:SOURCE#R<rev>L<a>-L<b> pinned to immutable extract_revisions (bounds validated against that revision's own text); legacy #L kept and labeled active-text; read_text/read_text_revision emit pinned locators; wording survives supersession, restart, backup/restore (tested). Schema-5 fixture genuinely drops extract_revisions before migration. Agent now has a scoped, bounded read_extract_revision tool; retrieval ledger records its historical revision. Finding click and record export retain the exact pinned locator.",
-      "native_check": "Dev-build native smoke run 2026-09-22 against artifacts/VisLex 0.3.0-dev (exe sha256 7a2bbed2... byte-identical to tested build): production path create_case -> import 6 synthetic fixtures -> process_source (sandboxed worker, artifact locator + 2 fidelity limitations) -> read_text emitted #R1L1-L8 revision 1 -> validate_citation returned valid/revision_binding=pinned/revision=1 -> write_record succeeded. The stock scripts/test-native.ps1 offline invariant (fresh case offline) fails on this machine because the user's consent-marked ai-defaults.json (model gpt-5.6-luna, online) legitimately initializes new cases per R04; all other steps passed. UI click-path and visual checks remain unrun."
+      "native_check": "Dev-build native smoke run 2026-09-22 against artifacts/VisLex 0.3.0-dev (exe sha256 7a2bbed2... byte-identical to tested build): production path create_case -> import 6 synthetic fixtures -> process_source (sandboxed worker, artifact locator + 2 fidelity limitations) -> read_text emitted #R1L1-L8 revision 1 -> validate_citation returned valid/revision_binding=pinned/revision=1 -> write_record succeeded. The stock scripts/test-native.ps1 offline invariant (fresh case offline) fails on this machine because the user's consent-marked ai-defaults.json (model gpt-5.6-luna, online) legitimately initializes new cases per R04; all other steps passed. UI click-path and visual checks remain unrun. Dev20 exact binary SHA256 E678396D5109DC7199BE1C2C8C94FF78F22D768BD5555137946A05C44E147056 passed native synthetic source-to-export run 1790431831373, with zero provider calls; new DOM tests exercise historical chat/finding/copy; Rust tests cover restart and encrypted restore."
     },
     "R03": {
       "state": "implemented",
@@ -71,20 +74,23 @@
       "note": "Certification now requires: structured blocks, every factual block claim-bound and block-review-supported against the exact candidate stamp, every block kind-disciplined and reviewed, every supported claim carried by a factual block, all claims supported, checks done, citations present, evidence current. Prose-only answers: visible 'unstructured free text' gap, never certified. Old completions/dossiers remain readable (serde default ids; empty ids unaddressable)."
     },
     "R04": {
-      "state": "implemented",
-      "commit": "1a4f67900e40ba294f8b873cacd2ed75018c83d5",
-      "evidence": "src-tauri/tests/master_v4.rs app_preferences_apply_exactly_the_chosen_policy_without_forcing (rewritten from forcing-asserting test); src-tauri/tests/core.rs unmarked_ai_defaults..., direct_media_consent_round_trips..., case_grants_and_consents_survive_backup_and_restore_exactly, image_grant_without_text_grant_is_refused...; src/components/SettingsDialog.tsx Case permissions panel",
+      "state": "verified",
+      "commit": "1250c7b4220d67b21a26f7ab35a29cb2e9bcf65b",
+      "evidence": "src-tauri/tests/master_v4.rs app_preferences_apply_exactly_the_chosen_policy_without_forcing (rewritten from forcing-asserting test); src-tauri/tests/core.rs unmarked_ai_defaults..., direct_media_consent_round_trips..., case_grants_and_consents_survive_backup_and_restore_exactly, image_grant_without_text_grant_is_refused...; src/components/SettingsDialog.tsx Case permissions panel; scripts/native-consent-acceptance.ps1/.js packaged UI grant/revoke/restart on an isolated empty synthetic case without VISLEX_TEST_MODE",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 134 passed, 0 failed, 22 ignored",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 49 passed",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test master_v4 -> exit 0, 24 passed",
         "npm test -> exit 0, 26 passed; npm run build -> exit 0",
-        "cargo clippy --tests -> no warnings in changed files"
+        "cargo clippy --tests -> no warnings in changed files",
+        "powershell -File scripts/native-consent-acceptance.ps1 -> exit 0; packaged Dev20; offline UI grant text/images/direct media, challenge review, single execution, revoke all media, restart retains revocation",
+        "npm test -> exit 0, 48 passed (11 files); npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including case grant backup/restore and outgoing policy tests"
       ],
       "reviewer": "adversarial review: FAIL with 1 major (primary-model per-profile checkboxes shown but never applied) — FIXED truthfully (primary governed by case permissions, stated in UI); minors fixed: corrupt ai-defaults can no longer block case creation (ignored, case starts local), images-requires-text enforced server-side with test; known limitations recorded: first save after upgrade visibly confirms historically forced values as defaults (displayed as-is; no provenance marker per grant), no DOM interaction harness exists for the consent panel",
-      "unrun_checks": "Native settings journey without VISLEX_TEST_MODE bypass NOT RUN (no packaged app; bypass is debug_assertions-only so release applies marked defaults); no visual check of the consent panel (no vision harness); packaged-worker suite, native acceptance NOT RUN",
-      "note": "apply_app_settings saves exactly the chosen policy (no forced online/text/images/standard/zero-budget); ai-defaults.json carries consent_version 2 and unmarked legacy files are ignored at create_case only; direct media has a visible audited opt-in; offline emergency-stop copy is truthful about in-flight requests; reopen/restore protection preserved."
+      "unrun_checks": "No live provider transmission or client-case grant change was used. Release-wide live-case and installer checks remain R23 gates.",
+      "note": "apply_app_settings saves exactly the chosen policy (no forced online/text/images/standard/zero-budget); ai-defaults.json carries consent_version 2 and unmarked legacy files are ignored at create_case only; direct media has a visible audited opt-in; offline emergency-stop copy is truthful about in-flight requests; reopen/restore protection preserved. Dev20 packaged exe SHA256 E678396D5109DC7199BE1C2C8C94FF78F22D768BD5555137946A05C44E147056. Native UI test used no test-mode bypass and restored the machine ai-defaults.json bytes in finally. Synthetic case retained in artifacts. Model switching and backup/restore are covered by Rust acceptance tests."
     },
     "R05": {
       "state": "pending"
