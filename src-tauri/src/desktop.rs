@@ -197,7 +197,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         };
 
-        let result=crate::processing::run_playback(&job);
+        let staged=crate::processing::stage_playback(&job,crate::processing::run_playback(&job));
 
         let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
 
@@ -205,7 +205,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         anyhow::ensure!(c.meta("id")?.unwrap_or_default()==job.case_id,"Case changed during playback processing");
 
-        let result=crate::processing::publish_playback(c,&job,result);
+        let result=crate::processing::publish_staged_playback(c,&job,staged);
 
         let _=app.emit("case-changed",());
 

@@ -574,6 +574,46 @@ pub fn run_playback(job: &PlaybackJob) -> Result<Value> {
     ensure!(result["status"]=="complete","{}",result["error"].as_str().unwrap_or("Playback conversion failed"));
     Ok(result)
 }
+pub struct StagedPlayback {result:Value,hash:String,relative:String,_leases:Vec<fs::File>}
+pub fn stage_playback(job:&PlaybackJob,result:Result<Value>)->Result<StagedPlayback> {
+    let result=result?;
+    let preview=job.directory.path().join("playback.mp4");
+    ensure!(!fs::symlink_metadata(&preview)?.file_type().is_symlink() && preview.is_file(),"Invalid playback artifact");
+    ensure!(preview.metadata()?.len()<=16*1024*1024*1024,"Playback artifact too large");
+    let source=verified_lease(&job.input_path,&job.expected_hash)?;
+    let original=read_lease(&preview)?;let hash=leased_hash(&original)?;
+    let relative=format!("artifacts/{hash}.mp4");
+    let root=job.directory.path().parent().context("Missing playback staging parent")?.parent().context("Missing case root")?;
+    let destination=root.join(&relative);
+    publish_file_cancellable(&preview,&destination,&hash,&job.directory.path().join("cancel.request"))?;
+    let output=verified_lease(&destination,&hash)?;
+    let journal=json!({"version":1,"job_id":job.id,"source_id":job.source,"source_sha256":job.expected_hash,"path":relative,"sha256":hash});
+    let mut file=fs::File::create(job.directory.path().join("publication-journal.json"))?;
+    std::io::Write::write_all(&mut file,journal.to_string().as_bytes())?;file.sync_all()?;
+    Ok(StagedPlayback{result,hash,relative,_leases:vec![source,original,output]})
+}
+pub fn publish_staged_playback(case:&mut Case,job:&PlaybackJob,staged:Result<StagedPlayback>)->Result<Value> {
+    let staged=match staged {Ok(value)=>value,Err(error)=>return publish_playback(case,job,Err(error))};
+    ensure!(case.meta("id")?.as_deref()==Some(&job.case_id),"Case changed during playback processing");
+    let source=case.source(&job.source)?;ensure!(source.sha256==job.expected_hash,"Source changed during playback processing");
+    let state:String=case.db.query_row("SELECT status FROM processing_jobs WHERE id=? AND source_id=?",params![job.id,job.source],|r|r.get(0))?;
+    ensure!(state=="running","Playback job changed before publication");
+    let journal_path=job.directory.path().join("publication-journal.json");
+    ensure!(journal_path.metadata()?.len()<=100000,"Invalid playback journal");
+    let journal:Value=serde_json::from_slice(&fs::read(journal_path)?)?;
+    ensure!(journal["version"]==1 && journal["job_id"]==job.id && journal["source_id"]==job.source && journal["source_sha256"]==job.expected_hash && journal["path"]==staged.relative && journal["sha256"]==staged.hash,"Playback journal changed");
+    ensure!(!job.directory.path().join("cancel.request").exists(),"Playback cancelled before publication");
+    case.db.execute_batch("SAVEPOINT playback_staged_publication")?;
+    let publish=(||->Result<Value>{
+        let artifact=id();
+        case.db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)",params![artifact,job.source,staged.hash,"video/mp4",staged.relative,staged.result["metadata"].to_string(),now()])?;
+        case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![staged.result.to_string(),job.id])?;
+        case.audit("playback_created",json!({"source":job.source,"artifact":artifact,"sha256":staged.hash}))?;
+        Ok(json!({"artifact_id":artifact}))
+    })();
+    if let Err(ref error)=publish {case.db.execute_batch("ROLLBACK TO playback_staged_publication; RELEASE playback_staged_publication")?;case.db.execute("UPDATE processing_jobs SET status='failed',error=? WHERE id=?",params![error.to_string(),job.id])?;} else {case.db.execute_batch("RELEASE playback_staged_publication")?;}
+    publish
+}
 pub fn publish_playback(case:&mut Case, job:&PlaybackJob,result:Result<Value>) -> Result<Value> {
     case.db.execute_batch("SAVEPOINT playback_publication")?;
     let publish=(|| -> Result<Value> {
@@ -638,6 +678,25 @@ mod publication_tests {
         assert!(publish_staged(&mut case,&job,Ok(staged)).is_err());
         let count:i64=case.db.query_row("SELECT count(*) FROM artifacts WHERE source_id=?",[&job.source.id],|r|r.get(0)).unwrap();
         assert_eq!(count,2);
+    }
+    #[test]
+    fn playback_staging_registers_once_and_keeps_original_bytes() {
+        let dir=tempfile::tempdir().unwrap();
+        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic playback").unwrap();
+        case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source=case.sources().unwrap().into_iter().find(|item|item.kind=="video").unwrap();
+        let job=prepare_playback(&mut case,&source.id).unwrap();
+        fs::write(job.directory.path().join("playback.mp4"),b"synthetic playback").unwrap();
+        let staged=stage_playback(&job,Ok(json!({"metadata":{"player_origin_seconds":0}}))).unwrap();
+        fs::write(job.directory.path().join("publication-journal.json"),b"{}").unwrap();
+        assert!(publish_staged_playback(&mut case,&job,Ok(staged)).is_err());
+        let staged=stage_playback(&job,Ok(json!({"metadata":{"player_origin_seconds":0}}))).unwrap();
+        let result=publish_staged_playback(&mut case,&job,Ok(staged)).unwrap();
+        assert!(artifact(&case,result["artifact_id"].as_str().unwrap()).is_ok());
+        assert_eq!(file_hash_strong(&case.source_path(&source.id).unwrap()).unwrap(),source.sha256);
+        let staged=stage_playback(&job,Ok(json!({"metadata":{"player_origin_seconds":0}}))).unwrap();
+        assert!(publish_staged_playback(&mut case,&job,Ok(staged)).is_err());
     }
     #[test]
     fn artifact_publication_is_idempotent_and_rejects_corrupt_existing_content() {
