@@ -188,6 +188,18 @@
     }
   },
   "additional_work": {
+    "EXACT-NAVIGATION-2026-09-26": {
+      "state": "implemented",
+      "commit": "9ca1b35",
+      "evidence": "Palette pointer and Enter activation open the selected source or search hit directly with its historical locator; Evidence Ask keeps the selected extraction revision and switches to Chat before focusing the composer; the attachment builder preserves an exact selected locator over a generic viewer position.",
+      "commands": [
+        "npm test -- --run -> exit 0, 43 tests in 11 files, including DOM palette pointer/Enter and Evidence-to-Chat focus interactions",
+        "npm run build -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "R06 remains incomplete: navigation history, tab/editor draft restoration, selected-range attachment in a live provider request and a packaged UI journey are not yet verified.",
+      "note": "No live case or source originals were touched."
+    },
     "PINNED-CITATION-EXPORT-2026-09-26": {
       "state": "implemented",
       "commit": "38b40ff",
