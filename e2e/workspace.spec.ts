@@ -108,3 +108,15 @@ test('narrow source inspection has an explicit return without losing selection',
   await page.locator('.library-row').first().click();
   await expect(page.locator('.main-panel')).toBeVisible();
 });
+
+test('forced-colors mode keeps workspace selection and primary controls visible', async ({ page }) => {
+  await page.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' });
+  await page.goto('/');
+  await page.getByRole('button', { name: /Try the sample case/ }).click();
+  await page.keyboard.press('Control+2');
+  await expect(page.getByRole('heading', { name: 'Evidence library' })).toBeVisible();
+  const activeRail = page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Evidence' });
+  await expect(activeRail).toHaveAttribute('aria-current', 'true');
+  expect(await activeRail.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
+  await expect(page.getByRole('button', { name: 'Create', exact: true })).toBeVisible();
+});
