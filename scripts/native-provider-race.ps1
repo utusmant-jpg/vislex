@@ -3,6 +3,8 @@ $ErrorActionPreference='Stop'
 $repo=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $binary=if ($BinaryPath) {(Resolve-Path -LiteralPath $BinaryPath).Path} else {Join-Path $repo 'src-tauri\target\x86_64-pc-windows-msvc\debug\local-evidence-desk.exe'}
 if (-not (Test-Path -LiteralPath $binary)) {throw 'Build the debug desktop app first.'}
+if ($binary -match '[\\/]release[\\/]') {throw 'The synthetic provider endpoint is enabled only in debug builds. Use the debug executable.'}
+try {$null=Invoke-WebRequest -Uri 'http://127.0.0.1:1420/' -TimeoutSec 2} catch {throw 'Start npm run dev before the debug provider race; its WebView requires the Vite page at 127.0.0.1:1420.'}
 $mockScript=Join-Path $PSScriptRoot 'native-provider-mock.mjs'
 $mock=Start-Process -FilePath (Get-Command node).Source -ArgumentList @("`"$mockScript`"","$MockPort") -WindowStyle Hidden -PassThru
 try {
@@ -27,7 +29,7 @@ try {
         $result=$output | ConvertFrom-Json
         if($result.native_error){throw $result.native_error}
         $requests=Invoke-RestMethod -Uri "http://127.0.0.1:$MockPort/state"
-        if($requests.requests -ne 2 -or $requests.held -ne 0){throw "Expected two completed synthetic provider deliveries, got $($requests | ConvertTo-Json -Compress)"}
+        if($requests.requests -ne 2 -or $requests.held -ne 0){throw "Expected two completed synthetic provider deliveries, got $($requests | ConvertTo-Json -Compress). Journey: $($output -join ' ')"}
         $output | Set-Content -Encoding utf8 (Join-Path $repo 'artifacts\native-provider-race.json')
         $output
     } finally {

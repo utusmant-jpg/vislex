@@ -13,7 +13,7 @@
   const casePath = `${root}/artifacts/integrity-case-${run}`;
   const created = await invoke('create_case', { path: casePath, name: `Synthetic integrity ${run}` });
   if (!Number.isSafeInteger(created.session_epoch)) throw new Error('Created case did not report a session epoch');
-  await invoke('close_case');
+  await invoke('close_case', { case_id: created.id, session_epoch: created.session_epoch });
   const reopened = await invoke('open_case', { path: casePath });
   if (reopened.id !== created.id || reopened.session_epoch <= created.session_epoch) throw new Error('Same-case reopen did not advance the session epoch');
   const reopenedSummary = await invoke('case_summary', { case_id: reopened.id });
@@ -33,12 +33,68 @@
   try { await invoke('delete_case', { case_id: reopened.id, session_epoch: reopened.session_epoch, path: `${root}/fixtures/generated`, confirm: reopened.name }); }
   catch (error) { wrongDeleteTargetDenied = String(error).includes('Delete target is not the open case'); }
   if (!wrongDeleteTargetDenied) throw new Error('Deletion accepted a different folder');
-  const imported = await invoke('import_files', { case_id: created.id, paths: [fixture], production: 'Synthetic integrity' });
+  const imported = await invoke('import_files', { case_id: created.id, session_epoch: reopened.session_epoch, paths: [fixture], production: 'Synthetic integrity' });
   if (imported.items[0]?.status !== 'imported') throw new Error('Synthetic import failed');
   const snapshot = await invoke('snapshot');
   if (!Number.isSafeInteger(snapshot.event_seq) || snapshot.event_seq < reopenedSummary.event_seq) throw new Error('Case event sequence went backwards');
   const source = snapshot.sources[0];
   if (!source || source.size !== 256 * 1024 * 1024) throw new Error('Synthetic source size mismatch');
+  const mandatorySessionActions = [
+    ['save_provider_key', { provider: 'openai', key: 'synthetic-never-written' }],
+    ['delete_provider_key', { provider: 'openai' }],
+    ['save_api_key', { key: 'synthetic-never-written' }],
+    ['delete_api_key', {}],
+    ['create_case', { path: `${root}/artifacts/rejected-switch-${run}`, name: 'Rejected switch' }],
+    ['open_case', { path: casePath }],
+    ['restore_case', { archive: `${root}/artifacts/no-archive-${run}.age`, path: `${root}/artifacts/rejected-restore-${run}`, password: 'synthetic-passphrase-only' }],
+    ['close_case', {}],
+    ['fetch_public_authority', { url: 'https://www.govinfo.gov/content/pkg/test/html/test.htm', title: 'Synthetic', jurisdiction: 'test', relevant_date: '2026-09-26' }],
+    ['hybrid_search', { query: 'synthetic' }],
+    ['export_word', { record_id: 'missing', path: `${root}/artifacts/rejected-document-${run}.pdf` }],
+    ['export_record', { record_id: 'missing', path: `${root}/artifacts/rejected-record-${run}.md` }],
+    ['import_files', { paths: [fixture], production: 'Rejected old session' }],
+    ['import_folder', { path: `${root}/fixtures/generated`, production: 'Rejected old session' }],
+    ['process_source', { source_id: 'missing' }],
+    ['probe_pdf', { source_id: 'missing' }],
+    ['render_page', { source_id: 'missing', page: 1 }],
+    ['transcribe_source', { source_id: 'missing' }],
+    ['scan_sound_events', { source_id: 'missing' }],
+    ['prepare_redaction', { source_id: 'missing', boxes: [] }],
+    ['diarize_source', { source_id: 'missing' }],
+    ['step_video_frame', { source_id: 'missing', target: 0, direction: 'next' }],
+    ['playback_proxy', { source_id: 'missing' }],
+    ['verify_source', { source_id: 'missing' }],
+    ['backup', { path: `${root}/artifacts/rejected-backup-${run}.age`, password: 'synthetic-passphrase-only' }],
+    ['export_dossier_bundle', { task_id: 'missing', path: `${root}/artifacts/rejected-package-${run}` }],
+    ['resume_processing', { job_id: 'missing' }],
+    ['resume_transcription', { job_id: 'missing' }],
+    ['queue_video_discovery', { source_id: 'missing', interval: 5 }],
+    ['retry_video_discovery', { run_id: 'missing' }],
+    ['cancel_video_discovery', { source_id: 'missing' }],
+    ['cancel_processing', { job_id: 'missing' }],
+    ['set_asr_profile', { model: 'tiny' }],
+    ['transcribe_full', { source_id: 'missing' }],
+    ['transcribe_all', {}],
+    ['propose_transcript_correction', { source_id: 'missing', run_id: 'missing', ordinal: 1, text: 'synthetic', reason: 'test' }],
+    ['review_transcript_correction', { correction_id: 'missing', accept: true }],
+    ['cancel_transcription', { source_id: 'missing' }],
+    ['reclaim_staging', {}],
+    ['rename', { kind: 'source', id: 'missing', name: 'Old session rename' }],
+    ['set_restricted', { source_id: 'missing', restricted: true }],
+    ['write_record', { title: 'Old session note', kind: 'note', content: 'No mutation', source_ids: [] }],
+    ['review_record', { record_id: 'missing', revision: 1 }],
+    ['rollback', { record_id: 'missing', target: 1, base_revision: 1 }],
+    ['save_ai_config', { config: {} }],
+    ['save_settings', { settings: reopened.settings }],
+    ['delete_conversation', { conversation_id: 'missing' }],
+    ['review_dossier_claim', { task_id: 'missing', revision: 1, claim_index: 0, decision: 'accepted', note: '' }],
+    ['save_ai_settings', { config: {}, settings: reopened.settings }],
+    ['set_direct_media_permission', { enabled: true }],
+    ['start_task', { prompt: 'Old session should not start a chat' }],
+    ['stop_task', { task_id: 'missing' }],
+    ['resume_task', { task_id: 'missing' }],
+    ['continue_paused_task', { task_id: 'missing' }],
+  ];
   const staleSessionActions = [
     ['import_files', { paths: [fixture], production: 'Rejected old session' }],
     ['process_source', { source_id: source.id }],
@@ -50,12 +106,19 @@
     ['review_redaction', { artifact_id: 'missing', pages: [1], note: 'Rejected old session' }],
     ['save_speaker_annotations', { source_id: source.id, artifact_id: 'missing', revision: 0, labels: {}, turns: {} }],
     ['hybrid_search', { query: 'synthetic' }],
+    ...mandatorySessionActions,
   ];
   for (const [action, args] of staleSessionActions) {
     let rejected = false;
     try { await invoke(action, { case_id: snapshot.id, session_epoch: created.session_epoch, ...args }); }
     catch (error) { rejected = String(error).includes('Case session changed'); }
     if (!rejected) throw new Error(`${action} did not reject an old session before work`);
+  }
+  for (const [action, args] of mandatorySessionActions) {
+    let rejected = false;
+    try { await invoke(action, { case_id: snapshot.id, ...args }); }
+    catch (error) { rejected = String(error).includes('Missing session_epoch'); }
+    if (!rejected) throw new Error(`${action} accepted a missing session epoch`);
   }
   let stalePermissionDenied = false;
   try { await invoke('set_direct_media_permission', { case_id: 'closed-synthetic-case', enabled: true }); } catch { stalePermissionDenied = true; }
@@ -128,7 +191,7 @@
   }
   const started = performance.now();
   let finished = false;
-  const verification = invoke('verify_source', { source_id: source.id }).finally(() => { finished = true; });
+  const verification = invoke('verify_source', { case_id: snapshot.id, session_epoch: reopened.session_epoch, source_id: source.id }).finally(() => { finished = true; });
   const summaries = [];
   for (let i = 0; i < 12; i++) {
     const before = performance.now();
@@ -140,7 +203,7 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  await invoke('close_case');
+  await invoke('close_case', { case_id: snapshot.id, session_epoch: reopened.session_epoch });
   const other = await invoke('create_case', { path: `${root}/artifacts/event-case-b-${run}`, name: `Synthetic event case B ${run}` });
   const lastEvent = caseEvents.at(-1);
   if (lastEvent?.case_id !== other.id || lastEvent.session_epoch !== other.session_epoch || lastEvent.event_seq <= afterFindings.event_seq) throw new Error('Case switch did not produce a fenced event');
