@@ -200,6 +200,8 @@ let toastId = 1;
 function emit() { for (const listener of toastListeners) listener(toastState); }
 
 function push(kind: ToastKind, title: string, detail?: string, action?: ToastEntry['action'], sticky = kind === 'error') {
+  const existing = toastState.find(toast => toast.kind === kind && toast.title === title && toast.detail === detail);
+  if (existing) return existing.id;
   const id = toastId++;
   toastState = [...toastState.slice(-2), { id, kind, title, detail, action }];
   emit();
@@ -247,26 +249,67 @@ export function SkeletonPage() {
 
 /* ---------------------------------- theme ---------------------------------- */
 
-type Theme = 'dark' | 'light';
-const ThemeContext = createContext<{ theme: Theme; setTheme: (theme: Theme) => void }>({ theme: 'dark', setTheme: () => {} });
+export type ThemePreference = 'dark' | 'light' | 'system';
+export type DensityPreference = 'comfortable' | 'compact';
+type ResolvedTheme = 'dark' | 'light';
+const ThemeContext = createContext<{
+  theme: ThemePreference;
+  resolvedTheme: ResolvedTheme;
+  setTheme: (theme: ThemePreference) => void;
+  density: DensityPreference;
+  setDensity: (density: DensityPreference) => void;
+}>({ theme: 'system', resolvedTheme: 'dark', setTheme: () => {}, density: 'comfortable', setDensity: () => {} });
+
+function systemTheme(): ResolvedTheme {
+  return typeof window.matchMedia === 'function' && !window.matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark';
+}
+
+function storedTheme(): ThemePreference {
+  try {
+    const saved = localStorage.getItem('vislex-theme');
+    return saved === 'dark' || saved === 'light' ? saved : 'system';
+  } catch { return 'system'; }
+}
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
-  const setTheme = (next: Theme) => {
+  const [theme, setThemeState] = useState<ThemePreference>(storedTheme);
+  const [system, setSystem] = useState<ResolvedTheme>(systemTheme);
+  const [density, setDensityState] = useState<DensityPreference>(() => {
+    try { return localStorage.getItem('vislex-density') === 'compact' ? 'compact' : 'comfortable'; }
+    catch { return 'comfortable'; }
+  });
+  const resolvedTheme = theme === 'system' ? system : theme;
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const changed = () => setSystem(media.matches ? 'dark' : 'light');
+    changed();
+    media.addEventListener?.('change', changed);
+    return () => media.removeEventListener?.('change', changed);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolvedTheme === 'dark' ? '#111318' : '#f7f8fa');
+  }, [resolvedTheme]);
+  useEffect(() => { document.documentElement.dataset.density = density; }, [density]);
+  const setTheme = (next: ThemePreference) => {
     setThemeState(next);
-    document.documentElement.dataset.theme = next;
     try { localStorage.setItem('vislex-theme', next); } catch { /* storage unavailable */ }
   };
-  return <ThemeContext.Provider value={{ theme, setTheme }}>{children}</ThemeContext.Provider>;
+  const setDensity = (next: DensityPreference) => {
+    setDensityState(next);
+    try { localStorage.setItem('vislex-density', next); } catch { /* storage unavailable */ }
+  };
+  return <ThemeContext.Provider value={{ theme, resolvedTheme, setTheme, density, setDensity }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme() { return useContext(ThemeContext); }
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  return <Tooltip text={theme === 'dark' ? 'Light appearance' : 'Dark appearance'}>
-    <button className="icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-      {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+  const { resolvedTheme, setTheme } = useTheme();
+  return <Tooltip text={resolvedTheme === 'dark' ? 'Light appearance' : 'Dark appearance'}>
+    <button className="icon-button" aria-label="Toggle color theme" onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}>
+      {resolvedTheme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
     </button>
   </Tooltip>;
 }

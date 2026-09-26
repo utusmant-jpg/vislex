@@ -6,7 +6,7 @@ import type { Snapshot } from '../types';
 
 const api = vi.hoisted(() => vi.fn());
 vi.mock('../bridge', () => ({ api, native: true }));
-vi.mock('../ui', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn() }) }));
+vi.mock('../ui', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn(), density: 'comfortable', setDensity: vi.fn() }) }));
 
 const snapshot: Snapshot = {
   id: 'synthetic-case', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1,
@@ -26,6 +26,7 @@ it('saves the exact case grants and review mode chosen in the dialog', async () 
   const refresh = vi.fn(async () => undefined);
   const onClose = vi.fn();
   render(<SettingsDialog snapshot={snapshot} refresh={refresh} onClose={onClose} run={fn => { void fn(); }} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Case permissions' }));
   await screen.findByText('Permitted — original audio/video may be sent');
   expect(screen.queryByText(/Case budget|tokens|\$\/M/i)).toBeNull();
   fireEvent.click(screen.getByText('Offline — stop new requests'));

@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   Activity, ArrowRight, FolderOpen, HardDrive, ListChecks, Maximize2, MessageSquare, Minus,
-  MoreHorizontal, NotebookPen, Plus, Scale, Search, Settings, X,
+  MoreHorizontal, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Scale, Search, Settings, X,
 } from 'lucide-react';
 import { api, formatBytes, native } from './bridge';
 import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary, Source, Job, Task } from './types';
@@ -16,6 +16,8 @@ import SettingsDialog from './components/SettingsDialog';
 import EvidenceNotebook from './components/EvidenceNotebook';
 import InvestigationWorkbench from './components/InvestigationWorkbench';
 import FolderImport from './components/FolderImport';
+import PaneDivider from './components/PaneDivider';
+import WorkspacePreferences from './components/WorkspacePreferences';
 import { ContextMenu, StatusPill, ThemeProvider, ThemeToggle, ToastStack, Tooltip, notify, relativeTime } from './ui';
 
 type View = 'chat' | 'evidence' | 'findings' | 'review' | 'jobs';
@@ -277,6 +279,28 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
 
 export default function App() {
   const [view, setView] = useState<View>('chat');
+  const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('vislex-sidebar') !== 'closed');
+  const [viewerWidth, setViewerWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('vislex-viewer-width'));
+    return Number.isFinite(saved) && saved >= 360 && saved <= 1000 ? saved : 520;
+  });
+  const [activePane, setActivePane] = useState<'workspace' | 'source'>('workspace');
+  const [layoutPreset, setLayoutPreset] = useState<'investigate' | 'review' | 'focus'>(() => {
+    const saved = localStorage.getItem('vislex-layout');
+    return saved === 'review' || saved === 'focus' ? saved : 'investigate';
+  });
+  useEffect(() => { localStorage.setItem('vislex-layout', layoutPreset); }, [layoutPreset]);
+  useEffect(() => {
+    if (window.innerWidth > 0 && window.innerWidth < 1200) setSidebarOpen(false);
+    const resized = () => { if (window.innerWidth > 0 && window.innerWidth < 1200) setSidebarOpen(false); };
+    window.addEventListener('resize', resized);
+    return () => window.removeEventListener('resize', resized);
+  }, []);
+  useEffect(() => { localStorage.setItem('vislex-sidebar', sidebarOpen ? 'open' : 'closed'); }, [sidebarOpen]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => localStorage.setItem('vislex-viewer-width', String(Math.round(viewerWidth))), 200);
+    return () => window.clearTimeout(timer);
+  }, [viewerWidth]);
   const [storage, setStorage] = useState<Record<string, number> | null>(null);
   const [palette, setPalette] = useState(false);
   const [rename, setRename] = useState<{ kind: string; id: string; name: string } | null>(null);
@@ -298,6 +322,7 @@ export default function App() {
   const caseEpoch = useRef(0);
   const refreshSequence = useRef(0);
   const [selection, setSelection] = useState<Selection>(null);
+  useEffect(() => { setActivePane(selection ? 'source' : 'workspace'); }, [selection?.id, selection?.locator]);
   const [navigationHistory, setNavigationHistory] = useState<{ entries: NonNullable<Selection>[]; index: number }>({ entries: [], index: -1 });
   const movingInHistory = useRef(false);
   useEffect(() => {setExtraSources([]);setExtraRecords([]);},[snapshot?.id,snapshot?.generation,snapshot?.counts?.audit_seq]);
@@ -518,7 +543,7 @@ export default function App() {
   const pendingCount = snapshot?.counts ? snapshot.counts.jobs_queued + snapshot.counts.jobs_running : pending.length;
   const needsAttention = (snapshot?.counts?.jobs_attention ?? snapshot?.jobs?.filter(job => !job.superseded && !job.parent_run_id && ['failed', 'interrupted'].includes(job.status)).length ?? 0)
     + (snapshot?.automatic_analysis?.review_state === 'failed' ? 1 : 0);
-  const selectSource = (id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); };
+  const selectSource = (id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); setActivePane('source'); };
 
   async function importFiles() {
     if (!snapshot) throw new Error('Create or open a case first.');
@@ -608,6 +633,12 @@ export default function App() {
         <strong data-tauri-drag-region>VisLex</strong>
         <span className="title-case" data-tauri-drag-region>{snapshot?.name ?? ''}</span>
         <div className="spacer" data-tauri-drag-region />
+        {snapshot ? <select className="layout-picker" aria-label="Workspace layout" value={layoutPreset} onChange={event => {
+          const next = event.target.value as typeof layoutPreset;
+          setLayoutPreset(next);
+          if (next === 'investigate') setView('chat');
+          if (next === 'review') setView('review');
+        }}><option value="investigate">Investigate</option><option value="review">Review</option><option value="focus">Focus</option></select> : null}
         {busy ? <Activity className="pulse" size={13} /> : null}
         <div className="window-controls">
           <button aria-label="Minimize window" onDoubleClick={event => event.stopPropagation()} onClick={() => { if (native) void getCurrentWindow().minimize(); }}><Minus size={15} /></button>
@@ -616,16 +647,17 @@ export default function App() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className="workspace" data-active-pane={activePane} data-layout={layoutPreset}>
         <nav className="rail" aria-label="Workspaces">
           {views.map(item => <Tooltip key={item.id} text={item.label} shortcut={item.shortcut}>
             <button className={`rail-button ${view === item.id ? 'active' : ''} ${item.id === 'jobs' && needsAttention ? 'attention' : ''}`} aria-label={item.label} aria-current={view === item.id} onClick={() => setView(item.id)}><item.icon size={18} /></button>
           </Tooltip>)}
           <div className="spacer" />
+          <Tooltip text={sidebarOpen ? 'Hide navigation' : 'Show navigation'}><button className="rail-button" aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(value => !value)}>{sidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button></Tooltip>
           <Tooltip text="Search case" shortcut="Ctrl+K"><button className="rail-button" aria-label="Search case" onClick={() => setPalette(true)}><Search size={17} /></button></Tooltip>
         </nav>
 
-        <aside className="sidebar">
+        <aside className="sidebar" hidden={!sidebarOpen}>
           <button className="matter-identity" disabled={!snapshot} title="Rename case (F2)" onClick={() => snapshot && beginRename('case', snapshot.id, snapshot.name)} onKeyDown={event => { if (event.key === 'F2' && snapshot) { event.preventDefault(); beginRename('case', snapshot.id, snapshot.name); } }}>
             <strong>{snapshot?.name ?? 'Open a case'}</strong>
             <small>{snapshot ? `${snapshot.counts?.source_count ?? snapshot.sources.length} sources · ${formatBytes(totalBytes)} · ${pendingCount ? `${pendingCount} jobs pending` : needsAttention ? 'Needs attention' : 'Unreviewed'}` : 'Local evidence workspace'}</small>
@@ -666,7 +698,7 @@ export default function App() {
               <button className="quiet" onClick={() => run(openCase)}><FolderOpen size={14} />Open</button>
             </div>
             <div className="sidebar-command split">
-              <Tooltip text="Settings"><button className="quiet" disabled={!snapshot} onClick={() => setSettings(true)}><Settings size={15} />Settings</button></Tooltip>
+              <Tooltip text="Settings"><button className="quiet" onClick={() => setSettings(true)}><Settings size={15} />Settings</button></Tooltip>
               <ThemeToggle />
               <details className="case-menu"><summary aria-label="Case options"><MoreHorizontal size={16} /></summary><div>
                 <button onClick={() => run(importFiles)}>Add files</button>
@@ -703,8 +735,10 @@ export default function App() {
           {snapshot && view === 'jobs' ? <JobsCenter snapshot={snapshot} run={run} refresh={refresh} onConversation={id => { setConversationId(id); setView('chat'); }} /> : null}
         </div>
 
-        <main className="main-panel" hidden={!selection}>
+        {selection ? <PaneDivider viewerWidth={viewerWidth} onWidthChange={setViewerWidth} /> : null}
+        <main className="main-panel" hidden={!selection} style={{ width: viewerWidth }}>
           <div className="tab-strip" role="tablist" aria-label="Open files">
+            <button className="icon-button pane-return" aria-label="Return to workspace" onClick={() => setActivePane('workspace')}>← <span>Workspace</span></button>
             <button className="icon-button" aria-label="Previous location" disabled={navigationHistory.index <= 0} onClick={() => moveInHistory(-1)}>←</button>
             <button className="icon-button" aria-label="Next location" disabled={navigationHistory.index >= navigationHistory.entries.length - 1} onClick={() => moveInHistory(1)}>→</button>
             {openTabs.map(tab => {
@@ -775,6 +809,7 @@ export default function App() {
       </dialog>
 
       {settings && snapshot ? <SettingsDialog snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /> : null}
+      {settings && !snapshot ? <WorkspacePreferences onClose={() => setSettings(false)} /> : null}
 
       {modal ? <dialog ref={dialog} className="modal" onCancel={() => { setModal(null); setPassword(''); }}>
         <div className="modal-heading"><h2>{modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : modal === 'delete' ? 'Delete this case permanently' : 'Restore a case'}</h2><button className="icon-button" aria-label="Close dialog" onClick={() => { setModal(null); setPassword(''); }}><X size={20} /></button></div>

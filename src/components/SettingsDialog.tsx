@@ -6,7 +6,7 @@ import { useTheme } from '../ui';
 import type { AIConfig, AIProfile, ModelOption, Provider, Settings, Snapshot } from '../types';
 
 const companies = Object.keys(providerNames) as Provider[];
-const sections = ['AI providers', 'Appearance', 'About'] as const;
+const sections = ['Providers & models', 'Case permissions', 'Review & execution', 'Appearance', 'About'] as const;
 type Section = typeof sections[number];
 
 function initialProfiles(snapshot: Snapshot): AIProfile[] {
@@ -18,8 +18,8 @@ function initialProfiles(snapshot: Snapshot): AIProfile[] {
 export default function SettingsDialog({ snapshot, onClose, refresh }: { snapshot: Snapshot; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const mounted = useRef(true);
-  const { theme, setTheme } = useTheme();
-  const [section, setSection] = useState<Section>('AI providers');
+  const { theme, setTheme, density, setDensity } = useTheme();
+  const [section, setSection] = useState<Section>('Providers & models');
   const [settings, setSettings] = useState<Settings>({ ...snapshot.settings });
   const [config, setConfig] = useState<AIConfig>(snapshot.ai_config ?? defaultConfig);
   const [directMedia, setDirectMedia] = useState<boolean | null>(null);
@@ -104,11 +104,13 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       <div className="settings-body">
         <div className="settings-heading"><h2>{section}</h2><button className="icon-button" disabled={busy} aria-label="Close settings" onClick={onClose}><X size={18} /></button></div>
 
-        {section === 'AI providers' ? <fieldset disabled={saving} className="ai-setup-fields">
+        {section !== 'Appearance' && section !== 'About' ? <fieldset disabled={saving} className="ai-setup-fields">
           {!native ? <p className="notice">AI setup is available in the Windows desktop app. This browser is a preview.</p> : null}
-          <p className="notice">Saved once for all cases. Selecting a model makes it available — what it may see is decided by the case permissions below, not by the selection. VisLex chooses when to delegate among permitted models.</p>
-          <p className="small muted disclosure-open"><KeyRound size={13} /> Keys are stored in Windows Credential Manager. Loading models contacts that company without sending case evidence.</p>
-          <fieldset className="provider-card case-permissions"><legend>Case permissions{native ? '' : ' (desktop app)'}</legend>
+          {section === 'Providers & models' ? <>
+            <p className="notice">Selecting a model makes it available. Case permissions decide what it may receive; selecting a model grants no case access.</p>
+            <p className="small muted disclosure-open"><KeyRound size={13} /> Keys are stored in Windows Credential Manager. Loading models contacts that company without sending case evidence.</p>
+          </> : null}
+          {section === 'Case permissions' ? <fieldset className="provider-card case-permissions"><legend>Case permissions{native ? '' : ' (desktop app)'}</legend>
             <label className="field-label">AI dispatch
               <div className="chip-row">
                 <button type="button" className={`chip ${!settings.offline ? 'selected' : ''}`} disabled={!native} onClick={() => setSettings(current => ({ ...current, offline: false }))}>Allowed</button>
@@ -120,6 +122,16 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
               <label><input type="checkbox" disabled={!native} checked={settings.allow_text} onChange={e => setSettings(current => ({ ...current, allow_text: e.target.checked, allow_images: e.target.checked ? current.allow_images : false }))} /> Case text may be sent to permitted models</label>
               <label><input type="checkbox" disabled={!native || !settings.allow_text} checked={settings.allow_images} onChange={e => setSettings(current => ({ ...current, allow_images: e.target.checked }))} /> Case images may be sent to permitted models</label>
             </div>
+            <label className="field-label">Direct media (Gemini only)
+              <div className="chip-row">
+                <button type="button" className={`chip ${directMedia === true ? 'selected' : ''}`} disabled={!native || directMedia === null} onClick={() => setDirectMedia(true)}>Permitted — original audio/video may be sent</button>
+                <button type="button" className={`chip ${directMedia === false || directMedia === null ? 'selected' : ''}`} disabled={!native} onClick={() => setDirectMedia(false)}>Blocked</button>
+              </div>
+            </label>
+            <p className="small muted">Direct media transmits an original recording (up to 12 MiB) to Gemini when a task needs it. It is a separate, audited consent; disabling it blocks future transmission only.</p>
+          </fieldset> : null}
+          {section === 'Review & execution' ? <div className="settings-section">
+            <p className="small muted">Choose how permitted models check work and whether independent assignments run in parallel. These choices never change case grants.</p>
             <div className="input-row">
               <label className="field-label">Review mode
                 <select disabled={!native} value={config.review} onChange={e => setConfig(current => ({ ...current, review: e.target.value as AIConfig['review'] }))}>
@@ -136,15 +148,9 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
                 </select>
               </label>
             </div>
-            <label className="field-label">Direct media (Gemini only)
-              <div className="chip-row">
-                <button type="button" className={`chip ${directMedia === true ? 'selected' : ''}`} disabled={!native || directMedia === null} onClick={() => setDirectMedia(true)}>Permitted — original audio/video may be sent</button>
-                <button type="button" className={`chip ${directMedia === false || directMedia === null ? 'selected' : ''}`} disabled={!native} onClick={() => setDirectMedia(false)}>Blocked</button>
-              </div>
-            </label>
-            <p className="small muted">Direct media transmits an original recording (up to 12 MiB) to Gemini when a task needs it. It is a separate, audited consent; disabling it blocks future transmission only.</p>
-          </fieldset>
-          {companies.map(provider => <fieldset key={provider} className="provider-card"><legend>{providerNames[provider]}</legend>
+            <p className="small muted">Up to three assignments run together. Agents choose scoped work and return evidence for the lead to check. Stop cancels the team.</p>
+          </div> : null}
+          {section === 'Providers & models' ? companies.map(provider => <fieldset key={provider} className="provider-card"><legend>{providerNames[provider]}</legend>
             <div className="input-row">
               <input aria-label={`${providerNames[provider]} API key`} type="password" autoComplete="off" value={keys[provider] ?? ''} disabled={loading[provider]} onChange={e => setKeys(s => ({ ...s, [provider]: e.target.value }))} placeholder={stored[provider] ? 'Key saved in Windows Credential Manager' : 'Paste API key'} />
               <button className="secondary" disabled={!native || loading[provider] || (!stored[provider] && !keys[provider]?.trim())} onClick={() => void loadModels(provider)}>{loading[provider] ? 'Loading…' : keys[provider]?.trim() ? 'Save key & load models' : 'Load models'}</button>
@@ -158,18 +164,24 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
               {p.model && primary !== i ? <div className="provider-grants"><label><input type="checkbox" checked={p.allow_text} onChange={e => updateProfile(i, { allow_text: e.target.checked, allow_images: e.target.checked ? p.allow_images : false })} /> May receive case text</label><label><input type="checkbox" checked={p.allow_images} disabled={!p.allow_text} onChange={e => updateProfile(i, { allow_images: e.target.checked })} /> May receive case images</label><span className="small muted">applies to delegated team work</span></div> : null}
             </div>)}
             <button className="quiet" disabled={profiles.length >= 16} onClick={() => setProfiles(ps => [...ps, { provider, model: '', allow_text: false, allow_images: false }])}>Add another model</button>
-          </fieldset>)}
-          <p className="small muted">Model lists come from your account. Listing alone does not verify tool or image support. Enabled providers remain available; agents send requests while doing assigned work.</p>
-          <p className="small muted">Up to three assignments run together, using one or several configured models. Agents choose scoped work and return evidence for the lead to check. Stop cancels the team.</p>
+          </fieldset>) : null}
+          {section === 'Providers & models' ? <p className="small muted">Model lists come from your account. Listing alone does not verify tool or image support.</p> : null}
         </fieldset> : null}
 
         {section === 'Appearance' ? <div className="settings-section">
-          <label className="field-label">Theme
+          <fieldset className="field-label"><legend>Theme</legend>
             <div className="chip-row">
               <button className={`chip ${theme === 'dark' ? 'selected' : ''}`} onClick={() => setTheme('dark')}>Dark</button>
               <button className={`chip ${theme === 'light' ? 'selected' : ''}`} onClick={() => setTheme('light')}>Light</button>
+              <button className={`chip ${theme === 'system' ? 'selected' : ''}`} onClick={() => setTheme('system')}>System</button>
             </div>
-          </label>
+          </fieldset>
+          <fieldset className="field-label"><legend>Workspace density</legend>
+            <div className="chip-row">
+              <button className={`chip ${density === 'comfortable' ? 'selected' : ''}`} onClick={() => setDensity('comfortable')}>Comfortable</button>
+              <button className={`chip ${density === 'compact' ? 'selected' : ''}`} onClick={() => setDensity('compact')}>Compact</button>
+            </div>
+          </fieldset>
           <p className="small muted">Evidence pages, photographs and video always keep their original colors on a neutral canvas in both themes.</p>
         </div> : null}
 
@@ -179,7 +191,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
           <p className="small muted">Case generation {snapshot.generation} · {snapshot.counts?.source_count ?? snapshot.sources.length} sources · {snapshot.counts?.record_count ?? snapshot.records.length} working files.</p>
         </div> : null}
 
-        {section === 'AI providers' ? <div className="ai-save-footer">
+        {section !== 'Appearance' && section !== 'About' ? <div className="ai-save-footer">
           {error ? <p role="alert" className="small danger-text">{error}</p> : null}
           <div className="modal-footer"><button className="secondary" disabled={busy} onClick={onClose}>Cancel</button><button className="primary" disabled={!native || busy} onClick={() => void save()}><Save size={15} />{saving ? 'Saving…' : 'Save settings & keys'}</button></div>
         </div> : null}

@@ -1,0 +1,67 @@
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { ThemeProvider, ToastStack, notify, useTheme } from './ui';
+import PaneDivider from './components/PaneDivider';
+
+function AppearanceProbe() {
+  const { theme, resolvedTheme, setTheme, density, setDensity } = useTheme();
+  return <>
+    <output data-testid="appearance">{theme}:{resolvedTheme}:{density}</output>
+    <button onClick={() => setTheme('light')}>Light</button>
+    <button onClick={() => setTheme('system')}>System</button>
+    <button onClick={() => setDensity('compact')}>Compact</button>
+  </>;
+}
+
+beforeEach(() => { localStorage.clear(); delete document.documentElement.dataset.theme; delete document.documentElement.dataset.density; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it('preserves explicit theme choice and compact density without case data', () => {
+  render(<ThemeProvider><AppearanceProbe /></ThemeProvider>);
+  fireEvent.click(screen.getByRole('button', { name: 'Light' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Compact' }));
+  expect(screen.getByTestId('appearance').textContent).toBe('light:light:compact');
+  expect(document.documentElement.dataset.theme).toBe('light');
+  expect(document.documentElement.dataset.density).toBe('compact');
+  expect(localStorage.getItem('vislex-theme')).toBe('light');
+  expect(localStorage.getItem('vislex-density')).toBe('compact');
+});
+
+it('follows operating-system appearance only when System is selected', () => {
+  let dark = false;
+  let onChange: (() => void) | undefined;
+  vi.stubGlobal('matchMedia', () => ({
+    get matches() { return dark; },
+    addEventListener: (_: string, handler: () => void) => { onChange = handler; },
+    removeEventListener: () => {},
+  }));
+  render(<ThemeProvider><AppearanceProbe /></ThemeProvider>);
+  expect(document.documentElement.dataset.theme).toBe('light');
+  dark = true;
+  act(() => { onChange?.(); });
+  expect(document.documentElement.dataset.theme).toBe('dark');
+  fireEvent.click(screen.getByRole('button', { name: 'Light' }));
+  dark = false;
+  act(() => { onChange?.(); });
+  expect(document.documentElement.dataset.theme).toBe('light');
+  fireEvent.click(screen.getByRole('button', { name: 'System' }));
+  expect(localStorage.getItem('vislex-theme')).toBe('system');
+});
+
+it('resizes the evidence pane from the keyboard and resets its size', () => {
+  const changed = vi.fn();
+  const { container, rerender } = render(<div><PaneDivider viewerWidth={520} onWidthChange={changed} /></div>);
+  vi.spyOn(container.firstElementChild!, 'getBoundingClientRect').mockReturnValue({ width: 1400 } as DOMRect);
+  fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize evidence pane' }), { key: 'ArrowLeft' });
+  expect(changed).toHaveBeenCalledWith(536);
+  rerender(<div><PaneDivider viewerWidth={600} onWidthChange={changed} /></div>);
+  fireEvent.doubleClick(screen.getByRole('separator', { name: 'Resize evidence pane' }));
+  expect(changed).toHaveBeenLastCalledWith(520);
+});
+
+it('keeps one actionable notification for a repeatedly polled error', () => {
+  render(<ToastStack />);
+  act(() => { notify.error('Synthetic refresh issue', 'Same read failure'); notify.error('Synthetic refresh issue', 'Same read failure'); });
+  expect(screen.getAllByText('Synthetic refresh issue')).toHaveLength(1);
+});

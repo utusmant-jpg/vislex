@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, BookOpen, ChevronDown, CircleDot, FilePenLine, Film, Flag, Layers, ListChecks,
   LoaderCircle, MessageSquareQuote, Play, Scale, ScanLine, Search, Settings2, Sparkles, Square, Wrench,
@@ -146,6 +146,13 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const [skipContext, setSkipContext] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const input = composer.current;
+    if (!input) return;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+    input.style.overflowY = input.scrollHeight > 220 ? 'auto' : 'hidden';
+  }, [prompt]);
   const following = useRef(true);
   const [showJump, setShowJump] = useState(false);
   const [conversationDetail, setConversationDetail] = useState<{ caseId: string; conversationId: string; tasks: Task[]; nextCursor: { created_at: string; id: string } | null } | null>(null);

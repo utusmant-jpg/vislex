@@ -20,7 +20,7 @@ function snapshot(): Snapshot {
     issues: [{ task_id: 'task', name: 'save_dossier', error: 'invalid check tool', count: 9, latest_receipt: 'latest', created_at: '' }],
   };
 }
-beforeEach(() => { localStorage.clear(); api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); save.mockReset(); });
+beforeEach(() => { Object.defineProperty(window, 'innerWidth', { value: 1440, writable: true, configurable: true }); localStorage.clear(); api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); save.mockReset(); });
 afterEach(cleanup);
 
 it('retries the parent discovery run from both failed job cards', async () => {
@@ -307,4 +307,26 @@ it('keeps the latest same-case refresh when an earlier request returns last', as
   resolveEarlier(initial);
   await Promise.resolve();
   expect(screen.getByText('Latest saved name',{selector:'.title-case'})).toBeTruthy();
+});
+
+it('collapses navigation at narrow widths and lets the user reopen it', async () => {
+  window.innerWidth = 1000;
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  const toggle = await screen.findByRole('button', { name: 'Show navigation' });
+  expect(screen.queryByRole('button', { name: 'Create' })).toBeNull();
+  fireEvent.click(toggle);
+  expect(screen.getByRole('button', { name: 'Hide navigation' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Create' })).toBeTruthy();
+});
+
+it('opens appearance and about settings before a case is selected', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Compact' }));
+  expect(localStorage.getItem('vislex-density')).toBe('compact');
+  fireEvent.click(screen.getByRole('button', { name: 'About' }));
+  expect(screen.getByText(/Cases are stored in local/)).toBeTruthy();
 });
