@@ -20,7 +20,7 @@
   }
   await invoke('create_case', { path, name: 'Synthetic consent acceptance' });
   const initial = await invoke('snapshot');
-  await invoke('save_settings', { settings: { ...initial.settings, offline: true, allow_text: false, allow_images: false, model: 'synthetic' } });
+  await invoke('save_settings', { case_id:initial.id,settings: { ...initial.settings, offline: true, allow_text: false, allow_images: false, model: 'synthetic' } });
   const settingsButton = await waitFor(() => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Settings' && !button.disabled), 'Settings button');
   settingsButton.click();
   const dialog = await waitFor(() => document.querySelector('dialog.settings-sheet[open]'), 'Settings dialog');

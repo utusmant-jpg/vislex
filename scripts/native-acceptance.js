@@ -26,7 +26,7 @@
     if(!second.reused || first.extraction_locator!==second.extraction_locator || !text.total_lines)throw new Error('Document extraction/cache failed: '+name);
     documents.push({name,total_lines:text.total_lines,reused:second.reused});
   }
-  await invoke('save_settings',{settings:{...snapshot.settings,offline:false,allow_text:true,model:'synthetic'}});
+  await invoke('save_settings',{case_id:snapshot.id,settings:{...snapshot.settings,offline:false,allow_text:true,model:'synthetic'}});
   let crossCaseChatDenied=false;
   try { await invoke('start_task',{case_id:'another-case',prompt:'how many files we have?'}); } catch { crossCaseChatDenied=true; }
   if(!crossCaseChatDenied)throw new Error('A stale case was allowed to start a chat');
