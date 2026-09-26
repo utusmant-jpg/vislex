@@ -23,13 +23,12 @@ function snapshot(): Snapshot {
 beforeEach(() => { Object.defineProperty(window, 'innerWidth', { value: 1440, writable: true, configurable: true }); localStorage.clear(); api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); save.mockReset(); });
 afterEach(cleanup);
 
-it('retries the parent discovery run from both failed job cards', async () => {
+it('deduplicates the parent discovery retry across its failed job cards', async () => {
   render(<JobsCenter snapshot={snapshot()} run={fn => { void fn(); }} refresh={async () => undefined} />);
   const buttons = screen.getAllByRole('button', { name: 'Retry index from saved progress' });
   fireEvent.click(buttons[0]); fireEvent.click(buttons[1]);
-  await waitFor(() => expect(api).toHaveBeenCalledTimes(2));
-  expect(api).toHaveBeenNthCalledWith(1, 'retry_video_discovery', { run_id: 'index-run' });
-  expect(api).toHaveBeenNthCalledWith(2, 'retry_video_discovery', { run_id: 'index-run' });
+  await waitFor(() => expect(api).toHaveBeenCalledTimes(1));
+  expect(api).toHaveBeenCalledWith('retry_video_discovery', { run_id: 'index-run' });
 });
 
 it('groups old AI tool errors and loads their receipts only when expanded', async () => {
@@ -309,7 +308,7 @@ it('keeps the latest same-case refresh when an earlier request returns last', as
   fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
   fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
-  fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
+  fireEvent.click(screen.getAllByRole('button',{name:'Retry index from saved progress'})[0]);
   await screen.findByText('Latest saved name',{selector:'.title-case'});
   resolveEarlier(initial);
   await Promise.resolve();

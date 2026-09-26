@@ -197,6 +197,19 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [jobError, setJobError] = useState('');
   const [jobFilter, setJobFilter] = useState<'all' | 'working' | 'attention' | 'completed'>('all');
+  const pendingKeys = useRef(new Set<string>());
+  const [pendingActions, setPendingActions] = useState<string[]>([]);
+  function jobAction(key: string, action: () => Promise<void>) {
+    const scopedKey = `${snapshot.id}:${key}`;
+    if (pendingKeys.current.has(scopedKey)) return;
+    pendingKeys.current.add(scopedKey);
+    setPendingActions([...pendingKeys.current]);
+    run(async () => {
+      try { await action(); }
+      finally { pendingKeys.current.delete(scopedKey); setPendingActions([...pendingKeys.current]); }
+    });
+  }
+  const pending = (key: string) => pendingActions.includes(`${snapshot.id}:${key}`);
   const [progressByJob,setProgressByJob]=useState<Record<string,JobProgress>>({});
   const runningJobIds=(snapshot.jobs ?? []).filter(job=>job.status==='running').map(job=>job.id).join(',');
   useEffect(()=>{
@@ -244,7 +257,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
   const review = snapshot.automatic_analysis;
   const reviewOpen = !!review?.review_task && ['running', 'paused', 'failed'].includes(review.review_state);
   return <section className="workspace-view jobs-center" aria-label="Jobs and issues">
-    <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" onClick={() => run(async () => { await api('transcribe_all'); await refresh(); })}>Queue missing full transcripts</button></div>
+    <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" disabled={pending('transcribe-all')} onClick={() => jobAction('transcribe-all', async () => { await api('transcribe_all'); await refresh(); })}>{pending('transcribe-all') ? 'Queuing…' : 'Queue missing full transcripts'}</button></div>
     <p className="small muted">Processing status does not certify evidence review. Historical failures remain visible with their receipts.</p>
     {currentJobs.length ? <div className="chip-row job-filters" role="group" aria-label="Filter jobs by status">
       {([['all', 'All'], ['working', 'Working'], ['attention', 'Needs attention'], ['completed', 'Completed & cancelled']] as const).map(([value, label]) => <button key={value} className={`chip ${jobFilter === value ? 'selected' : ''}`} aria-pressed={jobFilter === value} onClick={() => setJobFilter(value)}>{label}</button>)}
@@ -253,11 +266,11 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
       <div className="job-card-head"><strong>Automatic case analysis</strong><StatusPill state={review?.review_state === 'running' ? 'running' : review?.review_state === 'failed' ? 'failed' : 'interrupted'} label={review!.review_state} small /></div>
       {review?.review_state === 'failed' ? <p className="small danger-text">Saved progress is available. Continue in a new task to keep uncertain requests untouched.</p> : null}
       {review?.review_state === 'paused' ? <p className="small muted">The review is paused. Saved progress remains available.</p> : null}
-      {review?.review_state !== 'running' ? <button className="quiet" onClick={() => run(async () => {
+      {review?.review_state !== 'running' ? <button className="quiet" disabled={pending(`continue-review:${review!.review_task}`)} onClick={() => jobAction(`continue-review:${review!.review_task}`, async () => {
         const result=await api<{task_id:string;conversation_id:string}>('continue_paused_task',{case_id:snapshot.id,task_id:review!.review_task});
         await refresh();
         if (mounted.current && currentCaseId.current === snapshot.id) onConversation?.(result.conversation_id);
-      })}>Continue saved review</button> : null}
+      })}>{pending(`continue-review:${review!.review_task}`) ? 'Continuing…' : 'Continue saved review'}</button> : null}
       <code>Task {review!.review_task}</code>
     </article> : null}
     {visibleJobs.length ? visibleJobs.map(job => <article className={`job-card ${['failed', 'interrupted'].includes(job.status) ? 'job-attention' : ''}`} key={job.id}>
@@ -269,14 +282,14 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
       {progressByJob[job.id] ? <p role="status" className="small muted">{progressByJob[job.id].priority} · attempt {progressByJob[job.id].attempt}{typeof progressByJob[job.id].progress?.completed==='number' ? ` · ${Math.floor(progressByJob[job.id].progress!.completed!)} ${progressByJob[job.id].progress!.unit}${typeof progressByJob[job.id].progress?.total==='number' ? ` / ${Math.ceil(progressByJob[job.id].progress!.total!)}` : ''}` : ''}{typeof progressByJob[job.id].progress?.segments==='number' ? ` · ${progressByJob[job.id].progress!.segments} segments` : ''}</p> : null}
       {job.error ? <p role="alert" className="small danger-text">{job.error}</p> : null}
       <div className="input-row">
-        {job.kind === 'full_audio' && ['failed', 'interrupted'].includes(job.status) ? <button className="quiet" onClick={() => run(async () => { await api('resume_transcription', { job_id: job.id }); await refresh(); })}>Resume saved chunks</button> : null}
-        {job.kind === 'full_audio' ? <button className="quiet" onClick={() => run(async () => { await api(['running', 'queued'].includes(job.status) ? 'cancel_transcription' : 'transcribe_full', { source_id: job.source_id }); await refresh(); })}>{['running', 'queued'].includes(job.status) ? 'Cancel' : 'Retry'}</button> : null}
-        {job.status === 'running' ? <button className="quiet" onClick={() => run(async () => { await api('cancel_processing', { job_id: job.id }); await refresh(); })}>Cancel</button> : null}
-        {['interrupted', 'failed'].includes(job.status) && job.kind !== 'auto_prepare' && job.kind !== 'full_audio' ? <button className="quiet" onClick={() => run(async () => {
+        {job.kind === 'full_audio' && ['failed', 'interrupted'].includes(job.status) ? <button className="quiet" disabled={pending(`transcript:${job.id}`)} onClick={() => jobAction(`transcript:${job.id}`, async () => { await api('resume_transcription', { job_id: job.id }); await refresh(); })}>{pending(`transcript:${job.id}`) ? 'Resuming…' : 'Resume saved chunks'}</button> : null}
+        {job.kind === 'full_audio' ? <button className="quiet" disabled={pending(`transcript:${job.id}`)} onClick={() => jobAction(`transcript:${job.id}`, async () => { await api(['running', 'queued'].includes(job.status) ? 'cancel_transcription' : 'transcribe_full', { source_id: job.source_id }); await refresh(); })}>{pending(`transcript:${job.id}`) ? 'Working…' : ['running', 'queued'].includes(job.status) ? 'Cancel' : 'Retry'}</button> : null}
+        {job.status === 'running' && job.kind !== 'full_audio' ? <button className="quiet" disabled={pending(`cancel:${job.id}`)} onClick={() => jobAction(`cancel:${job.id}`, async () => { await api('cancel_processing', { job_id: job.id }); await refresh(); })}>{pending(`cancel:${job.id}`) ? 'Cancelling…' : 'Cancel'}</button> : null}
+        {['interrupted', 'failed'].includes(job.status) && job.kind !== 'auto_prepare' && job.kind !== 'full_audio' ? <button className="quiet" disabled={pending(`recover:${job.parent_run_id ?? job.id}`)} onClick={() => jobAction(`recover:${job.parent_run_id ?? job.id}`, async () => {
           const runId = job.parent_run_id ?? (['video_ocr_index', 'video_overview_index'].includes(job.kind) ? job.id : null);
           await (runId ? api('retry_video_discovery', { run_id: runId }) : api('resume_processing', { job_id: job.id }));
           await refresh();
-        })}>{job.parent_run_id || ['video_ocr_index', 'video_overview_index'].includes(job.kind) ? 'Retry index from saved progress' : 'Recover saved job'}</button> : null}
+        })}>{pending(`recover:${job.parent_run_id ?? job.id}`) ? 'Recovering…' : job.parent_run_id || ['video_ocr_index', 'video_overview_index'].includes(job.kind) ? 'Retry index from saved progress' : 'Recover saved job'}</button> : null}
       </div>
       <code>Receipt {job.id}</code>
     </article>) : currentJobs.length ? <div className="empty-state"><ListChecks size={32} /><h3>No {jobFilter === 'working' ? 'working jobs' : jobFilter === 'attention' ? 'jobs needing attention' : 'completed jobs'} in this page</h3><p>Choose another status or load older jobs.</p></div> : !reviewOpen ? <div className="empty-state"><ListChecks size={32} /><h3>{jobCursor!==null?'No jobs in this page':'No processing jobs yet'}</h3><p>Queued work, completed jobs, and failures will appear here with their receipts.</p></div> : null}
@@ -286,7 +299,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
     {supersededFailures.length ? <details className="job-card"><summary>Earlier failures and interruptions replaced by newer runs ({supersededFailures.length})</summary>{supersededFailures.map(job => <article key={job.id}><strong>{job.name}</strong><p className="small muted">{job.kind} · {job.error || job.status}</p><code>Receipt {job.id}</code></article>)}</details> : null}
     {snapshot.issues?.length ? <details className="job-card"><summary>Previous AI tool errors ({snapshot.issues.length} group{snapshot.issues.length === 1 ? '' : 's'})</summary>{snapshot.issues.map(issue => <IssueHistory issue={issue} key={issue.latest_receipt} />)}</details> : null}
     {storage ? <div className="job-card">
-      <div className="job-card-head"><strong>Case storage</strong><Tooltip text="Only abandoned import copies matching a verified original are removed. Job folders are retained."><button className="quiet" onClick={() => run(async () => { const receipt = await api<{ reclaimed_bytes: number }>('reclaim_staging'); setReclaimed(receipt.reclaimed_bytes); setStorage(await api<Record<string, number>>('storage_usage')); })}>Reclaim verified staging duplicates</button></Tooltip></div>
+      <div className="job-card-head"><strong>Case storage</strong><Tooltip text="Only abandoned import copies matching a verified original are removed. Job folders are retained."><button className="quiet" disabled={pending('reclaim-staging')} onClick={() => jobAction('reclaim-staging', async () => { const caseId = snapshot.id; const receipt = await api<{ reclaimed_bytes: number }>('reclaim_staging'); if (currentCaseId.current !== caseId) return; const usage = await api<Record<string, number>>('storage_usage'); if (currentCaseId.current === caseId) { setReclaimed(receipt.reclaimed_bytes); setStorage(usage); } })}>{pending('reclaim-staging') ? 'Checking staging…' : 'Reclaim verified staging duplicates'}</button></Tooltip></div>
       {Object.entries(storage).map(([name, bytes]) => <p className="small" key={name}>{name}: {formatBytes(bytes)}</p>)}
       {reclaimed !== null ? <p role="status" className="small success-text">Reclaimed {formatBytes(reclaimed)}</p> : null}
     </div> : null}
