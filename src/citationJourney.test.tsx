@@ -64,7 +64,7 @@ it('records a two-source comparison with exact citations and a next check', asyn
   const second: Source = { ...source, id: 'source-two', name: 'Interview.txt' };
   api.mockImplementation(async (action: string) => action === 'evidence_list' ? { objects: [], next_offset: null } : {});
   const onSource = vi.fn();
-  render(<EvidenceNotebook snapshot={{ id: 'case-one', sources: [source, second] } as Snapshot} onSource={onSource} onClose={vi.fn()} />);
+  render(<EvidenceNotebook snapshot={{ id: 'case-one', session_epoch: 7, sources: [source, second] } as Snapshot} onSource={onSource} onClose={vi.fn()} />);
   fireEvent.click(screen.getByText('Compare two accounts'));
   const groups = [screen.getByRole('group', { name: 'First account' }), screen.getByRole('group', { name: 'Second account' })];
   fireEvent.change(screen.getByLabelText('Comparison title'), { target: { value: 'Sequence of events' } });
@@ -79,7 +79,7 @@ it('records a two-source comparison with exact citations and a next check', asyn
   fireEvent.click(screen.getByText('Open first source'));
   expect(onSource).toHaveBeenCalledWith(source.id, 'R1L1-L1');
   fireEvent.click(screen.getByText('Save unreviewed comparison'));
-  await waitFor(() => expect(api).toHaveBeenCalledWith('evidence_write', expect.objectContaining({ case_id: 'case-one', object: expect.objectContaining({ kind: 'issue', source_ids: [source.id, second.id], locators: ['evidence:source-one#R1L1-L1', 'evidence:source-two#R1L2-L2'] }) })));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('evidence_write', expect.objectContaining({ case_id: 'case-one', session_epoch: 7, object: expect.objectContaining({ kind: 'issue', source_ids: [source.id, second.id], locators: ['evidence:source-one#R1L1-L1', 'evidence:source-two#R1L2-L2'] }) })));
   const saved = api.mock.calls.find(([name]) => name === 'evidence_write')![1].object;
   expect(JSON.parse(saved.content)).toMatchObject({ category: 'uncertain_clock', next_check: 'Compare verified clock anchors.' });
 });
