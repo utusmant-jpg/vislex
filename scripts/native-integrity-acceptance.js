@@ -58,11 +58,19 @@
   let staleWriteDenied = false;
   try { await invoke('evidence_write', { case_id: 'closed-synthetic-case', object }); } catch { staleWriteDenied = true; }
   if (!staleWriteDenied) throw new Error('Stale case finding update was accepted');
-  const finding = await invoke('evidence_write', { case_id: snapshot.id, object });
+  let staleSessionFindingDenied = false;
+  try { await invoke('evidence_write', { case_id: snapshot.id, session_epoch: created.session_epoch, object }); }
+  catch (error) { staleSessionFindingDenied = String(error).includes('Case session changed'); }
+  if (!staleSessionFindingDenied) throw new Error('An old same-case session wrote a finding');
+  const finding = await invoke('evidence_write', { case_id: snapshot.id, session_epoch: reopened.session_epoch, object });
   let staleReviewDenied = false;
   try { await invoke('evidence_review', { case_id: 'closed-synthetic-case', id: finding.id, revision: finding.revision, review: 'accepted' }); } catch { staleReviewDenied = true; }
   if (!staleReviewDenied) throw new Error('Stale case finding review was accepted');
-  await invoke('evidence_review', { case_id: snapshot.id, id: finding.id, revision: finding.revision, review: 'accepted' });
+  let staleSessionReviewDenied = false;
+  try { await invoke('evidence_review', { case_id: snapshot.id, session_epoch: created.session_epoch, id: finding.id, revision: finding.revision, review: 'accepted' }); }
+  catch (error) { staleSessionReviewDenied = String(error).includes('Case session changed'); }
+  if (!staleSessionReviewDenied) throw new Error('An old same-case session reviewed a finding');
+  await invoke('evidence_review', { case_id: snapshot.id, session_epoch: reopened.session_epoch, id: finding.id, revision: finding.revision, review: 'accepted' });
   const staleWorkflows = [
     ['review_dossier_claim', { case_id: 'closed-synthetic-case', task_id: 'missing', revision: 1, claim_index: 0, decision: 'accepted', note: '' }],
     ['export_dossier_bundle', { case_id: 'closed-synthetic-case', task_id: 'missing', path: `${root}/artifacts/rejected-package-${run}` }],
@@ -122,5 +130,5 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, stale_delete_denied: staleDeleteDenied, wrong_delete_target_denied: wrongDeleteTargetDenied, valid_empty_case_deleted: deletedEmpty.deleted, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
+  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_session_finding_write_denied: staleSessionFindingDenied, stale_session_finding_review_denied: staleSessionReviewDenied, stale_workflows_denied: staleWorkflows.length, stale_case_actions_denied: staleCaseActions.length, stale_same_case_session_denied: staleSessionDenied, stale_session_actions_denied: staleSessionActions.length, stale_delete_denied: staleDeleteDenied, wrong_delete_target_denied: wrongDeleteTargetDenied, valid_empty_case_deleted: deletedEmpty.deleted, session_epochs: [created.session_epoch, reopened.session_epoch], case_id: snapshot.id };
 })().catch(error => ({ native_error: String(error), stack: String(error?.stack ?? '') }))
