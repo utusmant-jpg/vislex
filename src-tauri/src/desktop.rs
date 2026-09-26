@@ -241,6 +241,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let state=app.state::<AppState>();
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_mut().context("Open a case first")?;
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before backup");
             (c.meta("id")?.unwrap_or_default(),backup::prepare_backup_deferred(c,&destination,text(&args,"password")?)?)
         };
         // Archive hashing, tarring and encryption run without the case lock so chat,
@@ -459,7 +460,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "cancel_video_discovery" => crate::discovery::cancel(c,text(&args,"source_id")?)?,
         "cancel_processing" => {crate::processing::cancel(c,text(&args,"job_id")?)?;Value::Null},
         "storage_usage" => c.storage_usage()?,
-        "reclaim_staging" => {anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the import before reclaiming staging");c.reclaim_staging()?},
+        "reclaim_staging" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before staging cleanup");anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the import before reclaiming staging");c.reclaim_staging()?},
 
         "rename" => { c.rename(text(&args,"kind")?, args["id"].as_str().unwrap_or(""), text(&args,"name")?)?; Value::Null },
 
@@ -547,6 +548,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "transcribe_all" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcription queue");
 
             let ids: Vec<String> = c
 
@@ -646,7 +648,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         }
 
-        "write_record" => serde_json::to_value(c.write_record(
+        "write_record" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before working record update");serde_json::to_value(c.write_record(
 
             args["record_id"].as_str(),
 
@@ -666,7 +668,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             serde_json::from_value(args["source_ids"].clone()).unwrap_or_default(),
 
-        )?)?,
+        )?)?},
 
         "review_record" => {
 
@@ -1455,7 +1457,7 @@ fn import_background(app:&tauri::AppHandle,action:&str,args:Value)->anyhow::Resu
     anyhow::ensure!(state.importing.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).is_ok(),"An import is already active");
     struct Lease<'a>(&'a AtomicBool);impl Drop for Lease<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
     let _lease=Lease(&state.importing);
-    let (root,case_id)={let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;(case.root.clone(),case.meta("id")?.unwrap_or_default())};
+    let (root,case_id)={let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before import");(case.root.clone(),case.meta("id")?.unwrap_or_default())};
     let (paths,skipped)=if action=="import_folder" {crate::case::folder_paths(&root,Path::new(text(&args,"path")?))?}else{(serde_json::from_value::<Vec<String>>(args["paths"].clone())?,vec![])};
     anyhow::ensure!(paths.len()<=10000,"Import at most 10,000 files per batch");
     let production=args["production"].as_str().unwrap_or("Imported evidence");

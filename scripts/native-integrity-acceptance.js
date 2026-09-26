@@ -6,8 +6,8 @@
   const root = __WORKSPACE__;
   const run = Date.now().toString();
   const fixture = `${root}/artifacts/integrity-256m.bin`;
-  await invoke('create_case', { path: `${root}/artifacts/integrity-case-${run}`, name: `Synthetic integrity ${run}` });
-  const imported = await invoke('import_files', { paths: [fixture], production: 'Synthetic integrity' });
+  const created = await invoke('create_case', { path: `${root}/artifacts/integrity-case-${run}`, name: `Synthetic integrity ${run}` });
+  const imported = await invoke('import_files', { case_id: created.id, paths: [fixture], production: 'Synthetic integrity' });
   if (imported.items[0]?.status !== 'imported') throw new Error('Synthetic import failed');
   const snapshot = await invoke('snapshot');
   const source = snapshot.sources[0];

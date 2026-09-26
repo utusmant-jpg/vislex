@@ -257,7 +257,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
   const review = snapshot.automatic_analysis;
   const reviewOpen = !!review?.review_task && ['running', 'paused', 'failed'].includes(review.review_state);
   return <section className="workspace-view jobs-center" aria-label="Jobs and issues">
-    <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" disabled={pending('transcribe-all')} onClick={() => jobAction('transcribe-all', async () => { await api('transcribe_all'); await refresh(); })}>{pending('transcribe-all') ? 'Queuing…' : 'Queue missing full transcripts'}</button></div>
+    <div className="workspace-header"><div><div className="eyebrow">ACTIVITY</div><h2>Jobs &amp; issues</h2></div><div className="spacer" /><button className="quiet" disabled={pending('transcribe-all')} onClick={() => jobAction('transcribe-all', async () => { await api('transcribe_all', { case_id: snapshot.id }); await refresh(); })}>{pending('transcribe-all') ? 'Queuing…' : 'Queue missing full transcripts'}</button></div>
     <p className="small muted">Processing status does not certify evidence review. Historical failures remain visible with their receipts.</p>
     {currentJobs.length ? <div className="chip-row job-filters" role="group" aria-label="Filter jobs by status">
       {([['all', 'All'], ['working', 'Working'], ['attention', 'Needs attention'], ['completed', 'Completed & cancelled']] as const).map(([value, label]) => <button key={value} className={`chip ${jobFilter === value ? 'selected' : ''}`} aria-pressed={jobFilter === value} onClick={() => setJobFilter(value)}>{label}</button>)}
@@ -299,7 +299,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
     {supersededFailures.length ? <details className="job-card"><summary>Earlier failures and interruptions replaced by newer runs ({supersededFailures.length})</summary>{supersededFailures.map(job => <article key={job.id}><strong>{job.name}</strong><p className="small muted">{job.kind} · {job.error || job.status}</p><code>Receipt {job.id}</code></article>)}</details> : null}
     {snapshot.issues?.length ? <details className="job-card"><summary>Previous AI tool errors ({snapshot.issues.length} group{snapshot.issues.length === 1 ? '' : 's'})</summary>{snapshot.issues.map(issue => <IssueHistory issue={issue} key={issue.latest_receipt} />)}</details> : null}
     {storage ? <div className="job-card">
-      <div className="job-card-head"><strong>Case storage</strong><Tooltip text="Only abandoned import copies matching a verified original are removed. Job folders are retained."><button className="quiet" disabled={pending('reclaim-staging')} onClick={() => jobAction('reclaim-staging', async () => { const caseId = snapshot.id; const receipt = await api<{ reclaimed_bytes: number }>('reclaim_staging'); if (currentCaseId.current !== caseId) return; const usage = await api<Record<string, number>>('storage_usage'); if (currentCaseId.current === caseId) { setReclaimed(receipt.reclaimed_bytes); setStorage(usage); } })}>{pending('reclaim-staging') ? 'Checking staging…' : 'Reclaim verified staging duplicates'}</button></Tooltip></div>
+      <div className="job-card-head"><strong>Case storage</strong><Tooltip text="Only abandoned import copies matching a verified original are removed. Job folders are retained."><button className="quiet" disabled={pending('reclaim-staging')} onClick={() => jobAction('reclaim-staging', async () => { const caseId = snapshot.id; const receipt = await api<{ reclaimed_bytes: number }>('reclaim_staging', { case_id: caseId }); if (currentCaseId.current !== caseId) return; const usage = await api<Record<string, number>>('storage_usage'); if (currentCaseId.current === caseId) { setReclaimed(receipt.reclaimed_bytes); setStorage(usage); } })}>{pending('reclaim-staging') ? 'Checking staging…' : 'Reclaim verified staging duplicates'}</button></Tooltip></div>
       {Object.entries(storage).map(([name, bytes]) => <p className="small" key={name}>{name}: {formatBytes(bytes)}</p>)}
       {reclaimed !== null ? <p role="status" className="small success-text">Reclaimed {formatBytes(reclaimed)}</p> : null}
     </div> : null}
@@ -522,7 +522,7 @@ export default function App() {
         if (!paths?.length) return;
         run(async () => {
           if (!snapshot) throw new Error('Create or open a case first.');
-          const receipt = await api<{ items: { status: string; detail: { error?: string } }[] }>('import_files', { paths, production });
+          const receipt = await api<{ items: { status: string; detail: { error?: string } }[] }>('import_files', { case_id: snapshot.id, paths, production });
           await refresh();
           const failed = receipt.items.filter(item => item.status === 'failed');
           if (failed.length) throw new Error(`${failed.length} import(s) failed: ${failed.map(item => item.detail.error).join('; ')}`);
@@ -599,7 +599,7 @@ export default function App() {
     if (!snapshot) throw new Error('Create or open a case first.');
     const paths = await open({ multiple: true, directory: false, title: 'Import evidence — originals will be preserved' });
     if (paths) {
-      const receipt = await api<{ items: { status: string; detail: { error?: string } }[] }>('import_files', { paths: Array.isArray(paths) ? paths : [paths], production });
+      const receipt = await api<{ items: { status: string; detail: { error?: string } }[] }>('import_files', { case_id: snapshot.id, paths: Array.isArray(paths) ? paths : [paths], production });
       await refresh();
       const failed = receipt.items.filter(item => item.status === 'failed');
       if (failed.length) throw new Error(`${failed.length} import(s) failed: ${failed.map(item => item.detail.error).join('; ')}`);
@@ -615,8 +615,8 @@ export default function App() {
   function openSettings() { settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setSettings(true); }
   async function performModal() {
     if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
-    if (modal === 'note') { const created = await api<WorkingRecord>('write_record', { title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
-    if (modal === 'backup') { const path = await save({ defaultPath: 'case-backup.tar.age', filters: [{ name: 'Encrypted backup', extensions: ['age'] }] }); if (!path) return; await api('backup', { path, password }); notify.success('Encrypted backup saved', path); }
+    if (modal === 'note') { if (!snapshot) throw new Error('Open a case first.'); const created = await api<WorkingRecord>('write_record', { case_id: snapshot.id, title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
+    if (modal === 'backup') { if (!snapshot) throw new Error('Open a case first.'); const path = await save({ defaultPath: 'case-backup.tar.age', filters: [{ name: 'Encrypted backup', extensions: ['age'] }] }); if (!path) return; await api('backup', { case_id: snapshot.id, path, password }); notify.success('Encrypted backup saved', path); }
     if (modal === 'delete') {
       if (!snapshot) throw new Error('Open a case first.');
       const receipt = await api<{ deleted: boolean; bytes: number }>('delete_case', { path: snapshot.root, confirm: name });
@@ -638,7 +638,7 @@ export default function App() {
     { id: 'view-review', label: 'Go to Review workbench', run: () => { setView('review'); setPalette(false); } },
     { id: 'view-jobs', label: 'Go to Jobs & issues', run: () => { setView('jobs'); setPalette(false); } },
     { id: 'settings', label: 'Open settings', run: () => { setPalette(false); openSettings(); } },
-    { id: 'transcribe-all', label: 'Queue missing full transcripts', run: () => { setPalette(false); run(async () => { await api('transcribe_all'); await refresh(); }); } },
+    { id: 'transcribe-all', label: 'Queue missing full transcripts', run: () => { setPalette(false); run(async () => { if (!snapshot) throw new Error('Open a case first.'); await api('transcribe_all', { case_id: snapshot.id }); await refresh(); }); } },
     { id: 'add-files', label: 'Add files to this case', run: () => { setPalette(false); run(importFiles); } },
     { id: 'delete-case', label: 'Delete this case permanently', run: () => { setPalette(false); if (snapshot && native) showModal('delete'); else notify.info('Open a native case to delete it.'); } },
   ], [run, refresh, snapshot]);
@@ -753,7 +753,7 @@ export default function App() {
               <ThemeToggle />
               <details className="case-menu"><summary aria-label="Case options"><MoreHorizontal size={16} /></summary><div>
                 <button onClick={() => run(importFiles)}>Add files</button>
-                <FolderImport hasCase={!!snapshot} run={run} refresh={refresh} />
+                <FolderImport caseId={snapshot?.id} hasCase={!!snapshot} run={run} refresh={refresh} />
                 <button disabled={!snapshot} onClick={() => showModal('note')}>New note</button>
                 <button disabled={!snapshot} onClick={() => showModal('backup')}>Export case archive</button>
                 <button onClick={() => showModal('restore')}>Restore case archive</button>
