@@ -256,7 +256,22 @@
       "note": "Browser 33 ms buttons are labeled approximate. Dedicated exact buttons decode the preceding or following frame from the original source, publish a PTS-bearing artifact/citation, and show the derivative. Browser requestVideoFrameCallback supplies mediaTime when available. Controls initialize and rebind on proxy replacement, ignore keyboard shortcuts in form fields, and reject invalid A/B order. Original source files untouched."
     },
     "R15": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "1de6a7c",
+      "evidence": "src/components/EvidenceViewer.test.tsx one-page, mixed-orientation, visible-context and 10,000-page mounted-window tests; workers/test_document_formats.py mixed geometry and linear XLSX rows; src-tauri/tests/sandbox.rs pdf_probe_prevents_page_twelve_guess_and_reuses_one_source_lease",
+      "environment": "Windows x64; rebuilt PyInstaller worker; synthetic fixtures only",
+      "commands": [
+        "powershell -File scripts/build-worker.ps1 -> exit 0 after PDF/XLSX worker edits",
+        "npm test -> exit 0, 68 passed in 13 files; npm run build -> exit 0",
+        ".venv-worker/Scripts/python.exe -m unittest discover -s workers -p 'test_*.py' -> exit 0, 23 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox pdf_probe_prevents_page_twelve_guess_and_reuses_one_source_lease -- --include-ignored --nocapture -> exit 0; one-page native probe/render, citation and one source copy",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 1, 25/26 native sandbox tests passed; agent-prepared PDF render failed because internal lease fields were compared to user options; fixed in agent.rs",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox -- --include-ignored -> exit 0, 26 passed after fix",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Separate self-review traced and fixed the production-path agent-prepared render regression; checked lease policy epoch, source status preservation, page bounds, proxy worker provenance and stale UI responses. No independent reviewer was available for this slice.",
+      "unrun_checks": "No packaged large-PDF UI journey or measured peak RAM/case-lock time on a large real-sized synthetic PDF. PDF printed/Bates labels remain separate from physical page indices but are not read into the viewer. Malformed, rotated and encrypted PDF cases beyond current fixtures need explicit acceptance checks. Oversized documents and mid-render cancellation need native measurement before verification.",
+      "note": "Viewer probes physical count before rendering, so a one-page file never schedules page 12. Per-page render metadata sets geometry; prefetch cannot claim the visible page. The mounted page window is at most 13 even for a 10,000-page fixture, and recent artifact/ratio UI caches are bounded. Invalid page input is rejected before worker launch; page-copy control explicitly says navigation-only. PDF probe/render reuse one verified private source copy; probe/render do not overwrite extraction status. XLSX formula/cached rows iterate linearly. User originals and live case untouched."
     },
     "R16": {
       "state": "pending"
