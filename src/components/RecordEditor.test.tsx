@@ -46,3 +46,10 @@ it('keeps a draft after a failed save and states its session lifetime',async()=>
   expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('Unsaved after error');
   expect(screen.getByText(/lost if the app closes or crashes/i)).toBeTruthy();
 });
+
+it('sends the displayed case ID when reviewing a working file',async()=>{
+  api.mockResolvedValue(null);
+  render(<RecordEditor caseId="review-case" record={record('Saved')} {...common}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Mark reviewed'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('review_record',expect.objectContaining({case_id:'review-case',record_id:'same-record',revision:1})));
+});
