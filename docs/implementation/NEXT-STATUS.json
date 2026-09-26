@@ -348,7 +348,8 @@
       "state": "pending"
     },
     "R23": {
-      "state": "pending"
+      "state": "pending",
+      "capacity_preflight": "Windows C: Get-PSDrive measured 8,015,208,448 free bytes on 2026-09-26 while a separate fixed-source installer was building. The mandatory 10-GB and 40–60-GB non-sparse synthetic tiers cannot run on this volume without additional provisioned storage; no substitute sparse-file result will be counted. The 1-GB opaque synthetic file measured earlier is not a realistic video tier or release acceptance. No live client case was touched."
     }
   },
   "packaged_worker_and_acceptance_evidence": {
