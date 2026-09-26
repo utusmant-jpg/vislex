@@ -92,3 +92,19 @@ test('case lifecycle dialogs keep validation and return keyboard focus', async (
   await expect(restoreDialog).toBeHidden();
   await expect(restore).toBeFocused();
 });
+
+test('narrow source inspection has an explicit return without losing selection', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 680 });
+  await page.goto('/');
+  await page.getByRole('button', { name: /Try the sample case/ }).click();
+  await page.keyboard.press('Control+2');
+  await expect(page.getByRole('heading', { name: 'Evidence library' })).toBeVisible();
+  await page.locator('.library-row').first().click();
+  await expect(page.locator('.main-panel')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Evidence library' })).toBeHidden();
+  await page.getByRole('button', { name: 'Return to workspace' }).click();
+  await expect(page.getByRole('heading', { name: 'Evidence library' })).toBeVisible();
+  await expect(page.locator('.main-panel')).toBeHidden();
+  await page.locator('.library-row').first().click();
+  await expect(page.locator('.main-panel')).toBeVisible();
+});
