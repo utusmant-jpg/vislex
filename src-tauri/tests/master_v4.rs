@@ -180,6 +180,67 @@ fn provider_rejects_orphans_truncation_and_url_models() {
     request["model"] = json!("model?key=secret");
     assert!(providers::encode(Provider::Gemini, &request).is_err());
 }
+
+#[test]
+fn claude_stream_waits_for_complete_signed_multi_tool_message() {
+    let wire = providers::encode(Provider::Anthropic, &body(json!([{"role":"user","content":"Synthetic question"}]))).unwrap();
+    assert_eq!(wire.body["stream"], true);
+    let events = vec![
+        json!({"type":"message_start","message":{"role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":12,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Check "}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the source."}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"synthetic thought"}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"signed"}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call-a","name":"read_text","input":{}}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"start\":"}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"1}"}}),
+        json!({"type":"content_block_stop","index":2}),
+        json!({"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"call-b","name":"read_text","input":{}}}),
+        json!({"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"start\":2}"}}),
+        json!({"type":"content_block_stop","index":3}),
+        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}),
+        json!({"type":"message_stop"}),
+    ];
+    let bytes = events.iter().map(|event| format!("data: {}\n\n", event)).collect::<String>().into_bytes();
+    let mut sse = agent::ResponseStream::default();
+    let mut claude = providers::ClaudeStream::default();
+    let mut completed = None;
+    for chunk in bytes.chunks(13) {
+        for event in sse.push(chunk).unwrap() {
+            let result = claude.push(&event).unwrap();
+            if result.is_some() { completed = result; }
+        }
+    }
+    let result = completed.unwrap();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["usage"]["input_tokens"], 12);
+    assert_eq!(result["usage"]["output_tokens"], 9);
+    assert_eq!(result["output"][0]["content"][0]["text"], "Check the source.");
+    assert_eq!(result["output"][1]["part"]["signature"], "signed");
+    assert_eq!(result["output"][2]["call_id"], "call-a");
+    assert_eq!(result["output"][2]["arguments"], "{\"start\":1}");
+    assert_eq!(result["output"][3]["call_id"], "call-b");
+}
+
+#[test]
+fn claude_stream_rejects_partial_and_malformed_tool_calls() {
+    let start = json!({"type":"message_start","message":{"role":"assistant","content":[],"stop_reason":null,"usage":{}}});
+    let tool = json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-a","name":"read_text","input":{}}});
+    let mut partial = providers::ClaudeStream::default();
+    partial.push(&start).unwrap();
+    partial.push(&tool).unwrap();
+    assert!(partial.push(&json!({"type":"message_stop"})).is_err());
+    let mut malformed = providers::ClaudeStream::default();
+    malformed.push(&start).unwrap();
+    malformed.push(&tool).unwrap();
+    malformed.push(&json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{bad"}})).unwrap();
+    assert!(malformed.push(&json!({"type":"content_block_stop","index":0})).is_err());
+}
 #[test]
 fn provider_stop_reasons_distinguish_truncation_and_refusal() {
     for (reason,expected) in [("max_tokens","incomplete"),("model_context_window_exceeded","incomplete"),("refusal","refused"),("pause_turn","paused")] {
