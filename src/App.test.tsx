@@ -202,14 +202,14 @@ it('opens the clicked palette search hit at its exact historical locator', async
   render(<App/>);
   await screen.findAllByText('Synthetic case');
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
-  const search=screen.getByRole('textbox',{name:/Search case/});
+  const search=screen.getByRole('combobox',{name:/Search case/});
   fireEvent.change(search,{target:{value:'hit'}});
   fireEvent.click(screen.getByRole('button',{name:/Search text & meaning/}));
-  fireEvent.click(await screen.findByRole('button',{name:/First hit/}));
+  fireEvent.click(await screen.findByRole('option',{name:/First hit/}));
   expect(screen.getByRole('tab',{name:'Statement.txt'}).getAttribute('aria-selected')).toBe('true');
   await waitFor(()=>expect(api).toHaveBeenCalledWith('read_extract_revision',{source_id:'source-one',revision:1,start:5,count:200}));
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
-  const reopened=screen.getByRole('textbox',{name:/Search case/});
+  const reopened=screen.getByRole('combobox',{name:/Search case/});
   fireEvent.keyDown(reopened,{key:'ArrowDown'});
   fireEvent.keyDown(reopened,{key:'Enter'});
   await waitFor(()=>expect(api).toHaveBeenCalledWith('read_extract_revision',{source_id:'source-one',revision:1,start:9,count:200}));
@@ -226,9 +226,9 @@ it('opens a cited source that is outside the first case page', async () => {
   render(<App/>);
   await screen.findAllByText('Synthetic case');
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
-  fireEvent.change(screen.getByRole('textbox',{name:/Search case/}),{target:{value:'older evidence'}});
+  fireEvent.change(screen.getByRole('combobox',{name:/Search case/}),{target:{value:'older evidence'}});
   fireEvent.click(screen.getByRole('button',{name:/Search text & meaning/}));
-  fireEvent.click(await screen.findByRole('button',{name:/Older statement/}));
+  fireEvent.click(await screen.findByRole('option',{name:/Older statement/}));
   await waitFor(()=>expect(api).toHaveBeenCalledWith('source_detail',{case_id:'synthetic-case',source_id:'older-source'}));
   await waitFor(()=>expect(screen.getByRole('tab',{name:'Older statement.txt'})).toBeTruthy());
 });
@@ -259,8 +259,8 @@ it('takes a selected historical text range to Chat and focuses the composer', as
   await screen.findAllByText('Synthetic case');
   fireEvent.click(screen.getByRole('button',{name:'Evidence'}));
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
-  fireEvent.change(screen.getByRole('textbox',{name:/Search case/}),{target:{value:'Statement'}});
-  fireEvent.click(await screen.findByRole('button',{name:'Statement.txt'}));
+  fireEvent.change(screen.getByRole('combobox',{name:/Search case/}),{target:{value:'Statement'}});
+  fireEvent.click(await screen.findByRole('option',{name:'Statement.txt'}));
   await screen.findByText('selected wording');
   fireEvent.mouseUp(screen.getByText('selected wording').closest('.document-page')!);
   fireEvent.click(screen.getByRole('button',{name:/Ask about L1/}));
@@ -329,4 +329,16 @@ it('opens appearance and about settings before a case is selected', async () => 
   expect(localStorage.getItem('vislex-density')).toBe('compact');
   fireEvent.click(screen.getByRole('button', { name: 'About' }));
   expect(screen.getByText(/Cases are stored in local/)).toBeTruthy();
+});
+
+it('keeps the command palette useful without a case and exposes keyboard selection', async () => {
+  api.mockImplementation(async (action:string) => action === 'snapshot' ? null : null);
+  render(<App />);
+  fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+  const search = screen.getByRole('combobox', { name: 'Search commands' });
+  expect(search.getAttribute('aria-activedescendant')).toBe('case-command-item-0');
+  expect(screen.getByRole('option', { name: /Open settings/ })).toBeTruthy();
+  expect(screen.queryByRole('option', { name: /Delete this case/ })).toBeNull();
+  fireEvent.keyDown(search, { key: 'Enter' });
+  expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
 });

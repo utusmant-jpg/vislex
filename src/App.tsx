@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -10,15 +10,25 @@ import { api, formatBytes, native } from './bridge';
 import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary, Source, Job, Task } from './types';
 import { suggestedMatterName } from './review';
 import EvidenceViewer, { SourceIcon } from './components/EvidenceViewer';
-import RecordEditor from './components/RecordEditor';
 import AgentPanel from './components/AgentPanel';
-import SettingsDialog from './components/SettingsDialog';
-import EvidenceNotebook from './components/EvidenceNotebook';
-import InvestigationWorkbench from './components/InvestigationWorkbench';
 import FolderImport from './components/FolderImport';
 import PaneDivider from './components/PaneDivider';
 import WorkspacePreferences from './components/WorkspacePreferences';
 import { ContextMenu, StatusPill, ThemeProvider, ThemeToggle, ToastStack, Tooltip, notify, relativeTime } from './ui';
+
+const RecordEditor = lazy(() => import('./components/RecordEditor'));
+const SettingsDialog = lazy(() => import('./components/SettingsDialog'));
+const EvidenceNotebook = lazy(() => import('./components/EvidenceNotebook'));
+const InvestigationWorkbench = lazy(() => import('./components/InvestigationWorkbench'));
+
+function WorkspaceLoading({ label, settings = false }: { label: string; settings?: boolean }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setVisible(true), 150);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return visible ? <div className={`workspace-loading ${settings ? 'settings-loading' : ''}`} role="status">{label}</div> : null;
+}
 
 type View = 'chat' | 'evidence' | 'findings' | 'review' | 'jobs';
 
@@ -167,7 +177,7 @@ export function RecordDetailPanel({caseId,summary,run,refresh,onSource}:{caseId:
     return ()=>{active=false;};
   },[caseId,summary.id,summary.revision,summary.updated_at,summary.protected,summary.review,summary.stale]);
   return detail?.id===summary.id && detail.revision===summary.revision
-    ? <RecordEditor key={`${caseId}:${detail.id}`} caseId={caseId} record={detail} run={run} refresh={refresh} onSource={onSource}/>
+    ? <Suspense fallback={<WorkspaceLoading label="Opening working file…" />}><RecordEditor key={`${caseId}:${detail.id}`} caseId={caseId} record={detail} run={run} refresh={refresh} onSource={onSource}/></Suspense>
     : <div className="empty-state">{error?<p role="alert">Could not load working file: {error}</p>:<p>Loading working file…</p>}</div>;
 }
 
@@ -586,7 +596,7 @@ export default function App() {
     { id: 'view-findings', label: 'Go to Findings', run: () => { setView('findings'); setPalette(false); } },
     { id: 'view-review', label: 'Go to Review workbench', run: () => { setView('review'); setPalette(false); } },
     { id: 'view-jobs', label: 'Go to Jobs & issues', run: () => { setView('jobs'); setPalette(false); } },
-    { id: 'settings', label: 'Open settings', run: () => { setPalette(false); if (snapshot) setSettings(true); else notify.info('Open a case to configure its API permissions.'); } },
+    { id: 'settings', label: 'Open settings', run: () => { setPalette(false); setSettings(true); } },
     { id: 'transcribe-all', label: 'Queue missing full transcripts', run: () => { setPalette(false); run(async () => { await api('transcribe_all'); await refresh(); }); } },
     { id: 'add-files', label: 'Add files to this case', run: () => { setPalette(false); run(importFiles); } },
     { id: 'delete-case', label: 'Delete this case permanently', run: () => { setPalette(false); if (snapshot && native) showModal('delete'); else notify.info('Open a native case to delete it.'); } },
@@ -599,8 +609,8 @@ export default function App() {
   const paletteItems = useMemo(() => [
     ...paletteMatches.map(item => ({ kind: 'source' as const, id: item.id, label: item.name })),
     ...(results ?? []).map((item, index) => ({ kind: 'result' as const, id: `${item.source_id}:${index}`, label: item.name, excerpt: item.excerpt, sourceId: item.source_id, locator: item.locator })),
-    ...paletteCommands.filter(command => !query.trim() || command.label.toLowerCase().includes(query.trim().toLowerCase())).map(command => ({ kind: 'command' as const, id: command.id, label: command.label, run: command.run })),
-  ], [paletteMatches, results, paletteCommands, query]);
+    ...paletteCommands.filter(command => (snapshot || command.id === 'settings') && (!query.trim() || command.label.toLowerCase().includes(query.trim().toLowerCase()))).map(command => ({ kind: 'command' as const, id: command.id, label: command.label, run: command.run })),
+  ], [paletteMatches, results, paletteCommands, query, snapshot]);
   useEffect(() => { setPaletteIndex(0); }, [query, results]);
   function activatePaletteItem(item: (typeof paletteItems)[number]) {
     if (item?.kind === 'source') { selectSource(item.id); setPalette(false); return; }
@@ -730,8 +740,8 @@ export default function App() {
             onRename={(id, value) => beginRename('source', id, value)}
             onRestrict={(id, restricted) => run(async () => { await api('set_restricted', { source_id: id, restricted }); await refresh(); })}
           /> : null}
-          {visibleSnapshot && view === 'findings' ? <EvidenceNotebook key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} /> : null}
-          {visibleSnapshot && view === 'review' ? <InvestigationWorkbench key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /> : null}
+          {visibleSnapshot && view === 'findings' ? <Suspense fallback={<WorkspaceLoading label="Opening findings…" />}><EvidenceNotebook key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} /></Suspense> : null}
+          {visibleSnapshot && view === 'review' ? <Suspense fallback={<WorkspaceLoading label="Opening review…" />}><InvestigationWorkbench key={snapshot!.id} snapshot={visibleSnapshot} onClose={() => setView('chat')} onSource={selectSource} onConversation={chooseConversation} /></Suspense> : null}
           {snapshot && view === 'jobs' ? <JobsCenter snapshot={snapshot} run={run} refresh={refresh} onConversation={id => { setConversationId(id); setView('chat'); }} /> : null}
         </div>
 
@@ -785,7 +795,7 @@ export default function App() {
       <dialog ref={paletteDialog} className="modal command-palette" onCancel={() => setPalette(false)}>
         <div className="palette-input-row">
           <Search size={16} />
-          <input autoFocus aria-label="Search case — evidence, meaning, chats and commands" value={query} onChange={event => { setQuery(event.target.value); setResults(null); }} onKeyDown={event => {
+          <input autoFocus role="combobox" aria-autocomplete="list" aria-controls="case-command-results" aria-expanded={paletteItems.length > 0} aria-activedescendant={paletteItems[paletteIndex] ? `case-command-item-${paletteIndex}` : undefined} aria-label={snapshot ? 'Search case — evidence, meaning, chats and commands' : 'Search commands'} value={query} onChange={event => { setQuery(event.target.value); setResults(null); }} onKeyDown={event => {
             if (event.key === 'ArrowDown') { event.preventDefault(); setPaletteIndex(index => Math.min(index + 1, paletteItems.length - 1)); }
             else if (event.key === 'ArrowUp') { event.preventDefault(); setPaletteIndex(index => Math.max(0, index - 1)); }
             else if (event.key === 'Enter') { event.preventDefault(); paletteEnter(); }
@@ -794,21 +804,26 @@ export default function App() {
         </div>
         <div className="palette-results">
           {query.trim() && snapshot && results === null ? <button className="tree-item palette-search-action" onClick={searchPalette}><Search size={14} /><span>Search text &amp; meaning for “{query.trim()}”<small>Hybrid search across indexed evidence</small></span></button> : null}
+          <div id="case-command-results" role="listbox" aria-label="Search results and commands">
           {paletteItems.map((item, index) => <button
             className={`tree-item palette-item ${index === paletteIndex ? 'selected' : ''}`}
+            id={`case-command-item-${index}`}
+            role="option"
+            aria-selected={index === paletteIndex}
             key={`${item.kind}:${item.id}`}
             onMouseEnter={() => setPaletteIndex(index)}
             onClick={() => { setPaletteIndex(index); activatePaletteItem(item); }}>
             {item.kind === 'source' ? <SourceIcon kind={snapshot?.sources.find(sourceItem => sourceItem.id === item.id)?.kind ?? 'other'} size={15} /> : item.kind === 'result' ? <Search size={15} /> : null}
             <span>{item.label}{'excerpt' in item && item.excerpt ? <small>{item.excerpt}</small> : item.kind === 'command' ? <small>Command</small> : null}</span>
           </button>)}
+          </div>
           {results?.length === 0 ? <p className="sidebar-empty">No indexed text matches. Unprocessed evidence is not searchable.</p> : null}
           {!snapshot ? <p className="sidebar-empty">Open a case to search its evidence.</p> : null}
         </div>
         <div className="palette-footer"><span>↑↓ navigate</span><span>↵ open</span><span>Esc close</span></div>
       </dialog>
 
-      {settings && snapshot ? <SettingsDialog snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /> : null}
+      {settings && snapshot ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
       {settings && !snapshot ? <WorkspacePreferences onClose={() => setSettings(false)} /> : null}
 
       {modal ? <dialog ref={dialog} className="modal" onCancel={() => { setModal(null); setPassword(''); }}>

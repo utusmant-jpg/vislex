@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { ThemeProvider, ToastStack, notify, useTheme } from './ui';
+import { ThemeProvider, ToastStack, Tooltip, notify, useTheme } from './ui';
 import PaneDivider from './components/PaneDivider';
 
 function AppearanceProbe() {
@@ -64,4 +64,16 @@ it('keeps one actionable notification for a repeatedly polled error', () => {
   render(<ToastStack />);
   act(() => { notify.error('Synthetic refresh issue', 'Same read failure'); notify.error('Synthetic refresh issue', 'Same read failure'); });
   expect(screen.getAllByText('Synthetic refresh issue')).toHaveLength(1);
+});
+
+it('shows a keyboard tooltip with an accessible description and dismisses it on Escape', () => {
+  render(<Tooltip text="Open settings" shortcut="Ctrl+,"><button>Settings</button></Tooltip>);
+  const trigger = screen.getByRole('button', { name: 'Settings' });
+  fireEvent.focus(trigger);
+  const tip = screen.getByRole('tooltip');
+  expect(tip.textContent).toContain('Open settings');
+  expect(trigger.getAttribute('aria-describedby')).toBe(tip.id);
+  fireEvent.keyDown(trigger, { key: 'Escape' });
+  expect(screen.queryByRole('tooltip')).toBeNull();
+  expect(trigger.hasAttribute('aria-describedby')).toBe(false);
 });

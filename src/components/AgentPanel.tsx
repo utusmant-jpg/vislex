@@ -277,6 +277,12 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
             {turn.prompt}
             {turn.status === 'running' && turn.id === running?.id ? <LoaderCircle size={12} className="spin user-message-running" /> : null}
           </div>
+          <div className="assistant-message-head">
+            <span className="assistant-avatar" aria-hidden="true">V</span>
+            <strong>VisLex</strong>
+            <StatusPill state={taskState(turn)} label={turn.status === 'running' ? 'Working' : turn.status === 'paused' ? 'Paused' : turn.error || turn.status === 'failed' ? 'Needs attention' : turn.status === 'complete' ? 'Saved response' : 'Pending'} small />
+            {turn.created_at && Number.isFinite(Date.parse(turn.created_at)) ? <time dateTime={turn.created_at} title={new Date(turn.created_at).toLocaleString()}>{new Date(turn.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}
+          </div>
           <TurnActivity turn={turn} onSource={onSource} live={turn.status === 'running' && live?.task === turn.id ? `${live.activity} · ${live.characters.toLocaleString()} characters received` : null} />
           {turn.status === 'running' && live?.task === turn.id && live.text ? <div className="live-answer">
             <p className="live-answer-caption">Live draft — not yet citation-validated</p>

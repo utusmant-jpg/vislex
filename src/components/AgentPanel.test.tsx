@@ -50,6 +50,7 @@ describe('chat composer interaction', () => {
     const completed = { ...task('answered', 'current-chat'), status: 'complete', answer: 'The report describes three knocks.' };
     panel(snapshot([completed]), 'current-chat');
     expect(screen.getByText('The report describes three knocks.')).toBeTruthy();
+    expect(screen.getByText('Saved response')).toBeTruthy();
     expect(screen.queryByText('AI assessment')).toBeNull();
   });
 

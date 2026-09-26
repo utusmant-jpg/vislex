@@ -1,6 +1,6 @@
 // Design-system primitives shared by every surface: status pills, tooltips, menus,
 // popovers, toasts, skeletons, theme, model picker. Hand-rolled to stay offline.
-import { cloneElement, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { cloneElement, createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle, Check, CheckCircle2, ChevronDown, CircleDashed, Copy, History, LoaderCircle, Lock,
@@ -73,32 +73,45 @@ export function formatClock(seconds: number, withMs = false): string {
 /* --------------------------------- tooltip --------------------------------- */
 
 export function Tooltip({ text, shortcut, children }: { text: string; shortcut?: string; children: ReactElement }) {
+  const id = useId();
   const [point, setPoint] = useState<{ x: number; y: number; below: boolean } | null>(null);
   const timer = useRef<number>(0);
   const target = useRef<HTMLElement | null>(null);
-  const original = children.props as { onMouseEnter?: unknown; onMouseLeave?: unknown; onFocus?: unknown; onBlur?: unknown; ref?: unknown };
-  const show = () => {
+  const original = children.props as {
+    onMouseEnter?: (event: React.MouseEvent) => void; onMouseLeave?: (event: React.MouseEvent) => void;
+    onFocus?: (event: React.FocusEvent) => void; onBlur?: (event: React.FocusEvent) => void;
+    onKeyDown?: (event: React.KeyboardEvent) => void; ref?: React.Ref<HTMLElement>;
+    'aria-describedby'?: string;
+  };
+  const show = (immediate: boolean) => {
     window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => {
+    const display = () => {
       const rect = target.current?.getBoundingClientRect();
-      if (rect) setPoint({ x: rect.left + rect.width / 2, y: rect.top, below: false });
-    }, 450);
+      if (rect) setPoint({ x: Math.max(12, Math.min(window.innerWidth - 12, rect.left + rect.width / 2)), y: rect.top < 48 ? rect.bottom : rect.top, below: rect.top < 48 });
+    };
+    if (immediate) display(); else timer.current = window.setTimeout(display, 400);
   };
   const hide = () => { window.clearTimeout(timer.current); setPoint(null); };
-  useEffect(() => () => window.clearTimeout(timer.current), []);
+  useEffect(() => {
+    window.addEventListener('scroll', hide, true);
+    return () => { window.clearTimeout(timer.current); window.removeEventListener('scroll', hide, true); };
+  }, []);
   return <>
     {cloneElement(children, {
       ref: (node: HTMLElement | null) => {
         target.current = node;
         if (typeof original.ref === 'function') original.ref(node);
+        else if (original.ref && 'current' in original.ref) original.ref.current = node;
       },
-      onMouseEnter: (event: unknown) => { void (original.onMouseEnter as ((e: unknown) => void) | undefined)?.(event); show(); },
-      onMouseLeave: (event: unknown) => { void (original.onMouseLeave as ((e: unknown) => void) | undefined)?.(event); hide(); },
-      onFocus: (event: unknown) => { void (original.onFocus as ((e: unknown) => void) | undefined)?.(event); show(); },
-      onBlur: (event: unknown) => { void (original.onBlur as ((e: unknown) => void) | undefined)?.(event); hide(); },
+      'aria-describedby': point ? [original['aria-describedby'], id].filter(Boolean).join(' ') : original['aria-describedby'],
+      onMouseEnter: (event: React.MouseEvent) => { original.onMouseEnter?.(event); show(false); },
+      onMouseLeave: (event: React.MouseEvent) => { original.onMouseLeave?.(event); hide(); },
+      onFocus: (event: React.FocusEvent) => { original.onFocus?.(event); show(true); },
+      onBlur: (event: React.FocusEvent) => { original.onBlur?.(event); hide(); },
+      onKeyDown: (event: React.KeyboardEvent) => { original.onKeyDown?.(event); if (event.key === 'Escape') hide(); },
     } as Record<string, unknown>)}
     {point ? createPortal(
-      <div className="tooltip" role="tooltip" style={{ left: point.x, top: point.y }} data-below={point.below}>
+      <div id={id} className="tooltip" role="tooltip" style={{ left: point.x, top: point.y }} data-below={point.below}>
         {text}{shortcut ? <kbd>{shortcut}</kbd> : null}
       </div>, document.body) : null}
   </>;
