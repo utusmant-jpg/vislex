@@ -306,6 +306,31 @@ fn reviewed_offline_package_requires_current_human_acceptance_and_escapes_html()
     c.verify_audit().unwrap();
 }
 #[test]
+fn structured_block_status_matches_saved_export_view() {
+    let (dir,mut c,s,t)=setup();
+    let input=json!({"source_id":s,"start":1,"count":2});
+    let output=agent::execute_tool(&mut c,&t,"read_text",&input).unwrap();
+    c.db.execute("INSERT INTO actions(id,task_id,name,input,output,status,created_at) VALUES('block-receipt',?,'read_text',?,?,'complete','now')",rusqlite::params![t,input.to_string(),output.to_string()]).unwrap();
+    let mut p=plan(&s);
+    p["checks"][0]["state"]=json!("done");
+    p["checks"][0]["receipts"]=json!(["block-receipt"]);
+    dossier::save(&mut c,&t,&p).unwrap();
+    assert_eq!(agent::execute_tool(&mut c,&t,"finish_task",&structured_candidate(&s)).unwrap()["status"],"review_required");
+    dossier::review_candidate(&mut c,&t,&structured_review(&s,1,"The witness reports three knocks.")).unwrap();
+    agent::execute_tool(&mut c,&t,"finish_task",&structured_candidate(&s)).unwrap();
+    dossier::human_review(&mut c,&t,1,0,"accepted","Synthetic review").unwrap();
+    let displayed=dossier::view(&c,&t).unwrap();
+    assert_eq!(displayed["completion"]["blocks"][0]["review"],"supported");
+    assert_eq!(displayed["completion"]["outcome"],"declared_checks_complete");
+    let destination=dir.path().join("structured-package");
+    evidence_desk::exports::dossier_bundle(&mut c,&t,&destination).unwrap();
+    let exported:Value=serde_json::from_slice(&std::fs::read(destination.join("dossier.json")).unwrap()).unwrap();
+    assert_eq!(exported["completion"]["blocks"],displayed["completion"]["blocks"]);
+    assert_eq!(exported["completion"]["outcome"],displayed["completion"]["outcome"]);
+    let html=std::fs::read_to_string(destination.join("index.html")).unwrap();
+    assert!(html.contains("&quot;review&quot;: &quot;supported&quot;"));
+}
+#[test]
 fn hypotheses_require_evidence_predictions_and_current_dossier_revision() {
     let (_dir,mut c,s,t)=setup();dossier::save(&mut c,&t,&plan(&s)).unwrap();
     let mut args=json!({"dossier_revision":1,"alternatives":[{"explanation":"The account describes a different event","unresolved_premise":"Event attribution","prediction":"An independent recording places it earlier","discriminating_check":"Compare clock anchors","citations":[format!("evidence:{s}#L1-L1")]}]});
