@@ -35,6 +35,10 @@ fn text<'a>(v: &'a Value, k: &str) -> anyhow::Result<&'a str> {
     v[k].as_str().ok_or_else(|| anyhow::anyhow!("Missing {k}"))
 
 }
+fn export_revision(v:&Value)->anyhow::Result<Option<i64>> {
+    if v.get("expected_revision").is_none() {return Ok(None);}
+    Ok(Some(v["expected_revision"].as_i64().context("Invalid expected_revision")?))
+}
 
 fn provider_key_entry(provider: crate::providers::Provider) -> anyhow::Result<keyring::Entry> {
 
@@ -89,7 +93,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return with_case(app,&case_id,|case|crate::semantic::publish(case,&job,result));
     }
     if action=="export_word" {
-        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_document(case,text(&args,"record_id")?,Path::new(text(&args,"path")?))?)};
+        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;let record_id=text(&args,"record_id")?;let expected=export_revision(&args)?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_document_at_revision(case,record_id,expected,Path::new(text(&args,"path")?))?)};
         crate::exports::run_document(&job)?;
         return with_case(app,&case_id,|case|crate::exports::publish_document(case,&job));
     }
@@ -645,7 +649,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "export_redaction" => crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?,
         "export_record" => {
 
-            c.export_record(text(&args, "record_id")?, Path::new(text(&args, "path")?))?;
+            let record_id=text(&args, "record_id")?;
+            if let Some(expected)=export_revision(&args)? {c.export_record_at_revision(record_id,expected,Path::new(text(&args,"path")?))?;}
+            else {c.export_record(record_id,Path::new(text(&args,"path")?))?;}
 
             json!({"saved":true})
 

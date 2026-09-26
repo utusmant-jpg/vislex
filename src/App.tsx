@@ -116,7 +116,7 @@ function IssueHistory({ issue }: { issue: NonNullable<Snapshot['issues']>[number
   </details>;
 }
 
-export function RecordDetailPanel({caseId,summary,run,refresh}:{caseId:string;summary:RecordSummary;run:(fn:()=>Promise<void>)=>void;refresh:()=>Promise<void>}) {
+export function RecordDetailPanel({caseId,summary,run,refresh,onSource}:{caseId:string;summary:RecordSummary;run:(fn:()=>Promise<void>)=>void;refresh:()=>Promise<void>;onSource:(id:string,locator?:string)=>void}) {
   const [detail,setDetail]=useState<WorkingRecord|null>(null);
   const [error,setError]=useState('');
   useEffect(()=>{
@@ -127,7 +127,7 @@ export function RecordDetailPanel({caseId,summary,run,refresh}:{caseId:string;su
     return ()=>{active=false;};
   },[caseId,summary.id,summary.revision,summary.updated_at,summary.protected,summary.review,summary.stale]);
   return detail?.id===summary.id && detail.revision===summary.revision
-    ? <RecordEditor key={detail.id} record={detail} run={run} refresh={refresh}/>
+    ? <RecordEditor key={detail.id} record={detail} run={run} refresh={refresh} onSource={onSource}/>
     : <div className="empty-state">{error?<p role="alert">Could not load working file: {error}</p>:<p>Loading working file…</p>}</div>;
 }
 
@@ -544,7 +544,7 @@ export default function App() {
             })}
           </div>
           {source ? <EvidenceViewer key={source.id} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} /> : null}
-          {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${record.id}`} caseId={snapshot.id} summary={record} run={run} refresh={refresh}/> : null}
+          {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${record.id}`} caseId={snapshot.id} summary={record} run={run} refresh={refresh} onSource={selectSource}/> : null}
         </main>
       </div>
 

@@ -1139,6 +1139,10 @@ impl Case {
             json!({"record":record_id,"revision":r.revision,"hash":digest(body.as_bytes())}),
         )
     }
+    pub fn export_record_at_revision(&mut self, record_id: &str, expected_revision: i64, destination: &Path) -> Result<()> {
+        ensure!(self.record(record_id)?.revision == expected_revision, "Record changed since export was selected; refresh and try again");
+        self.export_record(record_id, destination)
+    }
 }
 
 /// Permanently delete an entire case folder after explicit confirmation.

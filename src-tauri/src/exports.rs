@@ -112,6 +112,10 @@ pub fn dossier_bundle(case:&mut Case,task:&str,path:&Path)->Result<Value> {
     publish_dossier_bundle(case,&plan,write_dossier_bundle(&plan,path),path)
 }
 pub struct DocumentExport {pub staging:tempfile::TempDir,pub record:Record,pub target:PathBuf,pub format:String,pub dependencies:Vec<(String,String)>}
+pub fn prepare_document_at_revision(case:&Case,record:&str,expected_revision:Option<i64>,target:&Path)->Result<DocumentExport> {
+    if let Some(expected)=expected_revision {ensure!(case.record(record)?.revision==expected,"Record changed since export was selected; refresh and try again");}
+    prepare_document(case,record,target)
+}
 pub fn prepare_document(case:&Case,record:&str,target:&Path)->Result<DocumentExport> {
     destination(case,target)?;let record=case.record(record)?;
     // Pin the exact content hash of each restricted-checked dependency at

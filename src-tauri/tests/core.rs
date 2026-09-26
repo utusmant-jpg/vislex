@@ -345,6 +345,19 @@ fn restricted_dependencies_block_draft_export() {
 }
 
 #[test]
+fn record_export_refuses_a_revision_changed_while_choosing_destination() {
+    let (dir, mut c, _) = setup();
+    let first=c.write_record(None,0,"Memo","note","first","human","initial",None,vec![]).unwrap();
+    let next=c.write_record(Some(&first.id),first.revision,"Memo","note","second","human","edit",None,vec![]).unwrap();
+    let stale=dir.path().join("stale.md");
+    assert!(c.export_record_at_revision(&first.id,first.revision,&stale).is_err());
+    assert!(!stale.exists());
+    let current=dir.path().join("current.md");
+    c.export_record_at_revision(&first.id,next.revision,&current).unwrap();
+    assert!(std::fs::read_to_string(current).unwrap().contains("second"));
+}
+
+#[test]
 fn case_wide_agent_reads_and_edits_existing_records_without_attachments() {
     let (dir, mut case, source) = setup();
     let record = case
@@ -432,6 +445,10 @@ fn passage_search_uses_alternatives_and_searches_saved_records() {
     let result=agent::execute_tool(&mut c,&task,"search_passages",&json!({"terms":["nonexistent","blue","Sample"],"offset":0})).unwrap();
     assert_eq!(result["total"],2);
     assert!(result["matches"].as_array().unwrap().iter().any(|m|m["type"]=="working_record"));
+    let source_hit=result["matches"].as_array().unwrap().iter().find(|m|m["type"]=="source_extraction").unwrap();
+    let locator=source_hit["locator"].as_str().unwrap();
+    assert!(locator.starts_with(&format!("evidence:{sid}#R1L")));
+    assert_eq!(c.validate_citation(locator).unwrap()["revision_binding"],"pinned");
     c.set_restricted(&sid,true).unwrap();
     assert_eq!(agent::execute_tool(&mut c,&task,"search_passages",&json!({"terms":["blue","Sample"],"offset":0})).unwrap()["total"],0);
 }

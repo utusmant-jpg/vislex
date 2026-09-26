@@ -5,7 +5,9 @@ import { JobsCenter, RecordDetailPanel } from './App';
 import type { Snapshot, RecordSummary, WorkingRecord } from './types';
 
 const api = vi.hoisted(() => vi.fn());
-vi.mock('./bridge', () => ({ api, native: false, formatBytes: (value:number) => `${value} bytes`, citationParts: () => null }));
+const save = vi.hoisted(() => vi.fn());
+vi.mock('./bridge', async () => ({ ...await vi.importActual<typeof import('./bridge')>('./bridge'), api, native: false, formatBytes: (value:number) => `${value} bytes` }));
+vi.mock('@tauri-apps/plugin-dialog', async () => ({ ...await vi.importActual<typeof import('@tauri-apps/plugin-dialog')>('@tauri-apps/plugin-dialog'), save }));
 
 function snapshot(): Snapshot {
   return {
@@ -18,7 +20,7 @@ function snapshot(): Snapshot {
     issues: [{ task_id: 'task', name: 'save_dossier', error: 'invalid check tool', count: 9, latest_receipt: 'latest', created_at: '' }],
   };
 }
-beforeEach(() => { api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); });
+beforeEach(() => { api.mockReset(); api.mockResolvedValue({ receipts: [{ id: 'latest', created_at: 'now' }], next_offset: null }); save.mockReset(); });
 afterEach(cleanup);
 
 it('retries the parent discovery run from both failed job cards', async () => {
@@ -71,7 +73,7 @@ it('loads record text on selection and ignores a late result from another case',
   let resolveOld!:(record:WorkingRecord)=>void;
   const old=new Promise<WorkingRecord>(resolve=>{resolveOld=resolve;});
   api.mockImplementation((action:string,args:{case_id?:string})=>action==='record_detail'?(args.case_id==='old-case'?old:Promise.resolve({...summary,content:'New case text'})):Promise.resolve(null));
-  const props={summary,run:(fn:()=>Promise<void>)=>{void fn();},refresh:async()=>undefined};
+  const props={summary,run:(fn:()=>Promise<void>)=>{void fn();},refresh:async()=>undefined,onSource:vi.fn()};
   const view=render(<RecordDetailPanel caseId="old-case" {...props}/>);
   expect(screen.getByText('Loading working file…')).toBeTruthy();
   view.rerender(<RecordDetailPanel caseId="new-case" {...props}/>);
@@ -80,4 +82,21 @@ it('loads record text on selection and ignores a late result from another case',
   await Promise.resolve();
   expect((screen.getByRole('textbox',{name:'Working file content'}) as HTMLTextAreaElement).value).toBe('New case text');
   expect(api).toHaveBeenCalledWith('record_detail',{case_id:'new-case',record_id:'same-id',revision:1});
+});
+
+it('opens a record preview citation and states that export uses saved text', async () => {
+  const summary:RecordSummary={id:'record-1',title:'Synthetic note',kind:'note',revision:1,actor:'human',review:'unreviewed',protected:false,stale:false,updated_at:'now',dependencies:['source-one']};
+  api.mockImplementation(async (action:string)=>action==='record_detail'?{...summary,content:'See evidence:source-one#R1L5-L5'}:null);
+  save.mockResolvedValue('C:\\synthetic\\saved.md');
+  const onSource=vi.fn();
+  render(<RecordDetailPanel caseId="synthetic-case" summary={summary} run={fn=>{void fn();}} refresh={async()=>undefined} onSource={onSource}/>);
+  await screen.findByRole('textbox',{name:'Working file content'});
+  fireEvent.click(screen.getByRole('button',{name:'Preview'}));
+  fireEvent.click(screen.getByTitle('evidence:source-one#R1L5-L5'));
+  expect(onSource).toHaveBeenCalledWith('source-one','R1L5-L5');
+  fireEvent.click(screen.getByRole('button',{name:'Edit'}));
+  fireEvent.change(screen.getByRole('textbox',{name:'Working file content'}),{target:{value:'Unsaved revision text'}});
+  expect(screen.getByText('Export uses the saved revision. Save your changes first to include them.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Export saved revision'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('export_record',{record_id:'record-1',expected_revision:1,path:'C:\\synthetic\\saved.md'}));
 });

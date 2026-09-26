@@ -399,6 +399,7 @@ fn semantic_search_finds_synonyms_and_rejects_changed_permissions() {
     let job=evidence_desk::semantic::prepare(&case,"A car hit a person walking",vec![id.clone()]).unwrap();
     let output=evidence_desk::semantic::run(&job).unwrap();
     let result=evidence_desk::semantic::publish(&mut case,&job,output.clone()).unwrap();
+    assert!(result["results"].as_array().unwrap().iter().all(|hit|hit["locator"].as_str().unwrap().starts_with(&format!("evidence:{id}#R1L"))));
     assert!(result["results"][0]["excerpt"].as_str().unwrap().contains("automobile"));assert_eq!(result["remaining_passages"],0);
     case.db.execute("UPDATE sources SET restricted=1 WHERE id=?",[&id]).unwrap();
     assert!(evidence_desk::semantic::publish(&mut case,&job,output).is_err());

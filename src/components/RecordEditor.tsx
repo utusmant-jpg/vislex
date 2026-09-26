@@ -8,7 +8,7 @@ import type { WorkingRecord, Revision } from '../types';
 // Keep unsaved drafts while switching tabs; never put case content in browser storage.
 const drafts = new Map<string, { content: string; title: string; base: number }>();
 
-export default function RecordEditor({ record, refresh, run }: { record: WorkingRecord; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void }) {
+export default function RecordEditor({ record, refresh, run, onSource }: { record: WorkingRecord; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; onSource: (id: string, locator?: string) => void }) {
   const [content, setContent] = useState(drafts.get(record.id)?.content ?? record.content); const [title, setTitle] = useState(drafts.get(record.id)?.title ?? record.title);
   const [base, setBase] = useState(drafts.get(record.id)?.base ?? record.revision); const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [preview, setPreview] = useState(false);
@@ -18,11 +18,12 @@ export default function RecordEditor({ record, refresh, run }: { record: Working
   return <div className="record-view">
     <div className="viewer-tools"><span className="badge"><FilePenLine size={13}/>{record.kind.toUpperCase()}</span><span className={record.stale ? 'amber-text' : 'muted'}>{record.stale ? 'Needs recheck' : record.review}</span><div className="spacer"/>
       <button className="quiet" onClick={() => run(async () => setRevisions(await api<Revision[]>('revisions', { record_id: record.id })))}><History size={14}/>History</button>
-      <button className="quiet" title="Export a draft" onClick={() => run(async () => { const path = await save({ defaultPath: `${record.title.replace(/[^a-zA-Z0-9 -]/g, '')}.md`, filters: [{ name: 'Draft report', extensions: ['md', 'json', 'txt', 'docx', 'pdf'] }] }); if (path) await api(/\.(docx|pdf)$/i.test(path)?'export_word':'export_record', { record_id: record.id, path }); })}><Download size={14}/>Export</button>
+      <button className="quiet" title="Export the saved revision" onClick={() => run(async () => { const expected_revision = record.revision; const path = await save({ defaultPath: `${record.title.replace(/[^a-zA-Z0-9 -]/g, '')}.md`, filters: [{ name: 'Saved report', extensions: ['md', 'json', 'txt', 'docx', 'pdf'] }] }); if (path) await api(/\.(docx|pdf)$/i.test(path)?'export_word':'export_record', { record_id: record.id, expected_revision, path }); })}><Download size={14}/>Export saved revision</button>
     </div>
     {changed ? <div className="notice warning">A newer revision exists. Your local draft has been preserved. <button onClick={() => { setContent(record.content); setTitle(record.title); setBase(record.revision); }}>Load latest revision</button></div> : null}
+    {dirty ? <p className="small muted">Export uses the saved revision. Save your changes first to include them.</p> : null}
     <div className="editor-heading"><input aria-label="Working file title" value={title} onChange={e => setTitle(e.target.value)} /><div><span className="mono">REV {base}</span><span>{record.actor === 'agent' ? 'AI-updated / unreviewed' : record.actor === 'processor' ? 'Machine transcript / unreviewed' : 'Manual working file'}</span><span>{dirty ? 'Unsaved changes' : 'Saved in case database'}</span></div></div>
-    {preview ? <div className="markdown-editor record-preview"><Markdown text={content} onSource={() => undefined} /></div>
+    {preview ? <div className="markdown-editor record-preview"><Markdown text={content} onSource={onSource} /></div>
       : <textarea className="markdown-editor" aria-label="Working file content" spellCheck={false} value={content} onChange={e => setContent(e.target.value)} />}
     <div className="editor-actions">
       <button className="quiet" aria-pressed={preview} onClick={() => setPreview(value => !value)}>{preview ? <PenLine size={14}/> : <Eye size={14}/>}{preview ? 'Edit' : 'Preview'}</button>
