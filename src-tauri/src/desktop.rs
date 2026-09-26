@@ -846,6 +846,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 return Ok(json!({"task_id":task,"conversation_id":conversation}));
             }
             let case_id = c.meta("id")?.unwrap_or_default();
+            let session_epoch = state.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
 
             let handle = app.clone();
 
@@ -853,7 +854,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             tauri::async_runtime::spawn(async move {
 
-                run_agent(handle, case_id, tid).await;
+                run_agent(handle, case_id, session_epoch, tid).await;
 
             });
 
@@ -879,6 +880,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             agent::resume(c, &task)?;
 
             let case_id = c.meta("id")?.unwrap_or_default();
+            let session_epoch = state.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
 
             let handle = app.clone();
 
@@ -886,7 +888,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
             tauri::async_runtime::spawn(async move {
 
-                run_agent(handle, case_id, tid).await;
+                run_agent(handle, case_id, session_epoch, tid).await;
 
             });
 
@@ -902,8 +904,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             provider_key_entry(profile.provider)?.get_password().map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
             let (task,conversation)=agent::continue_paused(c,old)?;
             let case_id=c.meta("id")?.unwrap_or_default();
+            let session_epoch=state.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
             let handle=app.clone();let tid=task.clone();
-            tauri::async_runtime::spawn(async move {run_agent(handle,case_id,tid).await;});
+            tauri::async_runtime::spawn(async move {run_agent(handle,case_id,session_epoch,tid).await;});
             json!({"task_id":task,"conversation_id":conversation})
         }
 
@@ -992,13 +995,13 @@ fn with_case_expected<T>(
 
 }
 
-async fn cancelled(app: &tauri::AppHandle, case_id: &str, task: &str) {
+async fn cancelled(app: &tauri::AppHandle, case_id: &str, epoch:u64, task: &str) {
 
     loop {
 
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-        let active = with_case(app, case_id, |c| {
+        let active = with_case_expected(app, case_id, Some(epoch), |c| {
 
             let status: String =
 
@@ -1023,20 +1026,21 @@ async fn cancelled(app: &tauri::AppHandle, case_id: &str, task: &str) {
 }
 
 fn kick_transcriptions(app: tauri::AppHandle, case_id: String) {
+    let epoch=app.state::<AppState>().session_epoch.load(std::sync::atomic::Ordering::SeqCst);
 
     tauri::async_runtime::spawn_blocking(move || loop {
 
-        let job = match with_case(&app, &case_id, crate::transcription::next) {
+        let job = match with_case_expected(&app, &case_id, Some(epoch), crate::transcription::next) {
 
             Ok(Some(job)) => job,
 
-            _ => {kick_automatic(app.clone(),case_id.clone());break},
+            _ => {if app.state::<AppState>().session_epoch.load(std::sync::atomic::Ordering::SeqCst)==epoch {kick_automatic(app.clone(),case_id.clone());}break},
 
         };
 
         let result = crate::transcription::run(&job).and_then(|value| crate::transcription::stage_transcript(&job,value)).and_then(|staged| {
 
-            with_case(&app, &case_id, |case| {
+            with_case_expected(&app, &case_id, Some(epoch), |case| {
 
                 crate::transcription::publish_staged_transcript(case, &job, staged)
 
@@ -1046,7 +1050,7 @@ fn kick_transcriptions(app: tauri::AppHandle, case_id: String) {
 
         if let Err(error) = result {
 
-            let _ = with_case(&app, &case_id, |case| {
+            let _ = with_case_expected(&app, &case_id, Some(epoch), |case| {
 
                 crate::transcription::fail(case, &job, &error.to_string())
 
@@ -1076,22 +1080,23 @@ fn kick_transcriptions(app: tauri::AppHandle, case_id: String) {
 
 }
 
-async fn run_agent(app: tauri::AppHandle, case_id: String, task: String) {
-    run_session(app.clone(),case_id.clone(),task,true).await;
-    kick_automatic(app,case_id);
+async fn run_agent(app: tauri::AppHandle, case_id: String, epoch:u64, task: String) {
+    run_session(app.clone(),case_id.clone(),epoch,task,true).await;
+    let state=app.state::<AppState>();
+    if state.session_epoch.load(std::sync::atomic::Ordering::SeqCst)==epoch {kick_automatic(app,case_id);}
 }
-async fn run_team_phase(app:&tauri::AppHandle,case_id:&str,parent:&str,phase:&str)->anyhow::Result<()> {
-    let children=with_case(app,case_id,|c|crate::teams::prepare(c,parent,phase))?;
+async fn run_team_phase(app:&tauri::AppHandle,case_id:&str,epoch:u64,parent:&str,phase:&str)->anyhow::Result<()> {
+    let children=with_case_expected(app,case_id,Some(epoch),|c|crate::teams::prepare(c,parent,phase))?;
     let mut runs=tokio::task::JoinSet::new();
     for child in children {
         let handle=app.clone();let cid=case_id.to_string();
-        runs.spawn(async move {run_session(handle,cid,child,false).await;});
+        runs.spawn(async move {run_session(handle,cid,epoch,child,false).await;});
     }
     while let Some(result)=runs.join_next().await {result?;}
-    with_case(app,case_id,|c|crate::teams::merge(c,parent,phase))?;
+    with_case_expected(app,case_id,Some(epoch),|c|crate::teams::merge(c,parent,phase))?;
     Ok(())
 }
-fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)->std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send>> {
+fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordinator:bool)->std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send>> {
     Box::pin(async move {
 
     let result=async {
@@ -1099,25 +1104,25 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
 
 
 
-        if coordinator {run_team_phase(&app,&case_id,&task,"investigate").await?;}
+        if coordinator {run_team_phase(&app,&case_id,epoch,&task,"investigate").await?;}
         loop {
             if coordinator {
-                let pending=with_case(&app,&case_id,|c|c.meta(&format!("team_pending:{task}")))?;
-                if let Some(phase)=pending {run_team_phase(&app,&case_id,&task,&phase).await?;}
-                run_team_phase(&app,&case_id,&task,"review").await?;
+                let pending=with_case_expected(&app,&case_id,Some(epoch),|c|c.meta(&format!("team_pending:{task}")))?;
+                if let Some(phase)=pending {run_team_phase(&app,&case_id,epoch,&task,&phase).await?;}
+                run_team_phase(&app,&case_id,epoch,&task,"review").await?;
             }
-            let provider=with_case(&app,&case_id,|c|Ok(crate::providers::task_profile(c,&task)?.provider))?;
+            let provider=with_case_expected(&app,&case_id,Some(epoch),|c|Ok(crate::providers::task_profile(c,&task)?.provider))?;
             let key=provider_key_entry(provider)?.get_password()?;
-            let prepared=with_case(&app,&case_id,|c|agent::prepare_request(c,&task))?;
+            let prepared=with_case_expected(&app,&case_id,Some(epoch),|c|agent::prepare_request(c,&task))?;
             anyhow::ensure!(prepared.provider==provider,"Provider changed before dispatch");
 
             let _=app.emit("case-changed",());
 
             let response=tokio::select! {
 
-                result=crate::providers::send(prepared.provider,&key,prepared.body,|delta|{let _=app.emit("agent-progress",json!({"case_id":case_id,"task_id":task,"transmission_id":prepared.transmission,"delta":delta}));})=>result,
+                result=crate::providers::send(prepared.provider,&key,prepared.body,|delta|{let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":delta}));})=>result,
 
-                _=cancelled(&app,&case_id,&task)=>Err(anyhow::anyhow!("Request cancelled; transmission may have occurred")),
+                _=cancelled(&app,&case_id,epoch,&task)=>Err(anyhow::anyhow!("Request cancelled; transmission may have occurred")),
 
             };
 
@@ -1125,27 +1130,27 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
 
                 Ok(value)=>{
                     // Authorization and registration hold the lock briefly; worker decoding does not.
-                    let registered=with_case(&app,&case_id,|c|agent::prepare_media(c,&task,&prepared.transmission,&value));
+                    let registered=with_case_expected(&app,&case_id,Some(epoch),|c|agent::prepare_media(c,&task,&prepared.transmission,&value));
                     let (jobs,preparation_error)=match registered {Ok(j)=>(j,None),Err(e)=>(vec![],Some(e.to_string()))};
                     let job_ids=jobs.iter().map(|j|j.job_id.clone()).collect::<Vec<_>>();
                     let mut media=tauri::async_runtime::spawn_blocking(move || agent::PreparedMedia{jobs:jobs.into_iter().map(|job|{let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));(job,staged)}).collect(),cleanup:vec![],external:true,error:preparation_error}).await?;
-                    let semantic=with_case(&app,&case_id,|c|{c.set_meta(&format!("semantic_result:{task}"),"")?;agent::prepare_semantic(c,&task,&prepared.transmission,&value)});
+                    let semantic=with_case_expected(&app,&case_id,Some(epoch),|c|{c.set_meta(&format!("semantic_result:{task}"),"")?;agent::prepare_semantic(c,&task,&prepared.transmission,&value)});
                     if let Ok(Some(job))=semantic {
                         let (job,output)=tauri::async_runtime::spawn_blocking(move || {let output=crate::semantic::run(&job);(job,output)}).await?;
-                        with_case(&app,&case_id,|c|{
+                        with_case_expected(&app,&case_id,Some(epoch),|c|{
                             let query:Value=serde_json::from_str(value["output"].as_array().unwrap().iter().find(|v|v["name"]=="search_semantic").unwrap()["arguments"].as_str().unwrap())?;
                             let result=output.and_then(|v|crate::semantic::publish(c,&job,v));
                             let stored=match result {Ok(v)=>json!({"query":query["query"],"result":v}),Err(e)=>json!({"query":query["query"],"error":e.to_string()})};
                             c.set_meta(&format!("semantic_result:{task}"),&stored.to_string())?;Ok(())
                         })?;
                     }
-                    let handled=with_case(&app,&case_id,|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
+                    let handled=with_case_expected(&app,&case_id,Some(epoch),|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
                     for job in &media.cleanup {let _=crate::processing::cleanup_published_input(job);}
-                    with_case(&app,&case_id,|c|{for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}Ok(())})?;
+                    with_case_expected(&app,&case_id,Some(epoch),|c|{for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}Ok(())})?;
                     let more=handled?;kick_transcriptions(app.clone(),case_id.clone());let _=app.emit("case-changed",());if !more{break;}
                 },
 
-                Err(error)=>{with_case(&app,&case_id,|c|{c.db.execute("UPDATE transmissions SET status='uncertain' WHERE id=?",[&prepared.transmission])?;Ok(())})?;return Err(error);}
+                Err(error)=>{with_case_expected(&app,&case_id,Some(epoch),|c|{c.db.execute("UPDATE transmissions SET status='uncertain' WHERE id=?",[&prepared.transmission])?;Ok(())})?;return Err(error);}
 
             }
 
@@ -1155,7 +1160,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
 
     if let Err(e) = result {
 
-        let _ = with_case(&app, &case_id, |c| agent::pause(c, &task, &e.to_string()));
+        let _ = with_case_expected(&app, &case_id, Some(epoch), |c| agent::pause(c, &task, &e.to_string()));
 
     }
 
@@ -1379,12 +1384,14 @@ fn apply_ai_defaults(app:&tauri::AppHandle,case:&mut Case)->anyhow::Result<()> {
     Ok(())
 }
 fn kick_discovery(app:tauri::AppHandle,case_id:String) {
+    let epoch=app.state::<AppState>().session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    let session_key=format!("{case_id}:{epoch}");
     static ACTIVE:std::sync::OnceLock<Mutex<std::collections::HashSet<String>>>=std::sync::OnceLock::new();
     let active=ACTIVE.get_or_init(||Mutex::new(std::collections::HashSet::new()));
-    if !active.lock().unwrap_or_else(|e|e.into_inner()).insert(case_id.clone()) {return;}
+    if !active.lock().unwrap_or_else(|e|e.into_inner()).insert(session_key.clone()) {return;}
     struct Lease {active:&'static Mutex<std::collections::HashSet<String>>,id:String}
     impl Drop for Lease {fn drop(&mut self){self.active.lock().unwrap_or_else(|e|e.into_inner()).remove(&self.id);}}
-    let lease=Lease{active,id:case_id.clone()};
+    let lease=Lease{active,id:session_key};
     tauri::async_runtime::spawn_blocking(move || {
         let _lease=lease;
         // One lane can run OCR while the other runs overview. discovery::next
@@ -1393,29 +1400,29 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
         std::thread::scope(|scope| {
             for _ in 0..2 {
                 let app=app.clone();let case_id=case_id.clone();
-                scope.spawn(move || run_discovery_lane(&app,&case_id));
+                scope.spawn(move || run_discovery_lane(&app,&case_id,epoch));
             }
         });
-        let task=with_case(&app,&case_id,|c| {
+        let task=with_case_expected(&app,&case_id,Some(epoch),|c| {
             let provider=crate::providers::load(c)?.provider;
             if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
             crate::automatic::start_review(c)
         });
         if let Ok(Some(task))=task {
             let _=app.emit("case-changed",());
-            tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});
+            tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});
         }
     });
 }
-fn run_discovery_lane(app:&tauri::AppHandle,case_id:&str) {
+fn run_discovery_lane(app:&tauri::AppHandle,case_id:&str,epoch:u64) {
     loop {
-        let job=match with_case(app,case_id,crate::discovery::next) {
+        let job=match with_case_expected(app,case_id,Some(epoch),crate::discovery::next) {
             Ok(Some(job))=>job,
-            Ok(None)=>{let pending=with_case(app,case_id,|c|Ok(c.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE s.restricted=0 AND j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index'))",[],|r|r.get::<_,bool>(0))?)).unwrap_or(false);if pending {std::thread::sleep(std::time::Duration::from_millis(500));continue;}break;},
+            Ok(None)=>{let pending=with_case_expected(app,case_id,Some(epoch),|c|Ok(c.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE s.restricted=0 AND j.status='queued' AND j.kind IN ('video_ocr_index','video_overview_index'))",[],|r|r.get::<_,bool>(0))?)).unwrap_or(false);if pending {std::thread::sleep(std::time::Duration::from_millis(500));continue;}break;},
             Err(_)=>break
         };
         let staged=crate::processing::stage_prepared(&job.processor,crate::processing::run_prepared(&job.processor));
-        let published=with_case(app,case_id,|c|{crate::discovery::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
+        let published=with_case_expected(app,case_id,Some(epoch),|c|{crate::discovery::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
         if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);}
         let _=app.emit("case-changed",());
     }
@@ -1423,28 +1430,29 @@ fn run_discovery_lane(app:&tauri::AppHandle,case_id:&str) {
 fn kick_automatic(app:tauri::AppHandle,case_id:String) {
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return;}
+    let epoch=app.state::<AppState>().session_epoch.load(std::sync::atomic::Ordering::SeqCst);
     kick_semantic(app.clone(),case_id.clone());
     kick_discovery(app.clone(),case_id.clone());
     for _ in 0..2 {
         let app=app.clone();let case_id=case_id.clone();
         tauri::async_runtime::spawn_blocking(move || {
             loop {
-                let job=match with_case(&app,&case_id,crate::automatic::next) {Ok(Some(job))=>job,_=>break};
+                let job=match with_case_expected(&app,&case_id,Some(epoch),crate::automatic::next) {Ok(Some(job))=>job,_=>break};
                 let staged=crate::processing::stage_prepared(&job.processor,crate::processing::run_prepared(&job.processor));
-                let published=with_case(&app,&case_id,|c|{crate::automatic::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
+                let published=with_case_expected(&app,&case_id,Some(epoch),|c|{crate::automatic::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
                 if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);kick_semantic(app.clone(),case_id.clone());}
                 let _=app.emit("case-changed",());
-                let task=with_case(&app,&case_id,|c| {let provider=crate::providers::load(c)?.provider;if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}crate::automatic::start_review(c)});
-                if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});}
+                let task=with_case_expected(&app,&case_id,Some(epoch),|c| {let provider=crate::providers::load(c)?.provider;if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}crate::automatic::start_review(c)});
+                if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});}
             }
-            let task=with_case(&app,&case_id,|c| {
+            let task=with_case_expected(&app,&case_id,Some(epoch),|c| {
                 let provider=crate::providers::load(c)?.provider;
                 if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
                 crate::automatic::start_review(c)
             });
             if let Ok(Some(task))=task {
                 let _=app.emit("case-changed",());
-                tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});
+                tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});
             }
         });
     }
@@ -1453,17 +1461,19 @@ fn kick_semantic(app:tauri::AppHandle,case_id:String) {
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return;}
     let state=app.state::<AppState>();
+    let epoch=state.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    let session_key=format!("{case_id}:{epoch}");
     {
         let mut active=state.semantic_indexing.lock().unwrap_or_else(|e|e.into_inner());
-        if let Some(dirty)=active.get_mut(&case_id){*dirty=true;return;}
-        active.insert(case_id.clone(),false);
+        if let Some(dirty)=active.get_mut(&session_key){*dirty=true;return;}
+        active.insert(session_key.clone(),false);
     }
     tauri::async_runtime::spawn_blocking(move || {
-        struct Registration {app:tauri::AppHandle,case_id:String}
-        impl Drop for Registration {fn drop(&mut self){let state=self.app.state::<AppState>();state.semantic_indexing.lock().unwrap_or_else(|e|e.into_inner()).remove(&self.case_id);}}
-        let _registration=Registration{app:app.clone(),case_id:case_id.clone()};
+        struct Registration {app:tauri::AppHandle,session_key:String}
+        impl Drop for Registration {fn drop(&mut self){let state=self.app.state::<AppState>();state.semantic_indexing.lock().unwrap_or_else(|e|e.into_inner()).remove(&self.session_key);}}
+        let _registration=Registration{app:app.clone(),session_key:session_key.clone()};
         loop {
-            let prepared=with_case(&app,&case_id,|case|{
+            let prepared=with_case_expected(&app,&case_id,Some(epoch),|case|{
                 let scope=case.sources()?.into_iter().filter(|source|!source.restricted).map(|source|source.id).collect();
                 crate::semantic::prepare_background(case,scope)
             });
@@ -1471,15 +1481,15 @@ fn kick_semantic(app:tauri::AppHandle,case_id:String) {
                 Ok(Some(job))=>job,
                 Ok(None)=>{
                     let state=app.state::<AppState>();let mut active=state.semantic_indexing.lock().unwrap_or_else(|e|e.into_inner());
-                    if let Some(dirty)=active.get_mut(&case_id) {if *dirty {*dirty=false;continue;}}
-                    active.remove(&case_id);break;
+                    if let Some(dirty)=active.get_mut(&session_key) {if *dirty {*dirty=false;continue;}}
+                    active.remove(&session_key);break;
                 },
                 Err(_)=>break
             };
             let output=crate::semantic::run(&job);
-            let published=with_case(&app,&case_id,|case|crate::semantic::publish_index(case,&job,&output?));
+            let published=with_case_expected(&app,&case_id,Some(epoch),|case|crate::semantic::publish_index(case,&job,&output?));
             if let Err(error)=published {
-                let _=with_case(&app,&case_id,|case|{case.audit("semantic_index_paused",json!({"reason":error.to_string().chars().take(300).collect::<String>()}))?;Ok(())});
+                let _=with_case_expected(&app,&case_id,Some(epoch),|case|{case.audit("semantic_index_paused",json!({"reason":error.to_string().chars().take(300).collect::<String>()}))?;Ok(())});
                 break;
             }
         }
