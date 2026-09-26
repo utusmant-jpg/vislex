@@ -248,7 +248,7 @@ impl Case {
         if !create && version < 3 {
             db.backup(rusqlite::DatabaseName::Main, root.join("pre-migration-v2.sqlite3"), None)?;
         }
-        db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_tasks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),conversation_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hidden_conversations(id TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS conversation_lookup ON conversation_tasks(conversation_id);")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_tasks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),conversation_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hidden_conversations(id TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS conversation_lookup ON conversation_tasks(conversation_id); CREATE INDEX IF NOT EXISTS tasks_created_id ON tasks(created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS records_updated_id ON records(updated_at DESC,id DESC);")?;
         if version < 5 {
             if !create {
                 let snapshot = if version < 4 { "pre-migration-v3.sqlite3" } else { "pre-migration-v4.sqlite3" };
@@ -1007,16 +1007,33 @@ impl Case {
         receipt["skipped"] = json!(skipped);
         Ok(receipt)
     }
+    pub fn task_page(&self,before:Option<(&str,&str)>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT t.id,substr(t.prompt,1,500),t.mode,t.status,t.step,substr(t.answer,1,200),substr(t.error,1,300),t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),COALESCE(ct.conversation_id,t.id),length(t.answer)>200,m.value FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id LEFT JOIN meta m ON m.key='chat_title:'||COALESCE(ct.conversation_id,t.id) WHERE t.id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE(ct.conversation_id,t.id) NOT IN (SELECT id FROM hidden_conversations) AND (?1 IS NULL OR t.created_at<?1 OR (t.created_at=?1 AND t.id<?2)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
+        let mut tasks=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"conversation_id":r.get::<_,String>(11)?,"answer_truncated":r.get::<_,bool>(12)?,"title":r.get::<_,Option<String>>(13)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=tasks.len()>50;tasks.truncate(50);
+        let next_cursor=if more {tasks.last().map(|task|json!({"created_at":task["created_at"],"id":task["id"]}))}else{None};
+        Ok(json!({"tasks":tasks,"next_cursor":next_cursor}))
+    }
+    pub fn conversation_detail(&self,conversation:&str,before:Option<(&str,&str)>)->Result<Value> {
+        ensure!(!self.db.query_row("SELECT EXISTS(SELECT 1 FROM hidden_conversations WHERE id=?)",[conversation],|r|r.get::<_,bool>(0))?,"Conversation is hidden");
+        let mut stmt=self.db.prepare("SELECT t.id,t.prompt,t.mode,t.status,t.step,t.answer,t.error,t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id WHERE COALESCE(ct.conversation_id,t.id)=?1 AND t.id NOT IN (SELECT task_id FROM agent_assignments) AND (?2 IS NULL OR t.created_at<?2 OR (t.created_at=?2 AND t.id<?3)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
+        let mut tasks=stmt.query_map(params![conversation,before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"conversation_id":conversation})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let has_older=tasks.len()>50;tasks.truncate(50);
+        for task in &mut tasks {task["progress"]=serde_json::to_value(crate::review_progress::load(self,task["id"].as_str().unwrap_or_default())?)?;task["title"]=json!(self.meta(&format!("chat_title:{conversation}"))?);}
+        let next_cursor=if has_older {tasks.last().map(|task|json!({"created_at":task["created_at"],"id":task["id"]}))}else{None};
+        Ok(json!({"tasks":tasks,"has_older":has_older,"next_cursor":next_cursor}))
+    }
+    pub fn case_summary(&self)->Result<Value> {
+        let (source_count,record_count,task_count,job_count):(i64,i64,i64,i64)=self.db.query_row("SELECT (SELECT count(*) FROM sources),(SELECT count(*) FROM records),(SELECT count(*) FROM tasks),(SELECT count(*) FROM processing_jobs)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        let audit_seq:i64=self.db.query_row("SELECT COALESCE(MAX(seq),0) FROM audit",[],|r|r.get(0))?;
+        let action_rowid:i64=self.db.query_row("SELECT COALESCE(MAX(rowid),0) FROM actions",[],|r|r.get(0))?;
+        let task_update:String=self.db.query_row("SELECT COALESCE(MAX(updated_at),'') FROM tasks",[],|r|r.get(0))?;
+        let (queued,running,failed,complete):(i64,i64,i64,i64)=self.db.query_row("SELECT COALESCE(SUM(status='queued'),0),COALESCE(SUM(status='running'),0),COALESCE(SUM(status IN ('failed','interrupted')),0),COALESCE(SUM(status='complete'),0) FROM processing_jobs",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        let viewer_request=self.meta("viewer_request")?.map(|value|digest(value.as_bytes()));
+        Ok(json!({"case_id":self.meta("id")?,"generation":self.generation()?,"audit_seq":audit_seq,"action_rowid":action_rowid,"viewer_request_hash":viewer_request,"task_update":task_update,"source_count":source_count,"record_count":record_count,"task_count":task_count,"job_count":job_count,"jobs_queued":queued,"jobs_running":running,"jobs_failed":failed,"jobs_complete":complete}))
+    }
     pub fn snapshot(&self) -> Result<Value> {
-        let mut stmt=self.db.prepare("SELECT id,prompt,mode,status,step,answer,error,generation,created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=tasks.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=tasks.id) FROM tasks WHERE id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE((SELECT conversation_id FROM conversation_tasks WHERE task_id=tasks.id),tasks.id) NOT IN (SELECT id FROM hidden_conversations) ORDER BY created_at DESC")?;
-        let tasks=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let mut tasks = tasks;
-        for task in &mut tasks {
-            let conversation: Option<String> = self.db.query_row("SELECT conversation_id FROM conversation_tasks WHERE task_id=?", [task["id"].as_str().unwrap_or_default()], |r|r.get(0)).optional()?;
-            task["conversation_id"]=json!(conversation.unwrap_or_else(||task["id"].as_str().unwrap_or_default().to_string()));
-            task["progress"] = serde_json::to_value(crate::review_progress::load(self,task["id"].as_str().unwrap_or_default())?)?;
-            task["title"] = json!(self.meta(&format!("chat_title:{}", task["conversation_id"].as_str().unwrap_or_default()))?);
-        }
+        let tasks=self.task_page(None)?["tasks"].clone();
         let mut jobs = self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,j.error,j.created_at,(EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) OR EXISTS(SELECT 1 FROM processing_jobs parent JOIN processing_jobs newer ON newer.source_id=parent.source_id AND newer.kind=parent.kind AND newer.rowid>parent.rowid WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id))),(SELECT parent.id FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id) ORDER BY parent.rowid DESC LIMIT 1) FROM processing_jobs j JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC")?;
         let jobs = jobs.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?,"parent_run_id":r.get::<_,Option<String>>(8)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let mut issues = self.db.prepare("SELECT a.task_id,a.name,a.output,COUNT(*),(SELECT last.id FROM actions last WHERE last.status='failed' AND last.task_id=a.task_id AND last.name=a.name AND last.output=a.output ORDER BY last.rowid DESC LIMIT 1),MAX(a.created_at) FROM actions a WHERE a.status='failed' GROUP BY a.task_id,a.name,a.output ORDER BY MAX(a.rowid) DESC LIMIT 100")?;

@@ -53,7 +53,9 @@
   let staleDetailDenied=false;try{await invoke('record_detail',{case_id:'other-case',record_id:record.id,revision:record.revision});}catch{staleDetailDenied=true;}
   if(!staleDetailDenied)throw new Error('Cross-case record detail was accepted');
   const exports=[];
-  for(const ext of ['docx','pdf'])exports.push(await invoke('export_word',{record_id:record.id,path:root+'/artifacts/acceptance-'+run+'.'+ext}));
+  for(const ext of ['docx','pdf'])exports.push(await invoke('export_word',{case_id:snapshot.id,record_id:record.id,path:root+'/artifacts/acceptance-'+run+'.'+ext}));
+  let crossCaseExportDenied=false;try{await invoke('export_record',{case_id:'old-case',record_id:record.id,expected_revision:record.revision,path:root+'/artifacts/wrong-case-'+run+'.md'});}catch{crossCaseExportDenied=true;}
+  if(!crossCaseExportDenied)throw new Error('Export accepted a stale case identity');
   const redaction=await invoke('prepare_redaction',{source_id:photo.id,boxes:[{page:1,x:0,y:0,width:100,height:30}]});
   const derivative=redaction.published.find(p=>p.metadata.mime==='application/pdf');
   let denied=false;try{await invoke('export_redaction',{artifact_id:derivative.artifact_id,path:root+'/artifacts/unreviewed-'+run+'.pdf'});}catch{denied=true;}
@@ -72,5 +74,5 @@
   const draft=await waitFor(()=>[...document.querySelectorAll('button.library-row')].find(b=>b.querySelector('.library-name')?.textContent==='Synthetic native draft'),'working-file entry');draft.click();
   await waitFor(()=>document.querySelector('textarea[aria-label="Working file content"]')?.value===record.content,'lazy working-file detail');
   if(document.querySelector('.saved-progress,.question-dossier,.context-note'))throw new Error('Internal review panels leaked into normal chat');
-  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.sources.length,snapshot_latency_ms:latencies,semantic_results:search.results.length,remaining_passages:search.remaining_passages,exports,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
+  return {run,discovery,discovery_snapshot_latency_ms:discoveryLatency,chat_answer_rendered:true,docx_preview_rendered:true,unobscured_ui:!document.querySelector('dialog[open]'),documents,inventory_answer:inventory.answer,case_id:snapshot.id,source_count:snapshot.sources.length,snapshot_latency_ms:latencies,semantic_results:search.results.length,remaining_passages:search.remaining_passages,exports,cross_case_export_denied:crossCaseExportDenied,unreviewed_redaction_denied:denied,playback_origin:info.metadata,provider_calls:0};
 })()

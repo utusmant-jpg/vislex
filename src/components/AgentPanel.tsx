@@ -146,7 +146,33 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const composer = useRef<HTMLTextAreaElement>(null);
   const following = useRef(true);
   const [showJump, setShowJump] = useState(false);
-  const turns = (snapshot?.tasks ?? []).filter(task => (task.conversation_id ?? task.id) === conversationId).slice().reverse();
+  const [conversationDetail, setConversationDetail] = useState<{ caseId: string; conversationId: string; tasks: Task[]; nextCursor: { created_at: string; id: string } | null } | null>(null);
+  const [loadingOlderTurns, setLoadingOlderTurns] = useState(false);
+  const summarySignature = (snapshot?.tasks ?? []).filter(turn => (turn.conversation_id ?? turn.id) === conversationId).map(turn => `${turn.id}:${turn.status}:${turn.step}:${turn.answer.length}`).join('|');
+  useEffect(() => {
+    if (!snapshot || !conversationId) { setConversationDetail(null); return; }
+    let active = true;
+    api<{ tasks: Task[]; next_cursor: { created_at: string; id: string } | null }>('conversation_detail', { case_id: snapshot.id, conversation_id: conversationId })
+      .then(detail => { if (active) setConversationDetail(detail && Array.isArray(detail.tasks) ? { caseId: snapshot.id, conversationId, tasks: detail.tasks, nextCursor: detail.next_cursor ?? null } : null); })
+      .catch(() => { if (active) setConversationDetail(null); });
+    return () => { active = false; };
+  }, [snapshot?.id, conversationId, summarySignature]);
+  const turns = (conversationDetail && conversationDetail.caseId === snapshot?.id && conversationDetail.conversationId === conversationId
+    ? conversationDetail.tasks : (snapshot?.tasks ?? []).filter(turn => (turn.conversation_id ?? turn.id) === conversationId)).slice().reverse();
+  function loadOlderTurns() {
+    if (!snapshot || !conversationId || !conversationDetail?.nextCursor || loadingOlderTurns) return;
+    const caseId = snapshot.id;
+    const conversation = conversationId;
+    const cursor = conversationDetail.nextCursor;
+    setLoadingOlderTurns(true);
+    run(async () => {
+      try {
+        const page = await api<{ tasks: Task[]; next_cursor: { created_at: string; id: string } | null }>('conversation_detail', { case_id: caseId, conversation_id: conversation, before: cursor });
+        setConversationDetail(current => current?.caseId === caseId && current.conversationId === conversation && current.nextCursor?.id === cursor.id
+          ? { ...current, tasks: [...current.tasks, ...page.tasks.filter(task => !current.tasks.some(existing => existing.id === task.id))], nextCursor: page.next_cursor ?? null } : current);
+      } finally { setLoadingOlderTurns(false); }
+    });
+  }
   const task = turns.at(-1);
   const running = turns.find(candidate => candidate.status === 'running');
   const fileJobs = snapshot?.jobs?.filter(job => !job.superseded && ['auto_prepare', 'full_audio', 'video_ocr_index', 'video_overview_index'].includes(job.kind)) ?? [];
@@ -234,6 +260,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
       setShowJump(!following.current && turns.length > 0);
     }}>
       <div className="conversation-content">
+        {conversationDetail && conversationDetail.caseId === snapshot?.id && conversationDetail.conversationId === conversationId && conversationDetail.nextCursor ? <button className="quiet" disabled={loadingOlderTurns} onClick={loadOlderTurns}>{loadingOlderTurns ? 'Loading…' : 'Load earlier messages'}</button> : null}
         {turns.length ? turns.map(turn => <article className="conversation-turn" key={turn.id}>
           <div className="user-message">
             {turn.prompt}

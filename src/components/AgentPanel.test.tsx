@@ -65,12 +65,43 @@ describe('chat composer interaction', () => {
 
   it('continues paused work in a new task without resuming the uncertain request', async () => {
     const paused = { ...task('old-task', 'current-chat'), status: 'paused', answer: 'Saved partial finding', error: 'Provider response incomplete' };
-    api.mockResolvedValueOnce({ task_id: 'new-task', conversation_id: 'current-chat' });
+    api.mockImplementation(async (action:string) => action === 'continue_paused_task' ? { task_id: 'new-task', conversation_id: 'current-chat' } : action === 'conversation_detail' ? { tasks: [paused], has_older: false } : null);
     const { onConversation, refresh } = panel(snapshot([paused]), 'current-chat');
     fireEvent.click(screen.getByRole('button', { name: 'Continue in new task' }));
     await waitFor(() => expect(api).toHaveBeenCalledWith('continue_paused_task', { task_id: 'old-task' }));
     expect(api).not.toHaveBeenCalledWith('resume_task', expect.anything());
     expect(onConversation).toHaveBeenCalledWith('current-chat');
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it('ignores a late conversation detail from the previous case', async () => {
+    const oldTask={...task('shared-task','shared-chat'),status:'complete',answer:'Old case answer'};
+    const newTask={...oldTask,answer:'New case answer'};
+    let resolveOld!:(value:{tasks:Task[];has_older:boolean})=>void;
+    const oldDetail=new Promise<{tasks:Task[];has_older:boolean}>(resolve=>{resolveOld=resolve;});
+    api.mockImplementation((action:string,args:{case_id:string})=>action==='conversation_detail'?(args.case_id==='case-1'?oldDetail:Promise.resolve({tasks:[newTask],has_older:false})):Promise.resolve(null));
+    const current=snapshot([oldTask]);
+    const view=panel(current,'shared-chat');
+    const replacement={...snapshot([newTask]),id:'case-2'};
+    view.rerender(<AgentPanel snapshot={replacement} selection={null} conversationId="shared-chat" refresh={view.refresh} run={fn=>{void fn();}} onSource={vi.fn()} onSettings={vi.fn()} onConversation={view.onConversation}/>);
+    await waitFor(()=>expect(screen.getByText('New case answer')).toBeTruthy());
+    resolveOld({tasks:[oldTask],has_older:false});
+    await Promise.resolve();
+    expect(screen.queryByText('Old case answer')).toBeNull();
+  });
+
+  it('opens older saved turns through a bounded detail page', async () => {
+    const recent = {...task('recent','shared-chat'),status:'complete',answer:'Recent saved answer',created_at:'2026-09-22T02:00:00Z'};
+    const earlier = {...task('earlier','shared-chat'),status:'complete',answer:'Earlier saved answer',created_at:'2026-09-22T01:00:00Z'};
+    api.mockImplementation(async (action:string,args:{before?:{id:string}}) => action==='conversation_detail'
+      ? args.before ? {tasks:[earlier],next_cursor:null} : {tasks:[recent],next_cursor:{created_at:recent.created_at,id:recent.id}}
+      : null);
+    panel(snapshot([recent]),'shared-chat');
+    await waitFor(()=>expect(screen.getByRole('button',{name:'Load earlier messages'})).toBeTruthy());
+    fireEvent.click(screen.getByRole('button',{name:'Load earlier messages'}));
+    await waitFor(()=>expect(screen.getByText('Earlier saved answer')).toBeTruthy());
+    expect(screen.getByText('Recent saved answer')).toBeTruthy();
+    expect(api).toHaveBeenCalledWith('conversation_detail',{case_id:'case-1',conversation_id:'shared-chat',before:{created_at:recent.created_at,id:recent.id}});
+    expect(screen.queryByRole('button',{name:'Load earlier messages'})).toBeNull();
   });
 });

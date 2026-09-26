@@ -125,7 +125,7 @@ it('opens a record preview citation and states that export uses saved text', asy
   fireEvent.change(screen.getByRole('textbox',{name:'Working file content'}),{target:{value:'Unsaved revision text'}});
   expect(screen.getByText('Export uses the saved revision. Save your changes first to include them.')).toBeTruthy();
   fireEvent.click(screen.getByRole('button',{name:'Export saved revision'}));
-  await waitFor(()=>expect(api).toHaveBeenCalledWith('export_record',{record_id:'record-1',expected_revision:1,path:'C:\\synthetic\\saved.md'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('export_record',{case_id:'synthetic-case',record_id:'record-1',expected_revision:1,path:'C:\\synthetic\\saved.md'}));
 });
 
 it('opens the clicked palette search hit at its exact historical locator', async () => {
@@ -153,6 +153,23 @@ it('opens the clicked palette search hit at its exact historical locator', async
   await waitFor(()=>expect(api.mock.calls.filter(([action,args])=>action==='read_extract_revision' && args.start===5).length).toBeGreaterThan(1));
   fireEvent.click(screen.getByRole('button',{name:'Next location'}));
   await waitFor(()=>expect(api.mock.calls.filter(([action,args])=>action==='read_extract_revision' && args.start===9).length).toBeGreaterThan(1));
+});
+
+it('loads older chats by cursor and fetches the full selected answer on demand', async () => {
+  const current=snapshot();
+  current.jobs=[];
+  current.tasks=Array.from({length:50},(_,index)=>({id:`recent-${index}`,conversation_id:`recent-${index}`,prompt:`Recent question ${index}`,mode:'investigate',status:'complete',input_tokens:1,output_tokens:1,step:1,answer:'Short preview',error:'',generation:1,created_at:`2026-09-26T10:${String(59-index).padStart(2,'0')}:00Z`}));
+  const old={...current.tasks[0],id:'old-chat',conversation_id:'old-chat',prompt:'Older question',answer:'Long answer preview',answer_truncated:true,created_at:'2026-09-25T00:00:00Z'};
+  const full='Exact saved answer '.repeat(100);
+  api.mockImplementation(async (action:string,args:{conversation_id?:string})=>action==='snapshot'?current:action==='task_page'?{tasks:[old],next_cursor:null}:action==='conversation_detail'?{tasks:args.conversation_id==='old-chat'?[{...old,answer:full}]:[],has_older:false}:action==='storage_usage'?{}:null);
+  render(<App/>);
+  await screen.findAllByText('Synthetic case');
+  fireEvent.click(screen.getByRole('button',{name:'Show all chats'}));
+  fireEvent.click(screen.getByRole('button',{name:'Load older chats'}));
+  fireEvent.click(await screen.findByTitle('Older question'));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('conversation_detail',{case_id:'synthetic-case',conversation_id:'old-chat'}));
+  await waitFor(()=>expect(document.querySelector('.answer')?.textContent?.length).toBeGreaterThan(1000));
+  expect(document.querySelector('.answer')?.textContent).toContain(full.trim());
 });
 
 it('takes a selected historical text range to Chat and focuses the composer', async () => {

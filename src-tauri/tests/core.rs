@@ -501,13 +501,34 @@ fn large_snapshot_excludes_full_working_record_bodies() {
     let tx=c.db.transaction().unwrap();
     for index in 0..500 {
         tx.execute("INSERT INTO records(id,title,kind,content,revision,actor,review,updated_at,dependencies) VALUES(?,?,'note',?,1,'human','unreviewed',?,?)",rusqlite::params![format!("synthetic-record-{index}"),format!("Synthetic record {index}"),"x".repeat(2048),format!("2026-09-22T00:{:02}:{:02}Z",index/60,index%60),json!([sid]).to_string()]).unwrap();
+        tx.execute("INSERT INTO tasks(id,prompt,mode,status,scope,edit_scope,budget,history,answer,generation,created_at,updated_at) VALUES(?,?,'investigate','complete','[]','[]',0,'[]',?,0,?,?)",rusqlite::params![format!("synthetic-task-{index}"),format!("Synthetic question {index}"),"Old answer. ".repeat(90),format!("2026-09-22T01:{:02}:{:02}Z",index/60,index%60),format!("2026-09-22T01:{:02}:{:02}Z",index/60,index%60)]).unwrap();
     }
     tx.commit().unwrap();
+    let started=std::time::Instant::now();
     let snapshot=c.snapshot().unwrap();
     let bytes=serde_json::to_vec(&snapshot).unwrap().len();
-    println!("500 synthetic 2-KiB records snapshot bytes: {bytes}");
+    println!("500 synthetic 2-KiB records and 500 completed answers snapshot bytes: {bytes}; elapsed_ms: {}",started.elapsed().as_millis());
     assert!(bytes<256*1024,"Summary should stay under 256 KiB for this synthetic tier");
     assert!(snapshot["records"][0].get("content").is_none(),"Full record text requires explicit detail fetch");
+    let summary=c.case_summary().unwrap();
+    assert!(serde_json::to_vec(&summary).unwrap().len()<1024,"Routine polling must stay small");
+    assert_eq!(summary["record_count"],500);
+    assert_eq!(summary["task_count"],500);
+    assert_eq!(snapshot["tasks"].as_array().unwrap().len(),50);
+    assert!(snapshot["tasks"][0]["answer"].as_str().unwrap().len()<=200);
+    let mut before=None::<(String,String)>;
+    let mut ids=std::collections::HashSet::new();
+    loop {
+        let page=c.task_page(before.as_ref().map(|(at,id)|(at.as_str(),id.as_str()))).unwrap();
+        for task in page["tasks"].as_array().unwrap() {assert!(ids.insert(task["id"].as_str().unwrap().to_string()),"Duplicate task page entry");}
+        let Some(cursor)=page["next_cursor"].as_object() else {break};
+        before=Some((cursor["created_at"].as_str().unwrap().to_string(),cursor["id"].as_str().unwrap().to_string()));
+    }
+    assert_eq!(ids.len(),500,"Keyset pages must not skip synthetic tasks");
+    let old=c.conversation_detail("synthetic-task-0",None).unwrap();
+    assert_eq!(old["tasks"][0]["answer"].as_str().unwrap().len(),"Old answer. ".repeat(90).len(),"Full historical answer remains retrievable on demand");
+    let plan:String=c.db.query_row("EXPLAIN QUERY PLAN SELECT id FROM tasks ORDER BY created_at DESC,id DESC LIMIT 50",[],|r|r.get(3)).unwrap();
+    assert!(plan.contains("tasks_created_id"),"Task page query should use its ordering index: {plan}");
 }
 
 #[test]
@@ -951,7 +972,7 @@ fn checkpoints_preserve_attribution_and_progress_across_pause_and_reopen() {
     deliver_tool(&mut c,&task,"checkpoint_review",json!({"summary":format!("Attributed witness claim evidence:{sid}#L1-L1"),"citations":[format!("evidence:{sid}#L1-L1")],"gaps":["Clock not reconciled"],"next_steps":["Check original recording"]}));
     agent::pause(&mut c,&task,"test interruption").unwrap();let root=c.root.clone();drop(c);
     let mut c=Case::open(&root).unwrap();
-    assert!(c.snapshot().unwrap()["tasks"][0]["progress"]["summary"].as_str().unwrap().contains("Attributed witness claim"));
+    assert!(c.conversation_detail(&task,None).unwrap()["tasks"][0]["progress"]["summary"].as_str().unwrap().contains("Attributed witness claim"));
     agent::resume(&mut c,&task).unwrap();
     let next=agent::prepare_request(&mut c,&task).unwrap();
     let context=next.body["input"].to_string();assert!(context.contains("Clock not reconciled"));assert!(context.contains("read_text"));

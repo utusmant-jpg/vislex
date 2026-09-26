@@ -93,7 +93,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return with_case(app,&case_id,|case|crate::semantic::publish(case,&job,result));
     }
     if action=="export_word" {
-        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;let record_id=text(&args,"record_id")?;let expected=export_revision(&args)?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_document_at_revision(case,record_id,expected,Path::new(text(&args,"path")?))?)};
+        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");let record_id=text(&args,"record_id")?;let expected=export_revision(&args)?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_document_at_revision(case,record_id,expected,Path::new(text(&args,"path")?))?)};
         crate::exports::run_document(&job)?;
         return with_case(app,&case_id,|case|crate::exports::publish_document(case,&job));
     }
@@ -356,6 +356,20 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     let result = match action {
 
         "snapshot" => c.snapshot()?,
+        "case_summary" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before summary");
+            c.case_summary()?
+        },
+        "task_page" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before task page");
+            let before=if args["before"].is_null(){None}else{Some((text(&args["before"],"created_at")?,text(&args["before"],"id")?))};
+            c.task_page(before)?
+        },
+        "conversation_detail" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before conversation detail");
+            let before=if args["before"].is_null(){None}else{Some((text(&args["before"],"created_at")?,text(&args["before"],"id")?))};
+            c.conversation_detail(text(&args,"conversation_id")?,before)?
+        },
         "record_detail" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before record detail");
             let record=c.record(text(&args,"record_id")?)?;
@@ -649,6 +663,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "export_redaction" => crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?,
         "export_record" => {
 
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");
             let record_id=text(&args, "record_id")?;
             if let Some(expected)=export_revision(&args)? {c.export_record_at_revision(record_id,expected,Path::new(text(&args,"path")?))?;}
             else {c.export_record(record_id,Path::new(text(&args,"path")?))?;}
@@ -664,6 +679,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "delete_conversation" => {
 
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before conversation update");
             c.delete_conversation(text(&args,"conversation_id")?,args["deleted"].as_bool().unwrap_or(true))?;
 
             Value::Null
@@ -800,7 +816,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         "search",
 
-        "actions", "issue_history", "record_detail",
+        "actions", "issue_history", "record_detail", "task_page", "conversation_detail", "case_summary",
 
         "revisions",
 

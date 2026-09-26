@@ -7,7 +7,7 @@ import {
   MoreHorizontal, NotebookPen, Plus, Scale, Search, Settings, X,
 } from 'lucide-react';
 import { api, formatBytes, native } from './bridge';
-import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary } from './types';
+import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary, Task } from './types';
 import { suggestedMatterName } from './review';
 import EvidenceViewer, { SourceIcon } from './components/EvidenceViewer';
 import RecordEditor from './components/RecordEditor';
@@ -195,6 +195,9 @@ export default function App() {
   const paletteDialog = useRef<HTMLDialogElement>(null);
   const initialized = useRef(false);
   const [allChats, setAllChats] = useState(false);
+  const [olderTasks, setOlderTasks] = useState<Task[]>([]);
+  const [olderCursor, setOlderCursor] = useState<{ created_at: string; id: string } | null | undefined>(undefined);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [openTabs, setOpenTabs] = useState<NonNullable<Selection>[]>([]);
   const seenViewer = useRef<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -263,7 +266,7 @@ export default function App() {
     setProjects(previous => { const next = [{ id: snapshot.id, name: snapshot.name, root: snapshot.root }, ...previous.filter(project => project.id !== snapshot.id)]; localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; });
     const saved = localStorage.getItem(`vislex-conversation:${snapshot.id}`);
     setConversationId(saved ?? (snapshot.tasks[0]?.conversation_id ?? snapshot.tasks[0]?.id ?? null));
-    setSelection(null); setOpenTabs([]); setNavigationHistory({ entries: [], index: -1 }); movingInHistory.current = false; seenViewer.current = snapshot.viewer_request?.id ?? null;
+    setSelection(null); setOpenTabs([]); setNavigationHistory({ entries: [], index: -1 }); movingInHistory.current = false; setOlderTasks([]); setOlderCursor(undefined); seenViewer.current = snapshot.viewer_request?.id ?? null;
     setView('chat');
     setStorage(null);
     void api<Record<string, number>>('storage_usage').then(setStorage).catch(() => undefined);
@@ -273,8 +276,18 @@ export default function App() {
 
   useEffect(() => {
     if (!snapshot) return;
-    let active = true; let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => { try { await refresh(); } catch (error) { if (active) notify.fromError('Case refresh failed', error); } if (active) timer = setTimeout(poll, 3000); };
+    let active = true; let timer: ReturnType<typeof setTimeout>; let lastStamp = ''; let checks = 0;
+    const caseId = snapshot.id;
+    const epoch = caseEpoch.current;
+    const poll = async () => {
+      try {
+        const summary = await api<Record<string, unknown>>('case_summary', { case_id: caseId });
+        if (!active || caseEpoch.current !== epoch) return;
+        const stamp = JSON.stringify(summary);
+        if (stamp !== lastStamp || ++checks % 10 === 0) { lastStamp = stamp; await refresh(); }
+      } catch (error) { if (active && caseEpoch.current === epoch) notify.fromError('Case refresh failed', error); }
+      if (active) timer = setTimeout(poll, 3000);
+    };
     timer = setTimeout(poll, 3000);
     return () => { active = false; clearTimeout(timer); };
   }, [snapshot?.id, refresh]);
@@ -350,20 +363,38 @@ export default function App() {
   function closeTab(id: string) { setOpenTabs(tabs => { const rest = tabs.filter(tab => tab.id !== id); if (selection?.id === id) setSelection(rest.at(-1) ?? null); return rest; }); }
   function removeChat(id: string) {
     run(async () => {
-      await api('delete_conversation', { conversation_id: id });
-      notify.success('Chat deleted', undefined, { label: 'Undo', run: () => { void api('delete_conversation', { conversation_id: id, deleted: false }).then(refresh); } });
+      const caseId = snapshot?.id;
+      if (!caseId) return;
+      const epoch = caseEpoch.current;
+      const removed = olderTasks.filter(task => (task.conversation_id ?? task.id) === id);
+      await api('delete_conversation', { case_id: caseId, conversation_id: id });
+      if (caseEpoch.current === epoch) setOlderTasks(current => current.filter(task => (task.conversation_id ?? task.id) !== id));
+      notify.success('Chat deleted', undefined, { label: 'Undo', run: () => { void api('delete_conversation', { case_id: caseId, conversation_id: id, deleted: false }).then(() => { if (caseEpoch.current === epoch) setOlderTasks(current => [...current, ...removed]); return refresh(); }); } });
       if (conversationId === id) chooseConversation(null);
       await refresh();
     });
   }
-  const conversations = (snapshot?.tasks ?? []).filter((task, index, all) => all.findIndex(other => (other.conversation_id ?? other.id) === (task.conversation_id ?? task.id)) === index)
+  const allTaskSummaries = [...(snapshot?.tasks ?? []), ...olderTasks.filter(task => !snapshot?.tasks.some(current => current.id === task.id))];
+  const conversations = allTaskSummaries.filter((task, index, all) => all.findIndex(other => (other.conversation_id ?? other.id) === (task.conversation_id ?? task.id)) === index)
     .map(task => ({
       id: task.conversation_id ?? task.id,
-      title: task.title ?? snapshot?.tasks.filter(other => (other.conversation_id ?? other.id) === (task.conversation_id ?? task.id)).at(-1)?.prompt ?? task.prompt,
+      title: task.title ?? allTaskSummaries.filter(other => (other.conversation_id ?? other.id) === (task.conversation_id ?? task.id)).at(-1)?.prompt ?? task.prompt,
       running: task.status === 'running',
       when: task.created_at,
     }));
   const chatIndex = JSON.stringify(conversations.map(({ id, title }) => ({ id, title })));
+  function loadOlderChats() {
+    if (!snapshot || loadingOlder || olderCursor === null) return;
+    const before = olderCursor ?? (snapshot.tasks.at(-1) ? { created_at: snapshot.tasks.at(-1)!.created_at, id: snapshot.tasks.at(-1)!.id } : null);
+    if (!before) return;
+    const caseId = snapshot.id;
+    const epoch = caseEpoch.current;
+    setLoadingOlder(true);
+    void api<{ tasks: Task[]; next_cursor: { created_at: string; id: string } | null }>('task_page', { case_id: caseId, before })
+      .then(page => { if (caseEpoch.current !== epoch) return; setOlderTasks(current => [...current, ...page.tasks.filter(task => !current.some(existing => existing.id === task.id))]); setOlderCursor(page.next_cursor); })
+      .catch(error => notify.fromError('Could not load older chats', error))
+      .finally(() => setLoadingOlder(false));
+  }
   useEffect(() => {
     if (!snapshot) return;
     setProjects(previous => { const next = previous.map(project => project.id === snapshot.id ? { ...project, chats: JSON.parse(chatIndex) } : project); localStorage.setItem('vislex-projects', JSON.stringify(next)); return next; });
@@ -506,7 +537,8 @@ export default function App() {
                 <button className="chat-delete icon-button" aria-label={`Delete chat: ${chat.title}`} disabled={chat.running} onClick={() => removeChat(chat.id)}><X size={12} /></button>
               </div>
             </ContextMenu>) : <p className="sidebar-empty">{snapshot ? 'No conversations yet. Ask your first question.' : 'Open a case to see its chats.'}</p>}
-            {conversations.length > 8 ? <button className="more-chats" onClick={() => setAllChats(value => !value)}>{allChats ? 'Show less' : 'Show all chats'}</button> : null}
+            {(conversations.length > 8 || olderCursor !== null && (olderCursor !== undefined || (snapshot?.tasks.length ?? 0) === 50)) ? <button className="more-chats" onClick={() => setAllChats(value => !value)}>{allChats ? 'Show less' : 'Show all chats'}</button> : null}
+            {allChats && olderCursor !== null && (olderCursor !== undefined || (snapshot?.tasks.length ?? 0) === 50) ? <button className="more-chats" disabled={loadingOlder} onClick={loadOlderChats}>{loadingOlder ? 'Loading…' : 'Load older chats'}</button> : null}
           </div>
           <div className="tree-heading">PROJECTS</div>
           <div className="project-list">
