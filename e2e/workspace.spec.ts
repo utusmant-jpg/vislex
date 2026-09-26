@@ -127,6 +127,7 @@ test('review views have keyboard tabs and preserve legal form values', async ({ 
   await page.keyboard.press('Control+4');
   const tabs = page.getByRole('tablist', { name: 'Investigation views' });
   await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'No question dossiers yet' })).toBeVisible();
   const discrepancy = tabs.getByRole('tab', { name: 'Discrepancies' });
   await expect(discrepancy).toHaveAttribute('aria-selected', 'true');
   await discrepancy.focus();

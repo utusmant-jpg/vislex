@@ -815,6 +815,10 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 .workbench-table-scroll { max-width: 100%; overflow-x: auto; scrollbar-width: thin; }
 .workbench-table-scroll table { min-width: 720px; }
 .workbench-table-scroll:focus-visible { outline-offset: -2px; }
+.review-empty { flex: none; min-height: 220px; margin: 22px 0; padding: 28px; border: 1px dashed var(--border); border-radius: var(--r-md); background: var(--bg-surface-1); }
+.review-empty svg { color: var(--accent-text); }
+.review-empty h3 { margin: 0; color: var(--text-primary); font-size: 14px; }
+.review-empty p { margin: 0; line-height: 1.55; }
 .change-list { margin: 8px 0; }
 .change-added { color: var(--success); list-style: none; position: relative; padding-left: 4px; }
 .change-added::before { content: '+ '; }
