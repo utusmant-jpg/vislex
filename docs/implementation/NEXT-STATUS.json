@@ -142,6 +142,7 @@
     "R08": {
       "state": "implemented",
       "commit": "a495879",
+      "followup_commit": "734cd6b (case-ID fences for case AI settings, direct-media permission, evidence writes and human finding reviews; WebView harness waits for the bridge after initial navigation)",
       "evidence": "74a9926 bounded task pages and on-demand conversation detail; 802c7a5 backend and renderer case fence for chat commands; 3541c77 source/record/job page endpoints; 5e31304 first-page snapshot, source and record detail, current-problem job page and traced large fixture; 7deb401 library, Jobs, findings and review continuation UI; a495879 explicit x64 packaging script and bounded native command checks",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 21 AppContainer tests (before final chat fence)",
@@ -151,7 +152,8 @@
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites; include-ignored suite rerun in progress after final page changes",
         "packaged release x64 executable SHA256 624C0C9C14A8DDF23A0ACDA264BE938D70FB77B806FE4E5E1B3842CF5A735E45 passed prior synthetic native source-to-export journey including chat case fence; final paging changes postdate this executable"
       ],
-      "unrun_checks": "Typed envelopes/session epoch and event sequence are not yet applied to every case-mutating desktop command. The later x64 packaged synthetic journey passed on the R08 paging code (run 1790442231875; artifacts/native-acceptance-automated.json), but larger 1-GB+ tiers remain open. Do not mark R08 verified yet.",
+      "unrun_checks": "Typed envelopes/session epoch and event sequence are not yet applied to every case-mutating desktop command. Import, transcription, record, redaction and job actions still need case-ID fencing across their callers. Larger 1-GB+ tiers remain open. Do not mark R08 verified yet.",
+      "followup_evidence": "src/components/SettingsDialog.test.tsx and src/citationJourney.test.tsx assert captured case IDs; packaged Dev22 SHA256 6174FB9B7E72ECEE2FC2C79E56945527CCF8C73E5649276B460ABF19291FE790 ran scripts/native-integrity-acceptance.ps1 through the production bridge. Stale permission, finding write and finding review calls were rejected; valid same-case write/review succeeded; 256 MiB explicit Verify took 883.7 ms with 12 concurrent case summaries at 2.1–6.4 ms. npm test 77/77, npm run build and desktop cargo check passed. The first native attempt exposed a WebView initial-navigation race in the harness; a bridge-ready probe fixed it and the rerun passed.",
       "note": "Routine polling uses case_summary; recovery snapshot limits source, record, task and job lists to first pages with exact totals and current failures. Keyset/rowid pages are case fenced; mutable source/record pages additionally require the audit epoch. Older items remain accessible through list controls or exact detail fetch, including citations and source pickers. The 500-record fixture tests no duplicates/skips and query-plan indexes. Current UI counts reflect total case scope."
     },
     "R09": {
