@@ -35,6 +35,20 @@ it('opens a chat citation against the historical wording after active text chang
   expect(screen.queryByText('Changed active wording')).toBeNull();
 });
 
+it('copies the selected historical line with its revision', async () => {
+  const page: TextPage = { text: 'Old exact wording', start: 5, end: 5, total_lines: 9, revision: 1, historical: true, locator: 'evidence:source-one#R1L5-L5', truncated_long_lines: false };
+  api.mockResolvedValue(page);
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  const selection = vi.spyOn(window, 'getSelection').mockReturnValue({ isCollapsed: false, containsNode: (node: Node) => (node as HTMLElement).dataset?.line === '5' } as Selection);
+  render(<EvidenceViewer source={source} locator="R1L5-L5" run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  const article = await screen.findByText('Old exact wording');
+  fireEvent.mouseUp(article.closest('article')!);
+  fireEvent.click(await screen.findByText('Copy citation (rev 1)'));
+  expect(writeText).toHaveBeenCalledWith('evidence:source-one#R1L5-L5');
+  selection.mockRestore();
+});
+
 it('opens a finding citation at its pinned revision', async () => {
   api.mockImplementation(async (action: string) => action === 'evidence_list' ? { objects: [{ id: 'finding-one', revision: 1, kind: 'observation', title: 'Old observation', content: 'Old exact wording', source_ids: [source.id], locators: ['evidence:source-one#R1L5-L5'], review: 'unreviewed', stale: false, actor: 'human', start_seconds: null, end_seconds: null }], next_offset: null } : {});
   const onSource = vi.fn();
