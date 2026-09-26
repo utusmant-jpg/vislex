@@ -224,7 +224,19 @@
       "note": "The exact x64 installer SHA256 BF3BB503925B88E45DA02063C84ED36E17D984BACD6ADFB96DD1054B9FD51689 predates R12 and the final R11 Jobs changes; its passed synthetic journey is a checkpoint. The later R12 debug package passed the native six-source journey, while long-transcript UI behavior is covered by Rust and React tests. User originals and live case were untouched."
     },
     "R13": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "c9e56a1",
+      "evidence": "src-tauri/tests/semantic_baseline.rs; synthetic 5,000-line debug timing and production-path native worker regression suite",
+      "environment": "Windows x64; Rust 1.98.1; synthetic fixtures only",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test semantic_baseline -- --include-ignored --nocapture -> exit 0, 3 passed; lexical 5,000 lines p50 0 ms, p95 3 ms and last-line hit 3 ms; packed-vector ranking p50 227 ms, p95 239 ms; legacy JSON ranking p50 921 ms, p95 1001 ms",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 24 native AppContainer tests and one worker video end-to-end test",
+        "cargo check --locked --features desktop --manifest-path src-tauri/Cargo.toml -> exit 0",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Separate self-review found and fixed a missed-trigger race when new extraction arrived as the indexer exited. No independent reviewer was available for this slice.",
+      "unrun_checks": "No packaged R13 search journey, large-corpus peak RAM or case-lock measurement, transcript-first indexing quality evaluation, multimodal result evaluation, or wrong-person/negation retrieval set. The 5,000-line lexical timing is one synthetic fixture and excludes model worker time; it is not a full chat latency result. Working products and video OCR are not yet unified into this semantic result. Background batches still rescan active extraction text under the case lock; optimize and measure at larger tiers before verification.",
+      "note": "New queries no longer index up to 256 passages or tell the agent to repeat calls. A low-priority worker indexes revision-pinned extraction lines into existing SQLite storage; saved legacy JSON vectors remain readable, and new vectors use packed f32. Query results include fast scoped lexical leads even before vector completion, with partial currentness clearly labeled. Original sources and live case untouched."
     },
     "R14": {
       "state": "pending"
