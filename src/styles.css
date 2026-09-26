@@ -927,6 +927,32 @@ th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: 
 .settings-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .settings-heading h2 { font-size: 19px; font-weight: 600; }
 .settings-section { max-width: 480px; }
+.appearance-settings { max-width: 570px; }
+.appearance-settings > p { line-height: 1.6; margin-bottom: 20px; }
+.appearance-settings fieldset.field-label { margin-bottom: 20px; }
+.appearance-settings fieldset legend { margin-bottom: 8px; font-weight: 600; }
+.appearance-settings .chip-row { gap: 7px; }
+.appearance-settings .chip { min-width: 86px; justify-content: center; }
+.appearance-preview-heading { display: flex; justify-content: space-between; align-items: center; margin: 25px 0 9px; }
+.appearance-preview { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; box-shadow: var(--shadow-1); background: var(--bg-canvas); height: 210px; }
+.appearance-preview-title { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--bg-surface-1); font-size: 10px; }
+.appearance-preview-title .brand-mark { transform: scale(.75); transform-origin: left center; margin-right: -4px; }
+.appearance-preview-title > span:last-child { color: var(--text-faint); }
+.appearance-preview-layout { display: flex; height: calc(100% - 34px); }
+.appearance-preview-nav { width: 76px; padding: 12px 9px; border-right: 1px solid var(--border); background: var(--bg-surface-1); display: flex; flex-direction: column; gap: 9px; }
+.appearance-preview-nav span { display: block; width: 46px; height: 7px; border-radius: 3px; background: var(--border-strong); }
+.appearance-preview-nav span.selected { background: var(--accent); }
+.appearance-preview-content { flex: 1; padding: 16px; }
+.appearance-preview-bar { width: 120px; height: 10px; border-radius: 3px; background: var(--text-secondary); margin-bottom: 16px; }
+.appearance-preview-line { height: 6px; width: 75%; border-radius: 3px; background: var(--border-strong); margin-bottom: 10px; }
+.appearance-preview-line.short { width: 42%; margin-top: 13px; }
+.appearance-preview-card { display: flex; align-items: center; gap: 8px; height: 44px; margin-top: 15px; padding: 0 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface-1); }
+.appearance-preview-card b { width: 12px; height: 12px; border-radius: 3px; background: var(--accent); }
+.appearance-preview-card span { width: 26%; height: 6px; border-radius: 3px; background: var(--border-strong); }
+.appearance-preview-card span:last-child { width: 13%; margin-left: auto; }
+.appearance-preview[data-density="compact"] .appearance-preview-nav { gap: 6px; padding-top: 10px; }
+.appearance-preview[data-density="compact"] .appearance-preview-content { padding: 12px; }
+.appearance-preview[data-density="compact"] .appearance-preview-card { height: 34px; margin-top: 11px; }
 .settings-sheet fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .provider-card { border: 1px solid var(--border-subtle); padding: 14px !important; margin: 12px 0; border-radius: var(--r-md); background: var(--bg-surface-1); }
 .provider-card legend { font-size: 11.5px; font-weight: 600; color: var(--text-secondary); padding: 0 6px; }

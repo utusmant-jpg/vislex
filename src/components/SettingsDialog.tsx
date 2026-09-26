@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { KeyRound, Save, Trash2, X } from 'lucide-react';
 import { api, native } from '../bridge';
 import { configuredProfiles, defaultConfig, providerNames } from '../aiProfiles';
-import { useTheme } from '../ui';
+import AppearanceSettings from './AppearanceSettings';
 import type { AIConfig, AIProfile, ModelOption, Provider, Settings, Snapshot } from '../types';
 
 const companies = Object.keys(providerNames) as Provider[];
@@ -18,7 +18,6 @@ function initialProfiles(snapshot: Snapshot): AIProfile[] {
 export default function SettingsDialog({ snapshot, onClose, refresh }: { snapshot: Snapshot; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const mounted = useRef(true);
-  const { theme, setTheme, density, setDensity } = useTheme();
   const [section, setSection] = useState<Section>('Providers & models');
   const [settings, setSettings] = useState<Settings>({ ...snapshot.settings });
   const [config, setConfig] = useState<AIConfig>(snapshot.ai_config ?? defaultConfig);
@@ -168,22 +167,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
           {section === 'Providers & models' ? <p className="small muted">Model lists come from your account. Listing alone does not verify tool or image support.</p> : null}
         </fieldset> : null}
 
-        {section === 'Appearance' ? <div className="settings-section">
-          <fieldset className="field-label"><legend>Theme</legend>
-            <div className="chip-row">
-              <button className={`chip ${theme === 'dark' ? 'selected' : ''}`} onClick={() => setTheme('dark')}>Dark</button>
-              <button className={`chip ${theme === 'light' ? 'selected' : ''}`} onClick={() => setTheme('light')}>Light</button>
-              <button className={`chip ${theme === 'system' ? 'selected' : ''}`} onClick={() => setTheme('system')}>System</button>
-            </div>
-          </fieldset>
-          <fieldset className="field-label"><legend>Workspace density</legend>
-            <div className="chip-row">
-              <button className={`chip ${density === 'comfortable' ? 'selected' : ''}`} onClick={() => setDensity('comfortable')}>Comfortable</button>
-              <button className={`chip ${density === 'compact' ? 'selected' : ''}`} onClick={() => setDensity('compact')}>Compact</button>
-            </div>
-          </fieldset>
-          <p className="small muted">Evidence pages, photographs and video always keep their original colors on a neutral canvas in both themes.</p>
-        </div> : null}
+        {section === 'Appearance' ? <AppearanceSettings /> : null}
 
         {section === 'About' ? <div className="settings-section">
           <p><strong>VisLex</strong> · local evidence workspace</p>

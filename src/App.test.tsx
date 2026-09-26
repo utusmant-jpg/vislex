@@ -325,8 +325,10 @@ it('opens appearance and about settings before a case is selected', async () => 
   render(<App />);
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
   expect(screen.getByRole('dialog', { name: 'Workspace settings' })).toBeTruthy();
+  expect(screen.getByText('LIVE PREVIEW')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Compact' }));
   expect(localStorage.getItem('vislex-density')).toBe('compact');
+  expect(screen.getByRole('button', { name: 'Compact' }).getAttribute('aria-pressed')).toBe('true');
   fireEvent.click(screen.getByRole('button', { name: 'About' }));
   expect(screen.getByText(/Cases are stored in local/)).toBeTruthy();
 });
