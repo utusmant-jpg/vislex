@@ -59,18 +59,21 @@
       "native_check": "Dev-build native smoke run 2026-09-22 against artifacts/VisLex 0.3.0-dev (exe sha256 7a2bbed2... byte-identical to tested build): production path create_case -> import 6 synthetic fixtures -> process_source (sandboxed worker, artifact locator + 2 fidelity limitations) -> read_text emitted #R1L1-L8 revision 1 -> validate_citation returned valid/revision_binding=pinned/revision=1 -> write_record succeeded. The stock scripts/test-native.ps1 offline invariant (fresh case offline) fails on this machine because the user's consent-marked ai-defaults.json (model gpt-5.6-luna, online) legitimately initializes new cases per R04; all other steps passed. UI click-path and visual checks remain unrun. Dev20 exact binary SHA256 E678396D5109DC7199BE1C2C8C94FF78F22D768BD5555137946A05C44E147056 passed native synthetic source-to-export run 1790431831373, with zero provider calls; new DOM tests exercise historical chat/finding/copy; Rust tests cover restart and encrypted restore."
     },
     "R03": {
-      "state": "implemented",
-      "commit": "fef2a86a7095db181d27df48d2072915204fd0ce",
-      "evidence": "src-tauri/tests/dossier.rs (heuristic tests replaced by adversarial structured-publication suite: laundering, paraphrase, edited-wording negation/numeric/entity/decimal, mixed blocks, non-factual smuggling, hypothesis-only, legacy no-id, tool-schema round trip); heuristics content_tokens/is_qualifier/citation_matches deleted from dossier.rs",
+      "state": "verified",
+      "commit": "fef2a86a7095db181d27df48d2072915204fd0ce; acceptance evidence 2d07d16",
+      "evidence": "src-tauri/tests/dossier.rs adversarial structured-publication suite and production finish/review/export status parity; src/components/QuestionDossier.test.tsx DOM display of support state separate from human acceptance; heuristics content_tokens/is_qualifier/citation_matches deleted from dossier.rs",
       "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
       "commands": [
         "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 33 passed (was 28; 3 flawed-invariant tests replaced per plan rules, 8 adversarial added)",
         "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 130 passed, 0 failed, 22 ignored",
         "npm test -> exit 0, 26 passed; npm run build -> exit 0",
-        "cargo clippy --tests -> no new warnings in changed code"
+        "cargo clippy --tests -> no new warnings in changed code",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 36 passed after exported block-status parity test",
+        "npm test -- --run -> exit 0, 77 passed in 15 files including QuestionDossier block-status DOM test",
+        "npm run build -> exit 0 after acceptance evidence commit"
       ],
       "reviewer": "first adversarial review: FAIL with empirical probes (save_dossier schema blocker, strict-mode optional convention, non-factual smuggling, hypothesis-only certification, legacy empty-id binding); ALL fixed in-code with pinning tests; second-round items: reviewer also verified stamp binding, rendered-text indirection, replay resistance and legacy readability as sound",
-      "unrun_checks": "no live provider run of the new tool schemas (strict-mode acceptance verified against the codebase's required+nullable convention only); packaged-worker suite, native acceptance, visual checks NOT RUN",
+      "unrun_checks": "No live provider run of the new tool schemas; strict-mode acceptance is verified against the codebase's required+nullable convention only. Live provider compatibility and packaged release journey remain R19/R23 gates, not R03 certification claims.",
       "note": "Certification now requires: structured blocks, every factual block claim-bound and block-review-supported against the exact candidate stamp, every block kind-disciplined and reviewed, every supported claim carried by a factual block, all claims supported, checks done, citations present, evidence current. Prose-only answers: visible 'unstructured free text' gap, never certified. Old completions/dossiers remain readable (serde default ids; empty ids unaddressable)."
     },
     "R04": {
