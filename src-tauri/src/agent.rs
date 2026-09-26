@@ -260,7 +260,7 @@ pub fn resume(case: &mut Case, task: &str) -> Result<()> {
         [task],
         |r| r.get(0),
     )?;
-    ensure!(unresolved==0,"A request has uncertain billing or completion. Start a new task after reviewing its transmission; this task is not automatically resent.");
+    ensure!(unresolved==0,"A request may still be in progress or may have completed. Review its transmission, then start a new task; this task is not automatically resent.");
     let status: String = case
         .db
         .query_row("SELECT status FROM tasks WHERE id=?", [task], |r| r.get(0))?;

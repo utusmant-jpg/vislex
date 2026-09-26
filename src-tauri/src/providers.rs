@@ -471,6 +471,28 @@ pub fn synthetic_provider_url() -> Result<Option<String>> {
     Ok(None)
 }
 
+fn inference_client() -> Result<reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(client) = CLIENT.get() { return Ok(client.clone()); }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    Ok(CLIENT.get_or_init(|| client).clone())
+}
+
+fn catalogue_client() -> Result<reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(client) = CLIENT.get() { return Ok(client.clone()); }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()?;
+    Ok(CLIENT.get_or_init(|| client).clone())
+}
+
 pub async fn send(
     provider: Provider,
     key: &str,
@@ -481,11 +503,7 @@ pub async fn send(
     // The packaged debug acceptance harness may replace the network endpoint
     // with a loopback server. Release builds have no endpoint override.
     if let Some(url) = synthetic_provider_url()? { wire.url = url; }
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(20))
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+    let client = inference_client()?;
     let request = client.post(&wire.url).json(&wire.body);
     let request = match provider {
         Provider::Anthropic => request
@@ -596,7 +614,7 @@ pub async fn list_models(provider: Provider, key: &str) -> Result<Vec<ModelOptio
         Provider::Gemini=>"https://generativelanguage.googleapis.com/v1beta/models",
         Provider::Xai=>"https://api.x.ai/v1/models",
     };
-    let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).connect_timeout(std::time::Duration::from_secs(10)).timeout(std::time::Duration::from_secs(20)).build()?;
+    let client=catalogue_client()?;
     let mut cursor=String::new();let mut models=Vec::new();let mut seen=std::collections::HashSet::new();
     for _ in 0..20 {
         let mut request=client.get(url);
