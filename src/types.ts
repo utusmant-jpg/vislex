@@ -24,4 +24,4 @@ export type TextPage = { text: string; start: number; end: number; total_lines: 
 
 export type Action = { id: string; name: string; input: string; output: string; status: string; created_at: string };
 
-export type SearchResult = { source_id: string; name: string; excerpt: string };
+export type SearchResult = { source_id: string; name: string; excerpt: string; locator: string };

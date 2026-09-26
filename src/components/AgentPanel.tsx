@@ -134,7 +134,7 @@ function starterPrompts(snapshot: Snapshot | null): string[] {
 
 function recordingText(count: number) { return `${count} recording${count > 1 ? 's' : ''}`; }
 
-export default function AgentPanel({ snapshot, selection, refresh, run, onSource, onSettings, conversationId, onConversation }: { snapshot: Snapshot | null; selection: Selection; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; onSource: (id: string, locator?: string) => void; onSettings: () => void; conversationId: string | null; onConversation: (id: string) => void }) {
+export default function AgentPanel({ snapshot, selection, refresh, run, onSource, onSettings, conversationId, onConversation, focusRequest = 0 }: { snapshot: Snapshot | null; selection: Selection; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; onSource: (id: string, locator?: string) => void; onSettings: () => void; conversationId: string | null; onConversation: (id: string) => void; focusRequest?: number }) {
   const [prompt, setPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const availableModels = useMemo(() => snapshot ? configuredProfiles(snapshot).filter(profile => profile.allow_text) : [], [snapshot]);
@@ -182,6 +182,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     window.addEventListener('vislex:draft-prompt', draftEvent);
     return () => { window.removeEventListener('vislex:focus-composer', focus); window.removeEventListener('vislex:draft-prompt', draftEvent); };
   }, []);
+  useEffect(() => { if (focusRequest) composer.current?.focus(); }, [focusRequest]);
   useEffect(() => { if (following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [turns.length, task?.answer, task?.status]);
   useEffect(() => { setSkipContext(false); }, [selection?.id, selection?.locator]);
 

@@ -204,6 +204,7 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [paletteIndex, setPaletteIndex] = useState(0);
+  const [focusComposerRequest, setFocusComposerRequest] = useState(0);
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(false);
   const [modal, setModal] = useState<'create' | 'note' | 'backup' | 'restore' | 'delete' | null>(null);
@@ -404,14 +405,21 @@ export default function App() {
   }, [query, snapshot]);
   const paletteItems = useMemo(() => [
     ...paletteMatches.map(item => ({ kind: 'source' as const, id: item.id, label: item.name })),
-    ...(results ?? []).map((item, index) => ({ kind: 'result' as const, id: `${item.source_id}:${index}`, label: item.name, excerpt: item.excerpt })),
+    ...(results ?? []).map((item, index) => ({ kind: 'result' as const, id: `${item.source_id}:${index}`, label: item.name, excerpt: item.excerpt, sourceId: item.source_id, locator: item.locator })),
     ...paletteCommands.filter(command => !query.trim() || command.label.toLowerCase().includes(query.trim().toLowerCase())).map(command => ({ kind: 'command' as const, id: command.id, label: command.label, run: command.run })),
   ], [paletteMatches, results, paletteCommands, query]);
   useEffect(() => { setPaletteIndex(0); }, [query, results]);
+  function activatePaletteItem(item: (typeof paletteItems)[number]) {
+    if (item?.kind === 'source') { selectSource(item.id); setPalette(false); return; }
+    if (item?.kind === 'result') { selectSource(item.sourceId, item.locator.split('#')[1]); setPalette(false); return; }
+    if (item?.kind === 'command') { item.run(); return; }
+  }
   function paletteEnter() {
     const item = paletteItems[paletteIndex];
-    if (item?.kind === 'source') { selectSource(item.id); setPalette(false); return; }
-    if (item?.kind === 'command') { item.run(); return; }
+    if (item) { activatePaletteItem(item); return; }
+    searchPalette();
+  }
+  function searchPalette() {
     if (query.trim() && snapshot) {
       run(async () => {
         const response = await api<{ results: SearchResult[]; remaining_passages: number }>('hybrid_search', { query });
@@ -510,7 +518,7 @@ export default function App() {
             onRestore={() => showModal('restore')}
             onSample={() => run(async () => { setSnapshot(await api<Snapshot>('load_demo')); })}
           /> : null}
-          {snapshot && view === 'chat' ? <AgentPanel conversationId={conversationId} onConversation={chooseConversation} snapshot={snapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={() => setSettings(true)} /> : null}
+          {snapshot && view === 'chat' ? <AgentPanel conversationId={conversationId} onConversation={chooseConversation} snapshot={snapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={() => setSettings(true)} focusRequest={focusComposerRequest} /> : null}
           {!snapshot && view !== 'chat' ? <div className="empty-state workspace-view"><FolderOpen size={32} /><h3>Open a case first</h3><p>This workspace becomes available once a case is open.</p></div> : null}
           {snapshot && view === 'evidence' ? <EvidenceLibrary
             snapshot={snapshot}
@@ -543,7 +551,7 @@ export default function App() {
               </ContextMenu>;
             })}
           </div>
-          {source ? <EvidenceViewer key={source.id} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} /> : null}
+          {source ? <EvidenceViewer key={source.id} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} onAsk={() => { setView('chat'); setFocusComposerRequest(value => value + 1); }} /> : null}
           {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${record.id}`} caseId={snapshot.id} summary={record} run={run} refresh={refresh} onSource={selectSource}/> : null}
         </main>
       </div>
@@ -578,12 +586,12 @@ export default function App() {
           {query.trim() && snapshot ? <span className="small muted">{results === null ? 'Enter to search' : `${results.length} results`}</span> : null}
         </div>
         <div className="palette-results">
-          {query.trim() && snapshot && results === null ? <button className="tree-item palette-search-action" onClick={paletteEnter}><Search size={14} /><span>Search text &amp; meaning for “{query.trim()}”<small>Hybrid search across indexed evidence</small></span></button> : null}
+          {query.trim() && snapshot && results === null ? <button className="tree-item palette-search-action" onClick={searchPalette}><Search size={14} /><span>Search text &amp; meaning for “{query.trim()}”<small>Hybrid search across indexed evidence</small></span></button> : null}
           {paletteItems.map((item, index) => <button
             className={`tree-item palette-item ${index === paletteIndex ? 'selected' : ''}`}
             key={`${item.kind}:${item.id}`}
             onMouseEnter={() => setPaletteIndex(index)}
-            onClick={() => { setPaletteIndex(index); paletteEnter(); }}>
+            onClick={() => { setPaletteIndex(index); activatePaletteItem(item); }}>
             {item.kind === 'source' ? <SourceIcon kind={snapshot?.sources.find(sourceItem => sourceItem.id === item.id)?.kind ?? 'other'} size={15} /> : item.kind === 'result' ? <Search size={15} /> : null}
             <span>{item.label}{'excerpt' in item && item.excerpt ? <small>{item.excerpt}</small> : item.kind === 'command' ? <small>Command</small> : null}</span>
           </button>)}

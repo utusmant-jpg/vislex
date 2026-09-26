@@ -137,7 +137,7 @@ function PdfPageView({ index, ratio, artifact, ensure, onVisible, register }: {
   </div>;
 }
 
-export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void }) {
+export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect, onAsk }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void; onAsk?: () => void }) {
   const media = useRef<HTMLMediaElement | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [pendingSeek, setPendingSeek] = useState<number | null>(null);
@@ -381,7 +381,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     </div>
 
     {askChip ? <div className="ask-chip" style={{ left: askChip.x, top: askChip.y }} role="toolbar" aria-label="Selection actions">
-      <button onClick={() => { onLocatorSelect(`L${askChip.a}-L${askChip.b}`); setAskChip(null); window.dispatchEvent(new CustomEvent('vislex:focus-composer')); }}><AArrowDown size={13} />Ask about L{askChip.a}–L{askChip.b}</button>
+      <button onClick={() => { onLocatorSelect(`R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); if (onAsk) onAsk(); else window.dispatchEvent(new CustomEvent('vislex:focus-composer')); }}><AArrowDown size={13} />Ask about L{askChip.a}–L{askChip.b}</button>
       <button onClick={() => { void navigator.clipboard.writeText(`evidence:${source.id}#R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); }}>Copy citation (rev {askChip.revision})</button>
     </div> : null}
 
