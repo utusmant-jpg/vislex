@@ -12,7 +12,7 @@ type DossierView = {
   coverage?: {contract: {mode:string;purpose:string} | null; units: {requirement:{source_id:string;stage:string;start:number;end:number};missing:[number,number][];complete:boolean}[]};
 };
 
-export default function QuestionDossier({ taskId, step, status, evidenceVersion, onSource }: { taskId: string; step: number; status: string; evidenceVersion: string; onSource: (id: string, locator?: string) => void }) {
+export default function QuestionDossier({ caseId, taskId, step, status, evidenceVersion, onSource }: { caseId: string; taskId: string; step: number; status: string; evidenceVersion: string; onSource: (id: string, locator?: string) => void }) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<DossierView | null>(null);
   const [error, setError] = useState('');
@@ -35,7 +35,7 @@ export default function QuestionDossier({ taskId, step, status, evidenceVersion,
   async function review(index: number, decision: string) {
     if (!view?.dossier || reviewing !== null) return;
     setReviewing(index); setError('');
-    try { setView(await api<DossierView>('review_dossier_claim', { task_id: taskId, revision: view.dossier.revision, claim_index: index, decision, note: notes[index] ?? '' })); }
+    try { setView(await api<DossierView>('review_dossier_claim', { case_id: caseId, task_id: taskId, revision: view.dossier.revision, claim_index: index, decision, note: notes[index] ?? '' })); }
     catch (reason) { setError(String(reason)); }
     finally { setReviewing(null); }
   }

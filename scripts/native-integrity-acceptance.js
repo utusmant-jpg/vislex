@@ -24,6 +24,16 @@
   try { await invoke('evidence_review', { case_id: 'closed-synthetic-case', id: finding.id, revision: finding.revision, review: 'accepted' }); } catch { staleReviewDenied = true; }
   if (!staleReviewDenied) throw new Error('Stale case finding review was accepted');
   await invoke('evidence_review', { case_id: snapshot.id, id: finding.id, revision: finding.revision, review: 'accepted' });
+  const staleWorkflows = [
+    ['review_dossier_claim', { case_id: 'closed-synthetic-case', task_id: 'missing', revision: 1, claim_index: 0, decision: 'accepted', note: '' }],
+    ['export_dossier_bundle', { case_id: 'closed-synthetic-case', task_id: 'missing', path: `${root}/artifacts/rejected-package-${run}` }],
+    ['fetch_public_authority', { case_id: 'closed-synthetic-case', url: 'https://www.govinfo.gov/content/pkg/test/html/test.htm', title: 'Synthetic authority', jurisdiction: 'test', relevant_date: '2026-09-26' }],
+  ];
+  for (const [action, args] of staleWorkflows) {
+    let rejected = false;
+    try { await invoke(action, args); } catch (error) { rejected = String(error).includes('Case changed'); }
+    if (!rejected) throw new Error(`${action} did not reject the stale case before work`);
+  }
   const started = performance.now();
   let finished = false;
   const verification = invoke('verify_source', { source_id: source.id }).finally(() => { finished = true; });
@@ -38,5 +48,5 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, case_id: snapshot.id };
+  return { run, source_bytes: source.size, hashed_bytes: source.size, verification_ms: verificationMs, summary_samples: summaries, summaries_completed_during_hash: summaries.filter(s => s.completed_before_verify).length, stale_permission_denied: stalePermissionDenied, stale_finding_write_denied: staleWriteDenied, stale_finding_review_denied: staleReviewDenied, stale_workflows_denied: staleWorkflows.length, case_id: snapshot.id };
 })().catch(error => ({ native_error: String(error), stack: String(error?.stack ?? '') }))

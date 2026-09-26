@@ -61,7 +61,7 @@ fn key_entry() -> anyhow::Result<keyring::Entry> { provider_key_entry(crate::pro
 
 async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<Value, String> {
     if action=="fetch_public_authority" {
-        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),url))})();
+        let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before authority retrieval");anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),url))})();
         let (case_id,url)=prepared.map_err(|e|e.to_string())?;
         let download=crate::authority::retrieve(&url).await.map_err(|e|e.to_string())?;
         let value=with_case(&app,&case_id,|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
@@ -258,6 +258,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let state=app.state::<AppState>();
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let c=guard.as_mut().context("Open a case first")?;
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before reviewed package export");
             (c.meta("id")?.unwrap_or_default(),crate::exports::prepare_dossier_bundle(c,text(&args,"task_id")?,&destination)?)
         };
         // Copying cited originals into the package runs without the case lock.
@@ -708,7 +709,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "processing_recovery" => crate::processing::recovery_inventory(c)?,
         "read_coverage" => crate::coverage::view(c,text(&args,"task_id")?)?,
         "read_dossier" => crate::dossier::view(c,text(&args,"task_id")?)?,
-        "review_dossier_claim" => crate::dossier::human_review(c,text(&args,"task_id")?,args["revision"].as_u64().context("Missing dossier revision")?,usize::try_from(args["claim_index"].as_u64().context("Missing claim index")?)?,text(&args,"decision")?,text(&args,"note")?)?,
+        "review_dossier_claim" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before claim review");crate::dossier::human_review(c,text(&args,"task_id")?,args["revision"].as_u64().context("Missing dossier revision")?,usize::try_from(args["claim_index"].as_u64().context("Missing claim index")?)?,text(&args,"decision")?,text(&args,"note")?)?},
         "save_ai_settings" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before settings update");
             crate::automatic::preempt_for_chat(c)?;
