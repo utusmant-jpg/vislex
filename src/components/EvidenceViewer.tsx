@@ -207,7 +207,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const ensurePage = useCallback((target: number) => {
     if(pdfCount===null || !Number.isSafeInteger(target)||target<1||target>pdfCount||pdfArtifacts[target]||pdfPending.current.has(target))return;
     const epoch=pdfEpoch.current;const pending=pdfPending.current;pending.add(target);
-    void api<{ published: { artifact_id: string; metadata: { page:number;page_count: number; page_size_points?: [number, number] } }[]; limitations: string[] }>('render_page', { source_id: source.id, page: target })
+    void api<{ published: { artifact_id: string; metadata: { page:number;page_count: number; page_size_points?: [number, number] } }[]; limitations: string[] }>('render_page', { case_id: caseId, source_id: source.id, page: target })
       .then(result => {
         if(epoch!==pdfEpoch.current)return;
         const published=result.published[0];
@@ -219,7 +219,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       })
       .catch(reason => {if(epoch===pdfEpoch.current)setError(String(reason));})
       .finally(() => pending.delete(target));
-  }, [source.id,pdfCount,pdfArtifacts]);
+  }, [caseId,source.id,pdfCount,pdfArtifacts]);
 
   useEffect(() => {
     if(pdfCount===null)return;
@@ -460,7 +460,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     {source.kind==='video' && exactFrame && !showText && !derived ? <div className="exact-frame-inspection" role="region" aria-label="Exact decoded frame"><img src={evidenceUrl(`artifact/${exactFrame.artifact}`)} alt={`Decoded frame at source time ${formatClockMs(exactFrame.time)}`} style={{maxWidth:'100%',maxHeight:'40vh',objectFit:'contain'}} /><p>Decoded source frame at {formatClockMs(exactFrame.time)} · PTS {exactFrame.pts} × {exactFrame.timeBase}. This image is a derivative of one frame.</p><button className="quiet" onClick={()=>void navigator.clipboard.writeText(exactFrame.locator)}>Copy frame citation</button></div> : null}
     {['video', 'audio'].includes(source.kind) ? <FullTranscript caseId={caseId} currentTime={currentTime} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} sourceId={source.id} run={run} refresh={refresh} /> : null}
     {source.kind === 'video' && !source.restricted ? <VideoDiscovery key={source.id} sourceId={source.id} onFrame={id => { setDerived(id); setShowText(false); }} onSeek={time => { setDerived(null); setShowText(false); setPendingSeek(time); }} /> : null}
-    {['pdf', 'image'].includes(source.kind) && !source.restricted ? <RedactionPanel sourceId={source.id} kind={source.kind} /> : null}
+    {['pdf', 'image'].includes(source.kind) && !source.restricted ? <RedactionPanel caseId={caseId} sourceId={source.id} kind={source.kind} /> : null}
     {limitations.length ? <details className="processing-limitations disclosure">
       <summary><Info size={13} />About this preview<span className="disclosure-count">{limitations.length}</span></summary>
       {limitations.map(limitation => <p key={limitation}>{limitation}</p>)}

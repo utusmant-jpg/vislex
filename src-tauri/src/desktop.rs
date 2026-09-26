@@ -130,6 +130,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
             let case=guard.as_mut().context("Open a case first")?;
             let source=text(&args,"source_id")?;
+            if ["render_page","prepare_redaction"].contains(&action) {anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before source processing");}
             if ["scan_sound_events","step_video_frame"].contains(&action) {anyhow::ensure!(!case.source(source)?.restricted,"Restricted source");}
             let options=match action {
                 "render_page"=>json!({"operation":"render_page","page":args["page"]}),
@@ -266,7 +267,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return value;
     }
     if action=="export_redaction" {
-        let (case_id,plan)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_redaction_export(case,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?)};
+        let (case_id,plan)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction export");(case.meta("id")?.unwrap_or_default(),crate::exports::prepare_redaction_export(case,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?)};
         let staged=crate::exports::stage_redaction_export(&plan)?;
         let result=with_case(app,&case_id,|case|crate::exports::publish_staged_redaction_export(case,&plan,staged));
         let _=app.emit("case-changed",());return result;
@@ -742,7 +743,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         }
 
-        "review_redaction" => crate::exports::review_redaction(c,text(&args,"artifact_id")?,&serde_json::from_value::<Vec<u64>>(args["pages"].clone())?,text(&args,"note")?)?,
+        "review_redaction" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction review");crate::exports::review_redaction(c,text(&args,"artifact_id")?,&serde_json::from_value::<Vec<u64>>(args["pages"].clone())?,text(&args,"note")?)?},
         "export_redaction" => crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?,
         "export_record" => {
 

@@ -92,9 +92,10 @@ it('probes a one-page PDF before rendering and rejects out-of-range navigation',
   observePdfPages();
   const pdf:Source={...source,kind:'pdf',mime:'application/pdf',name:'One page.pdf'};
   api.mockImplementation(async (action:string,args:{page?:number})=>action==='probe_pdf'?{metadata:{page_count:1,first_page_size_points:[612,792]}}:action==='render_page'?{published:[{artifact_id:'page-one',metadata:{page:args.page,page_count:1,page_size_points:[612,792]}}],limitations:[]}:{}) ;
-  const view=render(<EvidenceViewer source={pdf} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
+  const view=render(<EvidenceViewer caseId="case-one" source={pdf} run={fn=>{void fn();}} refresh={async()=>undefined} onLocatorSelect={vi.fn()} />);
   await waitFor(()=>expect(screen.getByText('of 1 physical pages')).toBeTruthy());
   await waitFor(()=>expect(view.container.querySelectorAll('.pdf-page')).toHaveLength(1));
+  expect(api).toHaveBeenCalledWith('render_page',{case_id:'case-one',source_id:'source-one',page:1});
   expect(api).not.toHaveBeenCalledWith('render_page',{source_id:'source-one',page:12});
   fireEvent.change(screen.getByRole('spinbutton',{name:'Current page'}),{target:{value:'12'}});
   expect(api).not.toHaveBeenCalledWith('render_page',{source_id:'source-one',page:12});
