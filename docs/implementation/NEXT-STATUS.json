@@ -2,6 +2,25 @@
   "schema": 1,
   "audit_base": "485882149585a1f2db34f1e7e9c29226758ba039",
   "meaning": "pending = proposed; implemented = code exists but acceptance incomplete; verified = specified task evidence recorded, not product certification; blocked requires reason. Edit manually, never infer from test counts.",
+  "redesign_worktree_progress": {
+    "state": "in_progress",
+    "branch": "codex/vislex-redesign",
+    "base_commit": "298ab4291659ab4235c9c7e497a7a74190c0a6e0",
+    "slice_commit": "4ba546e",
+    "evidence": "docs/implementation/REDESIGN-COVERAGE.md; src/appearance.test.tsx; src/App.test.tsx; src/components/SettingsDialog.test.tsx",
+    "environment": "Windows x64, isolated worktree; synthetic browser preview only",
+    "commands": [
+      "npm ci --ignore-scripts -> exit 0",
+      "npm test -- --run -> exit 0, 69 tests in 14 files",
+      "npm run build -> exit 0; 133.70 kB gzip JS, 12.09 kB gzip CSS, local Inter font asset",
+      "python scripts/vislex_plan.py check -> exit 0; plan structure only",
+      "git diff --cached --check -> exit 0"
+    ],
+    "implemented_scope": "Graphite/blue dark and neutral light tokens; System theme and compact density persisted without case data; local Inter font; case-independent Appearance/About; separate provider/permission/review settings sections; collapsible navigation; keyboard-resizable evidence pane; narrow one-pane return; layout presets; composer auto-growth; duplicate error-toast suppression.",
+    "reviewer": "Self-review and synthetic dark/light browser inspection; no independent or packaged Windows review.",
+    "unrun_checks": "R21 full surface/interaction matrix, native window and scaling matrix, accessibility/Narrator, packaged Windows journey, Rust/core suite, complete protected journey and integration with the concurrent functionality branch are NOT RUN. Browser preview case_summary fixture is missing in bridge.ts and assigned to its owner. R21 remains pending until all acceptance gates have evidence.",
+    "note": "This records a reviewable implementation slice, not completion or verification of R21 or product certification."
+  },
   "tasks": {
     "R00": {
       "state": "verified",
