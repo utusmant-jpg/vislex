@@ -160,7 +160,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
             <button className="quiet" disabled={profiles.length >= 16} onClick={() => setProfiles(ps => [...ps, { provider, model: '', allow_text: false, allow_images: false }])}>Add another model</button>
           </fieldset>)}
           <p className="small muted">Model lists come from your account. Listing alone does not verify tool or image support. Enabled providers remain available; agents send requests while doing assigned work.</p>
-          <p className="small muted">Up to three assignments run together, using one or several configured models. Agents choose scoped work and return evidence for the lead to check. Stop cancels the team. Additional agents can increase cost.</p>
+          <p className="small muted">Up to three assignments run together, using one or several configured models. Agents choose scoped work and return evidence for the lead to check. Stop cancels the team.</p>
         </fieldset> : null}
 
         {section === 'Appearance' ? <div className="settings-section">
