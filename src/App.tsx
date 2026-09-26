@@ -9,6 +9,7 @@ import {
 import { api, formatBytes, native } from './bridge';
 import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary, Source, Job, Task } from './types';
 import { suggestedMatterName } from './review';
+import { subscribeCaseChanges } from './caseEvents';
 import EvidenceViewer, { SourceIcon } from './components/EvidenceViewer';
 import AgentPanel from './components/AgentPanel';
 import FolderImport from './components/FolderImport';
@@ -358,6 +359,7 @@ export default function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [projects, setProjects] = useState<{ id: string; name: string; root: string; chats?: { id: string; title: string }[] }[]>(() => { try { return JSON.parse(localStorage.getItem('vislex-projects') ?? '[]'); } catch { return []; } });
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const activeSnapshot = useRef<Snapshot | null>(null);
   const [extraSources, setExtraSources] = useState<Source[]>([]);
   const [extraRecords, setExtraRecords] = useState<RecordSummary[]>([]);
   const caseEpoch = useRef(0);
@@ -383,8 +385,8 @@ export default function App() {
   const [dropping, setDropping] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
 
-  const installSnapshot = useCallback((next: Snapshot | null) => { caseEpoch.current += 1; setSnapshot(next); }, []);
-  const refresh = useCallback(async () => { const epoch = caseEpoch.current; const sequence = ++refreshSequence.current; const next = await api<Snapshot | null>('snapshot'); if (caseEpoch.current === epoch && refreshSequence.current === sequence) setSnapshot(next); }, []);
+  const installSnapshot = useCallback((next: Snapshot | null) => { caseEpoch.current += 1; activeSnapshot.current = next; setSnapshot(next); }, []);
+  const refresh = useCallback(async () => { const epoch = caseEpoch.current; const sequence = ++refreshSequence.current; const next = await api<Snapshot | null>('snapshot'); if (caseEpoch.current === epoch && refreshSequence.current === sequence) { activeSnapshot.current = next; setSnapshot(next); } }, []);
   const run = useCallback((fn: () => Promise<void>) => {
     setBusy(true);
     void fn().catch(error => notify.fromError('Something went wrong', error)).finally(() => setBusy(false));
@@ -400,7 +402,8 @@ export default function App() {
       })().catch(error => notify.error('Could not reopen the last case', `${String(error)}. Choose a project from the sidebar.`));
     }
     if (!native) return;
-    const cleanup = listen('case-changed', () => { void refresh(); });
+    const cleanup = subscribeCaseChanges(listen, () => activeSnapshot.current, refresh,
+      (caseId, epoch) => api('case_summary', { case_id: caseId, session_epoch: epoch }));
     return () => { void cleanup.then(fn => fn()); };
   }, [refresh, installSnapshot]);
 
