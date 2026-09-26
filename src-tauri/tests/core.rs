@@ -608,6 +608,21 @@ fn paused_uncertain_task_continues_without_replaying_old_transmission() {
 }
 
 #[test]
+fn late_response_to_paused_run_cannot_publish_into_its_continuation() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let old=agent::start(&mut c,"Inspect the claim","investigate",vec![sid],vec![],0.).unwrap();
+    let request=agent::prepare_request(&mut c,&old).unwrap();
+    agent::pause(&mut c,&old,"Provider response incomplete").unwrap();
+    let (new,_)=agent::continue_paused(&mut c,&old).unwrap();
+    let response=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":4},"output":[{"type":"function_call","call_id":"late-finish","name":"finish_task","arguments":"{\"answer\":\"Late old answer\",\"citations\":[],\"gaps\":[]}"}]});
+    assert!(!agent::receive(&mut c,&old,&request.transmission,response).unwrap());
+    assert_eq!(c.db.query_row("SELECT status FROM transmissions WHERE id=?",[&request.transmission],|r|r.get::<_,String>(0)).unwrap(),"received");
+    assert_eq!(c.db.query_row("SELECT status FROM tasks WHERE id=?",[&new],|r|r.get::<_,String>(0)).unwrap(),"running");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM actions WHERE task_id IN (?,?)",[&old,&new],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(c.db.query_row("SELECT answer FROM tasks WHERE id=?",[&new],|r|r.get::<_,String>(0)).unwrap(),"");
+}
+
+#[test]
 fn continuing_a_deleted_automatic_chat_creates_a_visible_conversation() {
     let (_dir,mut c,_sid)=setup();enable(&mut c);
     let old=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
