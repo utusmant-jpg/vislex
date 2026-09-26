@@ -27,6 +27,7 @@ pub struct AppState {
 
     case: Mutex<Option<Case>>,
     importing: std::sync::atomic::AtomicBool,
+    semantic_indexing: Mutex<std::collections::HashMap<String,bool>>,
 
 }
 
@@ -88,7 +89,7 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
 fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result<Value> {
 
     if action=="hybrid_search" {
-        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),crate::semantic::prepare(case,text(&args,"query")?,scope)?)};
+        let (case_id,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),crate::semantic::prepare_query(case,text(&args,"query")?,scope)?)};
         let result=crate::semantic::run(&job)?;
         return with_case(app,&case_id,|case|crate::semantic::publish(case,&job,result));
     }
@@ -102,13 +103,14 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::transcription::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::transcription::run(&job).and_then(|value|crate::transcription::stage_transcript(&job,value));
         let value=with_case(app,&case_id,|case|match staged {Ok(v)=>crate::transcription::publish_staged_transcript(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
+        if value.is_ok(){kick_semantic(app.clone(),case_id.clone());}
         let _=app.emit("case-changed",());return value;
     }
     if action=="resume_processing" {
         let (case_id,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;(case.meta("id")?.unwrap_or_default(),crate::processing::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
         let result=with_case(app,&case_id,|case|crate::processing::publish_staged(case,&job,staged));
-        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);}
+        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
         let _=app.emit("case-changed",());return result;
     }
     if ["save_provider_key","provider_key_status","delete_provider_key"].contains(&action) {
@@ -142,7 +144,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         let _=app.emit("case-changed",());
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
         let result=with_case(app,&case_id,|case|crate::processing::publish_staged(case,&job,staged));
-        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);}
+        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
         let _=app.emit("case-changed",());
         return result;
     }
@@ -493,6 +495,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
                     });
 
+                } else {
+                    kick_semantic(handle.clone(),case_id.clone());
                 }
 
                 // Only the copied input in this exact private job directory is discarded.
@@ -998,6 +1002,8 @@ fn kick_transcriptions(app: tauri::AppHandle, case_id: String) {
 
             });
 
+        } else {
+            kick_semantic(app.clone(),case_id.clone());
         }
 
         let input = job.staging.join("input");
@@ -1119,6 +1125,7 @@ pub fn run() {
 
             case: Mutex::new(None),
             importing: std::sync::atomic::AtomicBool::new(false),
+            semantic_indexing: Mutex::new(std::collections::HashMap::new()),
 
         })
 
@@ -1365,6 +1372,7 @@ fn run_discovery_lane(app:&tauri::AppHandle,case_id:&str) {
 fn kick_automatic(app:tauri::AppHandle,case_id:String) {
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return;}
+    kick_semantic(app.clone(),case_id.clone());
     kick_discovery(app.clone(),case_id.clone());
     for _ in 0..2 {
         let app=app.clone();let case_id=case_id.clone();
@@ -1373,7 +1381,7 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
                 let job=match with_case(&app,&case_id,crate::automatic::next) {Ok(Some(job))=>job,_=>break};
                 let staged=crate::processing::stage_prepared(&job.processor,crate::processing::run_prepared(&job.processor));
                 let published=with_case(&app,&case_id,|c|{crate::automatic::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
-                if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);}
+                if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);kick_semantic(app.clone(),case_id.clone());}
                 let _=app.emit("case-changed",());
                 let task=with_case(&app,&case_id,|c| {let provider=crate::providers::load(c)?.provider;if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}crate::automatic::start_review(c)});
                 if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});}
@@ -1389,6 +1397,42 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
             }
         });
     }
+}
+fn kick_semantic(app:tauri::AppHandle,case_id:String) {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return;}
+    let state=app.state::<AppState>();
+    {
+        let mut active=state.semantic_indexing.lock().unwrap_or_else(|e|e.into_inner());
+        if let Some(dirty)=active.get_mut(&case_id){*dirty=true;return;}
+        active.insert(case_id.clone(),false);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        struct Registration {app:tauri::AppHandle,case_id:String}
+        impl Drop for Registration {fn drop(&mut self){let state=self.app.state::<AppState>();state.semantic_indexing.lock().unwrap_or_else(|e|e.into_inner()).remove(&self.case_id);}}
+        let _registration=Registration{app:app.clone(),case_id:case_id.clone()};
+        loop {
+            let prepared=with_case(&app,&case_id,|case|{
+                let scope=case.sources()?.into_iter().filter(|source|!source.restricted).map(|source|source.id).collect();
+                crate::semantic::prepare_background(case,scope)
+            });
+            let job=match prepared {
+                Ok(Some(job))=>job,
+                Ok(None)=>{
+                    let state=app.state::<AppState>();let mut active=state.semantic_indexing.lock().unwrap_or_else(|e|e.into_inner());
+                    if let Some(dirty)=active.get_mut(&case_id) {if *dirty {*dirty=false;continue;}}
+                    active.remove(&case_id);break;
+                },
+                Err(_)=>break
+            };
+            let output=crate::semantic::run(&job);
+            let published=with_case(&app,&case_id,|case|crate::semantic::publish_index(case,&job,&output?));
+            if let Err(error)=published {
+                let _=with_case(&app,&case_id,|case|{case.audit("semantic_index_paused",json!({"reason":error.to_string().chars().take(300).collect::<String>()}))?;Ok(())});
+                break;
+            }
+        }
+    });
 }
 
 fn import_background(app:&tauri::AppHandle,action:&str,args:Value)->anyhow::Result<Value> {
