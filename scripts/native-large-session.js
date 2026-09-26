@@ -9,6 +9,7 @@
   const path = `${root}/artifacts/large-tier-${run}`;
   const fixture = `${root}/artifacts/large-1g.bin`;
   const created = await invoke('create_case', { path, name: `Synthetic 1 GiB ${run}` });
+  await invoke('save_settings', { case_id: created.id, session_epoch: created.session_epoch, settings: { ...created.settings, offline: true, allow_text: false, allow_images: false } });
   const importStart = performance.now();
   const imported = await invoke('import_files', { case_id: created.id, session_epoch: created.session_epoch, paths: [fixture], production: 'Synthetic large tier' });
   const importMs = performance.now() - importStart;
@@ -32,7 +33,7 @@
   const oldEpoch = snapshot.session_epoch;
   const pending = invoke('verify_source', { case_id: snapshot.id, session_epoch: oldEpoch, source_id: source.id }).then(() => ({ succeeded: true }), error => ({ succeeded: false, error: String(error) }));
   await new Promise(resolve => setTimeout(resolve, 100));
-  await invoke('close_case');
+  await invoke('close_case', { case_id: snapshot.id, session_epoch: snapshot.session_epoch });
   const reopened = await invoke('open_case', { path });
   const late = await pending;
   if (late.succeeded || !/Case session changed|Case closed/.test(late.error)) throw new Error(`Old-session Verify was accepted after reopen: ${JSON.stringify(late)}`);

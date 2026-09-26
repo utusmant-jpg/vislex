@@ -13,7 +13,7 @@
   const casePath = `${root}/artifacts/integrity-case-${run}`;
   const created = await invoke('create_case', { path: casePath, name: `Synthetic integrity ${run}` });
   if (!Number.isSafeInteger(created.session_epoch)) throw new Error('Created case did not report a session epoch');
-  await invoke('close_case');
+  await invoke('close_case', { case_id: created.id, session_epoch: created.session_epoch });
   const reopened = await invoke('open_case', { path: casePath });
   if (reopened.id !== created.id || reopened.session_epoch <= created.session_epoch) throw new Error('Same-case reopen did not advance the session epoch');
   const reopenedSummary = await invoke('case_summary', { case_id: reopened.id });
@@ -40,6 +40,10 @@
   const source = snapshot.sources[0];
   if (!source || source.size !== 256 * 1024 * 1024) throw new Error('Synthetic source size mismatch');
   const mandatorySessionActions = [
+    ['create_case', { path: `${root}/artifacts/rejected-switch-${run}`, name: 'Rejected switch' }],
+    ['open_case', { path: casePath }],
+    ['restore_case', { archive: `${root}/artifacts/no-archive-${run}.age`, path: `${root}/artifacts/rejected-restore-${run}`, password: 'synthetic-passphrase-only' }],
+    ['close_case', {}],
     ['fetch_public_authority', { url: 'https://www.govinfo.gov/content/pkg/test/html/test.htm', title: 'Synthetic', jurisdiction: 'test', relevant_date: '2026-09-26' }],
     ['hybrid_search', { query: 'synthetic' }],
     ['export_word', { record_id: 'missing', path: `${root}/artifacts/rejected-document-${run}.pdf` }],
@@ -195,7 +199,7 @@
   const result = await verification;
   const verificationMs = performance.now() - started;
   if (!result.verified || result.method !== 'full-sha256-reread') throw new Error('Explicit Verify did not return a strong check');
-  await invoke('close_case');
+  await invoke('close_case', { case_id: snapshot.id, session_epoch: reopened.session_epoch });
   const other = await invoke('create_case', { path: `${root}/artifacts/event-case-b-${run}`, name: `Synthetic event case B ${run}` });
   const lastEvent = caseEvents.at(-1);
   if (lastEvent?.case_id !== other.id || lastEvent.session_epoch !== other.session_epoch || lastEvent.event_seq <= afterFindings.event_seq) throw new Error('Case switch did not produce a fenced event');

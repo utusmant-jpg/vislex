@@ -364,6 +364,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         anyhow::ensure!(!state.importing.load(std::sync::atomic::Ordering::SeqCst),"Wait for the current import before switching cases");
 
         if let Some(c) = guard.as_ref() {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before switching");
+            require_session_epoch(&state,&args)?;
 
             let running: i64 = c.db.query_row(
 

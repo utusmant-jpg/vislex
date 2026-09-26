@@ -616,12 +616,12 @@ export default function App() {
   async function openCase() {
     if (!native) { installSnapshot(await api<Snapshot>('load_demo')); setSelection(null); return; }
     const path = await open({ directory: true, title: 'Open a VisLex case folder' });
-    if (typeof path === 'string') { installSnapshot(await api<Snapshot>('open_case', { path })); setSelection(null); setView('chat'); }
+    if (typeof path === 'string') { installSnapshot(await api<Snapshot>('open_case', { ...(snapshot ? caseGuard(snapshot) : {}), path })); setSelection(null); setView('chat'); }
   }
   function showModal(type: typeof modal) { modalReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setName(''); setPassword(''); setModal(type); }
   function openSettings() { settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setSettings(true); }
   async function performModal() {
-    if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
+    if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { ...(snapshot ? caseGuard(snapshot) : {}), path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
     if (modal === 'note') { if (!snapshot) throw new Error('Open a case first.'); const created = await api<WorkingRecord>('write_record', { ...caseGuard(snapshot), title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
     if (modal === 'backup') { if (!snapshot) throw new Error('Open a case first.'); const path = await save({ defaultPath: 'case-backup.tar.age', filters: [{ name: 'Encrypted backup', extensions: ['age'] }] }); if (!path) return; await api('backup', { ...caseGuard(snapshot), path, password }); notify.success('Encrypted backup saved', path); }
     if (modal === 'delete') {
@@ -633,7 +633,7 @@ export default function App() {
       installSnapshot(null); setSelection(null); setOpenTabs([]);
       notify.success('Case deleted', `${formatBytes(receipt.bytes)} of case data removed from disk.`);
     }
-    if (modal === 'restore') { const archive = await open({ filters: [{ name: 'Encrypted case', extensions: ['age'] }] }); if (typeof archive !== 'string') return; const parent = await open({ directory: true, title: 'Choose restoration parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a restored case folder name.'); installSnapshot(await api<Snapshot>('restore_case', { archive, path: `${parent}\\${safeName}.ledcase`, password })); setSelection(null); }
+    if (modal === 'restore') { const archive = await open({ filters: [{ name: 'Encrypted case', extensions: ['age'] }] }); if (typeof archive !== 'string') return; const parent = await open({ directory: true, title: 'Choose restoration parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a restored case folder name.'); installSnapshot(await api<Snapshot>('restore_case', { ...(snapshot ? caseGuard(snapshot) : {}), archive, path: `${parent}\\${safeName}.ledcase`, password })); setSelection(null); }
     setPassword(''); setModal(null);
   }
 
@@ -748,8 +748,8 @@ export default function App() {
           <div className="project-list">
             {snapshot ? <div className="project-folder active"><FolderOpen size={15} /><button title={snapshot.root} onClick={() => beginRename('case', snapshot.id, snapshot.name)}>{snapshot.name}</button></div> : null}
             {projects.filter(project => project.id !== snapshot?.id).map(project => <details key={project.id} className="project-group"><summary><FolderOpen size={15} /><span>{project.name}</span></summary>
-              <button className="project-row" title={project.root} onClick={() => run(async () => { installSnapshot(await api<Snapshot>('open_case', { path: project.root })); setView('chat'); })}>Open project</button>
-              {project.chats?.slice(0, 8).map(chat => <button className="project-chat" key={chat.id} onClick={() => run(async () => { const opened = await api<Snapshot>('open_case', { path: project.root }); localStorage.setItem(`vislex-conversation:${project.id}`, chat.id); installSnapshot(opened); setView('chat'); })}>{chat.title}</button>)}
+              <button className="project-row" title={project.root} onClick={() => run(async () => { installSnapshot(await api<Snapshot>('open_case', { ...(snapshot ? caseGuard(snapshot) : {}), path: project.root })); setView('chat'); })}>Open project</button>
+              {project.chats?.slice(0, 8).map(chat => <button className="project-chat" key={chat.id} onClick={() => run(async () => { const opened = await api<Snapshot>('open_case', { ...(snapshot ? caseGuard(snapshot) : {}), path: project.root }); localStorage.setItem(`vislex-conversation:${project.id}`, chat.id); installSnapshot(opened); setView('chat'); })}>{chat.title}</button>)}
             </details>)}
           </div>
           <div className="sidebar-footer">

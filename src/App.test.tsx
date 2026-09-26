@@ -299,7 +299,7 @@ it('takes a selected historical text range to Chat and focuses the composer', as
 });
 
 it('discards a refresh from the previous case after switching projects', async () => {
-  const old=snapshot();
+  const old=snapshot();old.session_epoch=3;
   const next={...snapshot(),id:'new-case',name:'New case',root:'C:\\new-case'};
   localStorage.setItem('vislex-projects',JSON.stringify([{id:next.id,name:next.name,root:next.root}]));
   let resolveOld!:(value:Snapshot)=>void;
@@ -313,6 +313,7 @@ it('discards a refresh from the previous case after switching projects', async (
   await waitFor(()=>expect(reads).toBe(2));
   fireEvent.click(screen.getByText('New case',{selector:'summary span'}));
   fireEvent.click(screen.getByRole('button',{name:'Open project'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('open_case',{case_id:old.id,session_epoch:3,path:next.root}));
   await screen.findAllByText('New case');
   resolveOld(old);
   await Promise.resolve();
