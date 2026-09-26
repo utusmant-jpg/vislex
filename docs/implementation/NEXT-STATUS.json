@@ -188,6 +188,18 @@
     }
   },
   "additional_work": {
+    "CASE-SCOPED-DRAFTS-2026-09-26": {
+      "state": "implemented",
+      "commit": "1aa94e0",
+      "evidence": "Unsaved working-file drafts are keyed by case and record, with a DOM interaction that edits case A, opens case B using the same record ID, then returns to A and recovers only A's draft.",
+      "commands": [
+        "npm test -- --run -> exit 0, 46 tests in 11 files",
+        "npm run build -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "Drafts remain memory-only and do not survive full app exit; R06 close/restart handling is still open. Dev19 packaged native journey predates this UI edit and must not be claimed as covering it.",
+      "note": "No case data or source originals were modified."
+    },
     "DEV19-NATIVE-JOURNEY-2026-09-26": {
       "state": "verified",
       "environment": "Windows x64; isolated synthetic case; debug packaged build with VISLEX_TEST_MODE=1",
