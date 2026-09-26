@@ -201,6 +201,7 @@ export default function App() {
   const [projects, setProjects] = useState<{ id: string; name: string; root: string; chats?: { id: string; title: string }[] }[]>(() => { try { return JSON.parse(localStorage.getItem('vislex-projects') ?? '[]'); } catch { return []; } });
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const caseEpoch = useRef(0);
+  const refreshSequence = useRef(0);
   const [selection, setSelection] = useState<Selection>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[] | null>(null);
@@ -217,7 +218,7 @@ export default function App() {
   const dialog = useRef<HTMLDialogElement>(null);
 
   const installSnapshot = useCallback((next: Snapshot | null) => { caseEpoch.current += 1; setSnapshot(next); }, []);
-  const refresh = useCallback(async () => { const epoch = caseEpoch.current; const next = await api<Snapshot | null>('snapshot'); if (caseEpoch.current === epoch) setSnapshot(next); }, []);
+  const refresh = useCallback(async () => { const epoch = caseEpoch.current; const sequence = ++refreshSequence.current; const next = await api<Snapshot | null>('snapshot'); if (caseEpoch.current === epoch && refreshSequence.current === sequence) setSnapshot(next); }, []);
   const run = useCallback((fn: () => Promise<void>) => {
     setBusy(true);
     void fn().catch(error => notify.fromError('Something went wrong', error)).finally(() => setBusy(false));

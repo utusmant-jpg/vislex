@@ -163,3 +163,22 @@ it('discards a refresh from the previous case after switching projects', async (
   await Promise.resolve();
   expect(screen.getByText('New case',{selector:'.title-case'})).toBeTruthy();
 });
+
+it('keeps the latest same-case refresh when an earlier request returns last', async () => {
+  const initial=snapshot();
+  const newest={...snapshot(),name:'Latest saved name'};
+  let resolveEarlier!:(value:Snapshot)=>void;
+  const earlier=new Promise<Snapshot>(resolve=>{resolveEarlier=resolve;});
+  let reads=0;
+  api.mockImplementation(async (action:string)=>action==='snapshot'?(++reads===1?initial:reads===2?earlier:newest):action==='storage_usage'?{}:null);
+  render(<App/>);
+  await screen.findAllByText('Synthetic case');
+  fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
+  fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
+  await waitFor(()=>expect(reads).toBe(2));
+  fireEvent.click(screen.getByRole('button',{name:'Queue missing full transcripts'}));
+  await screen.findByText('Latest saved name',{selector:'.title-case'});
+  resolveEarlier(initial);
+  await Promise.resolve();
+  expect(screen.getByText('Latest saved name',{selector:'.title-case'})).toBeTruthy();
+});
