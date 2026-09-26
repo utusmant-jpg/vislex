@@ -36,3 +36,33 @@ it('loads long transcript segments in bounded pages and seeks to a later segment
   fireEvent.click(screen.getByRole('button',{name:'Accept correction'}));
   await waitFor(()=>expect(screen.getByText(/Accepted human correction/)).toBeTruthy());
 });
+
+it('keeps rendered transcript rows bounded after many real-sized cursor pages',async()=>{
+  api.mockImplementation((action:string,args:Record<string,unknown>)=>{
+    if(action==='full_transcription_status')return Promise.resolve({job_id:'long-run',status:'complete',error:'',progress:{},result:{segmented:true,segments:250,metadata:{container_origin_seconds:0,tracks:[{index:0,origin_seconds:0}]}},record:{content:'Summary'}});
+    if(action==='transcript_segment_page'){
+      const start=Number(args.cursor??0);
+      return Promise.resolve({segments:Array.from({length:25},(_,index)=>({ordinal:start+index,track:0,start:start+index,end:start+index+1,text:`Segment ${start+index}`})),next_cursor:start+25<250?start+25:null});
+    }
+    return Promise.resolve(null);
+  });
+  const view=render(<FullTranscript caseId="large-case" sourceId="large-source" run={fn=>{void fn();}} refresh={async()=>undefined} onSeek={vi.fn()} currentTime={0}/>);
+  await waitFor(()=>expect(screen.getByText(/25 loaded/)).toBeTruthy());
+  for(let page=2;page<=10;page++){
+    fireEvent.click(screen.getByRole('button',{name:'Load next 25 segments'}));
+    await waitFor(()=>expect(screen.getByText(new RegExp(`${page*25} loaded`))).toBeTruthy());
+  }
+  expect(view.container.querySelectorAll('.transcript-segment').length).toBeLessThanOrEqual(200);
+  expect(screen.getByRole('button',{name:'Show previous 200 loaded segments'})).toBeTruthy();
+});
+
+it('keeps legacy long transcript rows bounded while searching the entire saved text',async()=>{
+  const content=Array.from({length:10000},(_,index)=>`Line ${index}`).join('\n');
+  api.mockImplementation((action:string)=>action==='full_transcription_status'?Promise.resolve({job_id:'legacy-run',status:'complete',error:'',progress:{},result:{segmented:false,metadata:{container_origin_seconds:0,tracks:[]}},record:{content}}):Promise.resolve(null));
+  const view=render(<FullTranscript caseId="legacy-case" sourceId="legacy-source" run={fn=>{void fn();}} refresh={async()=>undefined} onSeek={vi.fn()} currentTime={0}/>);
+  await waitFor(()=>expect(screen.getByText('Line 199')).toBeTruthy());
+  expect(view.container.querySelectorAll('.transcript-plain').length).toBeLessThanOrEqual(200);
+  fireEvent.change(screen.getByRole('textbox',{name:'Search transcript'}),{target:{value:'Line 9999'}});
+  await waitFor(()=>expect(screen.getByText('Line 9999')).toBeTruthy());
+  expect(view.container.querySelectorAll('.transcript-plain')).toHaveLength(1);
+});

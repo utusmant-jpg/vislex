@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Save, History, Lock, Unlock, Check, Download, RotateCcw, FilePenLine, Eye, PenLine } from 'lucide-react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { api } from '../bridge';
@@ -7,12 +7,22 @@ import type { WorkingRecord, Revision } from '../types';
 
 // Keep unsaved drafts while switching tabs; never put case content in browser storage.
 const drafts = new Map<string, { content: string; title: string; base: number }>();
+type Props={ caseId: string; record: WorkingRecord; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; onSource: (id: string, locator?: string) => void };
 
-export default function RecordEditor({ caseId, record, refresh, run, onSource }: { caseId: string; record: WorkingRecord; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; onSource: (id: string, locator?: string) => void }) {
+export default function RecordEditor(props:Props){return <RecordEditorBody key={`${props.caseId}:${props.record.id}`} {...props}/>;}
+
+function RecordEditorBody({ caseId, record, refresh, run, onSource }: Props) {
   const draftKey = `${caseId}:${record.id}`;
   const [content, setContent] = useState(drafts.get(draftKey)?.content ?? record.content); const [title, setTitle] = useState(drafts.get(draftKey)?.title ?? record.title);
   const [base, setBase] = useState(drafts.get(draftKey)?.base ?? record.revision); const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [preview, setPreview] = useState(false);
+  const previousServer=useRef({content:record.content,title:record.title,revision:record.revision});
+  useEffect(()=>{
+    const previous=previousServer.current;
+    if(previous.content===record.content&&previous.title===record.title&&previous.revision===record.revision)return;
+    if(content===previous.content&&title===previous.title&&base===previous.revision){setContent(record.content);setTitle(record.title);setBase(record.revision);}
+    previousServer.current={content:record.content,title:record.title,revision:record.revision};
+  },[record.content,record.title,record.revision,content,title,base]);
   useEffect(() => { if (content !== record.content || title !== record.title) drafts.set(draftKey, { content, title, base }); else drafts.delete(draftKey); }, [draftKey, record.content, record.title, content, title, base]);
   const dirty = content !== record.content || title !== record.title;
   const changed = base !== record.revision;
@@ -22,7 +32,7 @@ export default function RecordEditor({ caseId, record, refresh, run, onSource }:
       <button className="quiet" title="Export the saved revision" onClick={() => run(async () => { const expected_revision = record.revision; const path = await save({ defaultPath: `${record.title.replace(/[^a-zA-Z0-9 -]/g, '')}.md`, filters: [{ name: 'Saved report', extensions: ['md', 'json', 'txt', 'docx', 'pdf'] }] }); if (path) await api(/\.(docx|pdf)$/i.test(path)?'export_word':'export_record', { case_id: caseId, record_id: record.id, expected_revision, path }); })}><Download size={14}/>Export saved revision</button>
     </div>
     {changed ? <div className="notice warning">A newer revision exists. Your local draft has been preserved. <button onClick={() => { setContent(record.content); setTitle(record.title); setBase(record.revision); }}>Load latest revision</button></div> : null}
-    {dirty ? <p className="small muted">Export uses the saved revision. Save your changes first to include them.</p> : null}
+    {dirty ? <><p className="small muted">Export uses the saved revision. Save your changes first to include them.</p><p className="small muted">Unsaved drafts stay in memory for this app session and are lost if the app closes or crashes.</p></> : null}
     <div className="editor-heading"><input aria-label="Working file title" value={title} onChange={e => setTitle(e.target.value)} /><div><span className="mono">REV {base}</span><span>{record.actor === 'agent' ? 'AI-updated / unreviewed' : record.actor === 'processor' ? 'Machine transcript / unreviewed' : 'Manual working file'}</span><span>{dirty ? 'Unsaved changes' : 'Saved in case database'}</span></div></div>
     {preview ? <div className="markdown-editor record-preview"><Markdown text={content} onSource={onSource} /></div>
       : <textarea className="markdown-editor" aria-label="Working file content" spellCheck={false} value={content} onChange={e => setContent(e.target.value)} />}
