@@ -8,6 +8,8 @@ import {
 } from 'lucide-react';
 import { api, citationParts } from './bridge';
 import { configuredProfiles, profileKey, providerNames } from './aiProfiles';
+import { motion, useReducedMotion } from 'motion/react';
+import { springs } from './lib/motion';
 import type { AIProfile, Snapshot } from './types';
 
 /* ---------------------------------- status --------------------------------- */
@@ -426,10 +428,28 @@ export function modelBadges(model: string, isDefault: boolean): string[] {
   const id = model.toLowerCase();
   const badges: string[] = [];
   if (isDefault) badges.push('Default');
+  if (id.endsWith(':free') || id.includes(':free')) badges.push('Free');
   if (/o1|o3|o4|reason|thinking|opus|r1/.test(id)) badges.push('Reasoning');
   else if (/mini|flash|haiku|fast|nano/.test(id)) badges.push('Fast');
   if (/vision|4o|gemini|gpt-5|sonnet|opus/.test(id)) badges.push('Vision');
-  return badges.slice(0, 2);
+  // Default + Free always lead; cap the rest so rows stay scannable.
+  const priority = badges.filter(badge => badge === 'Default' || badge === 'Free');
+  const rest = badges.filter(badge => badge !== 'Default' && badge !== 'Free');
+  return [...priority, ...rest].slice(0, 2);
+}
+
+/** Subsequence fuzzy match: every filter character appears in order. */
+export function matchesModelFilter(model: string, filter: string): boolean {
+  const needle = filter.trim().toLowerCase();
+  if (!needle) return true;
+  const haystack = model.toLowerCase();
+  if (haystack.includes(needle)) return true;
+  let index = 0;
+  for (const character of haystack) {
+    if (character === needle[index]) index += 1;
+    if (index === needle.length) return true;
+  }
+  return false;
 }
 
 export function ModelPicker({ snapshot, selected, onSelect, onManage, disabled }: {
@@ -438,37 +458,60 @@ export function ModelPicker({ snapshot, selected, onSelect, onManage, disabled }
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
+  const [highlight, setHighlight] = useState(0);
   const anchor = useRef<HTMLButtonElement | null>(null);
+  const reducedMotion = useReducedMotion();
   const profiles = (snapshot ? configuredProfiles(snapshot).filter(profile => profile.allow_text) : []);
   const groups = Object.entries(providerNames)
-    .map(([provider, name]) => ({ provider, name, models: profiles.filter(profile => profile.provider === provider && profile.model.toLowerCase().includes(filter.toLowerCase())) }))
+    .map(([provider, name]) => ({ provider, name, models: profiles.filter(profile => matchesModelFilter(profile.model, filter)) }))
     .filter(group => group.models.length);
+  const flat = groups.flatMap(group => group.models);
   const defaultKey = snapshot ? `${snapshot.ai_config?.provider ?? 'openai'}:${snapshot.settings.model}` : '';
+  function choose(profile: AIProfile) {
+    onSelect(profile);
+    setOpen(false);
+    setFilter('');
+    setHighlight(0);
+  }
   return <>
     <Tooltip text="Choose the model for your next message">
-      <button ref={anchor} className="model-picker" disabled={disabled || !profiles.length} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+      <button ref={anchor} className="model-picker bg-surface-2 border-border rounded-lg" disabled={disabled || !profiles.length} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(value => !value)}>
         <span className="model-provider-dot" data-provider={selected?.provider} />
         <span className="model-name">{selected?.model ?? 'Configure AI'}</span>
         <ChevronDown size={13} />
       </button>
     </Tooltip>
-    {open ? <AnchoredPopover anchor={anchor.current} onClose={() => { setOpen(false); setFilter(''); }} className="model-popover">
-      <div className="model-filter"><Search size={13} /><input autoFocus aria-label="Filter models" placeholder="Filter models…" value={filter} onChange={event => setFilter(event.target.value)} /></div>
-      {!profiles.length ? <p className="small muted model-empty">No models configured. Add a provider key and choose models.</p> :
-        !groups.length ? <p className="small muted model-empty">No models match “{filter}”.</p> : null}
-      {groups.map(group => <div key={group.provider} className="model-group" role="listbox" aria-label={group.name}>
-        <div className="model-group-label">{group.name}</div>
-        {group.models.map(profile => {
-          const key = profileKey(profile);
-          return <button key={key} role="option" aria-selected={selected ? profileKey(selected) === key : false} className={`model-option ${selected && profileKey(selected) === key ? 'selected' : ''}`} onClick={() => { onSelect(profile); setOpen(false); setFilter(''); }}>
-            <span className="model-provider-dot" data-provider={profile.provider} />
-            <span className="model-option-name">{profile.model}</span>
-            {modelBadges(profile.model, key === defaultKey).map(badge => <span className="model-badge" key={badge}>{badge}</span>)}
-            {selected && profileKey(selected) === key ? <Check size={13} /> : null}
-          </button>;
-        })}
-      </div>)}
-      <button className="model-manage" onClick={() => { setOpen(false); onManage(); }}>Manage models &amp; keys…</button>
+    {open ? <AnchoredPopover anchor={anchor.current} onClose={() => { setOpen(false); setFilter(''); setHighlight(0); }} className="model-popover">
+      <motion.div
+        initial={reducedMotion ? false : { opacity: 0, y: -4, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={springs.overlay}
+        onKeyDown={event => {
+          if (!flat.length) return;
+          if (event.key === 'ArrowDown') { event.preventDefault(); setHighlight(value => (value + 1) % flat.length); }
+          else if (event.key === 'ArrowUp') { event.preventDefault(); setHighlight(value => (value - 1 + flat.length) % flat.length); }
+          else if (event.key === 'Enter' && document.activeElement?.getAttribute('aria-label') !== 'Filter models') { event.preventDefault(); choose(flat[highlight] ?? flat[0]); }
+        }}
+      >
+        <div className="model-filter"><Search size={13} /><input autoFocus aria-label="Filter models" placeholder="Filter models…" value={filter} onChange={event => { setFilter(event.target.value); setHighlight(0); }} /></div>
+        {!profiles.length ? <p className="small muted model-empty">No models configured. Add a provider key and choose models.</p> :
+          !groups.length ? <p className="small muted model-empty">No models match "{filter}".</p> : null}
+        {groups.length ? <p className="small muted model-count" aria-hidden="true">{flat.length} model{flat.length === 1 ? '' : 's'} available</p> : null}
+        {groups.map(group => <div key={group.provider} className="model-group" role="listbox" aria-label={group.name}>
+          <div className="model-group-label">{group.name}</div>
+          {group.models.map(profile => {
+            const key = profileKey(profile);
+            const index = flat.indexOf(profile);
+            return <button key={key} role="option" aria-selected={selected ? profileKey(selected) === key : false} className={`model-option ${selected && profileKey(selected) === key ? 'selected' : ''} ${index === highlight ? 'highlight' : ''}`} onMouseEnter={() => setHighlight(index)} onClick={() => choose(profile)}>
+              <span className="model-provider-dot" data-provider={profile.provider} />
+              <span className="model-option-name">{profile.model}</span>
+              {modelBadges(profile.model, key === defaultKey).map(badge => <span className="model-badge" key={badge}>{badge}</span>)}
+              {selected && profileKey(selected) === key ? <Check size={13} /> : null}
+            </button>;
+          })}
+        </div>)}
+        <button className="model-manage" onClick={() => { setOpen(false); onManage(); }}>Manage models &amp; keys…</button>
+      </motion.div>
     </AnchoredPopover> : null}
   </>;
 }

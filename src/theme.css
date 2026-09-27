@@ -169,6 +169,10 @@
     border: 1px solid color-mix(in oklab, var(--primary) 38%, transparent);
     box-shadow: 0 4px 16px -8px color-mix(in oklab, var(--primary) 55%, transparent);
   }
+
+  /* Model picker: keyboard-highlight row + availability count. */
+  .model-option.highlight { background: color-mix(in oklab, var(--primary) 12%, transparent); }
+  .model-count { padding: 4px 12px 2px; margin: 0; font-size: 10.5px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
