@@ -32,7 +32,7 @@ try {
   if (!ready) throw new Error('Tauri bridge unavailable');
   const expression = `(async()=>{const invoke=(action)=>window.__TAURI_INTERNALS__.invoke('command',{action,args:{}});return {route:await invoke('ai_access_route'),account:await invoke('codex_account_status')}})()`;
   const result = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? JSON.stringify(result.exceptionDetails));
   const value = result.result?.value;
   if (value?.route?.subscription_ready !== true || typeof value?.account?.connected !== 'boolean') {
     throw new Error(`Packaged Codex account route unavailable: ${JSON.stringify(value)}`);

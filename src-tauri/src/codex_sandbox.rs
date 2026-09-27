@@ -75,12 +75,14 @@ fn sid_string(sid: PSID) -> Result<String> {
         Ok(result)
     }
 }
-fn acl(path: &Path, sid: &str, rights: &str, remove: bool) -> Result<()> {
+fn acl(path: &Path, sid: &str, rights: &str, remove: bool, recursive: bool) -> Result<()> {
     let system = std::env::var_os("SystemRoot").context("SystemRoot missing")?;
     let mut command = Command::new(Path::new(&system).join("System32/icacls.exe"));
     command.arg(path);
-    if remove { command.args(["/remove:g", &format!("*{sid}"), "/T", "/Q"]); }
-    else { command.args(["/grant", &format!("*{sid}:(OI)(CI)({rights})"), "/T", "/Q"]); }
+    if remove { command.args(["/remove:g", &format!("*{sid}")]); }
+    else { command.args(["/grant", &format!("*{sid}:(OI)(CI)({rights})")]); }
+    if recursive { command.arg("/T"); }
+    command.arg("/Q");
     let result = command.creation_flags(CREATE_NO_WINDOW).output()?;
     ensure!(result.status.success(), "Could not scope Codex AppContainer ACL: {}", String::from_utf8_lossy(&result.stderr));
     Ok(())
@@ -111,8 +113,8 @@ impl Drop for Grants {
         // Durable grants cover only the bundled runtime and that profile.
         if self.persistent { return; }
         if self.package_granted { let _ = package_traverse(&self.package_root, &self.sid, true); }
-        if self.home_granted { let _ = acl(&self.private_home, &self.sid, "M", true); }
-        if self.runtime_granted { let _ = acl(&self.runtime, &self.sid, "RX", true); }
+        if self.home_granted { let _ = acl(&self.private_home, &self.sid, "M", true, false); }
+        if self.runtime_granted { let _ = acl(&self.runtime, &self.sid, "RX", true, true); }
     }
 }
 
@@ -184,11 +186,13 @@ fn spawn_with_profile(executable: &Path, internet: bool, stable_name: Option<&st
         std::fs::create_dir_all(&private_home)?;
         let package_root = private_home.parent().context("AppContainer package root missing")?.to_path_buf();
         let mut grants = Grants { runtime: runtime.clone(), private_home: private_home.clone(), package_root, sid: sid.clone(), runtime_granted: false, home_granted: false, package_granted: false, persistent: stable_name.is_some() };
-        acl(&runtime, &sid, "RX", false)?;
+        acl(&runtime, &sid, "RX", false, true)?;
         grants.runtime_granted = true;
         package_traverse(&grants.package_root, &sid, false)?;
         grants.package_granted = true;
-        acl(&private_home, &sid, "M", false)?;
+        // The durable account home may already contain a large cache or stale
+        // paths. Grant its root with inheritance instead of traversing user data.
+        acl(&private_home, &sid, "M", false, false)?;
         grants.home_granted = true;
         let (stdin_read, mut stdin_write) = pipe()?;
         let (mut stdout_read, stdout_write) = pipe()?;

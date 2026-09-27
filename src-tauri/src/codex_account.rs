@@ -61,7 +61,7 @@ impl Connection {
         // path. Release must load the binary shipped beside the app resources.
         let binary = binary_path(directory);
         let child = crate::codex_sandbox::spawn_subscription(&binary)
-            .context("Isolated Codex runtime unavailable; subscription sign-in is disabled")?;
+            .map_err(|error| anyhow::anyhow!("Isolated Codex runtime unavailable; subscription sign-in is disabled: {error:#}"))?;
         let stdout = child.stdout.try_clone()?;
         let mut stderr = child.stderr.try_clone()?;
         std::thread::spawn(move || { let _ = std::io::copy(&mut stderr, &mut std::io::sink()); });
