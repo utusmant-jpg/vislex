@@ -17,6 +17,7 @@
     "check": "npm run build && npm run test && npm run test:core"
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.15.22",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",

@@ -3,6 +3,8 @@ import {
   ArrowUp, BookOpen, ChevronDown, CircleDot, FilePenLine, Film, Flag, Layers, ListChecks,
   LoaderCircle, MessageSquareQuote, Play, Scale, ScanLine, Search, Settings2, Sparkles, Square, Wrench,
 } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { springs } from '../lib/motion';
 import { listen } from '@tauri-apps/api/event';
 import { api, native } from '../bridge';
 import { caseSessionArgs } from '../caseSession';
@@ -48,6 +50,7 @@ function TurnActivity({ turn, onSource }: { turn: Task; onSource: (id: string, l
   const [actions, setActions] = useState<Action[] | null>(null);
   const [team, setTeam] = useState<TeamMember[]>([]);
   const [teamError, setTeamError] = useState('');
+  const reducedMotion = useReducedMotion();
   const running = turn.status === 'running';
   useEffect(() => {
     if (!open) return;
@@ -72,7 +75,16 @@ function TurnActivity({ turn, onSource }: { turn: Task; onSource: (id: string, l
       <span>{running ? (latest ? friendlyAction(latest) : 'Considering the evidence…') : `${actions?.length ?? '—'} actions${failures ? ` · ${failures} failed` : ''}`}</span>
       <ChevronDown size={12} />
     </button>
-    {open ? <>
+    <AnimatePresence initial={false}>
+      {open ? <motion.div
+        key="activity-body"
+        className="activity-body"
+        initial={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+        animate={reducedMotion ? { opacity: 1 } : { height: 'auto', opacity: 1 }}
+        exit={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+        transition={springs.gentle}
+        style={reducedMotion ? undefined : { overflow: 'hidden' }}
+      >
       {teamError ? <p className="small danger-text" role="alert">Team status unavailable: {teamError}</p> : null}
       {team.length ? <div className="team-cards">
         <p className="small muted">Agent team · {team.filter(member => member.status === 'complete').length}/{team.length} assignments complete. Separate working contexts — not independent corroboration or human approval.</p>
@@ -105,7 +117,8 @@ function TurnActivity({ turn, onSource }: { turn: Task; onSource: (id: string, l
         {actions && !actions.length ? <li className="timeline-row"><span className="timeline-icon"><CircleDot size={13} /></span><span className="timeline-name">No recorded actions.</span></li> : null}
       </ol>
       {running ? <RunStatus turn={turn} /> : null}
-    </> : null}
+      </motion.div> : null}
+    </AnimatePresence>
   </div>;
 }
 
@@ -274,6 +287,10 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
 
   const followUps = task?.status === 'complete' && !task.error ? (task.progress?.next_steps ?? []).filter(Boolean).slice(0, 3) : [];
   const starters = starterPrompts(snapshot);
+  const reducedMotion = useReducedMotion();
+  const heroItem = reducedMotion
+    ? { hidden: { opacity: 0 }, visible: { opacity: 1, transition: { duration: 0.12 } } }
+    : { hidden: { opacity: 0, y: 12 }, visible: { opacity: 1, y: 0, transition: springs.gentle } };
   const contextName = selection
     ? selection.type === 'source'
       ? snapshot?.sources.find(source => source.id === selection.id)?.name
@@ -295,7 +312,13 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     }}>
       <div className="conversation-content">
         {conversationDetail && conversationDetail.sessionKey === sessionKey && conversationDetail.conversationId === conversationId && conversationDetail.nextCursor ? <button className="quiet" disabled={loadingOlderTurns} onClick={loadOlderTurns}>{loadingOlderTurns ? 'Loading…' : 'Load earlier messages'}</button> : null}
-        {turns.length ? turns.map(turn => <article className="conversation-turn" key={turn.id}>
+        {turns.length ? turns.map(turn => <motion.article
+          className="conversation-turn"
+          key={turn.id}
+          initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={reducedMotion ? { duration: 0.12 } : springs.gentle}
+        >
           <div className="user-message">
             {turn.prompt}
             {turn.status === 'running' && turn.id === running?.id ? <LoaderCircle size={12} className="spin user-message-running" /> : null}
@@ -326,30 +349,66 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
             onConversation(result.conversation_id);
             await refresh();
           })}>Continue in new task</button> : null}
-          {turn.id === task?.id && turn.status === 'complete' && followUps.length ? <div className="follow-ups">
+          {turn.id === task?.id && turn.status === 'complete' && followUps.length ? <motion.div
+            className="follow-ups"
+            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={springs.gentle}
+          >
             <span className="follow-up-label"><MessageSquareQuote size={13} />Suggested next checks</span>
-            {followUps.map(step => <button key={step} className="follow-up" onClick={() => { draft(`Perform this next check: ${step}`); composer.current?.focus(); }}>{step}</button>)}
-          </div> : null}
-        </article>) : <div className="agent-welcome">
-          <div className="vislex-glyph"><Sparkles size={22} /></div>
-          <div className="eyebrow">CASE WORKSPACE</div>
-          <h1>{snapshot ? snapshot.name : 'Start with a case'}</h1>
-          <p>{snapshot ? 'Explore the evidence, compare accounts, and keep each conclusion tied to its source.' : 'Open a case to bring your evidence and conversations together.'}</p>
-          {snapshot ? <div className="welcome-summary" aria-label="Case at a glance">
-            <div><strong>{snapshot.counts?.source_count ?? snapshot.sources.length}</strong><span>Evidence sources</span></div>
-            <div><strong>{snapshot.counts?.record_count ?? snapshot.records.length}</strong><span>Working files</span></div>
-            <div><strong>{snapshot.sources.filter(source => source.restricted).length}</strong><span>Restricted in this page</span></div>
-          </div> : null}
-          <h2 className="welcome-prompt-label">Suggested starting points</h2>
-          <div className="starter-prompts">{starters.map(starter => <button key={starter} onClick={() => { draft(starter); composer.current?.focus(); }}>{starter}<ArrowUp size={14} /></button>)}</div>
-        </div>}
+            {followUps.map(step => <motion.button
+              key={step}
+              className="follow-up"
+              onClick={() => { draft(`Perform this next check: ${step}`); composer.current?.focus(); }}
+              whileHover={reducedMotion ? undefined : { x: 2 }}
+              whileTap={reducedMotion ? undefined : { scale: 0.99 }}
+            >{step}</motion.button>)}
+          </motion.div> : null}
+        </motion.article>) : <motion.div
+          className="agent-welcome"
+          initial="hidden"
+          animate="visible"
+          variants={{ hidden: {}, visible: reducedMotion ? {} : { transition: { staggerChildren: 0.05, delayChildren: 0.05 } } }}
+        >
+          <motion.div variants={heroItem} className="glyph-halo-wrap">
+            <div className="vislex-glyph glyph-halo" aria-hidden="true"><Sparkles size={22} /></div>
+          </motion.div>
+          <motion.div className="eyebrow" variants={heroItem}>CASE WORKSPACE</motion.div>
+          <motion.h1 variants={heroItem}>{snapshot ? snapshot.name : 'Start with a case'}</motion.h1>
+          <motion.p variants={heroItem}>{snapshot ? 'Explore the evidence, compare accounts, and keep each conclusion tied to its source.' : 'Open a case to bring your evidence and conversations together.'}</motion.p>
+          {snapshot ? <motion.div className="welcome-summary" variants={heroItem} aria-label="Case at a glance">
+            <div><strong className={snapshot.counts?.source_count ?? snapshot.sources.length ? undefined : 'stat-zero'}>{snapshot.counts?.source_count ?? snapshot.sources.length}</strong><span>Evidence sources</span></div>
+            <div><strong className={snapshot.counts?.record_count ?? snapshot.records.length ? undefined : 'stat-zero'}>{snapshot.counts?.record_count ?? snapshot.records.length}</strong><span>Working files</span></div>
+            <div><strong className={snapshot.sources.filter(source => source.restricted).length ? undefined : 'stat-zero'}>{snapshot.sources.filter(source => source.restricted).length}</strong><span>Restricted in this page</span></div>
+          </motion.div> : null}
+          <motion.h2 className="welcome-prompt-label" variants={heroItem}>Suggested starting points</motion.h2>
+          <div className="starter-prompts">{starters.map((starter, index) => <motion.button
+            key={starter}
+            onClick={() => { draft(starter); composer.current?.focus(); }}
+            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={reducedMotion ? { duration: 0.12 } : { ...springs.gentle, delay: 0.18 + index * 0.06 }}
+            whileHover={reducedMotion ? undefined : { y: -1 }}
+            whileTap={reducedMotion ? undefined : { scale: 0.99 }}
+          >{starter}<ArrowUp size={14} /></motion.button>)}</div>
+        </motion.div>}
       </div>
     </div>
-    {showJump ? <button className="jump-latest" aria-label="Jump to latest message" onClick={() => { following.current = true; if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; setShowJump(false); }}>Latest ↓</button> : null}
+    <AnimatePresence>
+      {showJump ? <motion.button
+        className="jump-latest"
+        aria-label="Jump to latest message"
+        initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.96 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.96 }}
+        transition={springs.overlay}
+        onClick={() => { following.current = true; if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; setShowJump(false); }}
+      >Latest ↓</motion.button> : null}
+    </AnimatePresence>
     <div className="composer-area">
       {snapshot && (snapshot.settings.offline || !snapshot.settings.allow_text || !availableModels.length) ? <button className="offline-notice" onClick={onSettings}>Set up or enable AI in settings</button> : null}
       {chatBlocked && !running ? <p role="status" className="small muted">Preparing case files before chat is available.</p> : null}
-      <div className="composer">
+      <div className="composer bg-surface-2/90 backdrop-blur-xl rounded-2xl border-border shadow-[0_12px_40px_-16px_rgba(0,0,0,0.55)]">
         {contextName ? <div className="viewer-context" title="The agent receives this open file, its page and playback position">
           <span>Viewing</span><strong>{contextName}</strong>
           {contextPage ? <span>p.{contextPage}</span> : null}
@@ -367,8 +426,22 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           />
           <div className="spacer" />
           {running
-            ? <Tooltip text="Stop the current response"><button className="send stop" aria-label="Stop response" onClick={() => run(async () => { if (!snapshot) return; await api('stop_task', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
-            : <Tooltip text={chatBlocked ? 'Waiting for case preparation' : 'Send message (Enter)'}><button className="send" aria-label="Send message" disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile} onClick={submit}><ArrowUp size={18} /></button></Tooltip>}
+            ? <Tooltip text="Stop the current response"><motion.button
+                className="send stop bg-destructive text-destructive-foreground rounded-full"
+                aria-label="Stop response"
+                whileTap={reducedMotion ? undefined : { scale: 0.92 }}
+                transition={springs.snappy}
+                onClick={() => run(async () => { if (!snapshot) return; await api('stop_task', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), task_id: running.id }); await refresh(); })}
+              ><Square size={14} /></motion.button></Tooltip>
+            : <Tooltip text={chatBlocked ? 'Waiting for case preparation' : 'Send message (Enter)'}><motion.button
+                className="send bg-primary text-primary-foreground hover:bg-primary-hover rounded-full"
+                aria-label="Send message"
+                disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile}
+                whileHover={reducedMotion || chatBlocked || sending || !prompt.trim() ? undefined : { scale: 1.05 }}
+                whileTap={reducedMotion ? undefined : { scale: 0.92 }}
+                transition={springs.snappy}
+                onClick={submit}
+              ><ArrowUp size={18} /></motion.button></Tooltip>}
         </div>
       </div>
       <p className="composer-foot">VisLex cites evidence for what it claims · Enter to send · Shift+Enter for a new line</p>

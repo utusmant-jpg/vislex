@@ -114,3 +114,49 @@
   --font-sans: 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'Cascadia Code', 'Consolas', monospace;
 }
+
+/* ---------------------------------------------------------------------------
+ * VisLex Modern components — new surfaces styled with plain CSS classes until
+ * the legacy sheet retires. Utilities are preferred; these are the pieces
+ * that need keyframes or token math utilities cannot express.
+ * ------------------------------------------------------------------------- */
+@layer components {
+  /* Chat welcome glyph: soft indigo aurora halo behind the mark. */
+  .glyph-halo-wrap { position: relative; display: inline-block; margin-bottom: 12px; }
+  .glyph-halo {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    border-radius: 18px;
+    border: 1px solid var(--border-strong);
+    color: oklch(82% 0.11 280);
+    background:
+      radial-gradient(120% 120% at 20% 15%, oklch(30% 0.09 280 / 65%), transparent 55%),
+      radial-gradient(120% 120% at 85% 90%, oklch(26% 0.07 250 / 55%), transparent 60%),
+      var(--surface-2);
+    box-shadow: 0 8px 32px -10px oklch(45% 0.14 280 / 45%), inset 0 1px 0 oklch(100% 0 0 / 6%);
+  }
+  .glyph-halo::after {
+    content: '';
+    position: absolute;
+    inset: -22px;
+    border-radius: 9999px;
+    background: radial-gradient(closest-side, oklch(60% 0.16 280 / 22%), transparent);
+    animation: glyph-breathe 5.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes glyph-breathe {
+    0%, 100% { opacity: 0.55; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.12); }
+  }
+
+  /* Zero-valued welcome stats step back instead of reading as findings. */
+  .welcome-summary strong.stat-zero { color: var(--subtle-foreground); opacity: 0.7; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glyph-halo::after { animation: none; }
+}
