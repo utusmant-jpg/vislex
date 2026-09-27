@@ -12,6 +12,14 @@ use std::{
 
 static CLIENT: OnceLock<Mutex<Option<Connection>>> = OnceLock::new();
 
+fn binary_path(directory: &Path) -> std::path::PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("VISLEX_CODEX_BINARY") { return path.into(); }
+    directory.join("codex.exe")
+}
+
+pub fn available(directory: &Path) -> bool { binary_path(directory).is_file() }
+
 struct Connection {
     child: crate::codex_sandbox::CodexChild,
     events: mpsc::Receiver<Value>,
@@ -23,12 +31,7 @@ impl Connection {
         std::fs::create_dir_all(directory)?;
         // In development only, the verified patched build may be supplied by
         // path. Release must load the binary shipped beside the app resources.
-        #[cfg(debug_assertions)]
-        let binary = std::env::var_os("VISLEX_CODEX_BINARY")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| directory.join("codex.exe"));
-        #[cfg(not(debug_assertions))]
-        let binary = directory.join("codex.exe");
+        let binary = binary_path(directory);
         let child = crate::codex_sandbox::spawn_subscription(&binary)
             .context("Isolated Codex runtime unavailable; subscription sign-in is disabled")?;
         let stdout = child.stdout.try_clone()?;

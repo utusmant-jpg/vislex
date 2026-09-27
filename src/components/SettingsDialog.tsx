@@ -12,7 +12,7 @@ type Section = typeof sections[number];
 type Preferences = { ai_config?: AIConfig; settings: Settings };
 type AppPreferences = { configured: boolean; config: AIConfig; settings: Settings };
 const emptySettings: Settings = { offline: true, allow_text: false, allow_images: false, model: '' };
-type AccessState = { route: 'api_keys' | 'chatgpt_subscription'; subscription?: { model: string; effort: string } | null; subscription_ready: boolean; blocker: string };
+type AccessState = { route: 'api_keys' | 'chatgpt_subscription'; subscription?: { model: string; effort: string } | null; subscription_ready: boolean; account_ready: boolean; blocker: string };
 type CodexAccount = { connected: boolean; email?: string | null; plan?: string | null };
 type CodexModel = { id: string; name: string; efforts: string[]; default_effort?: string | null };
 
@@ -72,8 +72,11 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
     });
     if (native && snapshot) api<{ enabled: boolean }>('direct_media_permission',caseSessionArgs(snapshot.id,snapshot.session_epoch)).then(v => { if (mounted.current) { setDirectMedia(v.enabled); setInitialDirectMedia(v.enabled); } }).catch(() => { if (mounted.current) { setDirectMedia(false); setInitialDirectMedia(false); } });
     if (native) {
-      api<AccessState>('ai_access_route').then(v => { if (mounted.current) {setAccess(v);setCodexModel(v.subscription?.model ?? '');setCodexEffort(v.subscription?.effort ?? '');} }).catch(e => {if (mounted.current) setCodexError(String(e));});
-      api<CodexAccount>('codex_account_status').then(v => {if (mounted.current) setAccount(v);}).catch(e => {if (mounted.current) setCodexError(String(e));});
+      api<AccessState>('ai_access_route').then(v => {
+        if (!mounted.current) return;
+        setAccess(v);setCodexModel(v.subscription?.model ?? '');setCodexEffort(v.subscription?.effort ?? '');
+        if (v.account_ready) api<CodexAccount>('codex_account_status').then(account => {if (mounted.current) setAccount(account);}).catch(e => {if (mounted.current) setCodexError(String(e));});
+      }).catch(e => {if (mounted.current) setCodexError(String(e));});
     }
     return () => { mounted.current = false; };
   }, []);
@@ -188,11 +191,12 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
               <button type="button" className={`chip ${access?.route === 'chatgpt_subscription' ? 'selected' : ''}`} disabled={!native || !access?.subscription_ready || codexBusy} onClick={() => void codexAction(async () => {const v = await api<AccessState>('set_ai_access_route',{route:'chatgpt_subscription'});setAccess(current => current ? {...current,route:v.route} : null);})}>ChatGPT subscription</button>
             </div>
             <p className="small muted">API usage and ChatGPT subscription usage are separate. The selected route applies to all new AI tasks; no task switches routes automatically.</p>
+            {access && !access.account_ready ? <p className="small muted" role="status">This build does not include the isolated Codex runtime. Subscription sign-in is unavailable.</p> : null}
             {!access?.subscription_ready && access ? <p className="small muted" role="status">Subscription tasks are disabled: {access.blocker}. API tasks continue normally.</p> : null}
             <div className="input-row">
               <span className="small">ChatGPT account: {account?.connected ? `${account.email ?? 'Connected'}${account.plan ? ` · ${account.plan}` : ''}` : 'Not connected'}</span>
-              {!account?.connected ? <button type="button" className="secondary" disabled={!native || codexBusy} onClick={() => void codexAction(async () => {setLogin(await api('codex_account_login'));})}>Sign in with ChatGPT</button> : <button type="button" className="secondary" disabled={codexBusy} onClick={() => void codexAction(async () => {await api('codex_account_logout');setAccount({connected:false});setCodexModels([]);setCodexLimits('');})}>Sign out</button>}
-              <button type="button" className="quiet" disabled={!native || codexBusy} onClick={() => void codexAction(async () => {setAccount(await api('codex_account_status'));})}>Refresh status</button>
+              {!account?.connected ? <button type="button" className="secondary" disabled={!native || !access?.account_ready || codexBusy} onClick={() => void codexAction(async () => {setLogin(await api('codex_account_login'));})}>Sign in with ChatGPT</button> : <button type="button" className="secondary" disabled={codexBusy} onClick={() => void codexAction(async () => {await api('codex_account_logout');setAccount({connected:false});setCodexModels([]);setCodexLimits('');})}>Sign out</button>}
+              <button type="button" className="quiet" disabled={!native || !access?.account_ready || codexBusy} onClick={() => void codexAction(async () => {setAccount(await api('codex_account_status'));})}>Refresh status</button>
             </div>
             {login ? <p className="small">Enter code <strong>{login.user_code}</strong> at <a href={login.auth_url} target="_blank" rel="noopener noreferrer">ChatGPT sign-in</a>. <button type="button" className="quiet" onClick={() => void codexAction(async () => {await api('codex_account_cancel_login',{login_id:login.login_id});setLogin(null);})}>Cancel sign-in</button></p> : null}
             {account?.connected ? <>

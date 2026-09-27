@@ -17,14 +17,14 @@ const snapshot: Snapshot = {
 
 beforeEach(() => {
   api.mockReset();
-  api.mockImplementation(async (action: string) => action === 'app_ai_settings' ? { configured: true, config: snapshot.ai_config, settings: snapshot.settings } : action === 'case_ai_scope' ? { scope: 'case' } : action === 'direct_media_permission' ? { enabled: false } : action === 'provider_key_status' ? { configured: true } : undefined);
+  api.mockImplementation(async (action: string) => action === 'app_ai_settings' ? { configured: true, config: snapshot.ai_config, settings: snapshot.settings } : action === 'case_ai_scope' ? { scope: 'case' } : action === 'direct_media_permission' ? { enabled: false } : action === 'provider_key_status' ? { configured: true } : action === 'ai_access_route' ? { route: 'api_keys', account_ready: false, subscription_ready: false, blocker: 'Tool bridge unverified' } : undefined);
   HTMLDialogElement.prototype.showModal = function () { this.open = true; };
 });
 afterEach(cleanup);
 
 it('shows the isolated subscription route as unavailable until case execution is verified', async () => {
   api.mockImplementation(async (action: string) => action === 'ai_access_route'
-    ? { route: 'api_keys', subscription: null, subscription_ready: false, blocker: 'Tool bridge unverified' }
+    ? { route: 'api_keys', subscription: null, account_ready: false, subscription_ready: false, blocker: 'Tool bridge unverified' }
     : action === 'codex_account_status' ? { connected: false }
     : action === 'app_ai_settings' ? { configured: true, config: snapshot.ai_config, settings: snapshot.settings }
     : action === 'case_ai_scope' ? { scope: 'case' }
@@ -41,6 +41,7 @@ it('shows the isolated subscription route as unavailable until case execution is
 it('shows a device code and allows cancellation without changing API keys', async () => {
   const prior = api.getMockImplementation()!;
   api.mockImplementation(async (action: string, args?: unknown) => {
+    if (action === 'ai_access_route') return { route: 'api_keys', account_ready: true, subscription_ready: false, blocker: 'Tool bridge unverified' };
     if (action === 'codex_account_status') return { connected: false };
     if (action === 'codex_account_login') return { login_id: 'synthetic-login', auth_url: 'https://auth.openai.com/codex/device', user_code: 'ABCD-EFGH' };
     return prior(action, args);

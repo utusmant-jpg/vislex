@@ -163,9 +163,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
     if ["ai_access_route","set_ai_access_route","save_codex_selection","codex_account_status","codex_account_login","codex_account_cancel_login","codex_account_logout","codex_account_models","codex_account_limits"].contains(&action) {
         let directory = app.path().app_config_dir()?;
+        let home=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
         if action == "ai_access_route" {
             let settings=crate::ai_access::read_settings(&directory)?;
-            return Ok(json!({"route":settings.route,"subscription":settings.subscription,"subscription_ready":false,
+            return Ok(json!({"route":settings.route,"subscription":settings.subscription,"subscription_ready":false,"account_ready":crate::codex_account::available(&home),
                 "blocker":"Codex dynamic tools and its Windows process boundary have not passed packaged security verification"}));
         }
         if action == "set_ai_access_route" {
@@ -175,7 +176,6 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             crate::ai_access::write(&directory,route)?;
             return Ok(json!({"route":route}));
         }
-        let home=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
         if action == "save_codex_selection" {
             let model=text(&args,"model")?;
             let effort=text(&args,"effort")?;
