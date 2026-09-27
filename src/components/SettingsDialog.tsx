@@ -24,6 +24,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
   const mounted = useRef(true);
   const [section, setSection] = useState<Section>('Providers & models');
   const [scope, setScope] = useState<'app' | 'case'>('app');
+  const scopeRef = useRef<'app' | 'case'>('app');
   const [caseScope, setCaseScope] = useState<'app' | 'case' | null>(null);
   const [appPreferences, setAppPreferences] = useState<AppPreferences | null>(null);
   const [settings, setSettings] = useState<Settings>({ ...(snapshot?.settings ?? emptySettings) });
@@ -51,7 +52,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
   useEffect(() => {
     mounted.current = true; dialog.current?.showModal();
     if (native) {
-      api<AppPreferences>('app_ai_settings').then(value => { if (mounted.current) { setAppPreferences(value); showPreferences({ ai_config: value.config, settings: value.settings }); } }).catch(error => { if (mounted.current) setError(String(error)); });
+      api<AppPreferences>('app_ai_settings').then(value => { if (mounted.current) { setAppPreferences(value); if (scopeRef.current === 'app') showPreferences({ ai_config: value.config, settings: value.settings }); } }).catch(error => { if (mounted.current) setError(String(error)); });
       if (snapshot) api<{scope:'app'|'case'}>('case_ai_scope',caseSessionArgs(snapshot.id,snapshot.session_epoch)).then(value => { if (mounted.current) setCaseScope(value.scope); }).catch(error => { if (mounted.current) setError(String(error)); });
     }
     if (native) companies.forEach(provider => {
@@ -130,10 +131,10 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
         {section !== 'Appearance' && section !== 'About' ? <div className="settings-section">
           <p className="small muted">App AI settings apply to every case that uses app settings. Existing case restrictions stay in place until you choose to use app settings for that case.</p>
           {snapshot ? <div className="chip-row" role="group" aria-label="AI settings scope">
-            <button type="button" className={`chip ${scope === 'app' ? 'selected' : ''}`} onClick={() => { setScope('app'); if (appPreferences) showPreferences({ ai_config: appPreferences.config, settings: appPreferences.settings }); }}>App settings</button>
-            <button type="button" className={`chip ${scope === 'case' ? 'selected' : ''}`} onClick={() => { setScope('case'); showPreferences(snapshot); }}>This case{caseScope === 'case' ? ' · customized' : ' · uses app settings'}</button>
+            <button type="button" className={`chip ${scope === 'app' ? 'selected' : ''}`} onClick={() => { scopeRef.current = 'app'; setScope('app'); if (appPreferences) showPreferences({ ai_config: appPreferences.config, settings: appPreferences.settings }); }}>App settings</button>
+            <button type="button" className={`chip ${scope === 'case' ? 'selected' : ''}`} onClick={() => { scopeRef.current = 'case'; setScope('case'); showPreferences(snapshot); }}>This case{caseScope === 'case' ? ' · customized' : ' · uses app settings'}</button>
           </div> : <p className="small muted">Set up AI here before creating or opening a case.</p>}
-          {snapshot && scope === 'case' && caseScope === 'case' ? <button type="button" className="quiet" disabled={busy || !appPreferences?.configured} onClick={() => void api('set_case_ai_scope', { ...sessionArgs, scope: 'app' }).then(async () => { setCaseScope('app'); await refresh(); if (appPreferences) { setScope('app'); showPreferences({ ai_config: appPreferences.config, settings: appPreferences.settings }); } }).catch(error => setError(String(error)))}>Return this case to app settings</button> : null}
+          {snapshot && scope === 'case' && caseScope === 'case' ? <button type="button" className="quiet" disabled={busy || !appPreferences?.configured} onClick={() => void api('set_case_ai_scope', { ...sessionArgs, scope: 'app' }).then(async () => { setCaseScope('app'); await refresh(); if (appPreferences) { scopeRef.current = 'app'; setScope('app'); showPreferences({ ai_config: appPreferences.config, settings: appPreferences.settings }); } }).catch(error => setError(String(error)))}>Return this case to app settings</button> : null}
           {scope === 'case' && caseScope === 'app' ? <p className="small muted">Saving changes here creates a case-specific override.</p> : null}
         </div> : null}
 

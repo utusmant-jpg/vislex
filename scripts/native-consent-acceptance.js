@@ -10,7 +10,7 @@
     }
     throw new Error('Timed out waiting for ' + label);
   };
-  if (__PHASE__ === 2) {
+  if (__PHASE__ === 3) {
     let snapshot = await invoke('snapshot');
     for (let i = 0; !snapshot && i < 30; i++) { await new Promise(resolve => setTimeout(resolve, 100)); snapshot = await invoke('snapshot'); }
     if (!snapshot) snapshot = await invoke('open_case', { path });
@@ -18,10 +18,15 @@
     if (!snapshot.settings.offline || snapshot.settings.allow_text || snapshot.settings.allow_images || direct.enabled) throw new Error('Reopen broadened a revoked permission');
     return { phase: 'reopen', case_id: snapshot.id, offline: snapshot.settings.offline, text: snapshot.settings.allow_text, images: snapshot.settings.allow_images, direct_media: direct.enabled };
   }
-  await invoke('create_case', { path, name: 'Synthetic consent acceptance' });
-  const initial = await invoke('snapshot');
-  await invoke('save_settings', { case_id:initial.id,session_epoch:initial.session_epoch,settings: { ...initial.settings, offline: true, allow_text: false, allow_images: false, model: 'synthetic' } });
-  await invoke('save_ai_config', { case_id:initial.id,session_epoch:initial.session_epoch,config: { provider:'openai',execution:'single',review:'challenge',pool:[] } });
+  if (__PHASE__ === 1) {
+    await invoke('create_case', { path, name: 'Synthetic consent acceptance' });
+    const initial = await invoke('snapshot');
+    await invoke('save_settings', { case_id:initial.id,session_epoch:initial.session_epoch,settings: { ...initial.settings, offline: true, allow_text: false, allow_images: false, model: 'synthetic' } });
+    await invoke('save_ai_config', { case_id:initial.id,session_epoch:initial.session_epoch,config: { provider:'openai',execution:'single',review:'challenge',pool:[] } });
+    return { phase: 'seed', case_id: initial.id };
+  }
+  let initial = await invoke('snapshot');
+  if (!initial) initial = await invoke('open_case', { path });
   const settingsButton = await waitFor(() => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Settings' && !button.disabled), 'Settings button');
   settingsButton.click();
   const dialog = await waitFor(() => document.querySelector('dialog.settings-sheet[open]'), 'Settings dialog');
@@ -37,7 +42,7 @@
   const text = dialog.querySelector('.case-permissions input[type="checkbox"]');
   const images = dialog.querySelectorAll('.case-permissions input[type="checkbox"]')[1];
   if (!text || !images) throw new Error('Case permission controls are missing');
-  if (text.checked || images.checked) throw new Error('Settings UI did not show revoked permissions');
+  if (text.checked || images.checked) throw new Error('Settings UI did not show revoked permissions: ' + JSON.stringify({ text: text.checked, images: images.checked, scope: dialog.querySelector('.chip-row .selected')?.textContent, current: initial.settings }));
   text.click();
   images.click();
   section(dialog, 'AI permissions');

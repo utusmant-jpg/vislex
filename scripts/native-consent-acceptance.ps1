@@ -9,7 +9,7 @@ $defaults = Join-Path $env:APPDATA 'org.localevidencedesk.app\ai-defaults.json'
 $hadDefaults = Test-Path -LiteralPath $defaults
 $savedDefaults = if ($hadDefaults) { [IO.File]::ReadAllBytes($defaults) } else { $null }
 try {
-    foreach ($phase in @(1, 2)) {
+    foreach ($phase in @(1, 2, 3)) {
         $env:WEBVIEW2_USER_DATA_FOLDER = $profile
         $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$Port"
         Remove-Item Env:VISLEX_TEST_MODE -ErrorAction SilentlyContinue
@@ -20,13 +20,9 @@ try {
                 try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/version"; $ready = $true; break } catch { Start-Sleep -Milliseconds 300 }
             }
             if (-not $ready) { throw 'Native WebView did not start.' }
-            $script = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'native-consent-acceptance.js') -Raw -Encoding UTF8).Replace('__CASE_PATH__', ($casePath.Replace('\', '/') | ConvertTo-Json -Compress)).Replace('__PHASE__', [string]$phase)
-            & npx --yes agent-browser --session "vislex-consent-$Port" --cdp $Port get title
-            $output = $script | & npx --yes agent-browser --session "vislex-consent-$Port" --cdp $Port eval --stdin
-            if ($LASTEXITCODE -ne 0) { throw ($output -join "`n") }
-            $output
+            & node (Join-Path $PSScriptRoot 'native-consent-cdp.mjs') $Port $casePath $phase
+            if ($LASTEXITCODE -ne 0) { throw 'Native consent acceptance failed.' }
         } finally {
-            & npx --yes agent-browser --session "vislex-consent-$Port" close
             if (-not $process.HasExited) { Stop-Process -Id $process.Id }
             Start-Sleep -Milliseconds 500
         }
