@@ -79,7 +79,7 @@ function TurnActivity({ turn, onSource }: { turn: Task; onSource: (id: string, l
       {open ? <motion.div
         key="activity-body"
         className="activity-body"
-        initial={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+        initial={reducedMotion ? false : { height: 0, opacity: 0 }}
         animate={reducedMotion ? { opacity: 1 } : { height: 'auto', opacity: 1 }}
         exit={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
         transition={springs.gentle}
@@ -289,7 +289,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const starters = starterPrompts(snapshot);
   const reducedMotion = useReducedMotion();
   const heroItem = reducedMotion
-    ? { hidden: { opacity: 0 }, visible: { opacity: 1, transition: { duration: 0.12 } } }
+    ? undefined
     : { hidden: { opacity: 0, y: 12 }, visible: { opacity: 1, y: 0, transition: springs.gentle } };
   const contextName = selection
     ? selection.type === 'source'
@@ -315,9 +315,9 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
         {turns.length ? turns.map(turn => <motion.article
           className="conversation-turn"
           key={turn.id}
-          initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 12 }}
+          initial={reducedMotion ? false : { opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={reducedMotion ? { duration: 0.12 } : springs.gentle}
+          transition={springs.gentle}
         >
           <div className="user-message">
             {turn.prompt}
@@ -351,7 +351,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           })}>Continue in new task</button> : null}
           {turn.id === task?.id && turn.status === 'complete' && followUps.length ? <motion.div
             className="follow-ups"
-            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+            initial={reducedMotion ? false : { opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             transition={springs.gentle}
           >
@@ -366,7 +366,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           </motion.div> : null}
         </motion.article>) : <motion.div
           className="agent-welcome"
-          initial="hidden"
+          initial={reducedMotion ? 'visible' : 'hidden'}
           animate="visible"
           variants={{ hidden: {}, visible: reducedMotion ? {} : { transition: { staggerChildren: 0.05, delayChildren: 0.05 } } }}
         >
@@ -385,9 +385,9 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           <div className="starter-prompts">{starters.map((starter, index) => <motion.button
             key={starter}
             onClick={() => { draft(starter); composer.current?.focus(); }}
-            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 10 }}
+            initial={reducedMotion ? false : { opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={reducedMotion ? { duration: 0.12 } : { ...springs.gentle, delay: 0.18 + index * 0.06 }}
+            transition={{ ...springs.gentle, delay: reducedMotion ? 0 : 0.18 + index * 0.06 }}
             whileHover={reducedMotion ? undefined : { y: -1 }}
             whileTap={reducedMotion ? undefined : { scale: 0.99 }}
           >{starter}<ArrowUp size={14} /></motion.button>)}</div>
@@ -398,7 +398,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
       {showJump ? <motion.button
         className="jump-latest"
         aria-label="Jump to latest message"
-        initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.96 }}
+        initial={reducedMotion ? false : { opacity: 0, y: 6, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, scale: 0.96 }}
         transition={springs.overlay}

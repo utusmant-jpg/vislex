@@ -720,7 +720,7 @@ export default function App() {
               whileTap={reducedMotion ? undefined : { scale: 0.92 }}
               transition={springs.snappy}
             >
-              {view === item.id ? <motion.span layoutId="rail-active" className="rail-active-pill" transition={springs.snappy} aria-hidden="true" /> : null}
+              {view === item.id ? <motion.span layoutId="rail-active" className="rail-active-pill" transition={reducedMotion ? { duration: 0 } : springs.snappy} aria-hidden="true" /> : null}
               <item.icon size={18} />
             </motion.button>
           </Tooltip>)}
