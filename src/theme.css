@@ -201,8 +201,24 @@
   .model-select:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
   .model-select .model-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-select .model-select-value.placeholder { color: var(--muted-foreground); }
+
+  /* Command palette: kbd hint chips + springy open (native dialog element). */
+  .palette-kbd {
+    margin-left: auto; flex-shrink: 0;
+    font-family: var(--font-mono); font-size: 10px; line-height: 1;
+    padding: 4px 6px; border-radius: 5px;
+    border: 1px solid var(--border-strong);
+    background: color-mix(in oklab, var(--surface-3) 70%, transparent);
+    color: var(--muted-foreground);
+  }
+  dialog.command-palette[open] { animation: palette-open 0.16s var(--ease-out, ease-out); }
+  @keyframes palette-open {
+    from { opacity: 0; transform: translateY(6px) scale(0.985); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .glyph-halo::after { animation: none; }
+  dialog.command-palette[open] { animation: none; }
 }

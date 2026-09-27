@@ -17,7 +17,7 @@ import AgentPanel from './components/AgentPanel';
 import FolderImport from './components/FolderImport';
 import PaneDivider from './components/PaneDivider';
 import SidebarDivider from './components/SidebarDivider';
-import { ContextMenu, StatusPill, ThemeProvider, ThemeToggle, ToastStack, Tooltip, notify, relativeTime } from './ui';
+import { ContextMenu, StatusPill, ThemeProvider, ThemeToggle, ToastStack, Tooltip, matchesModelFilter, notify, relativeTime } from './ui';
 
 const RecordEditor = lazy(() => import('./components/RecordEditor'));
 const SettingsDialog = lazy(() => import('./components/SettingsDialog'));
@@ -641,25 +641,25 @@ export default function App() {
 
   /* ------------------------------ command palette ----------------------------- */
   const paletteCommands = useMemo(() => [
-    { id: 'new-chat', label: 'New chat', run: () => { chooseConversation(null); setPalette(false); } },
-    { id: 'view-evidence', label: 'Go to Evidence', run: () => { setView('evidence'); setPalette(false); } },
-    { id: 'view-findings', label: 'Go to Findings', run: () => { setView('findings'); setPalette(false); } },
-    { id: 'view-review', label: 'Go to Review workbench', run: () => { setView('review'); setPalette(false); } },
-    { id: 'view-jobs', label: 'Go to Jobs & issues', run: () => { setView('jobs'); setPalette(false); } },
-    { id: 'settings', label: 'Open settings', run: () => { setPalette(false); openSettings(); } },
-    { id: 'transcribe-all', label: 'Queue missing full transcripts', run: () => { setPalette(false); run(async () => { if (!snapshot) throw new Error('Open a case first.'); await api('transcribe_all', caseGuard(snapshot)); await refresh(); }); } },
-    { id: 'add-files', label: 'Add files to this case', run: () => { setPalette(false); run(importFiles); } },
-    { id: 'delete-case', label: 'Delete this case permanently', run: () => { setPalette(false); if (snapshot && native) showModal('delete'); else notify.info('Open a native case to delete it.'); } },
+    { id: 'new-chat', label: 'New chat', hint: '', run: () => { chooseConversation(null); setPalette(false); } },
+    { id: 'view-evidence', label: 'Go to Evidence', hint: 'Ctrl+2', run: () => { setView('evidence'); setPalette(false); } },
+    { id: 'view-findings', label: 'Go to Findings', hint: 'Ctrl+3', run: () => { setView('findings'); setPalette(false); } },
+    { id: 'view-review', label: 'Go to Review workbench', hint: 'Ctrl+4', run: () => { setView('review'); setPalette(false); } },
+    { id: 'view-jobs', label: 'Go to Jobs & issues', hint: 'Ctrl+5', run: () => { setView('jobs'); setPalette(false); } },
+    { id: 'settings', label: 'Open settings', hint: 'Ctrl+,', run: () => { setPalette(false); openSettings(); } },
+    { id: 'transcribe-all', label: 'Queue missing full transcripts', hint: '', run: () => { setPalette(false); run(async () => { if (!snapshot) throw new Error('Open a case first.'); await api('transcribe_all', caseGuard(snapshot)); await refresh(); }); } },
+    { id: 'add-files', label: 'Add files to this case', hint: '', run: () => { setPalette(false); run(importFiles); } },
+    { id: 'delete-case', label: 'Delete this case permanently', hint: '', run: () => { setPalette(false); if (snapshot && native) showModal('delete'); else notify.info('Open a native case to delete it.'); } },
   ], [run, refresh, snapshot]);
   const paletteMatches = useMemo(() => {
-    const text = query.trim().toLowerCase();
+    const text = query.trim();
     if (!text || !snapshot) return [];
-    return snapshot.sources.filter(item => item.name.toLowerCase().includes(text)).slice(0, 6);
+    return snapshot.sources.filter(item => matchesModelFilter(item.name, text)).slice(0, 6);
   }, [query, snapshot]);
   const paletteItems = useMemo(() => [
     ...paletteMatches.map(item => ({ kind: 'source' as const, id: item.id, label: item.name })),
     ...(results ?? []).map((item, index) => ({ kind: 'result' as const, id: `${item.source_id}:${index}`, label: item.name, excerpt: item.excerpt, sourceId: item.source_id, locator: item.locator })),
-    ...paletteCommands.filter(command => (snapshot || command.id === 'settings') && (!query.trim() || command.label.toLowerCase().includes(query.trim().toLowerCase()))).map(command => ({ kind: 'command' as const, id: command.id, label: command.label, run: command.run })),
+    ...paletteCommands.filter(command => (snapshot || command.id === 'settings') && (!query.trim() || matchesModelFilter(command.label, query))).map(command => ({ kind: 'command' as const, id: command.id, label: command.label, hint: command.hint, run: command.run })),
   ], [paletteMatches, results, paletteCommands, query, snapshot]);
   useEffect(() => { setPaletteIndex(0); }, [query, results]);
   function activatePaletteItem(item: (typeof paletteItems)[number]) {
@@ -878,6 +878,7 @@ export default function App() {
             onClick={() => { setPaletteIndex(index); activatePaletteItem(item); }}>
             {item.kind === 'source' ? <SourceIcon kind={snapshot?.sources.find(sourceItem => sourceItem.id === item.id)?.kind ?? 'other'} size={15} /> : item.kind === 'result' ? <Search size={15} /> : null}
             <span>{item.label}{'excerpt' in item && item.excerpt ? <small>{item.excerpt}</small> : item.kind === 'command' ? <small>Command</small> : null}</span>
+            {item.kind === 'command' && item.hint ? <kbd className="palette-kbd">{item.hint}</kbd> : null}
           </button>)}
           </div>
           {results?.length === 0 ? <p className="sidebar-empty">No indexed text matches. Unprocessed evidence is not searchable.</p> : null}
