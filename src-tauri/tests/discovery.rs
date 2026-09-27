@@ -78,6 +78,27 @@ fn startup_replaces_only_stale_worker_discovery_run_and_keeps_old_samples() {
     assert_eq!(c.db.query_row("SELECT count(*) FROM processing_jobs WHERE source_id=?",[&s],|r|r.get::<_,i64>(0)).unwrap(),3);
 }
 #[test]
+fn startup_replaces_unstarted_old_revision_without_a_worker_hash() {
+    let (_dir,mut c,s)=setup();
+    let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let old=queued["jobs"][0].as_str().unwrap();
+    let overview=queued["jobs"][1].as_str().unwrap();
+    let raw:String=c.db.query_row("SELECT result FROM processing_jobs WHERE id=?",[old],|r|r.get(0)).unwrap();
+    let mut config:Value=serde_json::from_str(&raw).unwrap();
+    assert!(config["worker_sha256"].is_null());
+    config["revision"]=json!("previous-revision");
+    c.db.execute("UPDATE processing_jobs SET result=? WHERE id=?",rusqlite::params![config.to_string(),old]).unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE id=?",[overview]).unwrap();
+    discovery::enqueue_missing(&mut c).unwrap();
+    let rows:Vec<(String,String)>=c.db.prepare("SELECT id,status FROM processing_jobs WHERE source_id=? AND kind='video_ocr_index' ORDER BY rowid").unwrap()
+        .query_map([&s],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(rows.len(),2);
+    assert_eq!(rows[0],(old.to_string(),"failed".into()));
+    assert_eq!(rows[1].1,"queued");
+    assert_ne!(rows[1].0,old);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM processing_jobs WHERE source_id=? AND kind='video_overview_index'",[&s],|r|r.get::<_,i64>(0)).unwrap(),1);
+}
+#[test]
 fn overview_navigation_advances_while_full_audio_uses_the_heavy_worker() {
     let (_dir,mut c,s)=setup();
     let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();

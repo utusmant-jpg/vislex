@@ -60,13 +60,14 @@ pub fn enqueue_missing(case:&mut Case)->Result<()> {
             let Some((run,status,raw,error))=latest else {continue};
             if !["queued","failed","interrupted"].contains(&status.as_str()) {continue;}
             let config:Value=serde_json::from_str(&raw)?;
-            let stale=config["worker_sha256"].as_str().is_some_and(|old|old!=current_hash)
-                || error=="Worker changed; request a new index revision";
-            if !stale {continue;}
             let interval=config["interval"].as_f64().context("Missing discovery sampling interval")?;
             ensure!(interval.is_finite()&&(1.0..=60.0).contains(&interval),"Invalid discovery sampling interval");
-            case.db.execute("UPDATE processing_jobs SET status='failed',error='Worker changed; request a new index revision' WHERE id=?",[&run])?;
             let revision=digest(json!({"source":source.sha256,"interval":interval,"worker":current_hash,"schema":1}).to_string().as_bytes());
+            let stale=config["worker_sha256"].as_str().is_some_and(|old|old!=current_hash)
+                || config["revision"].as_str()!=Some(revision.as_str())
+                || error=="Worker changed; request a new index revision";
+            if !stale {continue;}
+            case.db.execute("UPDATE processing_jobs SET status='failed',error='Worker changed; request a new index revision' WHERE id=?",[&run])?;
             enqueue_kind(case,&source.id,kind,interval,&revision,true)?;
         }
     }
