@@ -116,4 +116,18 @@ mod tests {
         assert_eq!(value[0]["tools"][0]["name"],"read_text");
         assert_eq!(value[0]["tools"].as_array().unwrap().len(),1);
     }
+
+    #[test]
+    #[ignore = "Requires the patched Windows App Server; no login or model call is made"]
+    fn patched_server_accepts_ephemeral_case_tool_policy() -> Result<()> {
+        let binary = std::env::var_os("VISLEX_CODEX_BINARY").context("Set VISLEX_CODEX_BINARY")?;
+        let directory = Path::new(&binary).parent().context("Codex binary has no directory")?;
+        let mut connection = crate::codex_account::Connection::start_case(directory)?;
+        let tools = dynamic_tools(&[json!({"name":"read_text","description":"Read a permitted source",
+            "parameters":{"type":"object","properties":{},"additionalProperties":false}})])?;
+        let started = connection.call("thread/start",json!({"cwd":connection.home(),"ephemeral":true,
+            "baseInstructions":"Synthetic tool schema probe; no case data or model turn", "dynamicTools":tools}))?;
+        ensure!(started["thread"]["id"].as_str().is_some(),"Ephemeral thread ID missing");
+        Ok(())
+    }
 }
