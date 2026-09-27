@@ -15,7 +15,7 @@ const page = await browser.newPage({ viewport: { width: 1500, height: 960 }, col
 
 async function shot(name) {
   try {
-    await page.screenshot({ path: `${outDir}/${name}.png` });
+    await page.screenshot({ path: `${outDir}/${name}.png`, animations: 'disabled', caret: 'hide' });
     results.push(`OK   ${name}`);
   } catch (error) { results.push(`FAIL ${name}: ${error.message.split('\n')[0]}`); }
 }

@@ -1,0 +1,116 @@
+/* VisLex Modern design system — Tailwind v4 entry point.
+ *
+ * The legacy styles.css is imported into the `legacy` cascade layer so that
+ * migrated Tailwind utilities (in the later `utilities` layer) can override
+ * old rules at equal specificity while a surface is being ported. Preflight
+ * is deliberately NOT imported until the legacy sheet is retired, so this
+ * file changes nothing about the current rendering on its own.
+ *
+ * Theming follows the app's existing convention: <html data-theme="dark|light">.
+ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tw-animate-css";
+@import "./styles.css" layer(legacy);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* ---------------------------------------------------------------------------
+ * Dark theme (app default)
+ * ------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+  --background: oklch(14% 0.008 260);
+  --surface-1: oklch(17% 0.010 260);
+  --surface-2: oklch(21% 0.012 260);
+  --surface-3: oklch(25% 0.014 262);
+  --foreground: oklch(93% 0.005 260);
+  --muted-foreground: oklch(70% 0.012 262);
+  --subtle-foreground: oklch(52% 0.012 264);
+  --card: var(--surface-2);
+  --card-foreground: var(--foreground);
+  --popover: var(--surface-3);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(68% 0.14 280);
+  --primary-foreground: oklch(12% 0.01 280);
+  --primary-hover: oklch(73% 0.14 280);
+  --secondary: var(--surface-2);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--surface-1);
+  --accent: oklch(24% 0.03 280);
+  --accent-foreground: var(--foreground);
+  --destructive: oklch(62% 0.20 20);
+  --destructive-foreground: oklch(98% 0 0);
+  --border: oklch(100% 0 0 / 8%);
+  --border-strong: oklch(100% 0 0 / 14%);
+  --input: oklch(100% 0 0 / 10%);
+  --ring: oklch(68% 0.14 280 / 60%);
+  --radius: 0.75rem;
+}
+
+/* ---------------------------------------------------------------------------
+ * Light theme — rebuilt from scratch (warm paper neutrals, true elevation)
+ * ------------------------------------------------------------------------- */
+[data-theme="light"] {
+  color-scheme: light;
+  --background: oklch(97.5% 0.003 90);
+  --surface-1: oklch(99.3% 0.002 90);
+  --surface-2: oklch(100% 0 0);
+  --surface-3: oklch(100% 0 0);
+  --foreground: oklch(22% 0.01 260);
+  --muted-foreground: oklch(48% 0.012 260);
+  --subtle-foreground: oklch(60% 0.010 260);
+  --card: var(--surface-2);
+  --card-foreground: var(--foreground);
+  --popover: var(--surface-3);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(58% 0.17 280);
+  --primary-foreground: oklch(99% 0 0);
+  --primary-hover: oklch(53% 0.17 280);
+  --secondary: oklch(94.5% 0.004 90);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(95% 0.004 90);
+  --accent: oklch(93% 0.015 280);
+  --accent-foreground: oklch(30% 0.06 280);
+  --destructive: oklch(55% 0.21 25);
+  --destructive-foreground: oklch(99% 0 0);
+  --border: oklch(20% 0.01 260 / 10%);
+  --border-strong: oklch(20% 0.01 260 / 18%);
+  --input: oklch(20% 0.01 260 / 14%);
+  --ring: oklch(58% 0.17 280 / 55%);
+}
+
+/* ---------------------------------------------------------------------------
+ * Token bridge — expose the CSS variables as Tailwind design tokens
+ * ------------------------------------------------------------------------- */
+@theme inline {
+  --color-background: var(--background);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Cascadia Code', 'Consolas', monospace;
+}
