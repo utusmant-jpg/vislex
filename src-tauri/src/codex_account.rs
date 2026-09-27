@@ -32,6 +32,8 @@ impl Connection {
         let child = crate::codex_sandbox::spawn_subscription(&binary)
             .context("Isolated Codex runtime unavailable; subscription sign-in is disabled")?;
         let stdout = child.stdout.try_clone()?;
+        let mut stderr = child.stderr.try_clone()?;
+        std::thread::spawn(move || { let _ = std::io::copy(&mut stderr, &mut std::io::sink()); });
         let (tx, events) = mpsc::sync_channel(256);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
