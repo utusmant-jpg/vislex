@@ -26,26 +26,52 @@ pub fn enqueue(case:&mut Case,source:&str,interval:f64,retry:bool)->Result<Value
     let revision=digest(json!({"source":case.source(source)?.sha256,"interval":interval,"worker":processing::worker_path().ok().and_then(|p|crate::case::file_hash(&p).ok()),"schema":1}).to_string().as_bytes());
     let mut jobs=vec![];
     for kind in ["video_ocr_index","video_overview_index"] {
-        let existing:Option<(String,String)>=case.db.query_row("SELECT id,status FROM processing_jobs WHERE source_id=? AND kind=? AND json_extract(result,'$.revision')=? ORDER BY created_at DESC LIMIT 1",params![source,kind,revision],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        if let Some((job,status))=existing {
-            if retry && ["failed","interrupted","cancelled"].contains(&status.as_str()) {
-                case.db.execute("UPDATE processing_jobs SET status='queued',error='' WHERE id=?",[&job])?;
-            }
-            jobs.push(job);continue;
-        }
-        let job=id();
-        case.db.execute("INSERT INTO processing_jobs VALUES(?,?,?,'queued',?,'',?)",params![job,source,kind,json!({"revision":revision,"interval":interval,"next_start":0.0,"model_inspected":false}).to_string(),now()])?;
-        jobs.push(job);
+        jobs.push(enqueue_kind(case,source,kind,interval,&revision,retry)?);
     }
     Ok(json!({"jobs":jobs,"sample_interval":interval,"note":"Queued discovery is not inspection. Failed/cancelled jobs require an explicit retry."}))
 }
+fn enqueue_kind(case:&mut Case,source:&str,kind:&str,interval:f64,revision:&str,retry:bool)->Result<String> {
+    let existing:Option<(String,String)>=case.db.query_row("SELECT id,status FROM processing_jobs WHERE source_id=? AND kind=? AND json_extract(result,'$.revision')=? ORDER BY rowid DESC LIMIT 1",params![source,kind,revision],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    if let Some((job,status))=existing {
+        if retry && ["failed","interrupted","cancelled"].contains(&status.as_str()) {
+            case.db.execute("UPDATE processing_jobs SET status='queued',error='' WHERE id=?",[&job])?;
+        }
+        return Ok(job);
+    }
+    let job=id();
+    case.db.execute("INSERT INTO processing_jobs VALUES(?,?,?,'queued',?,'',?)",params![job,source,kind,json!({"revision":revision,"interval":interval,"next_start":0.0,"model_inspected":false}).to_string(),now()])?;
+    Ok(job)
+}
 pub fn enqueue_missing(case:&mut Case)->Result<()> {
     initialize(case)?;
-    case.db.execute("UPDATE processing_jobs SET status='queued',error='' WHERE status='interrupted' AND kind IN ('video_ocr_index','video_overview_index')",[])?;
+    let worker_hash=processing::worker_path().ok().and_then(|p|crate::case::file_hash(&p).ok());
     for source in case.sources()?.into_iter().filter(|s|s.kind=="video"&&!s.restricted) {
         let exists:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs WHERE source_id=? AND kind IN ('video_ocr_index','video_overview_index'))",[&source.id],|r|r.get(0))?;
-        if !exists {enqueue(case,&source.id,5.,false)?;}
+        if !exists {
+            let revision=digest(json!({"source":source.sha256,"interval":5.0,"worker":worker_hash.as_deref(),"schema":1}).to_string().as_bytes());
+            for kind in ["video_ocr_index","video_overview_index"] {
+                enqueue_kind(case,&source.id,kind,5.,&revision,false)?;
+            }
+            continue;
+        }
+        let Some(ref current_hash)=worker_hash else {continue};
+        for kind in ["video_ocr_index","video_overview_index"] {
+            let latest:Option<(String,String,String,String)>=case.db.query_row("SELECT id,status,result,error FROM processing_jobs WHERE source_id=? AND kind=? ORDER BY rowid DESC LIMIT 1",params![source.id,kind],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+            let Some((run,status,raw,error))=latest else {continue};
+            if !["queued","failed","interrupted"].contains(&status.as_str()) {continue;}
+            let config:Value=serde_json::from_str(&raw)?;
+            let interval=config["interval"].as_f64().context("Missing discovery sampling interval")?;
+            ensure!(interval.is_finite()&&(1.0..=60.0).contains(&interval),"Invalid discovery sampling interval");
+            let revision=digest(json!({"source":source.sha256,"interval":interval,"worker":current_hash,"schema":1}).to_string().as_bytes());
+            let stale=config["worker_sha256"].as_str().is_some_and(|old|old!=current_hash)
+                || config["revision"].as_str()!=Some(revision.as_str())
+                || error=="Worker changed; request a new index revision";
+            if !stale {continue;}
+            case.db.execute("UPDATE processing_jobs SET status='failed',error='Worker changed; request a new index revision' WHERE id=?",[&run])?;
+            enqueue_kind(case,&source.id,kind,interval,&revision,true)?;
+        }
     }
+    case.db.execute("UPDATE processing_jobs SET status='queued',error='' WHERE status='interrupted' AND kind IN ('video_ocr_index','video_overview_index')",[])?;
     Ok(())
 }
 /// Retry one failed discovery run from its last published chunk. A new child
@@ -178,7 +204,7 @@ pub fn cancel(case:&Case,source:&str)->Result<Value> {
 }
 pub fn status(case:&Case,source:&str)->Result<Value> {
     permitted(case,source)?;initialize(case)?;
-    let mut q=case.db.prepare("SELECT id,kind,status,result,error FROM processing_jobs WHERE source_id=? AND kind IN ('video_ocr_index','video_overview_index') ORDER BY created_at DESC,id")?;
+    let mut q=case.db.prepare("SELECT id,kind,status,result,error FROM processing_jobs WHERE source_id=? AND kind IN ('video_ocr_index','video_overview_index') ORDER BY rowid DESC")?;
     let jobs=q.query_map([source],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"result":serde_json::from_str::<Value>(&r.get::<_,String>(3)?).unwrap_or(Value::Null),"error":r.get::<_,String>(4)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
     Ok(json!({"jobs":jobs,"note":"Only listed sample times were indexed. Intervening footage remains uninspected; failures and undecoded frames are separate gaps."}))
 }
@@ -186,7 +212,7 @@ pub fn browse(case:&Case,source:&str,kind:&str,start:f64,end:f64,offset:u64,quer
     permitted(case,source)?;initialize(case)?;
     ensure!(["video_ocr","video_overview"].contains(&kind)&&start.is_finite()&&end.is_finite()&&0.<=start&&end>start,"Invalid discovery range");
     let parent=format!("{kind}_index");
-    let run:Option<String>=case.db.query_row("SELECT id FROM processing_jobs WHERE source_id=? AND kind=? ORDER BY created_at DESC,id DESC LIMIT 1",params![source,parent],|r|r.get(0)).optional()?;
+    let run:Option<String>=case.db.query_row("SELECT id FROM processing_jobs WHERE source_id=? AND kind=? ORDER BY rowid DESC LIMIT 1",params![source,parent],|r|r.get(0)).optional()?;
     let mut q=case.db.prepare("SELECT artifact_id,metadata FROM discovery_samples WHERE run_id=? AND seconds>=? AND seconds<? AND instr(lower(text),lower(?))>0 ORDER BY seconds,artifact_id LIMIT 31 OFFSET ?")?;
     let mut samples=q.query_map(params![run,start,end,query,offset.min(i64::MAX as u64)as i64],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<std::result::Result<Vec<_>,_>>()?;
     let more=samples.len()>30;samples.truncate(30);
@@ -195,7 +221,7 @@ pub fn browse(case:&Case,source:&str,kind:&str,start:f64,end:f64,offset:u64,quer
 }
 pub fn search(case:&Case,scope:&[String],terms:&[String])->Result<Vec<Value>> {
     initialize(case)?;let mut hits=vec![];
-    let mut q=case.db.prepare("SELECT d.source_id,s.name,d.seconds,d.artifact_id,d.text,d.run_id FROM discovery_samples d JOIN sources s ON s.id=d.source_id WHERE s.restricted=0 AND d.kind='video_ocr' AND d.run_id=(SELECT j.id FROM processing_jobs j WHERE j.source_id=d.source_id AND j.kind='video_ocr_index' ORDER BY j.created_at DESC,j.id DESC LIMIT 1) ORDER BY d.source_id,d.seconds,d.artifact_id")?;
+    let mut q=case.db.prepare("SELECT d.source_id,s.name,d.seconds,d.artifact_id,d.text,d.run_id FROM discovery_samples d JOIN sources s ON s.id=d.source_id WHERE s.restricted=0 AND d.kind='video_ocr' AND d.run_id=(SELECT j.id FROM processing_jobs j WHERE j.source_id=d.source_id AND j.kind='video_ocr_index' ORDER BY j.rowid DESC LIMIT 1) ORDER BY d.source_id,d.seconds,d.artifact_id")?;
     for row in q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))? {
         let (sid,name,seconds,artifact,text,run)=row?;
         if scope.contains(&sid)&&terms.iter().any(|t|text.to_lowercase().contains(&t.to_lowercase())) {
