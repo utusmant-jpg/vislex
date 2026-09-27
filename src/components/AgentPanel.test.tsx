@@ -76,6 +76,13 @@ describe('chat composer interaction', () => {
     expect(screen.queryByText('AI assessment')).toBeNull();
   });
 
+  it('labels pending usage while a subscription turn is running', () => {
+    panel(snapshot([task('current-task', 'current-chat')]), 'current-chat');
+    fireEvent.click(screen.getByRole('button', { name: /Considering the evidence/ }));
+    expect(screen.getByRole('status').textContent).toContain('Token usage pending');
+    expect(screen.queryByText(/0 tokens reported/)).toBeNull();
+  });
+
   it('sends a subscription chat without requiring or passing an API provider model', async () => {
     const data=snapshot();
     data.settings.model='';

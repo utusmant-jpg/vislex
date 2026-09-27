@@ -24,6 +24,23 @@ fn setup() -> (tempfile::TempDir, Case, String) {
     (dir, case, sid)
 }
 #[test]
+fn foreground_case_write_waits_for_worker_writer_to_finish() {
+    let (_dir,c,_source)=setup();
+    let path=c.root.join("case.sqlite3");
+    let (started,ready)=std::sync::mpsc::channel();
+    let worker=std::thread::spawn(move || {
+        let db=rusqlite::Connection::open(path).unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        started.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5500));
+        db.execute_batch("ROLLBACK").unwrap();
+    });
+    ready.recv().unwrap();
+    c.set_meta("synthetic_foreground_write","complete").unwrap();
+    worker.join().unwrap();
+    assert_eq!(c.meta("synthetic_foreground_write").unwrap().as_deref(),Some("complete"));
+}
+#[test]
 fn schema_seven_tracks_attempts_and_reconciles_interrupted_jobs() {
     let (dir,c,source)=setup();let root=c.root.clone();let job="synthetic-schedule-job";
     c.db.execute("INSERT INTO processing_jobs VALUES(?,?,'auto_prepare','queued','{}','',?)",rusqlite::params![job,source,evidence_desk::case::now()]).unwrap();

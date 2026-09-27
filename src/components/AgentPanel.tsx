@@ -145,8 +145,9 @@ function LiveResponse({ caseId, sessionEpoch, taskId, onSource, scroll, followin
 function RunStatus({ turn }: { turn: Task }) {
   const now = useNow(true);
   const elapsed = Math.max(0, Math.floor((now - Date.parse(turn.created_at)) / 1000));
+  const tokens = turn.input_tokens + turn.output_tokens;
   return <div className="run-status" role="status">
-    {formatClock(elapsed)} elapsed · step {turn.step} · {(turn.input_tokens + turn.output_tokens).toLocaleString()} tokens reported
+    {formatClock(elapsed)} elapsed · step {turn.step} · {tokens ? `${tokens.toLocaleString()} tokens reported` : 'Token usage pending'}
     {elapsed > 60 ? ' · Still working. You can stop this run below.' : ''}
   </div>;
 }

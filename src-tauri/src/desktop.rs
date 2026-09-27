@@ -1461,14 +1461,51 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
         Ok(transmission)
     })?;
     let handle=app.clone();let cid=case_id.to_owned();let tid=task.to_owned();
-    let completed=tauri::async_runtime::spawn_blocking(move || {
+    let last_activity=std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let worker_activity=last_activity.clone();
+    let active_jobs=std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let worker_jobs=active_jobs.clone();
+    let watchdog_cancelled=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancelled=watchdog_cancelled.clone();
+    let mut worker=tauri::async_runtime::spawn_blocking(move || {
         crate::codex_case::run(&runtime,&selection.model,&selection.effort,&instructions,&definitions,&context,
-            |call_id,name,args| run_subscription_tool(&handle,&cid,epoch,&tid,call_id,name,args),
-            |delta| {let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":format!("subscription:{tid}"),"delta":{"text":delta}}));},
-            || with_case_expected(&handle,&cid,Some(epoch),|c|Ok(c.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[&tid],|r|r.get(0))?))
+            |call_id,name,args| {
+                *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
+                let result=run_subscription_tool(&handle,&cid,epoch,&tid,call_id,name,args,&worker_jobs);
+                *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
+                result
+            },
+            |delta| {
+                *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
+                let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":format!("subscription:{tid}"),"delta":{"text":delta}}));
+            },
+            || worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) || with_case_expected(&handle,&cid,Some(epoch),|c|Ok(c.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[&tid],|r|r.get(0))?))
                 .map(|status| status=="paused" || status=="cancelled").unwrap_or(true),
         )
-    }).await;
+    });
+    let mut check=tokio::time::interval(std::time::Duration::from_secs(10));
+    let completed=loop {
+        tokio::select! {
+            result=&mut worker => break result,
+            _=check.tick() => {
+                if last_activity.lock().unwrap_or_else(|e|e.into_inner()).elapsed()>std::time::Duration::from_secs(12*60) {
+                    watchdog_cancelled.store(true,std::sync::atomic::Ordering::SeqCst);
+                    let reason="ChatGPT subscription had no case action or answer progress for twelve minutes. The unfinished turn was paused; saved receipts remain available to a new task.";
+                    let jobs=active_jobs.lock().unwrap_or_else(|e|e.into_inner()).clone();
+                    with_case_expected(app,case_id,Some(epoch),|c|{
+                        agent::pause(c,task,reason)?;
+                        for job in jobs {
+                            let cancelled=crate::processing::cancel(c,&job).is_ok();
+                            c.db.execute("UPDATE processing_jobs SET status=?,error=? WHERE id=? AND status='running'",rusqlite::params![if cancelled {"cancelled"} else {"failed"},reason,job])?;
+                        }
+                        c.db.execute("UPDATE transmissions SET status='uncertain' WHERE task_id=? AND status='pending'",[task])?;
+                        Ok(())
+                    })?;
+                    return Err(anyhow::anyhow!(reason));
+                }
+            }
+        }
+    };
     let (result,usage)=match completed {
         Ok(Ok(value))=>value,
         Ok(Err(error))=>{
@@ -1496,11 +1533,12 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
     Ok(())
 }
 
-fn run_subscription_tool(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str,call_id:&str,name:&str,args:Value)->anyhow::Result<Value> {
+fn run_subscription_tool(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str,call_id:&str,name:&str,args:Value,active_jobs:&std::sync::Mutex<Vec<String>>)->anyhow::Result<Value> {
     let call=with_case_expected(app,case_id,Some(epoch),|c|agent::prepare_subscription_call(c,task,call_id,name,args.clone()))?;
     let registered=with_case_expected(app,case_id,Some(epoch),|c|agent::prepare_media(c,task,&call.transmission,&call.response));
     let (jobs,preparation_error)=match registered {Ok(j)=>(j,None),Err(e)=>(vec![],Some(e.to_string()))};
     let job_ids=jobs.iter().map(|j|j.job_id.clone()).collect::<Vec<_>>();
+    *active_jobs.lock().unwrap_or_else(|e|e.into_inner())=job_ids.clone();
     let mut media=agent::PreparedMedia{jobs:jobs.into_iter().map(|job|{
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
         (job,staged)
@@ -1527,6 +1565,7 @@ fn run_subscription_tool(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str,
         for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}
         Ok(())
     })?;
+    active_jobs.lock().unwrap_or_else(|e|e.into_inner()).clear();
     result
 }
 
