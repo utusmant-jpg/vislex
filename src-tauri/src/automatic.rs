@@ -334,5 +334,6 @@ pub fn completed_review_context(case:&Case,source_ids:&[String])->Result<Option<
     if case.meta(&format!("auto_review_inventory:{task}"))?.as_deref()!=Some(fingerprint.as_str()) {return Ok(None);}
     let progress=crate::review_progress::load(case,&task)?;
     if status!="complete" && (progress.summary.is_empty() || progress.citations.is_empty()) {return Ok(None);}
+    if progress.citations.is_empty() {return Ok(None);}
     Ok(Some(json!({"task_id":task,"state":status,"answer_unreviewed":if status=="complete" {answer.chars().take(4000).collect::<String>()} else {String::new()},"saved_summary":progress.summary.chars().take(2000).collect::<String>(),"citations":progress.citations.iter().take(12).collect::<Vec<_>>(),"gaps":progress.gaps.iter().take(12).collect::<Vec<_>>(),"meaning":"Saved AI analysis is a lead with citations to recheck, not human-reviewed proof. This may be partial; investigate any question not supported by its current cited findings."})))
 }

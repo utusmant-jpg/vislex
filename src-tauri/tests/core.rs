@@ -361,7 +361,7 @@ fn subscription_case_tool_uses_existing_receipt_and_refuses_replay() {
     c.save_settings(Settings {offline:false,allow_text:true,allow_images:false,model:String::new()}).unwrap();
     let task=agent::start_subscription(&mut c,"List the permitted files","investigate",vec![source.clone()],vec![]).unwrap();
     assert_eq!(c.meta(&format!("task_access_route:{task}")).unwrap().as_deref(),Some("chatgpt_subscription"));
-    let (_instructions,tools,context)=agent::subscription_context(&c,&task).unwrap();
+    let (_instructions,tools,context)=agent::subscription_context(&mut c,&task).unwrap();
     assert!(tools.iter().any(|tool|tool["name"]=="list_sources"));
     assert!(!tools.iter().any(|tool|tool["name"]=="exec_command"));
     assert!(!context.contains(c.root.to_string_lossy().as_ref()));
@@ -372,6 +372,24 @@ fn subscription_case_tool_uses_existing_receipt_and_refuses_replay() {
     assert!(agent::subscription_tool_response(&mut c,&task,"synthetic-codex-call","list_sources",json!({"offset":0,"details":false})).is_err());
     assert_eq!(c.actions(&task).unwrap().as_array().unwrap().len(),1);
     assert!(agent::subscription_tool_response(&mut c,&task,"shell-attempt","exec_command",json!({"cmd":"dir"})).is_err());
+}
+#[test]
+fn subscription_followup_can_inspect_after_uncited_automatic_report() {
+    let (_dir,mut c,source)=setup();enable(&mut c);
+    let automatic=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.db.execute("UPDATE tasks SET status='complete',answer='No inspection completed' WHERE id=?",[&automatic]).unwrap();
+    evidence_desk::automatic::start_review(&mut c).unwrap();
+    let scope=agent::case_scope(&c).unwrap().0;
+    assert!(evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().is_none());
+    let task=agent::start_subscription(&mut c,"Inspect the source","investigate",scope,vec![]).unwrap();
+    assert!(c.meta(&format!("quick_answer_phase:{task}")).unwrap().is_none());
+    c.set_meta(&format!("quick_answer_phase:{task}"),"pending").unwrap(); // Older subscription task.
+    let (_,tools,_)=agent::subscription_context(&mut c,&task).unwrap();
+    assert_eq!(c.meta(&format!("quick_answer_phase:{task}")).unwrap().as_deref(),Some("expanded"));
+    assert!(tools.iter().any(|tool|tool["name"]=="list_sources"));
+    let result=agent::subscription_tool_response(&mut c,&task,"inspect-source","list_sources",json!({"offset":0,"details":false})).unwrap();
+    assert_eq!(result["success"],true);
+    assert!(result["contentItems"][0]["text"].to_string().contains(&source));
 }
 #[test]
 fn encrypted_backup_roundtrips_and_wrong_password_fails() {
@@ -1248,7 +1266,8 @@ fn applying_app_defaults_never_silently_enables_direct_media() {
 
 #[test]
 fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
-    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    c.publish_extract(&sid,"A witness reported a blue bag.","test",true).unwrap();
     // Dispatching the automatic task must NOT mark the inventory analyzed.
     let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
     assert!(c.meta("auto_review_fingerprint").unwrap().is_none(),"fingerprint written at start");
@@ -1272,6 +1291,9 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),Some(task.clone()));
     // Observed successful completion is what finally writes the fingerprint.
     c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
+    evidence_desk::review_progress::save(&c,&task,&evidence_desk::review_progress::Progress{
+        summary:"A witness reported a blue bag.".into(),citations:vec![format!("evidence:{sid}#R1L1-L1")],..Default::default()
+    }).unwrap();
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
     assert!(c.meta("auto_review_fingerprint").unwrap().is_some());
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
@@ -1341,12 +1363,20 @@ fn failed_automatic_review_is_not_treated_as_completed_analysis() {
 
 #[test]
 fn current_saved_analysis_uses_small_first_reply_and_expands_only_on_request() {
-    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    c.publish_extract(&sid,"A witness reported a blue bag.","test",true).unwrap();
     let mut settings=c.settings().unwrap();settings.model="gpt-5.6-luna".into();c.save_settings(settings).unwrap();
     let automatic=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
     c.db.execute("UPDATE tasks SET status='complete',answer='A witness reported a blue bag.' WHERE id=?",[&automatic]).unwrap();
+    evidence_desk::review_progress::save(&c,&automatic,&evidence_desk::review_progress::Progress{
+        summary:"A witness reported a blue bag.".into(),citations:vec![format!("evidence:{sid}#R1L1-L1")],..Default::default()
+    }).unwrap();
     evidence_desk::automatic::start_review(&mut c).unwrap();
     let (sources,records)=agent::case_scope(&c).unwrap();
+    let subscription=agent::start_subscription(&mut c,"Verify the saved finding","investigate",sources.clone(),records.clone()).unwrap();
+    assert!(c.meta(&format!("quick_answer_phase:{subscription}")).unwrap().is_none(),"Subscription turns need their case tools for the whole turn");
+    let (_,subscription_tools,_)=agent::subscription_context(&mut c,&subscription).unwrap();
+    assert!(subscription_tools.iter().any(|tool|tool["name"]=="list_sources"));
     let task=agent::start(&mut c,"What did the witness report?","investigate",sources.clone(),records.clone(),0.).unwrap();
     let first=agent::prepare_request(&mut c,&task).unwrap();
     assert_eq!(first.body["tools"].as_array().unwrap().len(),1);
