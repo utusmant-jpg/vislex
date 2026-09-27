@@ -225,7 +225,12 @@ fn spawn_with_profile(executable: &Path, internet: bool, stable_name: Option<&st
         startup.StartupInfo.hStdError = stderr_write.0;
         startup.lpAttributeList = attributes.ptr;
         let binary = wide(&executable);
-        let mut command = wide(format!("\"{}\" app-server --listen stdio://", executable.display()));
+        let command_line = if executable.file_stem().and_then(|stem| stem.to_str()) == Some("codex-app-server") {
+            format!("\"{}\" --listen stdio://", executable.display())
+        } else {
+            format!("\"{}\" app-server --listen stdio://", executable.display())
+        };
+        let mut command = wide(command_line);
         let system = std::env::var("SystemRoot")?;
         let vars = [
             format!("APPDATA={}", private_home.display()),

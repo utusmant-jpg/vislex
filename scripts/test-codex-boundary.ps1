@@ -18,8 +18,14 @@ if ([System.IO.File]::ReadAllText($marker) -ne 'DENIED_SYNTHETIC') {
 if (Test-Path -LiteralPath (Join-Path $fixture 'unauthorized-write.txt')) {
     throw 'An unauthorized-write fixture already exists; inspect it before rerunning'
 }
-$extra = @()
-if ($DeviceCode) { $extra = @('--test-login') }
-if ($PersistentProfile) { $extra = @('--test-persistent') }
-cargo run --locked --manifest-path (Join-Path $root 'src-tauri/Cargo.toml') --example codex_boundary_probe -- $binary $marker @extra
-if ($LASTEXITCODE -ne 0) { throw 'Codex boundary probe failed' }
+function Invoke-Probe([string]$mode) {
+    if ($mode) {
+        cargo run --locked --manifest-path (Join-Path $root 'src-tauri/Cargo.toml') --example codex_boundary_probe -- $binary $marker $mode
+    } else {
+        cargo run --locked --manifest-path (Join-Path $root 'src-tauri/Cargo.toml') --example codex_boundary_probe -- $binary $marker
+    }
+    if ($LASTEXITCODE -ne 0) { throw 'Codex boundary probe failed' }
+}
+if ($DeviceCode) { Invoke-Probe '--test-login' }
+if ($PersistentProfile) { Invoke-Probe '--test-persistent' }
+if (-not $DeviceCode -and -not $PersistentProfile) { Invoke-Probe '' }

@@ -10,6 +10,7 @@ src-tauri/target/
 workers/models/
 src-tauri/resources/worker/
 src-tauri/resources/codex/codex.exe
+src-tauri/resources/codex/codex-app-server.exe
 __pycache__/
 test-results/
 playwright-report/

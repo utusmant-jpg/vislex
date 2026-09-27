@@ -25,12 +25,12 @@ $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = '16'
 $env:CARGO_PROFILE_RELEASE_DEBUG = '0'
 $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
 $env:CARGO_BUILD_JOBS = '4'
-cargo build --release -p codex-cli --bin codex --target x86_64-pc-windows-msvc --manifest-path (Join-Path $Checkout 'codex-rs/Cargo.toml')
+cargo build --release -p codex-app-server --bin codex-app-server --target x86_64-pc-windows-msvc --manifest-path (Join-Path $Checkout 'codex-rs/Cargo.toml')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned Codex build failed' }
-$source = Join-Path $Checkout 'codex-rs/target/x86_64-pc-windows-msvc/release/codex.exe'
+$source = Join-Path $Checkout 'codex-rs/target/x86_64-pc-windows-msvc/release/codex-app-server.exe'
 $target = Join-Path $root 'src-tauri/resources/codex'
 New-Item -ItemType Directory -Force -Path $target | Out-Null
-Copy-Item -LiteralPath $source -Destination (Join-Path $target 'codex.exe') -Force
+Copy-Item -LiteralPath $source -Destination (Join-Path $target 'codex-app-server.exe') -Force
 Copy-Item -LiteralPath (Join-Path $Checkout 'LICENSE') -Destination (Join-Path $target 'LICENSE') -Force
 Copy-Item -LiteralPath (Join-Path $Checkout 'NOTICE') -Destination (Join-Path $target 'NOTICE') -Force
-Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $target 'codex.exe')
+Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $target 'codex-app-server.exe')

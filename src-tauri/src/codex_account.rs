@@ -15,7 +15,7 @@ static CLIENT: OnceLock<Mutex<Option<Connection>>> = OnceLock::new();
 fn binary_path(directory: &Path) -> std::path::PathBuf {
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("VISLEX_CODEX_BINARY") { return path.into(); }
-    directory.join("codex.exe")
+    directory.join("codex-app-server.exe")
 }
 
 pub fn available(directory: &Path) -> bool { binary_path(directory).is_file() }
