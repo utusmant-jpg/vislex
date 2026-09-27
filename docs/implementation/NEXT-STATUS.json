@@ -736,9 +736,9 @@
     },
     "CODEX-SUBSCRIPTION-GATE-2026-09-26": {
       "state": "blocked",
-      "commit": "No subscription execution code enabled",
-      "evidence": "docs/implementation/CODEX-SUBSCRIPTION-GATE.md; codex-cli 0.158.0-alpha.2.1 app-server stdio initialized, account/read returned no account in an isolated profile, model/list worked; custom permission profile with root deny and a single synthetic allowed folder still let command/exec read DENIED_SYNTHETIC from an out-of-scope synthetic file under LOCALAPPDATA, including after successful unelevated Windows sandbox setup.",
-      "unrun_checks": "No OAuth login, Codex model turn, dynamic-tool bridge, packaged Codex binary, or case-evidence transfer was attempted. Subscription-backed case chat remains unavailable until a repeatable packaged isolation test passes."
+      "commit": "148cb5d (isolated account controls and synthetic boundary probe); subscription case execution disabled",
+      "evidence": "docs/implementation/CODEX-SUBSCRIPTION-GATE.md; installed codex-cli custom permission profile leaked DENIED_SYNTHETIC; pinned Codex App Server built with narrow Windows AppContainer patch; synthetic allowed-file read succeeded and out-of-scope DENIED_SYNTHETIC read was denied; device-code OAuth start and persistent AppContainer profile reuse passed; desktop account/read smoke passed with pinned debug binary; SettingsDialog device-code and disabled-route tests passed; npm run build and cargo check --features desktop passed; npm test -- --maxWorkers=2 passed, 123 tests in 21 files; cargo test --features desktop --lib passed, 20 passed and 3 ignored.",
+      "unrun_checks": "No actual user OAuth completion, Codex model turn, dynamic-tool bridge, exact packaged-binary synthetic .ledcase read/write probe, or case-evidence transfer was attempted. Subscription-backed case chat remains unavailable until these checks pass."
     }
   },
   "redesign_worktree_progress": {
