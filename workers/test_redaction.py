@@ -33,6 +33,7 @@ class RedactionOutput(unittest.TestCase):
             self.assertEqual(len(output.pages), 1)
             self.assertEqual(output.pages[0].extract_text(), '')
             self.assertFalse(output.attachments)
+            self.assertEqual(output.metadata.title, 'Redaction derivative')
             self.assertNotIn('SYNTHETIC PRIVATE METADATA', str(output.metadata))
             self.assertNotIn(b'SYNTHETIC PRIVATE ATTACHMENT', (job / 'redacted.pdf').read_bytes())
             self.assertEqual(result['metadata']['page_count'], 1)

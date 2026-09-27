@@ -39,7 +39,7 @@ def redact(job: Path, request: dict) -> dict:
     from reportlab.pdfgen import canvas
     try:
         pdf = canvas.Canvas(str(job / 'redacted.pdf'), pageCompression=1)
-        pdf.setTitle('Reviewed redaction derivative')
+        pdf.setTitle('Redaction derivative')
         pdf.setAuthor('VisLex')
         for number in range(1, count + 1):
             if (job / 'cancel.request').exists():
