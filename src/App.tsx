@@ -7,6 +7,8 @@ import {
   MoreHorizontal, NotebookPen, PanelLeftClose, PanelLeftOpen, Plus, Scale, Search, Settings, X,
 } from 'lucide-react';
 import { api, formatBytes, native } from './bridge';
+import { motion, useReducedMotion } from 'motion/react';
+import { springs } from './lib/motion';
 import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary, Source, Job, Task } from './types';
 import { suggestedMatterName } from './review';
 import { subscribeCaseChanges } from './caseEvents';
@@ -311,6 +313,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
 }
 
 export default function App() {
+  const reducedMotion = useReducedMotion();
   const [view, setView] = useState<View>('chat');
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('vislex-sidebar') !== 'closed');
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -709,11 +712,21 @@ export default function App() {
       <div className="workspace" data-active-pane={activePane} data-layout={layoutPreset}>
         <nav className="rail" aria-label="Workspaces">
           {views.map(item => <Tooltip key={item.id} text={item.label} shortcut={item.shortcut}>
-            <button className={`rail-button ${view === item.id ? 'active' : ''} ${item.id === 'jobs' && needsAttention ? 'attention' : ''}`} aria-label={item.label} aria-current={view === item.id} onClick={() => setView(item.id)}><item.icon size={18} /></button>
+            <motion.button
+              className={`rail-button ${view === item.id ? 'active' : ''} ${item.id === 'jobs' && needsAttention ? 'attention' : ''}`}
+              aria-label={item.label}
+              aria-current={view === item.id}
+              onClick={() => setView(item.id)}
+              whileTap={reducedMotion ? undefined : { scale: 0.92 }}
+              transition={springs.snappy}
+            >
+              {view === item.id ? <motion.span layoutId="rail-active" className="rail-active-pill" transition={springs.snappy} aria-hidden="true" /> : null}
+              <item.icon size={18} />
+            </motion.button>
           </Tooltip>)}
           <div className="spacer" />
-          <Tooltip text={sidebarOpen ? 'Hide navigation' : 'Show navigation'}><button className="rail-button" aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(value => !value)}>{sidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button></Tooltip>
-          <Tooltip text="Search case" shortcut="Ctrl+K"><button className="rail-button" aria-label="Search case" onClick={() => setPalette(true)}><Search size={17} /></button></Tooltip>
+          <Tooltip text={sidebarOpen ? 'Hide navigation' : 'Show navigation'}><motion.button className="rail-button" aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(value => !value)} whileTap={reducedMotion ? undefined : { scale: 0.92 }} transition={springs.snappy}>{sidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</motion.button></Tooltip>
+          <Tooltip text="Search case" shortcut="Ctrl+K"><motion.button className="rail-button" aria-label="Search case" onClick={() => setPalette(true)} whileTap={reducedMotion ? undefined : { scale: 0.92 }} transition={springs.snappy}><Search size={17} /></motion.button></Tooltip>
         </nav>
 
         <aside className="sidebar" hidden={!sidebarOpen} style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
