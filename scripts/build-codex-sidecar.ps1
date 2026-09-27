@@ -27,4 +27,5 @@ $target = Join-Path $root 'src-tauri/resources/codex'
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 Copy-Item -LiteralPath $source -Destination (Join-Path $target 'codex.exe') -Force
 Copy-Item -LiteralPath (Join-Path $Checkout 'LICENSE') -Destination (Join-Path $target 'LICENSE') -Force
+Copy-Item -LiteralPath (Join-Path $Checkout 'NOTICE') -Destination (Join-Path $target 'NOTICE') -Force
 Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $target 'codex.exe')
