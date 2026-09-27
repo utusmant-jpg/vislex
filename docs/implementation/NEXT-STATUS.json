@@ -745,6 +745,22 @@
       ],
       "unrun_checks": "The new native journeys ran against an unbundled debug executable, not a release installer. Packaged release/installer verification and a live provider call remain unrun; release verification is not claimed."
     },
+    "CODEX-PERSISTENT-PROFILE-2026-09-27": {
+      "state": "implemented",
+      "commit": "a8f110e",
+      "environment": "Windows packaged x64 VisLex; installed sidecar SHA256 E1D6B21D4D53A4ECE8F3A034DB86A7022B3FDD3F07916E53A1C032FC42781C55",
+      "evidence": "Live case task paused with zero actions because subscription AppContainer startup failed. Fresh installed-app CDP smoke reproduced it. A diagnostic release build revealed icacls /T failed on a missing cached-plugin path inside the persistent Codex profile. The fix grants the profile root with inheritance without recursively scanning account data; the bundled runtime grant and AppContainer boundary remain. Fixed release EXE SHA256 42C307096766CE16730E3E59E99BD5A22D38F6EDFF2DA71EC3A9A627B8E2A6A3 was installed after a graceful app close, then reopened. Its exact installed binary returned subscription_ready=true, account_protocol=true, connected=true. The persistent synthetic probe allowed profile access and denied out-of-scope read/write. Matching NSIS bundle SHA256 AFC77F352D48CFBF50977BCD0712815EEC762BD0CA928ABAB712222E64FCD420; its release EXE SHA256 7685891569F54CABF98EBB9CEEF39185AFE2A2467A1059D373D9C837F589C557 passed the same account smoke from the build directory. The paused case task was not automatically resumed.",
+      "commands": [
+        "npx tauri build --features desktop --target x86_64-pc-windows-msvc --no-bundle -> exit 0",
+        "scripts/native-codex-account-test.ps1 -BinaryPath <fixed installed EXE> -Port 9487 -> exit 0, connected=true",
+        "npx tauri build --features desktop --target x86_64-pc-windows-msvc --bundles nsis -> exit 0",
+        "scripts/native-codex-account-test.ps1 -BinaryPath <bundled release EXE> -Port 9488 -> exit 0, connected=true",
+        "scripts/test-codex-boundary.ps1 -BinaryPath <installed sidecar> -PersistentProfile -> exit 0, synthetic boundary held",
+        "git diff --cached --check -> exit 0"
+      ],
+      "reviewer": "Self-review only; no independent reviewer available for this live fix.",
+      "unrun_checks": "No live case task retry, model turn, installer extraction/install journey, or complete case-analysis journey was run. This verifies the startup blocker and installed account route, not case-analysis correctness or release certification."
+    },
     "CODEX-SUBSCRIPTION-GATE-2026-09-26": {
       "state": "blocked",
       "commit": "148cb5d and later isolated account/boundary commits through 28d0c6f; subscription case execution disabled",
