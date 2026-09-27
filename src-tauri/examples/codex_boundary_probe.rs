@@ -15,6 +15,7 @@ fn main() -> Result<()> {
     let test_login = mode.as_deref() == Some(std::ffi::OsStr::new("--test-login"));
     let test_persistent = mode.as_deref() == Some(std::ffi::OsStr::new("--test-persistent"));
     ensure!(marker.is_file() && marker.is_absolute(), "Missing synthetic marker");
+    ensure!(std::fs::read_to_string(&marker)?.contains("DENIED_SYNTHETIC"), "Use only the synthetic deny marker");
     let mut child = if test_persistent { codex_sandbox::spawn_subscription(&binary)? } else { codex_sandbox::spawn(&binary, test_login)? };
     let allowed = child.home.join("allowed-synthetic.txt");
     std::fs::write(&allowed, b"ALLOWED_SYNTHETIC")?;
@@ -63,7 +64,20 @@ fn main() -> Result<()> {
         let result = rx.recv_timeout(Duration::from_secs(30))?;
         if result["id"] == 4 {
             ensure!(!result["result"]["stdout"].as_str().unwrap_or_default().contains("DENIED_SYNTHETIC"), "Boundary FAILED: out-of-scope marker was read");
-            println!("Boundary held: permitted profile readable; out-of-scope read denied; account/read available");
+            break;
+        }
+    }
+    let write_target = marker.parent().unwrap().join("unauthorized-write.txt");
+    ensure!(!write_target.exists(), "Synthetic write fixture already exists");
+    writeln!(child.stdin, "{}", json!({"method":"command/exec","id":6,"params":{
+        "command":["cmd.exe","/d","/c",format!("echo UNAUTHORIZED > \"{}\"",write_target.display())],
+        "cwd":child.home,"sandboxPolicy":{"type":"externalSandbox","networkAccess":"restricted"},"timeoutMs":10000
+    }}))?;
+    loop {
+        let result = rx.recv_timeout(Duration::from_secs(30))?;
+        if result["id"] == 6 {
+            ensure!(!write_target.exists(), "Boundary FAILED: out-of-scope file was created: {result}");
+            println!("Boundary held: permitted profile readable; out-of-scope read/write denied; account/read available");
             break;
         }
     }

@@ -103,9 +103,13 @@ struct Grants {
     runtime_granted: bool,
     home_granted: bool,
     package_granted: bool,
+    persistent: bool,
 }
 impl Drop for Grants {
     fn drop(&mut self) {
+        // A second VisLex process may still use the same durable OAuth profile.
+        // Durable grants cover only the bundled runtime and that profile.
+        if self.persistent { return; }
         if self.package_granted { let _ = package_traverse(&self.package_root, &self.sid, true); }
         if self.home_granted { let _ = acl(&self.private_home, &self.sid, "M", true); }
         if self.runtime_granted { let _ = acl(&self.runtime, &self.sid, "RX", true); }
@@ -179,7 +183,7 @@ fn spawn_with_profile(executable: &Path, internet: bool, stable_name: Option<&st
         CoTaskMemFree(package_path as _);
         std::fs::create_dir_all(&private_home)?;
         let package_root = private_home.parent().context("AppContainer package root missing")?.to_path_buf();
-        let mut grants = Grants { runtime: runtime.clone(), private_home: private_home.clone(), package_root, sid: sid.clone(), runtime_granted: false, home_granted: false, package_granted: false };
+        let mut grants = Grants { runtime: runtime.clone(), private_home: private_home.clone(), package_root, sid: sid.clone(), runtime_granted: false, home_granted: false, package_granted: false, persistent: stable_name.is_some() };
         acl(&runtime, &sid, "RX", false)?;
         grants.runtime_granted = true;
         package_traverse(&grants.package_root, &sid, false)?;
