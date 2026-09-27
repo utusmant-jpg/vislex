@@ -152,11 +152,14 @@ function RunStatus({ turn }: { turn: Task }) {
 }
 
 function starterPrompts(snapshot: Snapshot | null): string[] {
-  if (!snapshot?.sources.length) {
+  const count = snapshot?.counts?.source_count ?? snapshot?.sources.length ?? 0;
+  if (!snapshot || !count) {
     return ['Build a timeline from the evidence', 'Find contradictions across sources', 'Review the videos and summarize key moments'];
   }
-  const count = snapshot.counts?.source_count ?? snapshot.sources.length;
   const sourceWord = count === 1 ? 'source' : 'sources';
+  if (count > snapshot.sources.length) {
+    return [`Build a timeline from the ${count} ${sourceWord}`, 'Review the evidence and summarize key moments', 'Find contradictions across the sources'];
+  }
   const recordings = snapshot.sources.filter(source => ['video', 'audio'].includes(source.kind)).length;
   const documents = snapshot.sources.filter(source => ['pdf', 'text', 'other'].includes(source.kind)).length;
   const starters = [`Build a timeline from the ${count} ${sourceWord}`];

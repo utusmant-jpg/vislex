@@ -37,6 +37,16 @@ describe('chat composer interaction', () => {
     expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
   });
 
+  it('does not claim a recording count from a bounded source page', () => {
+    const data = snapshot();
+    data.sources = [{ id: 'audio-1', name: 'synthetic.wav', sha256: '', size: 1, mime: 'audio/wav', kind: 'audio', status: 'ready', restricted: false, occurrences: 1, created_at: '2026-09-22T00:00:00Z' }];
+    data.counts = { audit_seq: 1, source_count: 83, source_bytes: 1, record_count: 0, task_count: 0, job_count: 0, jobs_queued: 0, jobs_running: 0, jobs_failed: 0, jobs_attention: 0, jobs_complete: 0 };
+    panel(data);
+    expect(screen.getByRole('button', { name: /Build a timeline from the 83 sources/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Review the evidence and summarize key moments/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /1 recording/ })).toBeNull();
+  });
+
   it('sends a new chat while another conversation is running', async () => {
     const { onConversation } = panel(snapshot([task('other-task', 'other-chat')]));
     fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Check this source' } });
