@@ -11,6 +11,11 @@ def capture(database, mapping, configuration):
     with closing(sqlite3.connect(uri,uri=True)) as db:
         db.row_factory=sqlite3.Row
         db.execute('BEGIN')
+        # Task answers and tool receipts can mention sources outside the saved task scope.
+        # Refuse the entire capture when any current source restriction would need
+        # content-level redaction that this raw, read-only export cannot prove.
+        if db.execute('SELECT 1 FROM sources WHERE restricted=1 LIMIT 1').fetchone():
+            raise ValueError('Restricted source prevents raw benchmark capture')
         captured=[]
         for item in mapping:
             task=db.execute('SELECT id,prompt,status,answer,error,scope,created_at,updated_at FROM tasks WHERE id=?',(item['task_id'],)).fetchone()

@@ -81,7 +81,24 @@ def percentile(values, p):
     values=sorted(values)
     return values[round((len(values)-1)*p)]
 
-def evaluate(truth, runs, candidate=None, baseline=None, samples=2000, seed=20260920):
+def preregistration_matches(truth, candidate, baseline, artifact, digest):
+    if not isinstance(artifact, dict) or not isinstance(digest, str):
+        return False
+    targets = truth.get('preregistered_targets')
+    if not isinstance(targets, dict) or set(targets) != {'minimum_incidents', 'recall_gain', 'precision_margin', 'review_time_reduction'}:
+        return False
+    if isinstance(targets['minimum_incidents'], bool) or not isinstance(targets['minimum_incidents'], int) or targets['minimum_incidents'] < 30:
+        return False
+    if any(number(targets[k], k) > 1 for k in ('recall_gain', 'precision_margin', 'review_time_reduction')):
+        return False
+    incident_ids = sorted(i['id'] for i in truth['incidents'])
+    ids_digest = hashlib.sha256(json.dumps(incident_ids, separators=(',', ':')).encode()).hexdigest()
+    return (truth.get('preregistration_sha256') == digest
+            and artifact == {'schema_version': 1, 'dataset': truth.get('name'), 'split': 'held_out',
+                             'candidate': candidate, 'baseline': baseline,
+                             'incident_ids_sha256': ids_digest, 'targets': targets})
+
+def evaluate(truth, runs, candidate=None, baseline=None, samples=2000, seed=20260920, preregistration=None, preregistration_sha256=None):
     facts=validate(truth,runs)
     by_system={}
     report={'schema_version':1,'dataset':truth.get('name'),'synthetic':truth.get('synthetic',False), 'systems':{},'comparison':{'status':'not_evaluated','reason':'Both actual system submissions are required'},'limitations':['Adjudication is supplied by reviewers, not inferred from text.','Incident-macro metrics; repeats are averaged inside each incident.','Synthetic fixtures test the harness, not competitive quality.','Confidence intervals resample incidents, never individual frames or assertions.']}
@@ -106,16 +123,22 @@ def evaluate(truth, runs, candidate=None, baseline=None, samples=2000, seed=2026
             differences={m:{'candidate_minus_baseline':sum(a[k][m]-b[k][m] for k in keys)/len(keys),'ci95':[percentile(deltas[m],.025),percentile(deltas[m],.975)]} for m in METRICS}
             review_b=mean(list(b.values()),'review_seconds');review_a=mean(list(a.values()),'review_seconds')
             goals=truth.get('preregistered_targets',{})
-            eligible=not report['synthetic'] and truth.get('split')=='held_out' and bool(truth.get('preregistration_sha256')) and bool(goals) and len(keys)>=max(30,goals.get('minimum_incidents',30)) and all({(r['incident_id'],r['repeat']) for r in system['runs']} == {(r['incident_id'],r['repeat']) for r in next(s for s in runs['systems'] if s['id']==candidate)['runs']} for system in runs['systems'] if system['id'] in (candidate,baseline))
+            repeat_sets=[{(r['incident_id'],r['repeat']) for r in system['runs']} for system in runs['systems'] if system['id'] in (candidate,baseline)]
+            repeated=all({repeat for incident,repeat in repeat_set if incident==key} >= {1,2} for repeat_set in repeat_sets for key in keys)
+            valid_preregistration=preregistration_matches(truth,candidate,baseline,preregistration,preregistration_sha256)
+            eligible=(not report['synthetic'] and truth.get('split')=='held_out'
+                      and valid_preregistration and len(keys)>=goals['minimum_incidents'])
+            eligible=eligible and len(repeat_sets)==2 and repeat_sets[0]==repeat_sets[1] and repeated
             report['comparison']={'status':'scored','candidate':candidate,'baseline':baseline,'incident_count':len(keys),'bootstrap_samples':samples,'seed':seed,'differences':differences,'review_time_reduction':1-review_a/review_b if review_b else None,'review_time_reduction_ci95':[percentile(review_reductions,.025),percentile(review_reductions,.975)],'competitive_claim_eligible':eligible,'targets_met': eligible and differences['recall']['ci95'][0]>=goals.get('recall_gain',.15) and differences['precision']['ci95'][0]>=-goals.get('precision_margin',.01) and review_b>0 and percentile(review_reductions,.025)>=goals.get('review_time_reduction',.4)}
     return report
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('truth',type=Path);p.add_argument('runs',type=Path);p.add_argument('--output',type=Path,required=True);p.add_argument('--candidate');p.add_argument('--baseline');p.add_argument('--samples',type=int,default=2000)
+    p.add_argument('truth',type=Path);p.add_argument('runs',type=Path);p.add_argument('--output',type=Path,required=True);p.add_argument('--candidate');p.add_argument('--baseline');p.add_argument('--samples',type=int,default=2000);p.add_argument('--preregistration',type=Path)
     a=p.parse_args()
     if a.samples<100: p.error('Use at least 100 bootstrap samples')
-    report=evaluate(json.loads(a.truth.read_text(encoding='utf-8')),json.loads(a.runs.read_text(encoding='utf-8')),a.candidate,a.baseline,a.samples)
+    prereg_bytes=a.preregistration.read_bytes() if a.preregistration else None
+    report=evaluate(json.loads(a.truth.read_text(encoding='utf-8')),json.loads(a.runs.read_text(encoding='utf-8')),a.candidate,a.baseline,a.samples,preregistration=json.loads(prereg_bytes) if prereg_bytes else None,preregistration_sha256=hashlib.sha256(prereg_bytes).hexdigest() if prereg_bytes else None)
     report['input_sha256']={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in (a.truth,a.runs)}
     a.output.write_text(json.dumps(report,indent=2),encoding='utf-8')
     print(f'Wrote {a.output}: {report["comparison"]["status"]}')
