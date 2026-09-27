@@ -15,7 +15,7 @@ use std::{
 static CLIENT: OnceLock<Mutex<Option<Connection>>> = OnceLock::new();
 // Updated only after the pinned source, patch, and Windows package are rebuilt
 // and independently checked. A stale sidecar must never enable case turns.
-const SIDECAR_SHA256: &str = "E1D6B21D4D53A4ECE8F3A034DB86A7022B3FDD3F07916E53A1C032FC42781C55";
+const SIDECAR_SHA256: &str = "D44A2857F07087304F5A5409413F0297893EBF8B51DF5AC6BA1C2F86AA823897";
 
 fn binary_path(directory: &Path) -> std::path::PathBuf {
     #[cfg(debug_assertions)]

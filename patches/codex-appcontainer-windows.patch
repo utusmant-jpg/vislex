@@ -43,6 +43,25 @@ index 057478d..5589621 100644
  pub mod apply_command;
  mod chatgpt_client;
  pub mod connectors;
+diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
+index ce81b20..b9297a6 100644
+--- a/codex-rs/core/src/tools/mod.rs
++++ b/codex-rs/core/src/tools/mod.rs
+@@ -72,6 +72,14 @@ pub(crate) fn tool_user_shell_type(
+ }
+ 
+ pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
++    // VisLex runs this patched App Server inside AppContainer and exposes only
++    // host-brokered case tools. Code Mode needs a separate tool-host executable
++    // that is deliberately absent there, so advertise these tools directly.
++    if turn_context.dynamic_tools.iter().any(|tool| matches!(tool,
++        codex_protocol::dynamic_tools::DynamicToolSpec::Namespace(namespace)
++            if namespace.name == "vislex")) {
++        return ToolMode::Direct;
++    }
+     model_info.tool_mode.unwrap_or_else(|| {
+         if turn_context.config.features.enabled(Feature::CodeModeOnly) {
+             ToolMode::CodeModeOnly
 diff --git a/codex-rs/utils/home-dir/src/lib.rs b/codex-rs/utils/home-dir/src/lib.rs
 index caa4356..4a440a9 100644
 --- a/codex-rs/utils/home-dir/src/lib.rs

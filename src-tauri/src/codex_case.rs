@@ -130,4 +130,23 @@ mod tests {
         ensure!(started["thread"]["id"].as_str().is_some(),"Ephemeral thread ID missing");
         Ok(())
     }
+
+    #[test]
+    #[ignore = "Uses a signed-in ChatGPT account for a synthetic dynamic-tool turn"]
+    fn signed_in_turn_calls_synthetic_case_tool() -> Result<()> {
+        let binary = std::env::var_os("VISLEX_CODEX_BINARY").context("Set VISLEX_CODEX_BINARY")?;
+        let directory = Path::new(&binary).parent().context("Codex binary has no directory")?;
+        let mut calls = 0;
+        let (answer, _) = run(directory, "gpt-5.6-sol", "high",
+            "Call vislex.ping once to get the synthetic marker, then report it. No case data is present.",
+            &[json!({"name":"ping","description":"Return the synthetic marker", "parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}})],
+            "What marker does vislex.ping return? Call it before answering.",
+            |_, name, _| {
+                ensure!(name == "ping", "Unexpected synthetic tool");
+                calls += 1;
+                Ok(json!({"contentItems":[{"type":"inputText","text":"SYNTHETIC_MARKER"}],"success":true}))
+            }, |_| {}, || false)?;
+        ensure!(calls == 1, "Codex completed without calling the advertised synthetic tool: {}", answer.unwrap_or_default().chars().take(400).collect::<String>());
+        Ok(())
+    }
 }

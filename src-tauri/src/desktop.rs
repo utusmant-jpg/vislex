@@ -1486,8 +1486,11 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
     })?;
     let still_running=with_case_expected(app,case_id,Some(epoch),|c|Ok(c.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[task],|r|r.get(0))?=="running"))?;
     if still_running {
-        let answer=result.context("Codex ended without a validated finish action or answer")?;
-        with_case_expected(app,case_id,Some(epoch),|c|agent::subscription_finish_text(c,task,&answer))?;
+        // A final model message is not a brokered finish_task action. In
+        // particular, it must not turn an uninspected case into a completed
+        // task just because the model says its tools were unavailable.
+        let _ = result;
+        anyhow::bail!("ChatGPT subscription ended without calling VisLex finish_task. Case inspection and support review were not completed; retry after the case tools are available.");
     }
     emit_case_changed(app);
     Ok(())
