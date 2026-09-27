@@ -713,6 +713,29 @@
       "reviewer": "Self-review only; compared live UI, case job/action/transmission summaries, registered artifact files, and source control paths. Client document content and identifiers omitted from report.",
       "unrun_checks": "No changes were applied to the running case or app. Error 1450's exact OS resource cause is unproven without worker memory/commit diagnostics. Provider's omitted incomplete reason cannot be recovered from stored transmission metadata. Proposed repairs and packaged end-to-end verification remain open.",
       "note": "A diagnostic audit, not an implementation or verification claim. Prioritize discovery readiness/recovery, bounded error loops, resource handling, and provider diagnostics. The paused automatic task has an uncertain transmission and should not be blindly resent."
+    },
+    "APP-AI-SCOPE-2026-09-26": {
+      "state": "implemented",
+      "commit": "71d6253; combined through 38e25e3",
+      "environment": "Windows 10.0.26200 x64; isolated codex/vislex-redesign worktree; synthetic UI fixtures",
+      "evidence": "App-wide AI preferences now load/save without an open case; new cases inherit, legacy cases retain their prior policy until explicitly opted in, and case overrides remain separate. Visible execution/review/agent-count controls were removed; current case grants and review gates remain enforced. Frontend interactions cover app defaults, case override, return to inheritance, offline setup and focus. Browser accessibility/workspace checks pass.",
+      "commands": [
+        "npm run build -> exit 0",
+        "npm test -> exit 0, 119 tests in 21 files on final rerun (one preceding full run had a transient lazy-view timeout; its targeted rerun passed)",
+        "npm run test:a11y -> exit 0, 1 Playwright test",
+        "npm run test:e2e -> exit 0, 10 Playwright tests",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop --lib -> exit 0, 18 passed and 2 intentionally ignored",
+        "node --check scripts/native-consent-acceptance.js -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "Updated native-consent-acceptance.js has not been run against a newly packaged build. App-wide persistence and inheritance need a packaged synthetic Windows journey; release verification is not claimed."
+    },
+    "CODEX-SUBSCRIPTION-GATE-2026-09-26": {
+      "state": "blocked",
+      "commit": "No subscription execution code enabled",
+      "evidence": "docs/implementation/CODEX-SUBSCRIPTION-GATE.md; codex-cli 0.158.0-alpha.2.1 app-server stdio initialized, account/read returned no account in an isolated profile, model/list worked; custom permission profile with root deny and a single synthetic allowed folder still let command/exec read DENIED_SYNTHETIC from an out-of-scope synthetic file under LOCALAPPDATA, including after successful unelevated Windows sandbox setup.",
+      "unrun_checks": "No OAuth login, Codex model turn, dynamic-tool bridge, packaged Codex binary, or case-evidence transfer was attempted. Subscription-backed case chat remains unavailable until a repeatable packaged isolation test passes."
     }
   },
   "redesign_worktree_progress": {

@@ -1,0 +1,9 @@
+# Codex subscription integration gate — 2026-09-26
+
+VisLex's app-wide AI settings and per-case override are implemented in `71d6253`. The subscription-backed Codex route is **not enabled**. It must not receive case evidence until a packaged Windows test proves that the Codex process cannot read case files except through VisLex's grant-checked tool broker.
+
+The installed `codex-cli 0.158.0-alpha.2.1` app-server successfully initialized over stdio with a separate `CODEX_HOME`; `account/read` returned no account in that isolated profile and `model/list` returned a catalog. No user login or provider call was made.
+
+A synthetic Windows isolation probe configured `default_permissions = "vislex-case"` and a custom profile with `":root" = "deny"`, `":minimal" = "read"`, one synthetic folder as `"read"`, and network disabled. `permissionProfile/list` reported the profile as allowed. `windowsSandbox/setupStart` in `unelevated` mode reported success. `command/exec` with `permissionProfile: "vislex-case"` still read a synthetic file outside the allowed folder under `%LOCALAPPDATA%`: exit code 0 and output `DENIED_SYNTHETIC`. Reading the allowed synthetic file also succeeded. Both fixtures contained only those synthetic marker strings; no case data, credentials, or real provider calls were used.
+
+This is a failed boundary test, not evidence that all Codex sandbox modes behave the same. The current App Server's `readOnly.access` request shape was also rejected as unsupported and directed callers to permission profiles. Before enabling subscription-backed case work, pin a supported Codex binary, use a Windows isolation mechanism that actually denies out-of-scope reads and writes, repeat this adversarial test against the packaged binary and a synthetic `.ledcase`, and then test dynamic-tool calls through VisLex's case-grant, provenance, revision, and human-review dispatcher. Keep the route disabled if any of those checks fails.
