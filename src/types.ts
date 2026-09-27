@@ -1,4 +1,4 @@
-export type Provider = 'openai' | 'anthropic' | 'gemini' | 'xai';
+export type Provider = 'openai' | 'anthropic' | 'gemini' | 'xai' | 'openrouter';
 export type AIProfile = { provider: Provider; model: string; allow_text: boolean; allow_images: boolean };
 export type AIConfig = { provider: Provider; execution: 'single' | 'parallel' | 'auto'; review: 'standard' | 'independent' | 'challenge'; pool: AIProfile[] };
 export type ModelOption = { id: string; name: string };

@@ -11,6 +11,7 @@ pub enum Provider {
     Anthropic,
     Gemini,
     Xai,
+    Openrouter,
 }
 impl Provider {
     pub fn credential(self) -> &'static str {
@@ -19,6 +20,7 @@ impl Provider {
             Self::Anthropic => "anthropic-api-key",
             Self::Gemini => "gemini-api-key",
             Self::Xai => "xai-api-key",
+            Self::Openrouter => "openrouter-api-key",
         }
     }
     pub fn name(self) -> &'static str {
@@ -27,6 +29,7 @@ impl Provider {
             Self::Anthropic => "Anthropic",
             Self::Gemini => "Gemini",
             Self::Xai => "xAI",
+            Self::Openrouter => "OpenRouter",
         }
     }
 }
@@ -219,6 +222,69 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
             body: request,
         });
     }
+    if provider == Provider::Openrouter {
+        ensure!(!body["input"].as_array().into_iter().flatten().flat_map(|i|i["content"].as_array().into_iter().flatten()).any(|p|p["type"]=="input_media"),"Direct media is supported only by Gemini");
+        let mut messages: Vec<Value> = Vec::new();
+        if let Some(instructions) = body["instructions"].as_str().filter(|s| !s.is_empty()) {
+            messages.push(json!({"role":"system","content":instructions}));
+        }
+        for item in body["input"].as_array().context("Missing input")? {
+            let kind = item["type"].as_str().unwrap_or("message");
+            let message = match kind {
+                "reasoning" | "provider_native" => continue,
+                "function_call" => {
+                    let cid = item["call_id"].as_str().context("Missing call ID")?;
+                    let name = item["name"].as_str().context("Missing tool name")?;
+                    let args = item["arguments"].as_str().context("Missing tool arguments")?;
+                    serde_json::from_str::<Value>(args).context("Malformed tool arguments")?;
+                    json!({"role":"assistant","tool_calls":[{"id":cid,"type":"function","function":{"name":name,"arguments":args}}]})
+                }
+                "function_call_output" => {
+                    let cid = item["call_id"].as_str().context("Missing result call ID")?;
+                    json!({"role":"tool","tool_call_id":cid,"content":item["output"].as_str().unwrap_or("")})
+                }
+                _ => {
+                    let role = if item["role"] == "assistant" { "assistant" } else { "user" };
+                    let content = if let Some(text) = item["content"].as_str() {
+                        if text.is_empty() { continue; }
+                        json!(text)
+                    } else if let Some(parts) = item["content"].as_array() {
+                        let mapped: Vec<Value> = parts.iter().filter_map(|part| {
+                            if let Some(text) = part["text"].as_str().filter(|t| !t.is_empty()) {
+                                Some(json!({"type":"text","text":text}))
+                            } else if let Some(url) = part["image_url"].as_str() {
+                                Some(json!({"type":"image_url","image_url":{"url":url}}))
+                            } else {
+                                None
+                            }
+                        }).collect();
+                        if mapped.is_empty() { continue; }
+                        json!(mapped)
+                    } else {
+                        continue;
+                    };
+                    json!({"role":role,"content":content})
+                }
+            };
+            // Merge consecutive assistant messages so text and tool calls share one turn.
+            if message["role"] == "assistant"
+                && messages.last().is_some_and(|last| last["role"] == "assistant" && last["tool_calls"].is_array())
+                && message["tool_calls"].is_array()
+            {
+                messages.last_mut().unwrap()["tool_calls"].as_array_mut().unwrap().extend(message["tool_calls"].as_array().unwrap().iter().cloned());
+            } else {
+                messages.push(message);
+            }
+        }
+        let defs = body["tools"].as_array().cloned().unwrap_or_default();
+        let tools: Vec<Value> = defs.iter().map(|t| json!({"type":"function","function":{"name":t["name"],"description":t["description"],"parameters":t["parameters"]}})).collect();
+        let mut request = json!({"model":model,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true},"max_tokens":body["max_output_tokens"]});
+        request["tool_choice"] = match body["tool_choice"]["name"].as_str() {
+            Some(name) => json!({"type":"function","function":{"name":name}}),
+            None => json!("auto"),
+        };
+        return Ok(WireRequest { url: "https://openrouter.ai/api/v1/chat/completions".into(), body: request });
+    }
     let mut messages: Vec<Value> = Vec::new();
     let mut names = std::collections::HashMap::<String, String>::new();
     for item in body["input"].as_array().context("Missing input")? {
@@ -369,6 +435,29 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
     if matches!(provider, Provider::Openai | Provider::Xai) {
         return Ok(response);
     }
+    if provider == Provider::Openrouter {
+        let choice = response["choices"].get(0).context("OpenRouter returned no choices")?;
+        match choice["finish_reason"].as_str() {
+            Some("stop" | "tool_calls") => {},
+            Some("length") => bail!("OpenRouter response incomplete: output token limit reached"),
+            Some("content_filter") => bail!("OpenRouter response blocked by provider policy"),
+            _ => bail!("OpenRouter did not complete the response"),
+        }
+        let mut output = Vec::new();
+        if let Some(text) = choice["message"]["content"].as_str().filter(|t| !t.is_empty()) {
+            output.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}));
+        }
+        for call in choice["message"]["tool_calls"].as_array().unwrap_or(&Vec::new()) {
+            let function = call["function"].as_object().context("Missing OpenRouter tool function")?;
+            let id = call["id"].as_str().context("Missing OpenRouter tool call ID")?;
+            let name = function["name"].as_str().context("Missing OpenRouter tool name")?;
+            let arguments = function["arguments"].as_str().unwrap_or("{}");
+            serde_json::from_str::<Value>(arguments).context("Malformed OpenRouter tool arguments")?;
+            output.push(json!({"type":"function_call","call_id":id,"name":name,"arguments":arguments}));
+        }
+        ensure!(!output.is_empty(), "OpenRouter completed without text or tool calls");
+        return Ok(json!({"status":"completed","output":output,"usage":{"input_tokens":response["usage"]["prompt_tokens"],"output_tokens":response["usage"]["completion_tokens"]}}));
+    }
     let mut output = Vec::new();
     if provider == Provider::Anthropic {
         match response["stop_reason"].as_str() {
@@ -486,6 +575,74 @@ pub struct ClaudeStream {
 pub struct GeminiStream {
     parts: Vec<Value>,
     usage: Value,
+}
+/// OpenAI-compatible chat/completions SSE (OpenRouter). Tool call fragments
+/// arrive by index across chunks; completion is emitted on the trailing usage
+/// chunk when present, or on finish_reason otherwise.
+#[derive(Default)]
+pub struct ChatCompletionsStream {
+    text: String,
+    tool_calls: std::collections::BTreeMap<usize, (String, String, String)>,
+    finish_reason: Option<String>,
+    usage: Value,
+    completed: Option<Value>,
+}
+impl ChatCompletionsStream {
+    /// Returns (text deltas, tool-name activity deltas, completed response).
+    pub fn push(&mut self, chunk: &Value) -> Result<(Vec<String>, Vec<String>, Option<Value>)> {
+        if !chunk["usage"].is_null() { self.usage = chunk["usage"].clone(); }
+        let mut deltas = Vec::new();
+        let mut activity = Vec::new();
+        if let Some(choice) = chunk["choices"].get(0) {
+            if let Some(reason) = choice["finish_reason"].as_str() {
+                ensure!(self.finish_reason.is_none(), "Duplicate OpenRouter finish reason");
+                self.finish_reason = Some(reason.into());
+            }
+            if let Some(delta) = choice["delta"].as_object() {
+                if let Some(text) = delta.get("content").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                    self.text.push_str(text);
+                    deltas.push(text.to_string());
+                }
+                for call in delta.get("tool_calls").and_then(Value::as_array).unwrap_or(&Vec::new()) {
+                    let index = call["index"].as_u64().unwrap_or(0) as usize;
+                    ensure!(index < 100, "Excessive OpenRouter tool call index");
+                    let slot = self.tool_calls.entry(index).or_default();
+                    if let Some(id) = call["id"].as_str().filter(|v| !v.is_empty()) { slot.0 = id.into(); }
+                    if let Some(name) = call["function"]["name"].as_str().filter(|v| !v.is_empty()) {
+                        if slot.1.is_empty() { activity.push(name.to_string()); }
+                        slot.1 = name.into();
+                    }
+                    if let Some(args) = call["function"]["arguments"].as_str() { slot.2.push_str(args); }
+                }
+            }
+        }
+        if self.finish_reason.is_some() && self.completed.is_none() {
+            let tool_calls: Vec<Value> = self.tool_calls.values()
+                .map(|(id, name, args)| json!({"id":id,"type":"function","function":{"name":name,"arguments":args}}))
+                .collect();
+            let message = json!({
+                "role":"assistant",
+                "content": if self.text.is_empty() { Value::Null } else { json!(self.text) },
+                "tool_calls": if tool_calls.is_empty() { Value::Null } else { json!(tool_calls) },
+            });
+            self.completed = Some(json!({"choices":[{"message":message,"finish_reason":self.finish_reason}],"usage":self.usage.clone()}));
+            // The usage-only chunk that follows (stream_options.include_usage)
+            // carries final token counts; emit then. Without it, take_completed()
+            // after the loop emits what arrived.
+        }
+        if !chunk["usage"].is_null() && self.completed.is_some() {
+            let mut response = self.completed.take().context("OpenRouter completion vanished")?;
+            response["usage"] = self.usage.clone();
+            return Ok((deltas, activity, Some(decode(Provider::Openrouter, response)?)));
+        }
+        Ok((deltas, activity, None))
+    }
+    pub fn take_completed(&mut self) -> Option<anyhow::Result<Value>> {
+        self.completed.take().map(decode_openrouter)
+    }
+}
+fn decode_openrouter(response: Value) -> Result<Value> {
+    decode(Provider::Openrouter, response)
 }
 impl GeminiStream {
     pub fn push(&mut self, chunk: &Value) -> Result<(Vec<String>, Option<Value>)> {
@@ -649,6 +806,7 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
     let mut stream = crate::agent::ResponseStream::default();
     let mut claude = ClaudeStream::default();
     let mut gemini = GeminiStream::default();
+    let mut chat = ChatCompletionsStream::default();
     while let Some(chunk) = response.chunk().await? {
         for event in stream.push(&chunk)? {
             if provider == Provider::Anthropic {
@@ -661,6 +819,13 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
             if provider == Provider::Gemini {
                 let (deltas, completed) = gemini.push(&event)?;
                 for delta in deltas { progress(json!({"text":delta})); }
+                if let Some(value) = completed { return Ok(value); }
+                continue;
+            }
+            if provider == Provider::Openrouter {
+                let (deltas, activity, completed) = chat.push(&event)?;
+                for delta in deltas { progress(json!({"text":delta})); }
+                for name in activity { progress(json!({"activity":name})); }
                 if let Some(value) = completed { return Ok(value); }
                 continue;
             }
@@ -679,6 +844,9 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
                 _ => {}
             }
         }
+    }
+    if provider == Provider::Openrouter {
+        if let Some(result) = chat.take_completed() { return result; }
     }
     bail!("Provider stream ended without completion; no final result published")
 }
@@ -728,8 +896,15 @@ pub fn model_options(provider: Provider, value: &Value) -> Result<Vec<ModelOptio
             Provider::Anthropic => lower.starts_with("claude-"),
             Provider::Gemini => row["supportedGenerationMethods"].as_array().is_some_and(|methods|methods.iter().any(|m|m=="generateContent")) && !["tts","image","robotics"].iter().any(|part|lower.contains(part)),
             Provider::Xai => lower.starts_with("grok-") && !["image","video","imagine"].iter().any(|part|lower.contains(part)),
+            // OpenRouter aggregates many vendors; exclude non-chat families and
+            // keep everything else, including the ":free" tier suffixes.
+            Provider::Openrouter => !["image","video","tts","audio","realtime","embed","rerank","moderation","speech","voice","whisper","dall-e","sora","veo","imagen","safe"].iter().any(|part|lower.contains(part)),
         };
-        if candidate {result.push(ModelOption{id:id.into(),name:row[if provider==Provider::Gemini {"displayName"} else {"display_name"}].as_str().unwrap_or(id).into()});}
+        if candidate {result.push(ModelOption{id:id.into(),name:row[
+            if provider==Provider::Gemini {"displayName"}
+            else if provider==Provider::Openrouter {"name"}
+            else {"display_name"}
+        ].as_str().unwrap_or(id).into()});}
     }
     result.sort_by(|a,b|a.id.cmp(&b.id));result.dedup_by(|a,b|a.id==b.id);Ok(result)
 }
@@ -739,6 +914,7 @@ pub async fn list_models(provider: Provider, key: &str) -> Result<Vec<ModelOptio
         Provider::Anthropic=>"https://api.anthropic.com/v1/models",
         Provider::Gemini=>"https://generativelanguage.googleapis.com/v1beta/models",
         Provider::Xai=>"https://api.x.ai/v1/models",
+        Provider::Openrouter=>"https://openrouter.ai/api/v1/models",
     };
     let client=catalogue_client()?;
     let mut cursor=String::new();let mut models=Vec::new();let mut seen=std::collections::HashSet::new();
@@ -841,6 +1017,111 @@ mod stream_transport_tests {
             }
         });
         (url, server)
+    }
+
+    fn local_sse_lines(lines: Vec<String>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = [0u8; 8192];
+            let _ = socket.read(&mut request).unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").unwrap();
+            for line in lines {
+                socket.write_all(format!("{line}\n").as_bytes()).unwrap();
+                socket.flush().unwrap();
+            }
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn openrouter_encode_translates_tool_transcript() {
+        let body = json!({
+            "model":"anthropic/claude-haiku",
+            "instructions":"Case rules",
+            "max_output_tokens":1024,
+            "tool_choice":{"name":"search_passages"},
+            "tools":[{"name":"search_passages","description":"Search","parameters":{"type":"object"}}],
+            "input":[
+                {"type":"message","role":"user","content":"Check the statement"},
+                {"type":"function_call","call_id":"call-1","name":"search_passages","arguments":"{\"query\":\"statement\"}"},
+                {"type":"function_call_output","call_id":"call-1","output":"2 hits"},
+            ]
+        });
+        let wire = encode(Provider::Openrouter, &body).unwrap();
+        assert_eq!(wire.url, "https://openrouter.ai/api/v1/chat/completions");
+        assert_eq!(wire.body["messages"][0]["role"], "system");
+        assert_eq!(wire.body["messages"][1]["content"], "Check the statement");
+        assert_eq!(wire.body["messages"][2]["tool_calls"][0]["function"]["name"], "search_passages");
+        assert_eq!(wire.body["messages"][3]["role"], "tool");
+        assert_eq!(wire.body["messages"][3]["tool_call_id"], "call-1");
+        assert_eq!(wire.body["tool_choice"]["function"]["name"], "search_passages");
+        assert_eq!(wire.body["tools"][0]["type"], "function");
+        assert_eq!(wire.body["stream"], true);
+        assert_eq!(wire.body["stream_options"]["include_usage"], true);
+    }
+
+    fn sse_data(event: Value) -> String {
+        format!("data: {event}")
+    }
+
+    #[tokio::test]
+    async fn openrouter_transport_streams_tools_and_ignores_keepalive_comments() {
+        let tool_open = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"search_passages","arguments":"{\"query\":"}}]}}]});
+        let tool_args = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"statement\"}"}}]}}]});
+        let lines = vec![
+            ": OPENROUTER PROCESSING".to_string(),
+            sse_data(json!({"choices":[{"delta":{"role":"assistant","content":"Synthetic "}}]})),
+            ": OPENROUTER PROCESSING".to_string(),
+            sse_data(json!({"choices":[{"delta":{"content":"answer"}}]})),
+            sse_data(tool_open),
+            sse_data(tool_args),
+            sse_data(json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]})),
+            ": OPENROUTER PROCESSING".to_string(),
+            sse_data(json!({"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}})),
+            "data: [DONE]".to_string(),
+        ];
+        let (url, server) = local_sse_lines(lines);
+        let mut progress = Vec::new();
+        let response = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |delta| progress.push(delta)).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(progress, vec![
+            json!({"text":"Synthetic "}),
+            json!({"text":"answer"}),
+            json!({"activity":"search_passages"}),
+        ]);
+        assert_eq!(response["output"][0]["content"][0]["text"], "Synthetic answer");
+        assert_eq!(response["output"][1]["type"], "function_call");
+        assert_eq!(response["output"][1]["call_id"], "call-1");
+        assert_eq!(response["output"][1]["arguments"], "{\"query\":\"statement\"}");
+        assert_eq!(response["usage"]["input_tokens"], 5);
+        assert_eq!(response["usage"]["output_tokens"], 2);
+    }
+
+    #[tokio::test]
+    async fn openrouter_transport_completes_without_a_trailing_usage_chunk() {
+        let lines = vec![
+            sse_data(json!({"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]})),
+            "data: [DONE]".to_string(),
+        ];
+        let (url, server) = local_sse_lines(lines);
+        let response = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |_| {}).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(response["output"][0]["content"][0]["text"], "Done");
+        assert!(response["usage"]["input_tokens"].is_null());
+    }
+
+    #[tokio::test]
+    async fn openrouter_transport_rejects_truncated_responses() {
+        let lines = vec![
+            sse_data(json!({"choices":[{"delta":{"content":"Partial"},"finish_reason":"length"}]})),
+        ];
+        let (url, server) = local_sse_lines(lines);
+        let error = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |_| {}).await.unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().contains("output token limit"));
     }
 
     #[tokio::test]
