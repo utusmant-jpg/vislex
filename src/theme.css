@@ -227,6 +227,31 @@
     border: 1px solid color-mix(in oklab, var(--primary) 30%, transparent);
   }
   .workbench-tab-label { position: relative; z-index: 1; }
+
+  /* Jobs: determinate + indeterminate animated progress. */
+  .job-progress {
+    height: 6px; border-radius: 999px; overflow: hidden;
+    background: color-mix(in oklab, var(--foreground) 8%, transparent);
+    border: 1px solid var(--border);
+    margin: 6px 0;
+  }
+  .job-progress-fill {
+    height: 100%; border-radius: inherit;
+    background: linear-gradient(90deg, color-mix(in oklab, var(--primary) 75%, transparent), var(--primary));
+    transition: width 0.5s var(--ease-out, ease-out);
+    position: relative;
+  }
+  .job-progress-fill::after {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(100deg, transparent 20%, oklch(100% 0 0 / 25%) 50%, transparent 80%);
+    animation: job-shimmer 1.6s linear infinite;
+  }
+  @keyframes job-shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  .job-progress-indeterminate .job-progress-fill {
+    width: 34% !important;
+    animation: job-slide 1.4s var(--ease-out, ease-in-out) infinite;
+  }
+  @keyframes job-slide { 0% { margin-left: -34%; } 100% { margin-left: 100%; } }
   .empty-seeds { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
   .empty-seed {
     font-size: 12px; color: var(--muted-foreground); text-align: left;
@@ -239,4 +264,6 @@
 @media (prefers-reduced-motion: reduce) {
   .glyph-halo::after { animation: none; }
   dialog.command-palette[open] { animation: none; }
+  .job-progress-fill::after { animation: none; }
+  .job-progress-indeterminate .job-progress-fill { animation: none; }
 }

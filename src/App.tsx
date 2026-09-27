@@ -187,6 +187,7 @@ export function RecordDetailPanel({caseId,sessionEpoch,summary,run,refresh,onSou
 
 export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgress=native }: { snapshot: Snapshot; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onConversation?: (id: string) => void; pollProgress?:boolean }) {
   type JobProgress = {priority:string;attempt:number;progress:null|{unit:string;completed?:number;total?:number;segments?:number;track?:number;tracks?:number}};
+  const reducedMotion = useReducedMotion();
   const mounted = useRef(true);
   const caseSessionKey = `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}`;
   const currentCaseId = useRef(caseSessionKey);
@@ -279,13 +280,27 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
       })}>{pending(`continue-review:${review!.review_task}`) ? 'Continuing…' : 'Continue saved review'}</button> : null}
       <code>Task {review!.review_task}</code>
     </article> : null}
-    {visibleJobs.length ? visibleJobs.map(job => <article className={`job-card ${['failed', 'interrupted'].includes(job.status) ? 'job-attention' : ''}`} key={job.id}>
+    {visibleJobs.length ? visibleJobs.map(job => <motion.article
+      className={`job-card ${['failed', 'interrupted'].includes(job.status) ? 'job-attention' : ''}`}
+      key={job.id}
+      initial={reducedMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={springs.gentle}
+    >
       <div className="job-card-head">
         <strong>{job.name}</strong>
         <StatusPill state={job.status === 'running' ? 'running' : job.status === 'queued' ? 'queued' : job.status === 'cancelled' ? 'cancelled' : job.status === 'failed' ? 'failed' : job.status === 'complete' ? 'complete' : 'interrupted'} label={job.status} small />
       </div>
       <p className="small muted">{job.kind}</p>
       {progressByJob[job.id] ? <p role="status" className="small muted">{progressByJob[job.id].priority} · attempt {progressByJob[job.id].attempt}{typeof progressByJob[job.id].progress?.completed==='number' ? ` · ${Math.floor(progressByJob[job.id].progress!.completed!)} ${progressByJob[job.id].progress!.unit}${typeof progressByJob[job.id].progress?.total==='number' ? ` / ${Math.ceil(progressByJob[job.id].progress!.total!)}` : ''}` : ''}{typeof progressByJob[job.id].progress?.segments==='number' ? ` · ${progressByJob[job.id].progress!.segments} segments` : ''}</p> : null}
+      {job.status === 'running' && (() => {
+        const progress = progressByJob[job.id]?.progress;
+        if (!progress || typeof progress.completed !== 'number' || typeof progress.total !== 'number' || progress.total <= 0) return <div className="job-progress job-progress-indeterminate" aria-hidden="true"><div className="job-progress-fill" /></div>;
+        const percent = Math.min(100, Math.max(0, (progress.completed / progress.total) * 100));
+        return <div className="job-progress" role="progressbar" aria-valuenow={Math.round(percent)} aria-valuemin={0} aria-valuemax={100} aria-label={`${job.name} progress`}>
+          <div className="job-progress-fill" style={{ width: `${percent}%` }} />
+        </div>;
+      })()}
       {job.error ? <p role="alert" className="small danger-text">{job.error}</p> : null}
       <div className="input-row">
         {job.kind === 'full_audio' && ['failed', 'interrupted'].includes(job.status) ? <button className="quiet" disabled={pending(`transcript:${job.id}`)} onClick={() => jobAction(`transcript:${job.id}`, async () => { await api('resume_transcription', { ...caseGuard(snapshot), job_id: job.id }); await refresh(); })}>{pending(`transcript:${job.id}`) ? 'Resuming…' : 'Resume saved chunks'}</button> : null}
@@ -298,7 +313,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
         })}>{pending(`recover:${job.parent_run_id ?? job.id}`) ? 'Recovering…' : job.parent_run_id || ['video_ocr_index', 'video_overview_index'].includes(job.kind) ? 'Retry index from saved progress' : 'Recover saved job'}</button> : null}
       </div>
       <code>Receipt {job.id}</code>
-    </article>) : currentJobs.length ? <div className="empty-state"><ListChecks size={32} /><h3>No {jobFilter === 'working' ? 'working jobs' : jobFilter === 'attention' ? 'jobs needing attention' : 'completed jobs'} in this page</h3><p>Choose another status or load older jobs.</p></div> : !reviewOpen ? <div className="empty-state"><ListChecks size={32} /><h3>{jobCursor!==null?'No jobs in this page':'No processing jobs yet'}</h3><p>Queued work, completed jobs, and failures will appear here with their receipts.</p></div> : null}
+    </motion.article>) : currentJobs.length ? <div className="empty-state"><ListChecks size={32} /><h3>No {jobFilter === 'working' ? 'working jobs' : jobFilter === 'attention' ? 'jobs needing attention' : 'completed jobs'} in this page</h3><p>Choose another status or load older jobs.</p></div> : !reviewOpen ? <div className="empty-state"><ListChecks size={32} /><h3>{jobCursor!==null?'No jobs in this page':'No processing jobs yet'}</h3><p>Queued work, completed jobs, and failures will appear here with their receipts.</p></div> : null}
     {jobError?<p role="alert" className="small danger-text">Could not load older jobs: {jobError}</p>:null}
     {attentionCursor!==null?<button className="quiet" disabled={loadingJobs} onClick={()=>void loadOlderAttention()}>{loadingJobs?'Loading…':'Load more current problems'}</button>:null}
     {jobCursor!==null?<button className="quiet" disabled={loadingJobs} onClick={()=>void loadOlderJobs()}>{loadingJobs?'Loading…':'Load older jobs'}</button>:null}
