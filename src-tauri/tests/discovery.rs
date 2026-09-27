@@ -48,6 +48,36 @@ fn automatic_review_waits_for_discovery_and_restarts_when_inputs_change() {
     let tools=agent::tools("ask");assert!(tools.iter().any(|t|t["name"]=="browse_video_overview"));
 }
 #[test]
+fn startup_replaces_only_stale_worker_discovery_run_and_keeps_old_samples() {
+    let (_dir,mut c,s)=setup();
+    assert!(evidence_desk::processing::worker_path().is_ok());
+    let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let old_ocr=queued["jobs"][0].as_str().unwrap();
+    let overview=queued["jobs"][1].as_str().unwrap();
+    chunk(&mut c,&s,old_ocr,0.,"old sample",false);
+    let raw:String=c.db.query_row("SELECT result FROM processing_jobs WHERE id=?",[old_ocr],|r|r.get(0)).unwrap();
+    let mut config:Value=serde_json::from_str(&raw).unwrap();
+    config["worker_sha256"]=json!("previous-worker-hash");
+    config["revision"]=json!("previous-revision");
+    c.db.execute("UPDATE processing_jobs SET status='queued',result=? WHERE id=?",rusqlite::params![config.to_string(),old_ocr]).unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE id=?",[overview]).unwrap();
+    discovery::enqueue_missing(&mut c).unwrap();
+    let current:Vec<(String,String,String)>=c.db.prepare("SELECT id,kind,status FROM processing_jobs WHERE source_id=? ORDER BY rowid").unwrap()
+        .query_map([&s],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(current.len(),3);
+    assert_eq!(current[0],(old_ocr.to_string(),"video_ocr_index".into(),"failed".into()));
+    assert_eq!(current[1],(overview.to_string(),"video_overview_index".into(),"complete".into()));
+    assert_eq!(current[2].1,"video_ocr_index");
+    assert_eq!(current[2].2,"queued");
+    assert_ne!(current[2].0,old_ocr);
+    let retained:i64=c.db.query_row("SELECT count(*) FROM discovery_samples WHERE run_id=?",[old_ocr],|r|r.get(0)).unwrap();
+    assert_eq!(retained,1);
+    assert_eq!(discovery::browse(&c,&s,"video_ocr",0.,60.,0,"").unwrap()["run_id"],current[2].0);
+    assert!(discovery::search(&c,&[s.clone()],&["old sample".into()]).unwrap().is_empty());
+    discovery::enqueue_missing(&mut c).unwrap();
+    assert_eq!(c.db.query_row("SELECT count(*) FROM processing_jobs WHERE source_id=?",[&s],|r|r.get::<_,i64>(0)).unwrap(),3);
+}
+#[test]
 fn overview_navigation_advances_while_full_audio_uses_the_heavy_worker() {
     let (_dir,mut c,s)=setup();
     let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
