@@ -15,7 +15,6 @@ import AgentPanel from './components/AgentPanel';
 import FolderImport from './components/FolderImport';
 import PaneDivider from './components/PaneDivider';
 import SidebarDivider from './components/SidebarDivider';
-import WorkspacePreferences from './components/WorkspacePreferences';
 import { ContextMenu, StatusPill, ThemeProvider, ThemeToggle, ToastStack, Tooltip, notify, relativeTime } from './ui';
 
 const RecordEditor = lazy(() => import('./components/RecordEditor'));
@@ -698,7 +697,7 @@ export default function App() {
           setLayoutPreset(next);
           if (next === 'investigate') setView('chat');
           if (next === 'review') setView('review');
-        }}><option value="investigate">Investigate</option><option value="review">Review</option><option value="focus">Focus</option></select> : null}
+        }}><option value="investigate">Workspace</option><option value="review">Review layout</option><option value="focus">Focus layout</option></select> : null}
         {busy ? <Activity className="pulse" size={13} /> : null}
         <div className="window-controls">
           <button aria-label="Minimize window" onDoubleClick={event => event.stopPropagation()} onClick={() => { if (native) void getCurrentWindow().minimize(); }}><Minus size={15} /></button>
@@ -874,8 +873,7 @@ export default function App() {
         <div className="palette-footer"><span>↑↓ navigate</span><span>↵ open</span><span>Esc close</span></div>
       </dialog>
 
-      {settings && snapshot ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog key={`${snapshot.id}:${snapshot.session_epoch ?? 'preview'}`} snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
-      {settings && !snapshot ? <WorkspacePreferences onClose={() => setSettings(false)} /> : null}
+      {settings ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog key={snapshot ? `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}` : 'app'} snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
 
       {modal ? <dialog ref={dialog} className="modal" aria-label={modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : modal === 'delete' ? 'Delete this case permanently' : 'Restore a case'} onCancel={() => { setModal(null); setPassword(''); }}>
         <div className="modal-heading"><h2>{modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : modal === 'delete' ? 'Delete this case permanently' : 'Restore a case'}</h2><button className="icon-button" aria-label="Close dialog" onClick={() => { setModal(null); setPassword(''); }}><X size={20} /></button></div>

@@ -43,13 +43,13 @@ describe('chat composer interaction', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(api).toHaveBeenCalledWith('start_task', expect.objectContaining({ prompt: 'Check this source', parent_task_id: null })));
     expect(onConversation).toHaveBeenCalledWith('new-chat');
-    expect(screen.queryByRole('button', { name: 'Stop investigation' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Stop response' })).toBeNull();
   });
 
   it('stops only the selected conversation and waits for file preparation', async () => {
     const job = { id: 'job-1', source_id: 'source-1', name: 'source.txt', kind: 'auto_prepare', status: 'running', error: '', created_at: '2026-09-22T00:00:00Z', superseded: false };
     const view = panel(snapshot([task('other-task', 'other-chat'), task('current-task', 'current-chat')]), 'current-chat');
-    fireEvent.click(screen.getByRole('button', { name: 'Stop investigation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop response' }));
     await waitFor(() => expect(api).toHaveBeenCalledWith('stop_task', { case_id: 'case-1', task_id: 'current-task' }));
     view.rerender(<AgentPanel snapshot={snapshot([], [job])} selection={null} conversationId={null} refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={vi.fn()} />);
     fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Ask after preparation' } });

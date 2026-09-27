@@ -4,6 +4,7 @@ import { expect, test } from '@playwright/test';
 const require = createRequire(import.meta.url);
 
 test('dark and light startup, settings, and case navigation have no WCAG A/AA violations', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
   await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
   await page.goto('/');
   await page.addScriptTag({ path: require.resolve('axe-core/axe.min.js') });
@@ -27,6 +28,8 @@ test('dark and light startup, settings, and case navigation have no WCAG A/AA vi
   await page.keyboard.press('Escape');
   await page.keyboard.press('Control+,');
   await expect(page.getByRole('dialog', { name: 'Workspace settings' })).toBeVisible();
+  await scan('app-ai-settings-dark');
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
   await scan('appearance-settings-dark');
   await page.getByRole('button', { name: 'Light', exact: true }).click();
   await scan('appearance-settings-light');
@@ -52,7 +55,7 @@ test('dark and light startup, settings, and case navigation have no WCAG A/AA vi
   await page.getByText('Prepare an issue, production gap, exhibit or draft').click();
   await scan('structured-findings-forms-light');
   await page.keyboard.press('Control+,');
-  for (const section of ['Providers & models', 'Case permissions', 'Review & execution', 'Appearance', 'About']) {
+  for (const section of ['Providers & models', 'AI permissions', 'Appearance', 'About']) {
     await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: section }).click();
     await scan(`settings-${section.toLowerCase().replaceAll(/[^a-z]+/g, '-')}-light`);
   }

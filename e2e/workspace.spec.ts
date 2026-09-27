@@ -27,6 +27,7 @@ test('theme, workspace navigation, and case-independent settings', async ({ page
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await page.keyboard.press('Control+,');
   await expect(page.getByRole('dialog', { name: 'Workspace settings' })).toBeVisible();
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
   await page.getByRole('button', { name: 'Light', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await page.getByRole('button', { name: 'Compact', exact: true }).click();

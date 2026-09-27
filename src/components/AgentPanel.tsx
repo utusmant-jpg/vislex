@@ -353,7 +353,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           <button className="icon-button icon-button-sm" aria-label="Do not attach this file to the next message" onClick={() => setSkipContext(true)} disabled={skipContext}>✕</button>
         </div> : null}
         {skipContext && contextName ? <p className="small muted context-off">This file will not be attached to your next message.</p> : null}
-        <textarea ref={composer} aria-label="Agent task" placeholder={task ? 'Follow up, challenge a finding, or ask something else…' : 'Ask VisLex to investigate your case…'} value={prompt} onChange={event => draft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
+        <textarea ref={composer} aria-label="Agent task" placeholder={task ? 'Follow up, challenge a finding, or ask something else…' : 'Ask VisLex about your case…'} value={prompt} onChange={event => draft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
         <div className="composer-bottom">
           <ModelPicker
             snapshot={snapshot}
@@ -364,7 +364,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           />
           <div className="spacer" />
           {running
-            ? <Tooltip text="Stop the current investigation"><button className="send stop" aria-label="Stop investigation" onClick={() => run(async () => { if (!snapshot) return; await api('stop_task', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
+            ? <Tooltip text="Stop the current response"><button className="send stop" aria-label="Stop response" onClick={() => run(async () => { if (!snapshot) return; await api('stop_task', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), task_id: running.id }); await refresh(); })}><Square size={14} /></button></Tooltip>
             : <Tooltip text={chatBlocked ? 'Waiting for case preparation' : 'Send message (Enter)'}><button className="send" aria-label="Send message" disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile} onClick={submit}><ArrowUp size={18} /></button></Tooltip>}
         </div>
       </div>

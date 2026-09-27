@@ -30,6 +30,7 @@ pub struct AppState {
     session_epoch: std::sync::atomic::AtomicU64,
     event_seq: std::sync::atomic::AtomicU64,
     importing: std::sync::atomic::AtomicBool,
+    pending_app_ai: std::sync::atomic::AtomicBool,
     semantic_indexing: Mutex<std::collections::HashMap<String,bool>>,
 
 }
@@ -129,6 +130,36 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
 }
 
 fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result<Value> {
+    if action == "app_ai_settings" {
+        let saved = read_ai_defaults(app)?;
+        let (config, settings) = saved.clone().unwrap_or_else(|| {
+            let mut config = crate::providers::Config::default();
+            config.execution = crate::providers::Execution::Auto;
+            (config, Settings::default())
+        });
+        return Ok(json!({"configured":saved.is_some(),"config":config,"settings":settings}));
+    }
+    if action == "save_app_ai_settings" {
+        let config: crate::providers::Config = serde_json::from_value(args["config"].clone())?;
+        let settings: Settings = serde_json::from_value(args["settings"].clone())?;
+        write_ai_defaults(app, &config, &settings)?;
+        let state = app.state::<AppState>();
+        let mut guard = state.case.lock().unwrap_or_else(|e|e.into_inner());
+        let mut current_case_updated = true;
+        if let Some(case) = guard.as_mut() {
+            if case.meta("ai_scope")?.as_deref() == Some("app") {
+                if case_has_running_ai(case)? {
+                    current_case_updated = false;
+                } else if crate::providers::apply_app_settings(case, &json!({"config":config,"settings":settings})).is_err() {
+                    current_case_updated = false;
+                }
+            }
+        }
+        state.pending_app_ai.store(!current_case_updated,std::sync::atomic::Ordering::SeqCst);
+        drop(guard);
+        emit_case_changed(app);
+        return Ok(json!({"saved":true,"current_case_updated":current_case_updated}));
+    }
 
     if action=="hybrid_search" {
         let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before search");require_session_epoch(&state,&args)?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::semantic::prepare_query(case,text(&args,"query")?,scope)?)};
@@ -421,11 +452,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         let mut c = match action {
 
-            // App defaults initialize new cases only. Opening or restoring an
-            // existing case never changes its durable AI/cloud permissions.
             "create_case" => {
-                let mut created = Case::create(&path, text(&args, "name")?)?;
-                apply_ai_defaults(app, &mut created)?;
+                let created = Case::create(&path, text(&args, "name")?)?;
+                created.set_meta("ai_scope", "app")?;
                 created
             }
 
@@ -442,6 +471,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             _ => Case::open(&path)?,
 
         };
+
+        sync_inherited_ai(app, &mut c)?;
+        state.pending_app_ai.store(false,std::sync::atomic::Ordering::SeqCst);
 
         crate::automatic::enqueue(&mut c)?;
         let case_id=c.meta("id")?.unwrap_or_default();
@@ -477,7 +509,13 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
     let result = match action {
 
-        "snapshot" => stamp_session(c.snapshot()?,&state),
+        "snapshot" => {
+            if state.pending_app_ai.load(std::sync::atomic::Ordering::SeqCst) && !case_has_running_ai(c)? {
+                sync_inherited_ai(app,c)?;
+                state.pending_app_ai.store(false,std::sync::atomic::Ordering::SeqCst);
+            }
+            stamp_session(c.snapshot()?,&state)
+        },
         "case_summary" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before summary");
             stamp_session(c.case_summary()?,&state)
@@ -808,12 +846,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             c.db.execute_batch("SAVEPOINT ai_settings")?;
             let result=(||->anyhow::Result<()> {
                 crate::providers::apply_app_settings(c,&args)?;
-                let directory=app.path().app_config_dir()?;std::fs::create_dir_all(&directory)?;
-                let defaults=json!({"config":crate::providers::load(c)?,"settings":c.settings()?,"consent_version":crate::providers::AI_DEFAULTS_CONSENT_VERSION});
-                let mut staged=tempfile::NamedTempFile::new_in(&directory)?;
-                std::io::Write::write_all(&mut staged,&serde_json::to_vec(&defaults)?)?;
-                staged.as_file().sync_all()?;
-                staged.persist(directory.join("ai-defaults.json"))?;
+                c.set_meta("ai_scope", "case")?;
                 Ok(())
             })();
             if let Err(e)=result {c.db.execute_batch("ROLLBACK TO ai_settings; RELEASE ai_settings")?;return Err(e)}
@@ -821,9 +854,24 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             Value::Null
         },
         "direct_media_permission" => json!({"enabled":crate::providers::direct_media_enabled(c)}),
+        "case_ai_scope" => json!({"scope":if c.meta("ai_scope")?.as_deref()==Some("app") {"app"} else {"case"}}),
+        "set_case_ai_scope" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI scope update");
+            require_session_epoch(&state,&args)?;
+            let scope=text(&args,"scope")?;
+            anyhow::ensure!(scope=="app"||scope=="case","Invalid AI scope");
+            if scope=="app" {
+                anyhow::ensure!(!case_has_running_ai(c)?,"Stop the current AI task before applying app settings");
+                let (config,settings)=read_ai_defaults(app)?.context("Set up app AI first")?;
+                crate::providers::apply_app_settings(c,&json!({"config":config,"settings":settings}))?;
+            }
+            c.set_meta("ai_scope",scope)?;
+            c.audit("ai_scope_changed",json!({"scope":scope}))?;
+            json!({"scope":scope})
+        },
         "set_direct_media_permission" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before media permission update");require_session_epoch(&state,&args)?;let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
         "ai_config" => serde_json::to_value(crate::providers::load(c)?)?,
-        "save_ai_config" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI configuration update");require_session_epoch(&state,&args)?;crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;Value::Null},
+        "save_ai_config" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI configuration update");require_session_epoch(&state,&args)?;crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;c.set_meta("ai_scope","case")?;Value::Null},
         "save_settings" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before settings update");
             require_session_epoch(&state,&args)?;
@@ -832,6 +880,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 args["settings"].clone(),
 
             )?)?;
+            c.set_meta("ai_scope","case")?;
 
             Value::Null
 
@@ -1255,6 +1304,7 @@ pub fn run() {
             session_epoch: std::sync::atomic::AtomicU64::new(0),
             event_seq: std::sync::atomic::AtomicU64::new(0),
             importing: std::sync::atomic::AtomicBool::new(false),
+            pending_app_ai: std::sync::atomic::AtomicBool::new(false),
             semantic_indexing: Mutex::new(std::collections::HashMap::new()),
 
         })
@@ -1437,21 +1487,49 @@ pub fn run() {
 }
 
 
-fn apply_ai_defaults(app:&tauri::AppHandle,case:&mut Case)->anyhow::Result<()> {
+fn ai_defaults_path(app:&tauri::AppHandle)->anyhow::Result<PathBuf> {
     #[cfg(debug_assertions)]
-    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return Ok(());}
-    let path=app.path().app_config_dir()?.join("ai-defaults.json");
-    if path.is_file() {
-        // Only defaults saved by the consent-aware flow initialize a new case.
-        // Older forced files are ignored: the case starts local (offline, no
-        // grants) until the user re-consents in Settings. A corrupt or invalid
-        // defaults file is likewise ignored — it can never block case creation
-        // or smuggle in a broader policy through an error path.
-        if let Ok(value)=serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap_or_default()) {
-            match crate::providers::parse_ai_defaults(&value) {
-                Ok(Some((config,settings)))=>{crate::providers::apply_app_settings(case,&json!({"config":config,"settings":settings}))?;}
-                Ok(None)=>{}
-                Err(error)=>eprintln!("Ignoring unusable ai-defaults.json: {error}"),
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {
+        return std::env::var_os("VISLEX_TEST_AI_DEFAULTS_PATH")
+            .map(PathBuf::from)
+            .context("App AI settings are disabled in test mode without an isolated defaults path");
+    }
+    Ok(app.path().app_config_dir()?.join("ai-defaults.json"))
+}
+fn read_ai_defaults(app:&tauri::AppHandle)->anyhow::Result<Option<(crate::providers::Config,Settings)>> {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") && std::env::var_os("VISLEX_TEST_AI_DEFAULTS_PATH").is_none() {
+        return Ok(None);
+    }
+    let path=ai_defaults_path(app)?;
+    if !path.is_file() {return Ok(None);}
+    let value:Value=serde_json::from_slice(&std::fs::read(path)?)?;
+    crate::providers::parse_ai_defaults(&value)
+}
+fn write_ai_defaults(app:&tauri::AppHandle,config:&crate::providers::Config,settings:&Settings)->anyhow::Result<()> {
+    let defaults=json!({"config":config,"settings":settings,"consent_version":crate::providers::AI_DEFAULTS_CONSENT_VERSION});
+    anyhow::ensure!(crate::providers::parse_ai_defaults(&defaults)?.is_some(),"Invalid app AI settings");
+    anyhow::ensure!(!settings.allow_images||settings.allow_text,"Image analysis requires text permission");
+    anyhow::ensure!(settings.offline || !settings.allow_text || !settings.model.is_empty(),"Select a model before enabling AI");
+    let path=ai_defaults_path(app)?;
+    let directory=path.parent().context("App AI settings path has no parent")?;
+    std::fs::create_dir_all(directory)?;
+    let mut staged=tempfile::NamedTempFile::new_in(&directory)?;
+    std::io::Write::write_all(&mut staged,&serde_json::to_vec(&defaults)?)?;
+    staged.as_file().sync_all()?;
+    staged.persist(path)?;
+    Ok(())
+}
+fn case_has_running_ai(case:&Case)->anyhow::Result<bool> {
+    Ok(case.db.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE status='running')",[],|row|row.get::<_,i64>(0))?!=0)
+}
+fn sync_inherited_ai(app:&tauri::AppHandle,case:&mut Case)->anyhow::Result<()> {
+    if case.meta("ai_scope")?.as_deref()==Some("app") && !case_has_running_ai(case)? {
+        // Invalid or pre-consent defaults cannot widen a case's grants.
+        if let Ok(Some((config,settings)))=read_ai_defaults(app) {
+            if serde_json::to_value(crate::providers::load(case)?)?!=serde_json::to_value(&config)?
+                || serde_json::to_value(case.settings()?)?!=serde_json::to_value(&settings)? {
+                crate::providers::apply_app_settings(case,&json!({"config":config,"settings":settings}))?;
             }
         }
     }
