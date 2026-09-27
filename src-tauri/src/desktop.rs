@@ -175,7 +175,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             crate::ai_access::write(&directory,route)?;
             return Ok(json!({"route":route}));
         }
-        let home=app.path().resource_dir()?.join("codex");
+        let home=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
         if action == "save_codex_selection" {
             let model=text(&args,"model")?;
             let effort=text(&args,"effort")?;
