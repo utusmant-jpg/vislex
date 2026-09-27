@@ -1,16 +1,21 @@
-//! Account-only Codex App Server client. Subscription inference stays gated
-//! until the dynamic-tool bridge and packaged isolation checks pass.
+//! Codex App Server account connection. OAuth credentials remain inside the
+//! restricted sidecar profile and are never returned to the desktop frontend.
 use anyhow::{bail, ensure, Context, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
+    collections::VecDeque,
     path::Path,
     process::Command,
     sync::{mpsc, Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 static CLIENT: OnceLock<Mutex<Option<Connection>>> = OnceLock::new();
+// Updated only after the pinned source, patch, and Windows package are rebuilt
+// and independently checked. A stale sidecar must never enable case turns.
+const SIDECAR_SHA256: &str = "BUILD_HASH_PENDING";
 
 fn binary_path(directory: &Path) -> std::path::PathBuf {
     #[cfg(debug_assertions)]
@@ -18,17 +23,40 @@ fn binary_path(directory: &Path) -> std::path::PathBuf {
     directory.join("codex-app-server.exe")
 }
 
-pub fn available(directory: &Path) -> bool { binary_path(directory).is_file() }
+pub fn available(directory: &Path) -> bool {
+    let path=binary_path(directory);
+    #[cfg(debug_assertions)]
+    if std::env::var_os("VISLEX_CODEX_BINARY").is_some() { return path.is_file(); }
+    let Ok(mut file)=std::fs::File::open(path) else {return false};
+    let mut hash=Sha256::new();
+    let mut buffer=[0_u8;64*1024];
+    loop {
+        let Ok(count)=file.read(&mut buffer) else {return false};
+        if count==0 {break;}
+        hash.update(&buffer[..count]);
+    }
+    format!("{:X}",hash.finalize())==SIDECAR_SHA256
+}
 
-struct Connection {
+pub(crate) struct Connection {
     child: crate::codex_sandbox::CodexChild,
     events: mpsc::Receiver<Value>,
     next_id: u64,
+    login: Option<LoginState>,
+    case_mode: bool,
+    inbox: VecDeque<Value>,
+}
+
+struct LoginState {
+    id: String,
+    started: Instant,
+    outcome: Option<std::result::Result<(), String>>,
 }
 
 impl Connection {
-    fn start(directory: &Path) -> Result<Self> {
+    fn start(directory: &Path, case_mode: bool) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
+        ensure!(available(directory), "Verified Codex sidecar is unavailable");
         // In development only, the verified patched build may be supplied by
         // path. Release must load the binary shipped beside the app resources.
         let binary = binary_path(directory);
@@ -45,27 +73,33 @@ impl Connection {
                 if tx.send(value).is_err() { break }
             }
         });
-        let mut connection = Self { child, events, next_id: 1 };
-        connection.call("initialize", json!({"clientInfo":{"name":"vislex","title":"VisLex","version":env!("CARGO_PKG_VERSION")}}))?;
+        let mut connection = Self { child, events, next_id: 1, login: None, case_mode, inbox: VecDeque::new() };
+        connection.call("initialize", json!({"clientInfo":{"name":"vislex","title":"VisLex","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":case_mode}}))?;
         connection.send(json!({"method":"initialized","params":{}}))?;
         Ok(connection)
     }
 
-    fn send(&mut self, value: Value) -> Result<()> {
+    pub(crate) fn send(&mut self, value: Value) -> Result<()> {
         serde_json::to_writer(&mut self.child.stdin, &value)?;
         self.child.stdin.write_all(b"\n")?;
         self.child.stdin.flush()?;
         Ok(())
     }
 
-    fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+    pub(crate) fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(json!({"id":id,"method":method,"params":params}))?;
+        let deadline = Instant::now() + Duration::from_secs(45);
         loop {
-            let message = self.events.recv_timeout(Duration::from_secs(45))
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            ensure!(!remaining.is_zero(), "Codex App Server did not respond");
+            let message = self.events.recv_timeout(remaining)
                 .context("Codex App Server did not respond")?;
-            if message["id"].as_u64() != Some(id) { continue; }
+            if message.get("method").is_some() || message["id"].as_u64() != Some(id) {
+                self.handle_event(&message)?;
+                continue;
+            }
             if let Some(error) = message.get("error") {
                 let detail = error["message"].as_str().unwrap_or("request failed");
                 bail!("Codex App Server request failed: {}", detail.chars().take(300).collect::<String>());
@@ -73,26 +107,75 @@ impl Connection {
             return message.get("result").cloned().context("Codex App Server returned no result");
         }
     }
+
+    fn handle_event(&mut self, message: &Value) -> Result<()> {
+        if message["method"] == "account/login/completed" {
+            if let Some(login) = &mut self.login {
+                if message["params"]["loginId"].as_str() == Some(&login.id) {
+                    login.outcome = Some(if message["params"]["success"] == true { Ok(()) }
+                        else { Err(message["params"]["error"].as_str().unwrap_or("Sign-in failed").chars().take(300).collect()) });
+                }
+            }
+        } else if self.case_mode {
+            self.inbox.push_back(message.clone());
+        } else if message.get("id").is_some() && message.get("method").is_some() {
+            // Account mode must never silently drop a server request. A case
+            // request is handled by the dedicated task bridge instead.
+            self.send(json!({"id":message["id"],"error":{"code":-32601,"message":"Method not available in account mode"}}))?;
+        }
+        Ok(())
+    }
+
+    fn drain_events(&mut self) -> Result<()> {
+        while let Ok(event) = self.events.try_recv() { self.handle_event(&event)?; }
+        Ok(())
+    }
+
+    pub(crate) fn next_message(&mut self, timeout: Duration) -> Result<Option<Value>> {
+        if let Some(message) = self.inbox.pop_front() { return Ok(Some(message)); }
+        match self.events.recv_timeout(timeout) {
+            Ok(message) => Ok(Some(message)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                ensure!(self.child.wait(0)?.is_none(),"Codex App Server exited");
+                Ok(None)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => bail!("Codex App Server closed its event stream"),
+        }
+    }
+
+    pub(crate) fn start_case(directory: &Path) -> Result<Self> { Self::start(directory, true) }
+    pub(crate) fn home(&self) -> &Path { &self.child.home }
 }
 
 fn with_client<T>(directory: &Path, operation: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
     let slot = CLIENT.get_or_init(|| Mutex::new(None));
     let mut guard = slot.lock().unwrap_or_else(|poison| poison.into_inner());
     let restart = guard.as_mut().is_none_or(|client| client.child.wait(0).ok().flatten().is_some());
-    if restart { *guard = Some(Connection::start(directory)?); }
+    if restart { *guard = Some(Connection::start(directory, false)?); }
     operation(guard.as_mut().unwrap())
 }
 
 pub fn status(directory: &Path) -> Result<Value> {
     with_client(directory, |client| {
+        client.drain_events()?;
         let result = client.call("account/read", json!({"refreshToken":false}))?;
         let account = &result["account"];
+        let login = client.login.as_ref().map(|login| {
+            let expired = login.started.elapsed() >= Duration::from_secs(15 * 60);
+            let state = match &login.outcome { Some(Ok(())) => "complete", Some(Err(_)) => "failed", None if expired => "expired", None => "pending" };
+            json!({"state":state,"error":login.outcome.as_ref().and_then(|o|o.as_ref().err()),"expires_in_seconds":if expired {0}else{(15*60_u64).saturating_sub(login.started.elapsed().as_secs())}})
+        });
         Ok(json!({
             "connected": account["type"] == "chatgpt",
             "email": account["email"],
-            "plan": account["planType"]
+            "plan": account["planType"],
+            "login": login
         }))
     })
+}
+
+pub fn isolated_home(directory:&Path)->Result<std::path::PathBuf> {
+    with_client(directory,|client|Ok(client.home().to_path_buf()))
 }
 
 pub fn begin_login(directory: &Path) -> Result<Value> {
@@ -105,6 +188,7 @@ pub fn begin_login(directory: &Path) -> Result<Value> {
             "Unexpected ChatGPT authorization host");
         let login_id = result["loginId"].as_str().context("No login identifier returned")?;
         let user_code = result["userCode"].as_str().context("No device code returned")?;
+        client.login = Some(LoginState { id:login_id.to_owned(), started:Instant::now(), outcome:None });
         #[cfg(windows)]
         let browser_opened = std::env::var_os("SystemRoot").is_some_and(|root| {
             use std::os::windows::process::CommandExt;
@@ -121,11 +205,11 @@ pub fn begin_login(directory: &Path) -> Result<Value> {
 
 pub fn cancel_login(directory: &Path, login_id: &str) -> Result<()> {
     ensure!(!login_id.is_empty() && login_id.len() <= 128, "Invalid login identifier");
-    with_client(directory, |client| { client.call("account/login/cancel", json!({"loginId":login_id}))?; Ok(()) })
+    with_client(directory, |client| { client.call("account/login/cancel", json!({"loginId":login_id}))?; client.login = None; Ok(()) })
 }
 
 pub fn logout(directory: &Path) -> Result<()> {
-    with_client(directory, |client| { client.call("account/logout", json!({}))?; Ok(()) })
+    with_client(directory, |client| { client.call("account/logout", json!({}))?; client.login = None; Ok(()) })
 }
 
 pub fn models(directory: &Path) -> Result<Value> {
@@ -155,7 +239,7 @@ fn parse_models(page: &Value) -> Result<Vec<Value>> {
         if crate::providers::validate_model(id).is_err() { continue; }
         let efforts: Vec<String> = entry["supportedReasoningEfforts"].as_array().into_iter().flatten()
             .filter_map(|v| v["reasoningEffort"].as_str())
-            .filter(|v| matches!(*v,"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"))
+            .filter(|v| matches!(*v,"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra"))
             .map(str::to_owned).collect();
         let default = entry["defaultReasoningEffort"].as_str().filter(|v| efforts.iter().any(|e| e == v));
         models.push(json!({"id":id,"name":entry["displayName"].as_str().unwrap_or(id),"efforts":efforts,"default_effort":default,"input_modalities":entry["inputModalities"]}));

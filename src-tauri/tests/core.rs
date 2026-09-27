@@ -356,6 +356,24 @@ fn actual_agent_tool_response_writes_once_and_checkpoints() {
     assert_eq!(c.actions(&task).unwrap()[0]["status"], "complete");
 }
 #[test]
+fn subscription_case_tool_uses_existing_receipt_and_refuses_replay() {
+    let (_dir,mut c,source)=setup();
+    c.save_settings(Settings {offline:false,allow_text:true,allow_images:false,model:String::new()}).unwrap();
+    let task=agent::start_subscription(&mut c,"List the permitted files","investigate",vec![source.clone()],vec![]).unwrap();
+    assert_eq!(c.meta(&format!("task_access_route:{task}")).unwrap().as_deref(),Some("chatgpt_subscription"));
+    let (_instructions,tools,context)=agent::subscription_context(&c,&task).unwrap();
+    assert!(tools.iter().any(|tool|tool["name"]=="list_sources"));
+    assert!(!tools.iter().any(|tool|tool["name"]=="exec_command"));
+    assert!(!context.contains(c.root.to_string_lossy().as_ref()));
+    let answer=agent::subscription_tool_response(&mut c,&task,"synthetic-codex-call","list_sources",json!({"offset":0,"details":false})).unwrap();
+    assert_eq!(answer["success"],true);
+    assert!(answer["contentItems"][0]["text"].to_string().contains(&source));
+    assert_eq!(c.actions(&task).unwrap().as_array().unwrap().len(),1);
+    assert!(agent::subscription_tool_response(&mut c,&task,"synthetic-codex-call","list_sources",json!({"offset":0,"details":false})).is_err());
+    assert_eq!(c.actions(&task).unwrap().as_array().unwrap().len(),1);
+    assert!(agent::subscription_tool_response(&mut c,&task,"shell-attempt","exec_command",json!({"cmd":"dir"})).is_err());
+}
+#[test]
 fn encrypted_backup_roundtrips_and_wrong_password_fails() {
     let (dir, mut c, s) = setup();
     let r = c

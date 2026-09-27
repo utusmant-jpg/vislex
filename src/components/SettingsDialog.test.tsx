@@ -17,7 +17,7 @@ const snapshot: Snapshot = {
 
 beforeEach(() => {
   api.mockReset();
-  api.mockImplementation(async (action: string) => action === 'app_ai_settings' ? { configured: true, config: snapshot.ai_config, settings: snapshot.settings } : action === 'case_ai_scope' ? { scope: 'case' } : action === 'direct_media_permission' ? { enabled: false } : action === 'provider_key_status' ? { configured: true } : action === 'ai_access_route' ? { route: 'api_keys', account_ready: false, subscription_ready: false, blocker: 'Tool bridge unverified' } : undefined);
+  api.mockImplementation(async (action: string) => action === 'app_ai_settings' ? { configured: true, config: snapshot.ai_config, settings: snapshot.settings } : action === 'case_ai_scope' ? { scope: 'case' } : action === 'case_ai_access_route' ? { override: 'app', effective: 'api_keys' } : action === 'direct_media_permission' ? { enabled: false } : action === 'provider_key_status' ? { configured: true } : action === 'ai_access_route' ? { route: 'api_keys', account_ready: false, subscription_ready: false, blocker: 'Tool bridge unverified' } : undefined);
   HTMLDialogElement.prototype.showModal = function () { this.open = true; };
 });
 afterEach(cleanup);
@@ -52,6 +52,53 @@ it('shows a device code and allows cancellation without changing API keys', asyn
   fireEvent.click(screen.getByRole('button', { name: 'Cancel sign-in' }));
   await waitFor(() => expect(api).toHaveBeenCalledWith('codex_account_cancel_login', { login_id: 'synthetic-login' }));
   expect(api).not.toHaveBeenCalledWith('save_provider_key', expect.anything());
+});
+
+it('applies a case subscription override without changing the app route', async () => {
+  const prior = api.getMockImplementation()!;
+  api.mockImplementation(async (action: string, args?: unknown) => {
+    if (action === 'ai_access_route') return { route: 'api_keys', account_ready: true, subscription_ready: true, blocker: '' };
+    if (action === 'codex_account_status') return { connected: true, email: 'synthetic@example.test' };
+    if (action === 'set_case_ai_access_route') return { override: 'chatgpt_subscription', effective: 'chatgpt_subscription' };
+    return prior(action, args);
+  });
+  render(<SettingsDialog snapshot={snapshot} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'This case · customized' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'ChatGPT subscription' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('set_case_ai_access_route', { case_id: 'synthetic-case', session_epoch: 8, route: 'chatgpt_subscription' }));
+  expect(api).not.toHaveBeenCalledWith('set_ai_access_route', expect.anything());
+  expect(await screen.findByText('Effective route for this case: ChatGPT subscription.')).toBeTruthy();
+});
+
+it('saves a case model without replacing the app subscription model', async () => {
+  const prior = api.getMockImplementation()!;
+  api.mockImplementation(async (action: string, args?: unknown) => {
+    if (action === 'ai_access_route') return { route: 'chatgpt_subscription', subscription: { model: 'app-model', effort: 'high' }, account_ready: true, subscription_ready: true, blocker: '' };
+    if (action === 'case_ai_access_route') return { override: 'app', effective: 'chatgpt_subscription', selection_override: false, selection: { model: 'app-model', effort: 'high' } };
+    if (action === 'codex_account_status') return { connected: true };
+    if (action === 'codex_account_models') return [{ id: 'app-model', name: 'App model', efforts: ['high'], default_effort: 'high' }, { id: 'case-model', name: 'Case model', efforts: ['medium'], default_effort: 'medium' }];
+    if (action === 'save_case_codex_selection') return { selection_override: true, selection: { model: 'case-model', effort: 'medium' } };
+    return prior(action, args);
+  });
+  render(<SettingsDialog snapshot={snapshot} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'This case · customized' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Load subscription models' }));
+  fireEvent.change(await screen.findByRole('combobox', { name: 'ChatGPT subscription model' }), { target: { value: 'case-model' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save case model' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('save_case_codex_selection', { case_id: 'synthetic-case', session_epoch: 8, model: 'case-model', effort: 'medium' }));
+  expect(api).not.toHaveBeenCalledWith('save_codex_selection', expect.anything());
+});
+
+it('shows a completed device-code failure instead of polling silently forever', async () => {
+  const prior = api.getMockImplementation()!;
+  api.mockImplementation(async (action: string, args?: unknown) => {
+    if (action === 'ai_access_route') return { route: 'api_keys', account_ready: true, subscription_ready: true, blocker: '' };
+    if (action === 'codex_account_status') return { connected: false, login: { state: 'failed', error: 'Authorization was denied', expires_in_seconds: 0 } };
+    if (action === 'codex_account_login') return { login_id: 'synthetic-login', auth_url: 'https://auth.openai.com/codex/device', user_code: 'ABCD-EFGH' };
+    return prior(action, args);
+  });
+  render(<SettingsDialog snapshot={snapshot} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} />);
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Authorization was denied');
 });
 
 it('saves app AI permissions independently of a case', async () => {

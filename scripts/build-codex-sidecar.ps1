@@ -19,13 +19,13 @@ if ($LASTEXITCODE -ne 0) {
     git -C $Checkout apply $patch
     if ($LASTEXITCODE -ne 0) { throw 'Pinned Codex patch failed' }
 }
-$env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-msvc'
+$env:RUSTUP_TOOLCHAIN = '1.98.1-x86_64-pc-windows-msvc'
 $env:CARGO_PROFILE_RELEASE_LTO = 'false'
 $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = '16'
 $env:CARGO_PROFILE_RELEASE_DEBUG = '0'
 $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = '2'
 $env:CARGO_BUILD_JOBS = '4'
-cargo build --release -p codex-app-server --bin codex-app-server --target x86_64-pc-windows-msvc --manifest-path (Join-Path $Checkout 'codex-rs/Cargo.toml')
+cargo build --locked --release -p codex-app-server --bin codex-app-server --target x86_64-pc-windows-msvc --manifest-path (Join-Path $Checkout 'codex-rs/Cargo.toml')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned Codex build failed' }
 $source = Join-Path $Checkout 'codex-rs/target/x86_64-pc-windows-msvc/release/codex-app-server.exe'
 $target = Join-Path $root 'src-tauri/resources/codex'

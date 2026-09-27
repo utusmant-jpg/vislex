@@ -51,6 +51,7 @@ fn main() -> Result<()> {
     loop {
         let result = rx.recv_timeout(Duration::from_secs(30))?;
         if result["id"] == 3 {
+            ensure!(result["result"]["exitCode"] == 0,"Permitted profile command did not execute successfully: {result}");
             ensure!(result["result"]["stdout"].as_str().unwrap_or_default().contains("ALLOWED_SYNTHETIC"), "Codex could not read its permitted synthetic profile: {result}");
             break;
         }
@@ -63,6 +64,7 @@ fn main() -> Result<()> {
     loop {
         let result = rx.recv_timeout(Duration::from_secs(30))?;
         if result["id"] == 4 {
+            ensure!(result["result"]["exitCode"].as_i64().is_some_and(|code|code!=0),"Out-of-scope read did not fail as a process: {result}");
             ensure!(!result["result"]["stdout"].as_str().unwrap_or_default().contains("DENIED_SYNTHETIC"), "Boundary FAILED: out-of-scope marker was read");
             break;
         }
@@ -76,6 +78,7 @@ fn main() -> Result<()> {
     loop {
         let result = rx.recv_timeout(Duration::from_secs(30))?;
         if result["id"] == 6 {
+            ensure!(result["result"]["exitCode"].as_i64().is_some_and(|code|code!=0),"Out-of-scope write did not fail as a process: {result}");
             ensure!(!write_target.exists(), "Boundary FAILED: out-of-scope file was created: {result}");
             println!("Boundary held: permitted profile readable; out-of-scope read/write denied; account/read available");
             break;

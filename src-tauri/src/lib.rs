@@ -7,6 +7,8 @@ pub mod case;
 pub mod desktop;
 #[cfg(feature = "desktop")]
 pub mod codex_account;
+#[cfg(feature = "desktop")]
+pub mod codex_case;
 #[cfg(windows)]
 pub mod codex_sandbox;
 pub mod processing;

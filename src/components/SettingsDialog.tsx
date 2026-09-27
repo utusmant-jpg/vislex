@@ -13,8 +13,17 @@ type Preferences = { ai_config?: AIConfig; settings: Settings };
 type AppPreferences = { configured: boolean; config: AIConfig; settings: Settings };
 const emptySettings: Settings = { offline: true, allow_text: false, allow_images: false, model: '' };
 type AccessState = { route: 'api_keys' | 'chatgpt_subscription'; subscription?: { model: string; effort: string } | null; subscription_ready: boolean; account_ready: boolean; blocker: string };
-type CodexAccount = { connected: boolean; email?: string | null; plan?: string | null };
+type CodexAccount = { connected: boolean; email?: string | null; plan?: string | null; login?: { state: 'pending' | 'complete' | 'failed' | 'expired'; error?: string | null; expires_in_seconds: number } | null };
+type CaseAccess = { override: 'app' | 'api_keys' | 'chatgpt_subscription'; effective: 'api_keys' | 'chatgpt_subscription'; selection_override?: boolean; selection?: { model: string; effort: string } | null };
 type CodexModel = { id: string; name: string; efforts: string[]; default_effort?: string | null };
+type CodexLimits = { rateLimits?: { primary?: { usedPercent?: number; resetsAt?: number }; secondary?: { usedPercent?: number; resetsAt?: number } } };
+
+function formatCodexLimits(value: CodexLimits): string {
+  const windows = ([['Current window', value.rateLimits?.primary], ['Weekly window', value.rateLimits?.secondary]] as const)
+    .filter(([, limit]) => typeof limit?.usedPercent === 'number')
+    .map(([label, limit]) => `${label}: ${Math.max(0, 100 - Math.min(100, limit!.usedPercent!))}% remaining${typeof limit?.resetsAt === 'number' ? `; resets ${new Date(limit.resetsAt * 1000).toLocaleString()}` : ''}`);
+  return windows.join(' · ') || 'Usage limit detail unavailable';
+}
 
 function initialProfiles(preferences: Preferences): AIProfile[] {
   const saved = configuredProfiles(preferences as Snapshot);
@@ -44,6 +53,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
   const [loading, setLoading] = useState<Partial<Record<Provider, boolean>>>({});
   const [catalogErrors, setCatalogErrors] = useState<Partial<Record<Provider, string>>>({});
   const [access, setAccess] = useState<AccessState | null>(null);
+  const [caseAccess, setCaseAccess] = useState<CaseAccess | null>(null);
   const [account, setAccount] = useState<CodexAccount | null>(null);
   const [login, setLogin] = useState<{ login_id: string; auth_url: string; user_code: string } | null>(null);
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
@@ -71,6 +81,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       api<{ configured: boolean }>('provider_key_status', { provider }).then(v => { if (mounted.current) setStored(s => ({ ...s, [provider]: v.configured })); }).catch(e => { if (mounted.current) setCatalogErrors(s => ({ ...s, [provider]: String(e) })); });
     });
     if (native && snapshot) api<{ enabled: boolean }>('direct_media_permission',caseSessionArgs(snapshot.id,snapshot.session_epoch)).then(v => { if (mounted.current) { setDirectMedia(v.enabled); setInitialDirectMedia(v.enabled); } }).catch(() => { if (mounted.current) { setDirectMedia(false); setInitialDirectMedia(false); } });
+    if (native && snapshot) api<CaseAccess>('case_ai_access_route',caseSessionArgs(snapshot.id,snapshot.session_epoch)).then(v => {if (mounted.current) setCaseAccess(v);}).catch(e => {if (mounted.current) setCodexError(String(e));});
     if (native) {
       api<AccessState>('ai_access_route').then(v => {
         if (!mounted.current) return;
@@ -83,15 +94,20 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
   useEffect(() => {
     if (!login || account?.connected) return;
     const timer = window.setInterval(() => {
-      api<CodexAccount>('codex_account_status').then(v => {if (mounted.current) {setAccount(v);if (v.connected) setLogin(null);}}).catch(() => {});
+      api<CodexAccount>('codex_account_status').then(v => {if (mounted.current) {setAccount(v);if (v.connected || v.login?.state === 'expired' || v.login?.state === 'failed') setLogin(null);}}).catch(e => {if (mounted.current) setCodexError(String(e));});
     }, 2500);
     return () => window.clearInterval(timer);
   }, [login, account?.connected]);
+  useEffect(() => {
+    const selection = scope === 'case' ? caseAccess?.selection ?? access?.subscription : access?.subscription;
+    setCodexModel(selection?.model ?? '');
+    setCodexEffort(selection?.effort ?? '');
+  }, [scope, caseAccess?.selection, access?.subscription]);
   async function codexAction(action: () => Promise<void>) {
     if (codexBusy) return;
     setCodexBusy(true); setCodexError('');
     try { await action(); } catch (e) { if (mounted.current) setCodexError(String(e)); }
-    finally { if (mounted.current) setCodexBusy(false); }
+    finally { if (mounted.current) setCodexBusy(false); window.dispatchEvent(new Event('vislex:ai-access-changed')); }
   }
   async function loadCodexModels() {
     const result = await api<CodexModel[]>('codex_account_models');
@@ -100,6 +116,16 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
       const selected = result.find(m => m.id === codexModel) ?? result[0];
       setCodexModel(selected?.id ?? '');
       setCodexEffort(selected?.efforts.includes(codexEffort) ? codexEffort : selected?.default_effort ?? selected?.efforts[0] ?? '');
+    }
+  }
+  async function setRoute(route: 'app' | 'api_keys' | 'chatgpt_subscription') {
+    if (scope === 'case' && snapshot) {
+      const next = await api<CaseAccess>('set_case_ai_access_route',{...sessionArgs,route});
+      setCaseAccess(next);
+    } else if (route !== 'app') {
+      const next = await api<AccessState>('set_ai_access_route',{route});
+      setAccess(current => current ? {...current,route:next.route} : null);
+      if (caseAccess?.override === 'app') setCaseAccess({override:'app',effective:next.route});
     }
   }
   function updateProfile(index: number, change: Partial<AIProfile>) { setProfiles(ps => ps.map((p, i) => i === index ? { ...p, ...change } : p)); }
@@ -127,11 +153,12 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
     setSaving(true); setError('');
     try {
       const lead = profiles[primary];
-      if (!lead?.model && !settings.offline) throw new Error('Select a default model from one of the company dropdowns.');
+      const subscription = (scope === 'case' ? caseAccess?.effective : access?.route) === 'chatgpt_subscription';
+      if (!lead?.model && !settings.offline && !subscription) throw new Error('Select a default model from one of the company dropdowns.');
       for (const provider of companies) {
         if (keys[provider]?.trim()) { await api('save_provider_key', { ...sessionArgs, provider, key: keys[provider] }); setKeys(s => ({ ...s, [provider]: '' })); setStored(s => ({ ...s, [provider]: true })); }
       }
-      if (!settings.offline) {
+      if (!settings.offline && !subscription) {
         const enabled = [...new Set(profiles.filter(p => p.model).map(p => p.provider))];
         for (const provider of enabled) {
           const status = await api<{ configured: boolean }>('provider_key_status', { provider });
@@ -185,12 +212,14 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
             <p className="notice">Select a default model for {scope === 'app' ? 'the app' : 'this case'}. Case restrictions still govern what evidence it may receive.</p>
             <p className="small muted disclosure-open"><KeyRound size={13} /> Keys are stored in Windows Credential Manager. Loading models contacts that company without sending case evidence.</p>
           </> : null}
-          {section === 'Providers & models' ? <fieldset className="provider-card"><legend>OpenAI access route</legend>
+          {section === 'Providers & models' ? <fieldset className="provider-card"><legend>{scope === 'app' ? 'App AI access' : 'Case AI access'}</legend>
             <div className="chip-row">
-              <button type="button" className={`chip ${access?.route === 'api_keys' ? 'selected' : ''}`} disabled={!native || codexBusy} onClick={() => void codexAction(async () => {const v = await api<AccessState>('set_ai_access_route',{route:'api_keys'});setAccess(current => current ? {...current,route:v.route} : null);})}>API keys</button>
-              <button type="button" className={`chip ${access?.route === 'chatgpt_subscription' ? 'selected' : ''}`} disabled={!native || !access?.subscription_ready || codexBusy} onClick={() => void codexAction(async () => {const v = await api<AccessState>('set_ai_access_route',{route:'chatgpt_subscription'});setAccess(current => current ? {...current,route:v.route} : null);})}>ChatGPT subscription</button>
+              {scope === 'case' ? <button type="button" className={`chip ${caseAccess?.override === 'app' ? 'selected' : ''}`} disabled={!native || codexBusy} onClick={() => void codexAction(() => setRoute('app'))}>Use app default</button> : null}
+              <button type="button" className={`chip ${(scope === 'case' ? caseAccess?.override : access?.route) === 'api_keys' ? 'selected' : ''}`} disabled={!native || codexBusy} onClick={() => void codexAction(() => setRoute('api_keys'))}>API keys</button>
+              <button type="button" className={`chip ${(scope === 'case' ? caseAccess?.override : access?.route) === 'chatgpt_subscription' ? 'selected' : ''}`} disabled={!native || !access?.subscription_ready || codexBusy} onClick={() => void codexAction(() => setRoute('chatgpt_subscription'))}>ChatGPT subscription</button>
             </div>
-            <p className="small muted">API usage and ChatGPT subscription usage are separate. The selected route applies to all new AI tasks; no task switches routes automatically.</p>
+            <p className="small muted">API usage and ChatGPT subscription usage are separate. The app route is the default for all cases; a case choice affects its new tasks only. Running tasks keep their original route.</p>
+            {scope === 'case' && caseAccess ? <p className="small muted">Effective route for this case: {caseAccess.effective === 'api_keys' ? 'API keys' : 'ChatGPT subscription'}.</p> : null}
             {access && !access.account_ready ? <p className="small muted" role="status">This build does not include the isolated Codex runtime. Subscription sign-in is unavailable.</p> : null}
             {!access?.subscription_ready && access ? <p className="small muted" role="status">Subscription tasks are disabled: {access.blocker}. API tasks continue normally.</p> : null}
             <div className="input-row">
@@ -198,11 +227,12 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
               {!account?.connected ? <button type="button" className="secondary" disabled={!native || !access?.account_ready || codexBusy} onClick={() => void codexAction(async () => {setLogin(await api('codex_account_login'));})}>Sign in with ChatGPT</button> : <button type="button" className="secondary" disabled={codexBusy} onClick={() => void codexAction(async () => {await api('codex_account_logout');setAccount({connected:false});setCodexModels([]);setCodexLimits('');})}>Sign out</button>}
               <button type="button" className="quiet" disabled={!native || !access?.account_ready || codexBusy} onClick={() => void codexAction(async () => {setAccount(await api('codex_account_status'));})}>Refresh status</button>
             </div>
-            {login ? <p className="small">Enter code <strong>{login.user_code}</strong> at <a href={login.auth_url} target="_blank" rel="noopener noreferrer">ChatGPT sign-in</a>. <button type="button" className="quiet" onClick={() => void codexAction(async () => {await api('codex_account_cancel_login',{login_id:login.login_id});setLogin(null);})}>Cancel sign-in</button></p> : null}
+            {login ? <p className="small">Enter code <strong>{login.user_code}</strong> at <a href={login.auth_url} target="_blank" rel="noopener noreferrer">ChatGPT sign-in</a>. <button type="button" className="quiet" onClick={() => void navigator.clipboard.writeText(login.user_code).catch(e => setCodexError(String(e)))}>Copy code</button> <button type="button" className="quiet" onClick={() => void codexAction(async () => {await api('codex_account_cancel_login',{login_id:login.login_id});setLogin(null);})}>Cancel sign-in</button>{account?.login?.state === 'pending' ? ` Expires in ${Math.ceil(account.login.expires_in_seconds / 60)} min.` : null}</p> : null}
+            {account?.login?.state === 'failed' || account?.login?.state === 'expired' ? <p role="alert" className="small danger-text">{account.login.error ?? 'ChatGPT sign-in expired. Start again.'}</p> : null}
             {account?.connected ? <>
-              <div className="input-row"><button type="button" className="secondary" disabled={codexBusy} onClick={() => void codexAction(loadCodexModels)}>Load subscription models</button><button type="button" className="quiet" disabled={codexBusy} onClick={() => void codexAction(async () => {const v = await api<{rateLimits?:{primary?:{usedPercent?:number}}}>('codex_account_limits');setCodexLimits(typeof v.rateLimits?.primary?.usedPercent === 'number' ? `${v.rateLimits.primary.usedPercent}% of current Codex window used` : 'Usage limit detail unavailable');})}>Check subscription usage</button></div>
+              <div className="input-row"><button type="button" className="secondary" disabled={codexBusy} onClick={() => void codexAction(loadCodexModels)}>Load subscription models</button><button type="button" className="quiet" disabled={codexBusy} onClick={() => void codexAction(async () => {setCodexLimits(formatCodexLimits(await api<CodexLimits>('codex_account_limits')));})}>Check subscription usage</button></div>
               {codexLimits ? <p className="small muted" role="status">{codexLimits}</p> : null}
-              {codexModels.length ? <div className="input-row"><label className="field-label">Subscription model<select aria-label="ChatGPT subscription model" value={codexModel} onChange={e => {const model=codexModels.find(m => m.id===e.target.value);setCodexModel(e.target.value);setCodexEffort(model?.default_effort ?? model?.efforts[0] ?? '');}}>{codexModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label><label className="field-label">Reasoning effort<select aria-label="ChatGPT reasoning effort" value={codexEffort} onChange={e => setCodexEffort(e.target.value)}>{(codexModels.find(m => m.id===codexModel)?.efforts ?? []).map(effort => <option key={effort} value={effort}>{effort}</option>)}</select></label><button type="button" className="secondary" disabled={codexBusy || !codexEffort} onClick={() => void codexAction(async () => {await api('save_codex_selection',{model:codexModel,effort:codexEffort});setAccess(current => current ? {...current,subscription:{model:codexModel,effort:codexEffort}} : null);})}>Save subscription model</button></div> : null}
+              {codexModels.length ? <div className="input-row"><label className="field-label">Subscription model<select aria-label="ChatGPT subscription model" value={codexModel} onChange={e => {const model=codexModels.find(m => m.id===e.target.value);setCodexModel(e.target.value);setCodexEffort(model?.default_effort ?? model?.efforts[0] ?? '');}}>{codexModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label><label className="field-label">Reasoning effort<select aria-label="ChatGPT reasoning effort" value={codexEffort} onChange={e => setCodexEffort(e.target.value)}>{(codexModels.find(m => m.id===codexModel)?.efforts ?? []).map(effort => <option key={effort} value={effort}>{effort}</option>)}</select></label><button type="button" className="secondary" disabled={codexBusy || !codexEffort} onClick={() => void codexAction(async () => {if (scope === 'case' && snapshot) {const next=await api<CaseAccess>('save_case_codex_selection',{...sessionArgs,model:codexModel,effort:codexEffort});setCaseAccess(current => current ? {...current,...next} : current);} else {await api('save_codex_selection',{model:codexModel,effort:codexEffort});setAccess(current => current ? {...current,subscription:{model:codexModel,effort:codexEffort}} : null);}})}>{scope === 'case' ? 'Save case model' : 'Save app model'}</button>{scope === 'case' && caseAccess?.selection_override ? <button type="button" className="quiet" disabled={codexBusy} onClick={() => void codexAction(async () => {const next=await api<CaseAccess>('save_case_codex_selection',{...sessionArgs,use_app:true});setCaseAccess(current => current ? {...current,...next} : current);})}>Use app model</button> : null}</div> : null}
             </> : null}
             {codexError ? <p role="alert" className="small danger-text">{codexError}</p> : null}
           </fieldset> : null}
