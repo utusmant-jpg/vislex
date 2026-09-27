@@ -1061,6 +1061,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "continue_paused_task" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat continued");
             require_session_epoch(&state,&args)?;
+            anyhow::ensure!(crate::ai_access::read(&app.path().app_config_dir()?)? == crate::ai_access::AccessRoute::ApiKeys,
+                "ChatGPT subscription execution is unavailable; no API key was used. Select API keys in Settings to continue this task.");
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
             let old=text(&args,"task_id")?;
             let profile=crate::providers::task_profile(c,old)?;
