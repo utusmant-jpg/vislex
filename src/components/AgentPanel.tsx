@@ -4,7 +4,9 @@ import {
   LoaderCircle, MessageSquareQuote, Play, Scale, ScanLine, Search, Settings2, Sparkles, Square, Wrench,
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { springs } from '../lib/motion';
+import { useVisLexRuntime } from '../chat/vislex-runtime';
 import { listen } from '@tauri-apps/api/event';
 import { api, native } from '../bridge';
 import { caseSessionArgs } from '../caseSession';
@@ -262,15 +264,15 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     chatDrafts.set(`${snapshot?.id}:${conversationId}`, value);
   }
 
-  function submit() {
-    if (sending || chatBlocked || !prompt.trim() || !native || !snapshot || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile) return;
+  function submit(text: string = prompt) {
+    if (sending || chatBlocked || !text.trim() || !native || !snapshot || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile) return;
     setSending(true);
     run(async () => {
       try {
         const viewerContext = buildViewerAttachment(selection, getViewerContext(), skipContext);
         const result = await api<{ task_id: string; conversation_id: string }>('start_task', {
           ...caseSessionArgs(snapshot.id, snapshot.session_epoch),
-          prompt,
+          prompt: text,
           provider: selectedProfile!.provider,
           model: selectedProfile!.model,
           parent_task_id: task?.id ?? null,
@@ -285,6 +287,15 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     });
   }
 
+  // assistant-ui runtime: sends flow through runtime.thread.append → onNew →
+  // submit, so the composer and any future assistant-ui elements share one path.
+  const runtime = useVisLexRuntime({
+    turns,
+    isRunning: !!running,
+    onNew: text => submit(text),
+    onCancel: () => { if (snapshot && running) run(async () => { await api('stop_task', { ...caseSessionArgs(snapshot.id, snapshot.session_epoch), task_id: running.id }); await refresh(); }); },
+  });
+
   const followUps = task?.status === 'complete' && !task.error ? (task.progress?.next_steps ?? []).filter(Boolean).slice(0, 3) : [];
   const starters = starterPrompts(snapshot);
   const reducedMotion = useReducedMotion();
@@ -298,7 +309,8 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     : null;
   const contextPage = selection && getViewerContext()?.sourceId === selection.id ? getViewerContext()?.page : null;
 
-  return <section className="agent-panel">
+  return <AssistantRuntimeProvider runtime={runtime}>
+    <section className="agent-panel">
     <div className="panel-heading">
       <span className="chat-heading" title={turns[0]?.title ?? turns[0]?.prompt}>{turns[0]?.title ?? turns[0]?.prompt.slice(0, 65) ?? 'New chat'}</span>
       <div className="spacer" />
@@ -440,11 +452,12 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
                 whileHover={reducedMotion || chatBlocked || sending || !prompt.trim() ? undefined : { scale: 1.05 }}
                 whileTap={reducedMotion ? undefined : { scale: 0.92 }}
                 transition={springs.snappy}
-                onClick={submit}
+                onClick={() => void runtime.thread.append({ role: 'user', content: [{ type: 'text', text: prompt }] })}
               ><ArrowUp size={18} /></motion.button></Tooltip>}
         </div>
       </div>
       <p className="composer-foot">VisLex cites evidence for what it claims · Enter to send · Shift+Enter for a new line</p>
     </div>
-  </section>;
+  </section>
+  </AssistantRuntimeProvider>;
 }
