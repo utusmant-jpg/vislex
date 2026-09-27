@@ -1,14 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
-import { KeyRound, Save, Trash2, X } from 'lucide-react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Info, KeyRound, Palette, Save, ShieldCheck, Trash2, X } from 'lucide-react';
+import { motion, useReducedMotion } from 'motion/react';
 import { api, native } from '../bridge';
 import { caseSessionArgs } from '../caseSession';
 import { configuredProfiles, defaultConfig, providerNames } from '../aiProfiles';
+import { springs } from '../lib/motion';
 import AppearanceSettings from './AppearanceSettings';
+import ModelSelect from './ModelSelect';
 import type { AIConfig, AIProfile, ModelOption, Provider, Settings, Snapshot } from '../types';
 
 const companies = Object.keys(providerNames) as Provider[];
 const sections = ['Providers & models', 'AI permissions', 'Appearance', 'About'] as const;
 type Section = typeof sections[number];
+const sectionIcons: Record<Section, ReactNode> = {
+  'Providers & models': <KeyRound size={14} />,
+  'AI permissions': <ShieldCheck size={14} />,
+  'Appearance': <Palette size={14} />,
+  'About': <Info size={14} />,
+};
 type Preferences = { ai_config?: AIConfig; settings: Settings };
 type AppPreferences = { configured: boolean; config: AIConfig; settings: Settings };
 const emptySettings: Settings = { offline: true, allow_text: false, allow_images: false, model: '' };
@@ -118,11 +127,16 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
     } catch (e) { if (mounted.current) setError(String(e)); }
     finally { if (mounted.current) setSaving(false); }
   }
+  const reducedMotion = useReducedMotion();
   return <dialog ref={dialog} className="modal settings-sheet" aria-label="Workspace settings" onCancel={e => { if (busy) e.preventDefault(); else onClose(); }}>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="Settings sections">
         <div className="eyebrow">SETTINGS</div>
-        {sections.map(item => <button key={item} className={section === item ? 'selected' : ''} onClick={() => setSection(item)}>{item}</button>)}
+        {sections.map(item => <button key={item} className={`settings-nav-item ${section === item ? 'selected' : ''}`} onClick={() => setSection(item)}>
+          {section === item ? <motion.span layoutId="settings-nav-active" className="settings-nav-pill" transition={reducedMotion ? { duration: 0 } : springs.snappy} aria-hidden="true" /> : null}
+          <span className="settings-nav-icon">{sectionIcons[item]}</span>
+          <span>{item}</span>
+        </button>)}
         <div className="spacer" />
         <button className="quiet" disabled={busy} onClick={onClose}>Close</button>
       </nav>
@@ -164,7 +178,12 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
             </label>
             <p className="small muted">Direct media transmits an original recording (up to 12 MiB) to Gemini when a task needs it. It requires separate, audited case consent.</p></> : null}
           </fieldset> : null}
-          {section === 'Providers & models' ? companies.map(provider => <fieldset key={provider} className="provider-card"><legend>{providerNames[provider]}</legend>
+          {section === 'Providers & models' ? companies.map(provider => <fieldset key={provider} className="provider-card settings-provider-card">
+            <legend className="provider-legend"><span>{providerNames[provider]}</span>
+              <span className={`provider-status ${catalogErrors[provider] ? 'error' : stored[provider] ? 'ok' : 'none'}`}>
+                {catalogErrors[provider] ? '⚠ Key issue' : stored[provider] ? '● Key saved' : '○ No key'}
+              </span>
+            </legend>
             <div className="input-row">
               <input aria-label={`${providerNames[provider]} API key`} type="password" autoComplete="off" value={keys[provider] ?? ''} disabled={loading[provider]} onChange={e => setKeys(s => ({ ...s, [provider]: e.target.value }))} placeholder={stored[provider] ? 'Key saved in Windows Credential Manager' : 'Paste API key'} />
               <button className="secondary" disabled={!native || loading[provider] || (!stored[provider] && !keys[provider]?.trim())} onClick={() => void loadModels(provider)}>{loading[provider] ? 'Loading…' : keys[provider]?.trim() ? 'Save key & load models' : 'Load models'}</button>
@@ -172,7 +191,14 @@ export default function SettingsDialog({ snapshot, onClose, refresh }: { snapsho
             </div>
             {catalogErrors[provider] ? <p role="alert" className="small danger-text">{catalogErrors[provider]}</p> : null}
             {profiles.map((p, i) => p.provider !== provider ? null : <div className="provider-model" key={i}>
-              <label>Model<select aria-label={`${providerNames[provider]} model ${i + 1}`} value={p.model} onChange={e => { const first = !profiles.some(x => x.model); updateProfile(i, { model: e.target.value }); if (first) setPrimary(i); }}><option value="">{loading[provider] ? 'Loading models…' : 'Select a model'}</option>{p.model && !models[provider]?.some(m => m.id === p.model) ? <option value={p.model}>{p.model} (saved)</option> : null}{models[provider]?.map(m => <option key={m.id} value={m.id}>{m.name === m.id ? m.id : `${m.name} · ${m.id}`}</option>)}</select></label>
+              <label>Model<ModelSelect
+                label={`${providerNames[provider]} model ${i + 1}`}
+                value={p.model}
+                onChange={model => { const first = !profiles.some(x => x.model); updateProfile(i, { model }); if (first) setPrimary(i); }}
+                options={models[provider] ?? []}
+                loading={loading[provider]}
+                disabled={saving}
+              /></label>
               <div className="provider-permissions"><label><input type="radio" name="default-model" checked={primary === i} onChange={() => setPrimary(i)} /> Default chat model</label>{p.model ? <span className="badge">Selected</span> : null}{profiles.filter(x => x.provider === provider).length > 1 && primary !== i ? <button className="quiet" onClick={() => { setProfiles(ps => ps.filter((_, j) => j !== i)); if (primary > i) setPrimary(primary - 1); }}>Remove</button> : null}</div>
               {p.model && primary === i ? <p className="small muted">The default model is governed by the case permissions above — selecting it grants nothing by itself.</p> : null}
               {p.model && primary !== i ? <div className="provider-grants"><label><input type="checkbox" checked={p.allow_text} onChange={e => updateProfile(i, { allow_text: e.target.checked, allow_images: e.target.checked ? p.allow_images : false })} /> May receive case text</label><label><input type="checkbox" checked={p.allow_images} disabled={!p.allow_text} onChange={e => updateProfile(i, { allow_images: e.target.checked })} /> May receive case images</label></div> : null}
