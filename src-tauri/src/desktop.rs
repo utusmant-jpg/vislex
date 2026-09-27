@@ -1702,9 +1702,7 @@ pub fn run() {
 
                     .header("X-Content-Type-Options", "nosniff")
 
-                    .header("Cache-Control", "no-store")
-
-                    .header("Access-Control-Allow-Origin", "*");
+                    .header("Cache-Control", "no-store");
 
                 if partial {
 
