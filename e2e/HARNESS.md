@@ -78,14 +78,16 @@ for a completed call), `axeViolations`.
 
 Known app issues are encoded as `test.fail` (the test passes while the issue
 exists and fails once it is fixed, prompting removal) or as named entries in
-the axe baseline. Current entries: a citation pinned to the current extraction
-revision is labelled as superseded historical wording (case.rs
-`read_text_revision` always returns `historical: true`); the Settings model
-combobox options are inert under the modal dialog; the open-file
-tab strip nests buttons in `role="tablist"`; the palette results region is not
-keyboard-scrollable. Resolved by the assistant redesign and removed: a user
-Stop rendered as an error alert; the chat token count missed 4.5:1 contrast in
-light theme.
+the axe baseline. Current entries: the open-file tab strip nests buttons in
+`role="tablist"`; the palette results region is not keyboard-scrollable.
+Resolved by the assistant redesign and removed: a user Stop rendered as an
+error alert; the chat token count missed 4.5:1 contrast in light theme.
+Resolved in integration and removed: a citation pinned to the current
+extraction revision was labelled as superseded wording (the viewer now
+compares the pinned revision with `extract_history`'s `active_revision`,
+because case.rs `read_text_revision` always returns `historical: true`); the
+Settings model combobox options were inert under the modal dialog (overlays
+now render inside the open dialog).
 
 ## Limits
 
@@ -101,7 +103,8 @@ light theme.
   is emitted after successful mutations except the early-return branches
   (`hybrid_search`, `export_word`, key and access-route actions), and also after
   `case_ai_scope` / `case_ai_access_route`, which desktop.rs does not list as
-  read-only; `read_extract_revision` always reports `historical: true`.
+  read-only; `read_extract_revision` always reports `historical: true`, and
+  `extract_history` names the `active_revision`.
 - The fixture keeps display-only "running" jobs; the native backend refuses to
   switch cases while processing jobs run. Enable
   `setScenario({ blockSwitchWhileJobsRun: true })` to model that.

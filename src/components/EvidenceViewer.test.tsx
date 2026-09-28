@@ -27,14 +27,35 @@ function observePdfPages() {
 
 it('opens a pinned citation against its historical revision and marks the wording as superseded', async () => {
   const historical: TextPage = { text: 'Old exact wording', start: 5, end: 5, total_lines: 9, revision: 1, historical: true, locator: 'evidence:source-one#R1L5-L5', truncated_long_lines: false };
-  api.mockImplementation(async (action: string) => action === 'read_extract_revision' ? historical : { ...historical, text: 'Changed active wording', revision: 2, historical: false });
+  api.mockImplementation(async (action: string) => action === 'read_extract_revision' ? historical : action === 'extract_history' ? { source_id: 'source-one', active_revision: 2, revisions: [] } : { ...historical, text: 'Changed active wording', revision: 2, historical: false });
   render(<EvidenceViewer source={source} locator="R1L5-L5" run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
   await waitFor(() => expect(api).toHaveBeenCalledWith('read_extract_revision', { source_id: 'source-one', revision: 1, start: 5, count: 200 }));
-  expect(screen.getByText('Old exact wording')).toBeTruthy();
+  expect(api).toHaveBeenCalledWith('extract_history', { source_id: 'source-one' });
+  expect(await screen.findByText('Old exact wording')).toBeTruthy();
   expect(screen.queryByText('Changed active wording')).toBeNull();
-  expect(screen.getByRole('note').textContent).toContain('superseded wording preserved');
+  expect((await screen.findByRole('note')).textContent).toContain('Historical extraction revision 1 — superseded wording preserved; this is not the current active text.');
+  expect(screen.getByText('Pinned rev 1')).toBeTruthy();
   expect(screen.getByText('Extracted text · Revision 1 · Lines 5–5 of 9')).toBeTruthy();
   expect(screen.getByText('TEXT · 100 B · text ready')).toBeTruthy();
+});
+
+it('does not label a citation pinned to the active revision as superseded', async () => {
+  // read_extract_revision reports historical: true for every revision (case.rs).
+  const pinned: TextPage = { text: 'Current exact wording', start: 5, end: 5, total_lines: 9, revision: 2, historical: true, locator: 'evidence:source-one#R2L5-L5', truncated_long_lines: false };
+  api.mockImplementation(async (action: string) => action === 'read_extract_revision' ? pinned : action === 'extract_history' ? { source_id: 'source-one', active_revision: 2, revisions: [] } : undefined);
+  render(<EvidenceViewer source={source} locator="R2L5-L5" run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  expect(await screen.findByText('Current exact wording')).toBeTruthy();
+  await waitFor(() => expect(screen.getByText('Rev 2 · current')).toBeTruthy());
+  expect(screen.queryByRole('note')).toBeNull();
+  expect(screen.queryByText(/superseded wording/)).toBeNull();
+  expect(api).not.toHaveBeenCalledWith('read_text', expect.anything());
+});
+
+it('keeps the historical label when the active revision cannot be read', async () => {
+  const pinned: TextPage = { text: 'Pinned wording', start: 5, end: 5, total_lines: 9, revision: 2, historical: true, locator: 'evidence:source-one#R2L5-L5', truncated_long_lines: false };
+  api.mockImplementation(async (action: string) => { if (action === 'extract_history') throw new Error('history unavailable'); return pinned; });
+  render(<EvidenceViewer source={source} locator="R2L5-L5" run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  expect((await screen.findByRole('note')).textContent).toContain('Historical extraction revision 2 — superseded wording preserved; this is not the current active text.');
 });
 
 it('keeps the restriction visible while reading a source', async () => {

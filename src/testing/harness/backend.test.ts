@@ -192,6 +192,10 @@ describe('SyntheticBackend guards and paging', () => {
     expect(pinnedCurrent).toMatchObject({ historical: true, revision: 2, source_id: FIXTURE.statement });
     expect(pinnedCurrent.text).toContain('approximately 14:32');
     await expect(command('read_text', { source_id: FIXTURE.statement, start: 1, count: 201 })).rejects.toBe('Request 1–200 lines starting at line 1 or later');
+    // As case.rs extract_history: newest revision first, with the active one named.
+    const history = await command<{ active_revision: number | null; revisions: { revision: number }[] }>('extract_history', { source_id: FIXTURE.statement });
+    expect(history.active_revision).toBe(2);
+    expect(history.revisions.map(item => item.revision)).toEqual([2, 1]);
   });
 });
 

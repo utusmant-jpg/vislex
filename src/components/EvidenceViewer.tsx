@@ -376,6 +376,25 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     return () => { active = false; };
   }, [source.id, source.kind, start, showText, source.status, requestedRevision, textReload]);
 
+  // read_extract_revision reports every revision as historical (case.rs), so
+  // the source's active revision decides whether a pinned revision is
+  // superseded. undefined: still loading; 'unknown': history could not be read.
+  const [activeRevision, setActiveRevision] = useState<{ sourceId: string; revision: number | null | 'unknown' } | undefined>(undefined);
+  useEffect(() => {
+    if (requestedRevision === null) return;
+    let active = true; setActiveRevision(undefined);
+    api<{ active_revision: number | null }>('extract_history', { source_id: source.id })
+      .then(value => { if (active) setActiveRevision({ sourceId: source.id, revision: value.active_revision ?? null }); })
+      .catch(() => { if (active) setActiveRevision({ sourceId: source.id, revision: 'unknown' }); });
+    return () => { active = false; };
+  }, [source.id, source.status, requestedRevision, textReload]);
+  const knownActive = activeRevision?.sourceId === source.id ? activeRevision.revision : undefined;
+  // Pinned to the revision that is active now: current text, not superseded wording.
+  const pinnedCurrent = !!page?.historical && typeof knownActive === 'number' && knownActive === page.revision;
+  // Superseded only once the active revision is known to differ; if history
+  // cannot be read, keep the backend's historical label rather than claim current.
+  const superseded = !!page?.historical && knownActive !== undefined && !pinnedCurrent;
+
   useEffect(() => {
     if (requestedTime != null && media.current?.readyState && Number.isFinite(requestedTime)) media.current.currentTime = requestedTime;
   }, [requestedTime]);
@@ -473,7 +492,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
         <div className="viewer-source-meta">
           <span className="viewer-source-facts">{source.kind.toUpperCase()} · {formatBytes(source.size)} · {source.status}</span>
           {source.sha256 ? <Tooltip text={`SHA-256 ${source.sha256}`}><span className="viewer-hash mono" tabIndex={0}><Fingerprint size={12} aria-hidden="true" />{shortHash(source.sha256)}</span></Tooltip> : null}
-          {page ? <span className={`viewer-revision ${page.historical ? 'historical' : ''}`}>{page.historical ? <><History size={12} aria-hidden="true" />Pinned rev {page.revision}</> : <>Rev {page.revision} · current</>}</span> : null}
+          {page ? <span className={`viewer-revision ${superseded ? 'historical' : ''}`}>{page.historical && !pinnedCurrent ? <><History size={12} aria-hidden="true" />Pinned rev {page.revision}</> : <>Rev {page.revision} · current</>}</span> : null}
         </div>
       </div>
       <div className="viewer-source-actions">
@@ -520,7 +539,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       {processing ? <div className="preview-progress" role="status"><span className="activity-dot" aria-hidden="true" />{needsProxy ? 'Opening video…' : 'Opening source…'}</div> : null}
       {error && !unsupported ? <ViewerProblem title={problemTitle} message={error} onRetry={retry} retryLabel={retryLabel} /> : null}
 
-      {showText && page?.historical ? <div className="viewer-pinned-banner" role="note">
+      {showText && superseded ? <div className="viewer-pinned-banner" role="note">
         <History size={16} aria-hidden="true" />
         <div><strong>Pinned revision {page.revision} — not the current text</strong><span>Historical extraction revision {page.revision} — superseded wording preserved; this is not the current active text.</span></div>
       </div> : null}

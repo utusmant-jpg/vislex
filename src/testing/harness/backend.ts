@@ -424,6 +424,12 @@ export class SyntheticBackend {
       case 'issue_history': return { receipts: [{ id: String(args.receipt_id), created_at: new Date().toISOString() }, { id: syntheticId('receipt', 1), created_at: new Date(Date.now() - 3_600_000).toISOString() }], next_offset: null };
       case 'read_text': return this.readLines(c, args.source_id, null, Number(args.start ?? 1), Number(args.count ?? 200));
       case 'read_extract_revision': return this.readLines(c, args.source_id, Number(args.revision), Number(args.start ?? 1), Number(args.count ?? 200));
+      case 'extract_history': {
+        // As case.rs extract_history: revisions newest first, plus the active one.
+        const source = this.source(c, args.source_id);
+        const revisions = Object.entries(source.revisions ?? {}).map(([revision, lines]) => ({ revision: Number(revision), method: 'synthetic', created_at: source.created_at, characters: lines.join('\n').length })).sort((a, b) => b.revision - a.revision);
+        return { source_id: source.id, active_revision: source.revisions ? source.currentRevision : null, revisions };
+      }
       case 'search': case 'hybrid_search': {
         if (action === 'hybrid_search') this.requireCase(args, 'search', true);
         const query = String(args.query ?? '').toLowerCase();

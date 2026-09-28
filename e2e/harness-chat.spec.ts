@@ -139,17 +139,19 @@ test.describe('chat through the mocked IPC harness', () => {
   });
 
   test('a citation pinned to the current revision is not labelled as superseded wording', async ({ page }) => {
-    // Known issue: case.rs read_text_revision returns historical: true for every
-    // revision, and EvidenceViewer shows "superseded wording preserved; this is
-    // not the current active text" whenever page.historical is set. A citation
-    // pinned to R2 — the active revision of W-01 — is therefore mislabelled.
-    // Remove test.fail once the viewer (or backend) distinguishes the active revision.
-    test.fail(true, 'Current-revision citations are labelled as historical');
-    await openHarness(page);
+    // case.rs read_text_revision returns historical: true for every revision; the
+    // viewer compares the pinned revision with extract_history's active revision.
+    // R2 is the active revision of W-01, so it is current wording.
+    const fx = await openHarness(page);
     const viewer = page.getByRole('main', { name: 'Evidence viewer' });
     await page.getByRole('button', { name: 'Open cited evidence, rev 2 · 5–5' }).first().click();
     await expect(viewer.locator('.text-line[data-line="5"]')).toContainText('approximately 14:32');
+    expect((await lastCall(page, 'extract_history')).args).toEqual({ source_id: fx.statement });
+    await expect(viewer.getByText('Rev 2 · current')).toBeVisible();
     await expect(viewer.getByText(/Historical extraction revision/)).toHaveCount(0, { timeout: 2000 });
+    // A real historical revision keeps its banner verbatim.
+    await page.getByRole('button', { name: 'Open cited evidence, rev 1 · 5–5' }).first().click();
+    await expect(viewer.getByRole('note')).toContainText('Historical extraction revision 1 — superseded wording preserved; this is not the current active text.');
   });
 
   test('an unsent draft survives a workspace switch and never reaches browser storage', async ({ page }) => {
