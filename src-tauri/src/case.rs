@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 /// The case database schema version this build migrates to. Cases with a
 /// higher `user_version` were written by a newer app and are refused.
-pub const CASE_SCHEMA: i64 = 8;
+pub const CASE_SCHEMA: i64 = 9;
 /// Marks working records stale after a source's text changes (a new active
 /// extraction or transcript). Only records that depend on that source, or
 /// whose dependencies are empty or unreadable, are marked: an unrelated note
@@ -375,6 +375,38 @@ impl Case {
                 );
                 CREATE INDEX IF NOT EXISTS transcript_corrections_latest ON transcript_corrections(run_id,ordinal,revision DESC);
                 PRAGMA user_version=8; COMMIT;")?;
+        }
+        if version < 9 {
+            // v9: ledger for the optional second opinion on uncertain audio.
+            // Additive only; no existing table or row changes.
+            if !create && version >= 8 {db.backup(rusqlite::DatabaseName::Main,root.join("pre-migration-v8.sqlite3"),None)?;}
+            db.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS second_opinions(
+                    id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL REFERENCES sources(id),
+                    run_id TEXT NOT NULL,
+                    ordinals TEXT NOT NULL,
+                    track INTEGER NOT NULL CHECK(track>=0),
+                    start_seconds REAL NOT NULL CHECK(start_seconds>=0),
+                    end_seconds REAL NOT NULL CHECK(end_seconds>start_seconds),
+                    vendor TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    grant_revision INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('clipping','previewed','sending','received','failed','cancelled','uncertain')),
+                    clip_artifact_id TEXT,
+                    clip_sha256 TEXT,
+                    task_id TEXT REFERENCES tasks(id),
+                    transmission_id TEXT,
+                    reasons TEXT NOT NULL,
+                    result TEXT,
+                    usage TEXT,
+                    error TEXT NOT NULL DEFAULT '',
+                    decision TEXT CHECK(decision IS NULL OR decision IN ('accepted_remote','kept_local','edited','unresolved')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS second_opinions_source ON second_opinions(source_id,created_at);
+                PRAGMA user_version=9; COMMIT;")?;
         }
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;",
@@ -1158,7 +1190,7 @@ impl Case {
         Ok(receipt)
     }
     pub fn task_page(&self,before:Option<(&str,&str)>)->Result<Value> {
-        let mut stmt=self.db.prepare("SELECT t.id,substr(t.prompt,1,500),t.mode,t.status,t.step,substr(t.answer,1,200),substr(t.error,1,300),t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),COALESCE(ct.conversation_id,t.id),length(t.answer)>200,m.value,(SELECT SUM(actual) FROM transmissions WHERE task_id=t.id),(SELECT EXISTS(SELECT 1 FROM transmissions WHERE task_id=t.id AND actual IS NULL)) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id LEFT JOIN meta m ON m.key='chat_title:'||COALESCE(ct.conversation_id,t.id) WHERE t.id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE(ct.conversation_id,t.id) NOT IN (SELECT id FROM hidden_conversations) AND (?1 IS NULL OR t.created_at<?1 OR (t.created_at=?1 AND t.id<?2)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
+        let mut stmt=self.db.prepare("SELECT t.id,substr(t.prompt,1,500),t.mode,t.status,t.step,substr(t.answer,1,200),substr(t.error,1,300),t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),COALESCE(ct.conversation_id,t.id),length(t.answer)>200,m.value,(SELECT SUM(actual) FROM transmissions WHERE task_id=t.id),(SELECT EXISTS(SELECT 1 FROM transmissions WHERE task_id=t.id AND actual IS NULL)) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id LEFT JOIN meta m ON m.key='chat_title:'||COALESCE(ct.conversation_id,t.id) WHERE t.id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE(ct.conversation_id,t.id) NOT IN (SELECT id FROM hidden_conversations) AND t.mode<>'second_opinion' AND (?1 IS NULL OR t.created_at<?1 OR (t.created_at=?1 AND t.id<?2)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
         let mut tasks=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"conversation_id":r.get::<_,String>(11)?,"answer_truncated":r.get::<_,bool>(12)?,"title":r.get::<_,Option<String>>(13)?,"cost":r.get::<_,Option<f64>>(14)?,"cost_partial":r.get::<_,bool>(15)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let more=tasks.len()>50;tasks.truncate(50);
         let next_cursor=if more {tasks.last().map(|task|json!({"created_at":task["created_at"],"id":task["id"]}))}else{None};
@@ -1166,7 +1198,7 @@ impl Case {
     }
     pub fn conversation_detail(&self,conversation:&str,before:Option<(&str,&str)>)->Result<Value> {
         ensure!(!self.db.query_row("SELECT EXISTS(SELECT 1 FROM hidden_conversations WHERE id=?)",[conversation],|r|r.get::<_,bool>(0))?,"Conversation is hidden");
-        let mut stmt=self.db.prepare("SELECT t.id,t.prompt,t.mode,t.status,t.step,t.answer,t.error,t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT SUM(actual) FROM transmissions WHERE task_id=t.id),(SELECT EXISTS(SELECT 1 FROM transmissions WHERE task_id=t.id AND actual IS NULL)) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id WHERE COALESCE(ct.conversation_id,t.id)=?1 AND t.id NOT IN (SELECT task_id FROM agent_assignments) AND (?2 IS NULL OR t.created_at<?2 OR (t.created_at=?2 AND t.id<?3)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
+        let mut stmt=self.db.prepare("SELECT t.id,t.prompt,t.mode,t.status,t.step,t.answer,t.error,t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT SUM(actual) FROM transmissions WHERE task_id=t.id),(SELECT EXISTS(SELECT 1 FROM transmissions WHERE task_id=t.id AND actual IS NULL)) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id WHERE COALESCE(ct.conversation_id,t.id)=?1 AND t.id NOT IN (SELECT task_id FROM agent_assignments) AND t.mode<>'second_opinion' AND (?2 IS NULL OR t.created_at<?2 OR (t.created_at=?2 AND t.id<?3)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
         let mut tasks=stmt.query_map(params![conversation,before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"cost":r.get::<_,Option<f64>>(11)?,"cost_partial":r.get::<_,bool>(12)?,"conversation_id":conversation})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let has_older=tasks.len()>50;tasks.truncate(50);
         for task in &mut tasks {task["progress"]=serde_json::to_value(crate::review_progress::load(self,task["id"].as_str().unwrap_or_default())?)?;task["title"]=json!(self.meta(&format!("chat_title:{conversation}"))?);}

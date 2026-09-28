@@ -526,7 +526,7 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
 /// Error bodies carry account, quota and schema diagnostics — never evidence
 /// content — so surfacing the parsed message keeps failures diagnosable
 /// without logging a successful response body.
-async fn provider_rejection(response: &mut reqwest::Response) -> String {
+pub(crate) async fn provider_rejection(response: &mut reqwest::Response) -> String {
     let mut bytes = Vec::new();
     while let Ok(Some(chunk)) = response.chunk().await {
         bytes.extend_from_slice(&chunk);
@@ -809,7 +809,7 @@ impl ClaudeStream {
     }
 }
 
-fn inference_client() -> Result<reqwest::Client> {
+pub(crate) fn inference_client() -> Result<reqwest::Client> {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     if let Some(client) = CLIENT.get() { return Ok(client.clone()); }
     let client = reqwest::Client::builder()

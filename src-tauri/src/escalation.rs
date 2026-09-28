@@ -199,6 +199,307 @@ pub fn candidates(case: &Case, source_id: &str, run_id: &str) -> Result<Value> {
     }))
 }
 
+// ---------------------------------------------------------------------------
+// Grant, clip, send and decision. Everything below runs only when a reviewer
+// asks; a case without a grant can triage but never send.
+// ---------------------------------------------------------------------------
+
+use crate::case::{id, now};
+use crate::providers::Provider;
+use serde::Deserialize;
+
+const GRANT_KEY: &str = "second_opinion_grant";
+/// Largest clip body accepted for sending (30 s of 16 kHz mono PCM is ~1 MB).
+const MAX_CLIP_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_TEXT: usize = 2000;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Vendor { Openrouter, Openai }
+impl Vendor {
+    pub fn provider(self) -> Provider { match self { Vendor::Openrouter => Provider::Openrouter, Vendor::Openai => Provider::Openai } }
+    pub fn endpoint(self) -> &'static str {
+        match self {
+            Vendor::Openrouter => "https://openrouter.ai/api/v1/chat/completions",
+            Vendor::Openai => "https://api.openai.com/v1/chat/completions",
+        }
+    }
+    /// Stated before every send; the reviewer reads it in the preview.
+    pub fn disclosure(self) -> &'static str {
+        match self {
+            Vendor::Openrouter => "Sent through OpenRouter with zero-data-retention routing and data collection denied. The upstream provider that ran it is recorded. Cancelling may not stop billing on Google, Groq, Bedrock or Mistral upstreams.",
+            Vendor::Openai => "Sent to OpenAI with your existing key. OpenAI may keep API data for up to 30 days for abuse monitoring unless your organisation has zero data retention. Cancelling may not stop billing.",
+        }
+    }
+}
+
+/// A per-case permission to send short audio clips to one named model. It is
+/// separate from the case text and image grants, is never copied from app
+/// defaults, and is refused while the case is offline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Grant { pub vendor: Vendor, pub model: String, pub revision: i64, pub granted_at: String }
+
+pub fn grant(case: &Case) -> Result<Option<Grant>> {
+    Ok(case.meta(GRANT_KEY)?.filter(|raw| !raw.is_empty()).map(|raw| serde_json::from_str(&raw)).transpose()?)
+}
+
+/// Set or revoke (None) the grant. Every change is audited and bumps the
+/// revision, which invalidates previews made under an earlier grant.
+pub fn set_grant(case: &mut Case, choice: Option<(Vendor, &str)>) -> Result<Option<Grant>> {
+    let previous = grant(case)?;
+    let revision = previous.as_ref().map(|g| g.revision).unwrap_or(0) + 1;
+    let Some((vendor, model)) = choice else {
+        case.set_meta(GRANT_KEY, "")?;
+        case.audit("second_opinion_grant_revoked", json!({"revision": revision}))?;
+        return Ok(None);
+    };
+    crate::providers::validate_model(model)?;
+    ensure!(vendor != Vendor::Openrouter || !crate::providers::openrouter_model_is_search(model), "Web-search models are not permitted for case work");
+    ensure!(!case.settings()?.offline, "Offline mode is on; turn it off before allowing a second opinion");
+    let next = Grant { vendor, model: model.into(), revision, granted_at: now() };
+    case.set_meta(GRANT_KEY, &serde_json::to_string(&next)?)?;
+    case.audit("second_opinion_grant_changed", json!({"vendor": vendor, "model": model, "revision": revision}))?;
+    Ok(Some(next))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClipRequest { pub track: i64, pub start: f64, pub end: f64, pub ordinals: Vec<i64> }
+
+/// Validate a clip against the transcript it came from and record a pending
+/// ledger row. Returns (row id, options for processing::prepare_request).
+pub fn begin_clip(case: &mut Case, source_id: &str, run_id: &str, clip: &ClipRequest) -> Result<(String, Value)> {
+    let grant = grant(case)?.context("Allow a second opinion for this case in Settings first")?;
+    ensure!(!case.settings()?.offline, "Offline mode is on; nothing is sent");
+    let triage = candidates(case, source_id, run_id)?;
+    ensure!(!clip.ordinals.is_empty() && clip.ordinals.len() <= 64, "Choose at least one flagged segment");
+    ensure!(clip.start.is_finite() && clip.end.is_finite() && clip.start >= 0.0 && clip.end > clip.start && clip.end - clip.start <= MAX_CLIP_SECONDS + 1e-9, "A clip must be a positive interval no longer than 30 seconds");
+    let mut reasons = Vec::new();
+    for ordinal in &clip.ordinals {
+        let (track, start, end): (i64, f64, f64) = case.db.query_row(
+            "SELECT track,start_seconds,end_seconds FROM transcript_segments WHERE run_id=? AND ordinal=?", params![run_id, ordinal],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).context("Unknown transcript segment")?;
+        ensure!(track == clip.track && start >= clip.start - PAD_SECONDS - 1e-6 && end <= clip.end + PAD_SECONDS + 1e-6, "The clip must cover the segments it names");
+    }
+    for candidate in triage["candidates"].as_array().into_iter().flatten() {
+        if candidate["ordinals"].as_array().is_some_and(|o| o.iter().any(|v| clip.ordinals.contains(&v.as_i64().unwrap_or(-1)))) {
+            reasons.extend(candidate["reasons"].as_array().cloned().unwrap_or_default());
+        }
+    }
+    let row = id();
+    case.db.execute(
+        "INSERT INTO second_opinions(id,source_id,run_id,ordinals,track,start_seconds,end_seconds,vendor,model,grant_revision,status,reasons,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'clipping',?,?,?)",
+        params![row, source_id, run_id, serde_json::to_string(&clip.ordinals)?, clip.track, clip.start, clip.end,
+            serde_json::to_value(grant.vendor)?.as_str().unwrap_or_default(), grant.model, grant.revision, Value::Array(reasons).to_string(), now(), now()])?;
+    case.audit("second_opinion_clip_requested", json!({"id": row, "source": source_id, "run": run_id, "start": clip.start, "end": clip.end, "track": clip.track}))?;
+    Ok((row, json!({"operation": "media_clip", "start": clip.start, "end": clip.end, "track": clip.track})))
+}
+
+/// Attach the published clip and return the preview a reviewer confirms.
+pub fn attach_clip(case: &mut Case, row: &str, published: Result<Value>) -> Result<Value> {
+    let published = match published {
+        Ok(value) => value,
+        Err(error) => {
+            case.db.execute("UPDATE second_opinions SET status='failed',error=?,updated_at=? WHERE id=? AND status='clipping'", params![error.to_string().chars().take(500).collect::<String>(), now(), row])?;
+            return Err(error);
+        }
+    };
+    // A repeated identical clip is served from the processor cache, whose
+    // result names the artifact through its published locator.
+    let artifact = published["artifact_id"].as_str()
+        .or_else(|| published["published"][0]["artifact_id"].as_str())
+        .or_else(|| published["locator"].as_str().and_then(|l| l.split("#artifact:").nth(1)))
+        .or_else(|| published["published"][0]["locator"].as_str().and_then(|l| l.split("#artifact:").nth(1)))
+        .context("Clip was not published")?.to_string();
+    let artifact = artifact.as_str();
+    let (_, mime, path, _) = crate::processing::artifact(case, artifact)?;
+    ensure!(mime == "audio/wav", "Clip has an unexpected format");
+    let hash: String = case.db.query_row("SELECT sha256 FROM artifacts WHERE id=?", [artifact], |r| r.get(0))?;
+    let changed = case.db.execute("UPDATE second_opinions SET status='previewed',clip_artifact_id=?,clip_sha256=?,updated_at=? WHERE id=? AND status='clipping'", params![artifact, hash, now(), row])?;
+    ensure!(changed == 1, "Second opinion changed before the clip was ready");
+    let bytes = std::fs::metadata(path)?.len();
+    preview(case, row).map(|mut value| { value["clip_bytes"] = json!(bytes); value })
+}
+
+/// What will leave the machine, to whom, and what it may cost.
+pub fn preview(case: &Case, row: &str) -> Result<Value> {
+    let item = entry(case, row)?;
+    let vendor: Vendor = serde_json::from_value(item["vendor"].clone())?;
+    let seconds = item["end"].as_f64().unwrap_or(0.0) - item["start"].as_f64().unwrap_or(0.0);
+    Ok(json!({
+        "second_opinion": item,
+        "recipient": match vendor { Vendor::Openrouter => format!("OpenRouter → upstream provider for {}", item["model"].as_str().unwrap_or("")), Vendor::Openai => format!("OpenAI {}", item["model"].as_str().unwrap_or("")) },
+        "sends": format!("{seconds:.1} seconds of 16 kHz mono audio (no file name, tags or case text) and a fixed instruction with the segment times"),
+        "disclosure": vendor.disclosure(),
+        "estimate": {"audio_seconds": seconds, "note": "Cost is shown after the provider reports it; no spending limit is applied."},
+    }))
+}
+
+pub fn entry(case: &Case, row: &str) -> Result<Value> {
+    case.db.query_row("SELECT id,source_id,run_id,ordinals,track,start_seconds,end_seconds,vendor,model,grant_revision,status,clip_artifact_id,clip_sha256,reasons,result,usage,error,decision,created_at,updated_at FROM second_opinions WHERE id=?", [row], |r| Ok(json!({
+        "id": r.get::<_, String>(0)?, "source_id": r.get::<_, String>(1)?, "run_id": r.get::<_, String>(2)?,
+        "ordinals": serde_json::from_str::<Value>(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
+        "track": r.get::<_, i64>(4)?, "start": r.get::<_, f64>(5)?, "end": r.get::<_, f64>(6)?,
+        "vendor": r.get::<_, String>(7)?, "model": r.get::<_, String>(8)?, "grant_revision": r.get::<_, i64>(9)?,
+        "status": r.get::<_, String>(10)?, "clip_artifact_id": r.get::<_, Option<String>>(11)?, "clip_sha256": r.get::<_, Option<String>>(12)?,
+        "reasons": serde_json::from_str::<Value>(&r.get::<_, String>(13)?).unwrap_or(Value::Null),
+        "result": r.get::<_, Option<String>>(14)?.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+        "usage": r.get::<_, Option<String>>(15)?.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+        "error": r.get::<_, String>(16)?, "decision": r.get::<_, Option<String>>(17)?,
+        "created_at": r.get::<_, String>(18)?, "updated_at": r.get::<_, String>(19)?,
+        "label": "Unreviewed remote machine interpretation"
+    }))).context("Second opinion not found")
+}
+
+pub fn list(case: &Case, source_id: &str) -> Result<Value> {
+    let mut statement = case.db.prepare("SELECT id FROM second_opinions WHERE source_id=? ORDER BY created_at DESC LIMIT 100")?;
+    let ids = statement.query_map([source_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(Value::Array(ids.iter().map(|row| entry(case, row)).collect::<Result<Vec<_>>>()?))
+}
+
+/// Everything the desktop layer needs to send, prepared under the case lock.
+pub struct Outbound { pub row: String, pub vendor: Vendor, pub body: Value, pub transmission: String }
+
+const INSTRUCTION: &str = "You are giving a second opinion on a short audio clip from legal evidence. Transcribe only what is audible in each listed time range (seconds from the start of this clip). Do not guess: write [inaudible] for words you cannot make out, and do not add speaker names. Reply with JSON only: {\"segments\":[{\"ordinal\":<number>,\"text\":\"...\"}],\"notes\":\"one short sentence on audio quality or uncertainty\"}.";
+
+pub fn request_body(vendor: Vendor, model: &str, wav: &[u8], windows: &[(i64, f64, f64)]) -> Value {
+    use base64::Engine;
+    let ranges = windows.iter().map(|(o, a, b)| format!("ordinal {o}: {a:.2}–{b:.2} s")).collect::<Vec<_>>().join("; ");
+    let mut body = json!({
+        "model": model,
+        "max_tokens": 1200,
+        "messages": [
+            {"role": "system", "content": INSTRUCTION},
+            {"role": "user", "content": [
+                {"type": "text", "text": format!("Time ranges: {ranges}.")},
+                {"type": "input_audio", "input_audio": {"data": base64::engine::general_purpose::STANDARD.encode(wav), "format": "wav"}}
+            ]}
+        ]
+    });
+    if vendor == Vendor::Openrouter {
+        body["provider"] = json!({"zdr": true, "data_collection": "deny"});
+    }
+    body
+}
+
+/// Re-check everything at send time (grant revision, offline, restriction,
+/// strong clip hash), then open a ledger anchor and a pending transmission.
+pub fn prepare_send(case: &mut Case, row: &str) -> Result<Outbound> {
+    let item = entry(case, row)?;
+    ensure!(item["status"] == "previewed", "Only a previewed clip can be sent, once");
+    let grant = grant(case)?.context("The second-opinion permission was revoked")?;
+    ensure!(item["grant_revision"].as_i64() == Some(grant.revision) && item["vendor"] == json!(grant.vendor) && item["model"] == grant.model.as_str(), "The permission changed since this preview; prepare a new preview");
+    ensure!(!case.settings()?.offline, "Offline mode is on; nothing is sent");
+    let source_id = item["source_id"].as_str().context("Missing source")?;
+    ensure!(!case.source(source_id)?.restricted, "Restricted sources are never sent");
+    let artifact = item["clip_artifact_id"].as_str().context("Clip missing")?;
+    let (_, mime, path, _) = crate::processing::artifact(case, artifact)?;
+    ensure!(mime == "audio/wav" && std::fs::metadata(&path)?.len() <= MAX_CLIP_BYTES, "Clip is missing or too large");
+    let wav = std::fs::read(&path)?;
+    ensure!(crate::case::digest(&wav) == item["clip_sha256"].as_str().unwrap_or(""), "Clip changed since the preview");
+    let start = item["start"].as_f64().unwrap_or(0.0);
+    let run = item["run_id"].as_str().unwrap_or_default().to_string();
+    let mut windows = Vec::new();
+    for ordinal in item["ordinals"].as_array().into_iter().flatten().filter_map(Value::as_i64) {
+        let (a, b): (f64, f64) = case.db.query_row("SELECT start_seconds,end_seconds FROM transcript_segments WHERE run_id=? AND ordinal=?", params![run, ordinal], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        windows.push((ordinal, (a - start).max(0.0), (b - start).max(0.0)));
+    }
+    let body = request_body(grant.vendor, &grant.model, &wav, &windows);
+    let task = id();
+    let transmission = id();
+    case.db.execute_batch("SAVEPOINT second_opinion_send")?;
+    let opened = (|| -> Result<()> {
+        // A ledger anchor so the existing usage totals include this request;
+        // mode 'second_opinion' keeps it out of chat lists and resume paths.
+        let generation: i64 = case.meta("generation")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+        case.db.execute("INSERT INTO tasks(id,prompt,mode,status,scope,edit_scope,budget,generation,created_at,updated_at) VALUES(?,?,'second_opinion','complete',?,'[]',0,?,?,?)",
+            params![task, format!("Second opinion on {} clip", source_id), json!([source_id]).to_string(), generation, now(), now()])?;
+        case.db.execute("INSERT INTO transmissions(id,task_id,payload_hash,model,source_ids,reserved,status,created_at) VALUES(?,?,?,?,?,0,'pending',?)",
+            params![transmission, task, crate::case::digest(body.to_string().as_bytes()), format!("{}:{}", grant.vendor.provider().name(), grant.model), json!([source_id]).to_string(), now()])?;
+        case.db.execute("UPDATE second_opinions SET status='sending',task_id=?,transmission_id=?,updated_at=? WHERE id=? AND status='previewed'", params![task, transmission, now(), row])?;
+        case.audit("second_opinion_sent", json!({"id": row, "vendor": grant.vendor, "model": grant.model, "clip_sha256": item["clip_sha256"], "payload_sha256": crate::case::digest(body.to_string().as_bytes()), "transmission": transmission}))?;
+        Ok(())
+    })();
+    if opened.is_err() { case.db.execute_batch("ROLLBACK TO second_opinion_send")?; }
+    case.db.execute_batch("RELEASE second_opinion_send")?;
+    opened?;
+    Ok(Outbound { row: row.into(), vendor: grant.vendor, body, transmission })
+}
+
+/// Parse a chat-completions reply into bounded per-segment text. Unparseable
+/// replies keep a bounded raw note so nothing is silently discarded.
+pub fn interpret(response: &Value, ordinals: &[i64]) -> Value {
+    let content = response["choices"][0]["message"]["content"].as_str().unwrap_or("");
+    let trimmed = content.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+    let parsed = serde_json::from_str::<Value>(trimmed).ok();
+    let segments: Vec<Value> = parsed.as_ref().and_then(|v| v["segments"].as_array()).into_iter().flatten()
+        .filter_map(|s| {
+            let ordinal = s["ordinal"].as_i64().filter(|o| ordinals.contains(o))?;
+            let text = s["text"].as_str()?.chars().take(MAX_TEXT).collect::<String>();
+            (!text.trim().is_empty()).then(|| json!({"ordinal": ordinal, "text": text}))
+        }).collect();
+    let notes = parsed.as_ref().and_then(|v| v["notes"].as_str()).unwrap_or("").chars().take(500).collect::<String>();
+    json!({"segments": segments, "notes": notes, "raw": if segments.is_empty() { json!(content.chars().take(4000).collect::<String>()) } else { Value::Null },
+           "label": "Unreviewed remote machine interpretation. Model timestamps and text can be wrong; check against the original audio."})
+}
+
+/// Record the outcome of a send. Remote text is stored only in this ledger;
+/// it never changes the transcript until a reviewer decides.
+pub fn finish_send(case: &mut Case, outbound: &Outbound, outcome: Result<Value>) -> Result<Value> {
+    let item = entry(case, &outbound.row)?;
+    ensure!(item["status"] == "sending", "Second opinion changed while sending");
+    match outcome {
+        Ok(response) => {
+            let ordinals: Vec<i64> = item["ordinals"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
+            let result = interpret(&response, &ordinals);
+            let usage = json!({"input_tokens": response["usage"]["prompt_tokens"], "output_tokens": response["usage"]["completion_tokens"],
+                "cost": response["usage"]["cost"].as_f64().filter(|c| c.is_finite() && *c >= 0.0), "upstream_provider": response["provider"].as_str(), "generation_id": response["id"].as_str()});
+            case.db.execute("UPDATE transmissions SET status='received',usage=?,actual=? WHERE id=? AND status='pending'", params![usage.to_string(), usage["cost"].as_f64(), outbound.transmission])?;
+            case.db.execute("UPDATE second_opinions SET status='received',result=?,usage=?,updated_at=? WHERE id=?", params![result.to_string(), usage.to_string(), now(), outbound.row])?;
+            case.audit("second_opinion_received", json!({"id": outbound.row, "segments": result["segments"].as_array().map(Vec::len)}))?;
+        }
+        Err(error) => {
+            let cancelled = error.to_string().contains("cancelled");
+            case.db.execute("UPDATE transmissions SET status='uncertain' WHERE id=? AND status='pending'", [&outbound.transmission])?;
+            case.db.execute("UPDATE second_opinions SET status=?,error=?,updated_at=? WHERE id=?", params![if cancelled { "cancelled" } else { "uncertain" }, error.to_string().chars().take(500).collect::<String>(), now(), outbound.row])?;
+            case.audit("second_opinion_failed", json!({"id": outbound.row, "cancelled": cancelled}))?;
+        }
+    }
+    entry(case, &outbound.row)
+}
+
+/// A reviewer's decision. Accepting or editing creates human-attributed,
+/// accepted transcript corrections that cite the model; the machine
+/// transcript itself is never changed.
+pub fn decide(case: &mut Case, row: &str, decision: &str, edits: &[(i64, String)]) -> Result<Value> {
+    let item = entry(case, row)?;
+    ensure!(item["decision"].is_null(), "A decision was already recorded");
+    ensure!(["accepted_remote", "kept_local", "edited", "unresolved"].contains(&decision), "Unknown decision");
+    let source = item["source_id"].as_str().unwrap_or_default().to_string();
+    let run = item["run_id"].as_str().unwrap_or_default().to_string();
+    let ordinals: Vec<i64> = item["ordinals"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
+    let texts: Vec<(i64, String)> = match decision {
+        "accepted_remote" => {
+            ensure!(item["status"] == "received", "There is no received second opinion to accept");
+            item["result"]["segments"].as_array().into_iter().flatten()
+                .filter_map(|s| Some((s["ordinal"].as_i64()?, s["text"].as_str()?.to_string()))).collect()
+        }
+        "edited" => { ensure!(edits.iter().all(|(o, t)| ordinals.contains(o) && !t.trim().is_empty() && t.len() <= 10000), "Edits must name this clip's segments"); edits.to_vec() }
+        _ => Vec::new(),
+    };
+    ensure!(decision != "accepted_remote" || !texts.is_empty(), "The second opinion returned no segment text to accept");
+    let reason = format!("Reviewer decision on a second opinion from {} {} (unreviewed machine interpretation, checked against the audio)", item["vendor"].as_str().unwrap_or(""), item["model"].as_str().unwrap_or(""));
+    let mut corrections = Vec::new();
+    for (ordinal, text) in texts {
+        let saved = crate::transcription::save_correction(case, &source, &run, ordinal, &text, &reason)?;
+        let id = saved["id"].as_str().context("Correction id missing")?.to_string();
+        crate::transcription::review_correction(case, &id, true)?;
+        corrections.push(json!({"ordinal": ordinal, "correction": id}));
+    }
+    case.db.execute("UPDATE second_opinions SET decision=?,updated_at=? WHERE id=? AND decision IS NULL", params![decision, now(), row])?;
+    case.audit("second_opinion_decided", json!({"id": row, "decision": decision, "corrections": corrections}))?;
+    Ok(json!({"second_opinion": entry(case, row)?, "corrections": corrections}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

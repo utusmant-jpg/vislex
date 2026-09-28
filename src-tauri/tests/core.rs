@@ -83,8 +83,23 @@ fn schema_eight_migrates_seven_with_backup_and_empty_segment_store() {
     drop(c);
     let reopened=Case::open(&root).unwrap();
     assert!(root.join("pre-migration-v7.sqlite3").exists());
-    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),8);
+    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),evidence_desk::case::CASE_SCHEMA);
     assert_eq!(reopened.db.query_row("SELECT count(*) FROM transcript_segments",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+}
+#[test]
+fn schema_nine_adds_the_second_opinion_ledger_without_touching_existing_rows() {
+    let (_dir,c,source)=setup();let root=c.root.clone();
+    let before=c.source(&source).unwrap().sha256;
+    let audit_rows:i64=c.db.query_row("SELECT count(*) FROM audit",[],|r|r.get(0)).unwrap();
+    c.db.execute_batch("DROP TABLE second_opinions; PRAGMA user_version=8;").unwrap();
+    drop(c);
+    let reopened=Case::open(&root).unwrap();
+    assert!(root.join("pre-migration-v8.sqlite3").exists());
+    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),9);
+    assert_eq!(reopened.db.query_row("SELECT count(*) FROM second_opinions",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(reopened.source(&source).unwrap().sha256,before);
+    assert!(reopened.db.query_row("SELECT count(*) FROM audit",[],|r|r.get::<_,i64>(0)).unwrap()>=audit_rows);
+    reopened.verify_audit().unwrap();
 }
 fn enable(case: &mut Case) {
     case.save_settings(Settings {

@@ -128,7 +128,9 @@ fn serial_worker(kind: Option<&str>, physical_available_mib: Option<u64>) -> boo
         // Overview is a navigation pass. Run it beside one ASR/OCR worker
         // only when enough physical memory remains for both sandboxes.
         Some("video_overview") => physical_available_mib.unwrap_or(0)<4096,
-        None | Some("video_ocr"|"full_audio"|"video"|"audio"|"diarization") => true,
+        // media_clip decodes a bounded interval; it is treated as heavy until
+        // measured worker peaks show it can safely run beside ASR or OCR.
+        None | Some("video_ocr"|"full_audio"|"video"|"audio"|"diarization"|"media_clip") => true,
         _ => false,
     }
 }

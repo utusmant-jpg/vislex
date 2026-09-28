@@ -121,6 +121,13 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
         let value=with_case_expected(&app,&case_id,Some(epoch),|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
         kick_automatic(app.clone(),case_id);emit_case_changed(&app);return Ok(value);
     }
+    // Second opinion: the network send runs here, outside the case mutex, after
+    // prepare_send re-checked the grant, restriction, offline mode and clip hash.
+    if action=="send_second_opinion" {
+        let result=send_second_opinion(&app,&args).await;
+        emit_case_changed(&app);
+        return result.map_err(|e|e.to_string());
+    }
     // Explicit account metadata lookup: no case material and no case mutex during network I/O.
     if action == "provider_models" {
         let provider:crate::providers::Provider=serde_json::from_value(args["provider"].clone()).map_err(|e|e.to_string())?;
@@ -312,6 +319,27 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         };
     }
     if ["import_files","import_folder"].contains(&action) {return import_background(app,action,args);}
+    if action=="prepare_second_opinion" {
+        let (case_id,epoch,row,job)={
+            let state=app.state::<AppState>();
+            let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+            let case=guard.as_mut().context("Open a case first")?;
+            ensure_session_epoch(&state,&args)?;
+            anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before preparing a second opinion");
+            require_session_epoch(&state,&args)?;
+            let source=text(&args,"source_id")?;
+            let clip:crate::escalation::ClipRequest=serde_json::from_value(args["clip"].clone())?;
+            let (row,options)=crate::escalation::begin_clip(case,source,text(&args,"run_id")?,&clip)?;
+            let job=match crate::processing::prepare_request(case,source,options) {Ok(job)=>job,Err(error)=>return crate::escalation::attach_clip(case,&row,Err(error))};
+            (case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),row,job)
+        };
+        emit_case_changed(&app);
+        let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
+        let result=with_case_expected(app,&case_id,Some(epoch),|case|{let published=crate::processing::publish_staged(case,&job,staged);crate::escalation::attach_clip(case,&row,published)});
+        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);}
+        emit_case_changed(&app);
+        return result;
+    }
     if ["process_source","probe_pdf","render_page","transcribe_source","scan_sound_events","prepare_redaction","diarize_source","step_video_frame"].contains(&action) {
         let (case_id,epoch,job)={
             let state=app.state::<AppState>();
@@ -775,6 +803,32 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript page");
             crate::transcription::segment_page(c,text(&args,"source_id")?,text(&args,"run_id")?,args["cursor"].as_i64())?
         },
+        "second_opinion_grant" => {
+            json!({"grant":crate::escalation::grant(c)?,"vendors":["openrouter","openai"],
+                "note":"Allows sending short audio clips that you confirm, one batch at a time, to the named model. It never sends case text and is separate from the case text and image permissions."})
+        },
+        "set_second_opinion_grant" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before updating the second-opinion permission");
+            require_session_epoch(&state,&args)?;
+            let choice=if args["revoke"]==true {None} else {Some((serde_json::from_value::<crate::escalation::Vendor>(args["vendor"].clone())?,text(&args,"model")?))};
+            json!({"grant":crate::escalation::set_grant(c,choice)?})
+        },
+        "list_second_opinions" => crate::escalation::list(c,text(&args,"source_id")?)?,
+        "second_opinion_preview" => crate::escalation::preview(c,text(&args,"id")?)?,
+        "cancel_second_opinion" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before cancelling");
+            require_session_epoch(&state,&args)?;
+            let row=text(&args,"id")?;
+            crate::escalation::entry(c,row)?;
+            c.set_meta(&format!("second_opinion_cancel:{row}"),"1")?;
+            json!({"cancel_requested":true})
+        },
+        "decide_second_opinion" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before recording the decision");
+            require_session_epoch(&state,&args)?;
+            let edits=args["edits"].as_array().map(|items|items.iter().filter_map(|e|Some((e["ordinal"].as_i64()?,e["text"].as_str()?.to_string()))).collect::<Vec<_>>()).unwrap_or_default();
+            crate::escalation::decide(c,text(&args,"id")?,text(&args,"decision")?,&edits)?
+        },
         "second_opinion_candidates" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before uncertainty triage");
             crate::escalation::candidates(c,text(&args,"source_id")?,text(&args,"run_id")?)?
@@ -1173,6 +1227,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "transcript_segment_page",
         "transcript_segment_detail",
         "second_opinion_candidates",
+        "second_opinion_grant",
+        "list_second_opinions",
+        "second_opinion_preview",
 
         "artifact_info",
 
@@ -1241,6 +1298,50 @@ fn with_case_expected<T>(
 
 }
 
+async fn send_second_opinion(app:&tauri::AppHandle,args:&Value)->anyhow::Result<Value> {
+    let (case_id,epoch,vendor)={
+        let state=app.state::<AppState>();
+        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+        let case=guard.as_ref().context("Open a case first")?;
+        ensure_session_epoch(&state,args)?;
+        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(args,"case_id")?),"Case changed before sending");
+        require_session_epoch(&state,args)?;
+        let grant=crate::escalation::grant(case)?.context("Allow a second opinion for this case in Settings first")?;
+        (case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),grant.vendor)
+    };
+    let key=provider_key_for_case(vendor.provider()).map_err(|_|anyhow::anyhow!("Save a {} API key in Settings first",vendor.provider().name()))?;
+    let row=text(args,"id")?.to_string();
+    let outbound=with_case_expected(app,&case_id,Some(epoch),|c|{c.set_meta(&format!("second_opinion_cancel:{row}"),"")?;crate::escalation::prepare_send(c,&row)})?;
+    emit_case_changed(app);
+    let url=crate::providers::synthetic_provider_url()?.unwrap_or_else(||vendor.endpoint().to_string());
+    let body=outbound.body.clone();
+    let send=async {
+        let client=crate::providers::inference_client()?;
+        let request=client.post(&url).bearer_auth(&key).json(&body);
+        let request=if vendor==crate::escalation::Vendor::Openrouter {request.header("X-Title","VisLex")} else {request};
+        let mut response=request.send().await?;
+        if !response.status().is_success() {
+            let detail=crate::providers::provider_rejection(&mut response).await;
+            anyhow::bail!("{} returned HTTP {}. {}",vendor.provider().name(),response.status().as_u16(),detail);
+        }
+        let bytes=response.bytes().await?;
+        anyhow::ensure!(bytes.len()<=1024*1024,"Second opinion reply is too large");
+        Ok::<Value,anyhow::Error>(serde_json::from_slice(&bytes)?)
+    };
+    let outcome=tokio::select! {
+        result=send=>result,
+        _=second_opinion_cancelled(app,&case_id,epoch,&row)=>Err(anyhow::anyhow!("Request cancelled; transmission may have occurred")),
+    };
+    with_case_expected(app,&case_id,Some(epoch),|c|crate::escalation::finish_send(c,&outbound,outcome))
+}
+/// Resolves when the reviewer cancels, the case goes offline, or the grant is revoked.
+async fn second_opinion_cancelled(app:&tauri::AppHandle,case_id:&str,epoch:u64,row:&str) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let active=with_case_expected(app,case_id,Some(epoch),|c|Ok(c.meta(&format!("second_opinion_cancel:{row}"))?.as_deref()!=Some("1")&&!c.settings()?.offline&&crate::escalation::grant(c)?.is_some())).unwrap_or(false);
+        if !active {return;}
+    }
+}
 async fn cancelled(app: &tauri::AppHandle, case_id: &str, epoch:u64, task: &str) {
 
     loop {

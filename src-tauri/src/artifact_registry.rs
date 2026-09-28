@@ -8,7 +8,7 @@
 
 /// Version of the accepted artifact format set. Recorded in new backup
 /// manifests; older manifests without the field are treated as version 1.
-pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
+pub const ARTIFACT_FORMAT_VERSION: u32 = 2;
 
 /// Every registered format with the artifact-format version that introduced
 /// it. Formats are only ever added, never removed or renamed, so a backup
@@ -18,6 +18,8 @@ const FORMATS: &[(&str, &str, u32)] = &[
     ("jpg", "image/jpeg", 1),
     ("mp4", "video/mp4", 1),
     ("pdf", "application/pdf", 1),
+    // Version 2: short PCM clips for the optional second opinion.
+    ("wav", "audio/wav", 2),
 ];
 
 /// Registered artifact extensions, paired with their publication MIME types.
@@ -81,6 +83,8 @@ mod tests {
         assert_eq!(extensions_at(1), vec!["json", "jpg", "mp4", "pdf"]);
         let hash = "a".repeat(64);
         assert!(parse_artifact_file_at(&format!("artifacts/{hash}.json"), 1).is_some());
+        assert!(parse_artifact_file_at(&format!("artifacts/{hash}.wav"), 1).is_none(), "a version-1 backup cannot contain a newer format");
+        assert!(parse_artifact_file_at(&format!("artifacts/{hash}.wav"), 2).is_some());
         assert!(parse_artifact_file_at(&format!("artifacts/{hash}.exe"), ARTIFACT_FORMAT_VERSION).is_none());
     }
 }

@@ -437,3 +437,33 @@ fn legacy_manifests_without_artifact_formats_still_restore() {
     let restored = backup::restore(&archive, &dir.path().join("legacy-out.ledcase"), PASSWORD).unwrap();
     restored.verify_audit().unwrap();
 }
+
+/// A backup written at artifact-format version 1 restores after the registry
+/// gained a format, but it cannot smuggle in a format newer than itself.
+#[test]
+fn version_one_backups_restore_under_a_newer_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let seed = Case::create(&dir.path().join("seed.ledcase"), "Version one seed").unwrap();
+    seed.db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
+    let db_bytes = fs::read(seed.root.join("case.sqlite3")).unwrap();
+    drop(seed);
+    let versioned = |files: &[(&str, String)]| {
+        let mut value: Value = serde_json::from_slice(&manifest_for(files)).unwrap();
+        value["artifact_formats"] = json!(1);
+        serde_json::to_vec(&value).unwrap()
+    };
+    let archive = dir.path().join("v1.age");
+    let manifest = versioned(&[("case.sqlite3", sha256(&db_bytes))]);
+    craft_archive(&archive, PASSWORD, &[("case.sqlite3", &db_bytes), ("manifest.json", &manifest)]);
+    let restored = backup::restore(&archive, &dir.path().join("v1-out.ledcase"), PASSWORD).unwrap();
+    restored.verify_audit().unwrap();
+    drop(restored);
+
+    let clip = b"RIFF synthetic clip".to_vec();
+    let clip_name = format!("artifacts/{}.wav", sha256(&clip));
+    let archive = dir.path().join("v1-with-wav.age");
+    let manifest = versioned(&[("case.sqlite3", sha256(&db_bytes)), (&clip_name, sha256(&clip))]);
+    craft_archive(&archive, PASSWORD, &[("case.sqlite3", &db_bytes), (&clip_name, &clip), ("manifest.json", &manifest)]);
+    let error = restore_error(&archive, &dir);
+    assert!(error.contains("newer than its manifest version"), "got: {error}");
+}
