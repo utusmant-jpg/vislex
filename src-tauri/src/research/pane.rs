@@ -34,12 +34,45 @@ pub struct PaneState {
     pub cancel: Arc<AtomicBool>,
     /// The policy the open pane was created with; navigation and pop-up handlers read it.
     policy: Arc<Mutex<Option<NavigationPolicy>>>,
+    /// Case the open pane belongs to; the pane closes when that case is no longer active.
+    owner: Mutex<Option<String>>,
 }
 
 impl PaneState {
     pub fn policy(&self) -> Option<NavigationPolicy> {
         self.policy.lock().unwrap_or_else(|error| error.into_inner()).clone()
     }
+
+    pub fn owner(&self) -> Option<String> {
+        self.owner.lock().unwrap_or_else(|error| error.into_inner()).clone()
+    }
+
+    pub fn set_owner(&self, case_id: Option<String>) {
+        *self.owner.lock().unwrap_or_else(|error| error.into_inner()) = case_id;
+    }
+}
+
+/// Where the pane opens: the research service home, or the loopback mock in debug test mode.
+pub fn start_url() -> String {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
+        if let Ok(mock) = std::env::var("VISLEX_RESEARCH_MOCK_URL") {
+            return mock;
+        }
+    }
+    super::WESTLAW_HOME.to_string()
+}
+
+/// The research browser profile: a sibling of the application's own WebView2 folder, never
+/// inside it or inside a case. Debug test mode may redirect it to a throwaway folder.
+pub fn profile_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
+        if let Some(folder) = std::env::var_os("VISLEX_RESEARCH_PROFILE_DIR") {
+            return Ok(PathBuf::from(folder));
+        }
+    }
+    Ok(app.path().local_data_dir()?.join(format!("{}.research", app.config().identifier)))
 }
 
 fn allowed(policy: &Arc<Mutex<Option<NavigationPolicy>>>, url: &str) -> bool {
@@ -184,9 +217,31 @@ pub fn layout<R: Runtime>(app: &AppHandle<R>, rect: Rect, visible: bool) -> Resu
     Ok(())
 }
 
+/// Signs out by deleting the research profile (cookies and site data). Closes the pane first
+/// and retries while the WebView2 browser process releases its files. Blocks; never call it
+/// on the UI thread.
+pub fn clear_session<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
+    let profile = profile_dir(app)?;
+    close(app)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        match std::fs::remove_dir_all(&profile) {
+            Ok(()) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) if std::time::Instant::now() >= deadline => {
+                return Err(error).context("The research browser profile is still in use; close VisLex and try again");
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
+        }
+    }
+    ensure!(!profile.exists(), "The research browser profile could not be removed");
+    Ok(())
+}
+
 pub fn close<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let state = app.state::<PaneState>();
     state.verified.store(false, Ordering::SeqCst);
+    state.set_owner(None);
     *state.policy.lock().unwrap_or_else(|error| error.into_inner()) = None;
     if let Some(pane) = webview(app) {
         pane.close()?;

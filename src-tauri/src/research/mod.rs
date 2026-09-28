@@ -167,6 +167,67 @@ pub fn ensure_profile_boundary(case_root: &Path, profile: &Path) -> Result<()> {
     Ok(())
 }
 
+const GRANT_KEY: &str = "research_browser_grant";
+const MAX_SSO_HOSTS: usize = 10;
+
+/// Per-case research browser switch. A plain on/off toggle for the user; kept revisioned and
+/// audited like the other case grants. Never set by app-wide preferences, refused offline.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Grant {
+    pub enabled: bool,
+    pub revision: u64,
+    pub changed_at: String,
+    pub destination: String,
+    pub sso_hosts: Vec<String>,
+    pub caps: Caps,
+    /// Access routes the research tools may be used on; the subscription route stays off
+    /// until its no-persistence probe passes (R37).
+    pub routes: Vec<String>,
+    /// Reserved so a supervised mode can be added without a data migration.
+    pub approval_mode: String,
+}
+
+pub fn grant(case: &crate::case::Case) -> Result<Option<Grant>> {
+    case.meta(GRANT_KEY)?.map(|value| serde_json::from_str(&value).map_err(Into::into)).transpose()
+}
+
+/// Whether the case has the research browser switched on.
+pub fn enabled(case: &crate::case::Case) -> bool {
+    grant(case).ok().flatten().is_some_and(|grant| grant.enabled)
+}
+
+/// A single hostname a firm uses for sign-in: lower-case DNS name, no scheme, port or path.
+fn normalize_sso_host(host: &str) -> Result<String> {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let parsed: reqwest::Url = format!("https://{host}/").parse().map_err(|_| anyhow::anyhow!("Invalid sign-in host {host}"))?;
+    ensure!(parsed.host_str() == Some(host.as_str()) && host.contains('.') && parsed.domain().is_some(), "Invalid sign-in host {host}");
+    ensure!(!RESEARCH_HOSTS.contains(&host.as_str()) && !SIGN_ON_HOSTS.contains(&host.as_str()), "{host} is already allowed");
+    Ok(host)
+}
+
+/// Switches the research browser on or off for the case and sets its extra sign-in hosts.
+pub fn set_grant(case: &mut crate::case::Case, enabled: bool, sso_hosts: &[String]) -> Result<Grant> {
+    ensure!(!(enabled && case.settings()?.offline), "Turn off offline mode before enabling the research browser");
+    ensure!(sso_hosts.len() <= MAX_SSO_HOSTS, "At most {MAX_SSO_HOSTS} sign-in hosts");
+    let mut hosts = sso_hosts.iter().map(|host| normalize_sso_host(host)).collect::<Result<Vec<_>>>()?;
+    hosts.sort();
+    hosts.dedup();
+    let previous = grant(case)?;
+    let grant = Grant {
+        enabled,
+        revision: previous.as_ref().map_or(1, |grant| grant.revision + 1),
+        changed_at: chrono::Utc::now().to_rfc3339(),
+        destination: "westlaw".into(),
+        sso_hosts: hosts,
+        caps: previous.as_ref().map_or_else(Caps::default, |grant| grant.caps),
+        routes: vec!["api_keys".into()],
+        approval_mode: "autonomous".into(),
+    };
+    case.set_meta(GRANT_KEY, &serde_json::to_string(&grant)?)?;
+    case.audit("research_grant_changed", serde_json::json!({"enabled": grant.enabled, "revision": grant.revision, "sso_hosts": grant.sso_hosts}))?;
+    Ok(grant)
+}
+
 /// Per-task limits enforced in Rust regardless of model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Caps {

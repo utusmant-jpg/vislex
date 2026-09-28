@@ -6,7 +6,7 @@ $ErrorActionPreference='Stop'
 $repo=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $binary=if ($BinaryPath) { (Resolve-Path -LiteralPath $BinaryPath).Path } else { Join-Path $repo 'src-tauri\target\x86_64-pc-windows-msvc\debug\local-evidence-desk.exe' }
 if (-not (Test-Path -LiteralPath $binary)) {throw 'Build the debug desktop app with --features research first.'}
-$names='VISLEX_TEST_MODE','VISLEX_RESEARCH_MOCK_URL','WEBVIEW2_USER_DATA_FOLDER','WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'
+$names='VISLEX_TEST_MODE','VISLEX_TEST_CASE_ROOT','VISLEX_RESEARCH_MOCK_URL','WEBVIEW2_USER_DATA_FOLDER','WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'
 $saved=@{}; foreach($name in $names){ $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
 $fixture=$null; $process=$null
 try {
@@ -17,6 +17,7 @@ try {
     }
     if(-not $served){throw 'Research fixture server did not start.'}
     $env:VISLEX_TEST_MODE='1'
+    $env:VISLEX_TEST_CASE_ROOT=Join-Path $repo 'artifacts'
     $env:VISLEX_RESEARCH_MOCK_URL="http://127.0.0.1:$FixturePort/"
     $env:WEBVIEW2_USER_DATA_FOLDER=Join-Path $repo ('artifacts\research-spike-webview-'+[Guid]::NewGuid().ToString())
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$Port"

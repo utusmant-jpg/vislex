@@ -101,6 +101,24 @@ fn require_session_epoch(state: &AppState, args: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Native test journeys may run the debug app on the user's real WebView profile, whose UI
+/// reopens the last real case at startup. With `VISLEX_TEST_CASE_ROOT` set, debug test mode
+/// creates, opens and restores cases only inside that folder, so a test run can never open,
+/// migrate or write a real case.
+fn ensure_test_case_path(path: &Path) -> anyhow::Result<()> {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
+        if let Some(root) = std::env::var_os("VISLEX_TEST_CASE_ROOT") {
+            anyhow::ensure!(
+                crate::research::path_components(path).starts_with(&crate::research::path_components(Path::new(&root))),
+                "Test mode opens cases only under VISLEX_TEST_CASE_ROOT"
+            );
+        }
+    }
+    let _ = path;
+    Ok(())
+}
+
 fn provider_key_for_case(provider: crate::providers::Provider) -> anyhow::Result<String> {
     if crate::providers::synthetic_provider_url()?.is_some() {
         return Ok("synthetic-local-transport".into());
@@ -138,6 +156,10 @@ async fn command(app: tauri::AppHandle, webview: tauri::Webview, action: String,
         let profile=PathBuf::from(text(&args,"profile").map_err(|e|e.to_string())?);
         return crate::research::spike::run(app, start, profile).await.map_err(|e|format!("{e:#}"));
     }
+    #[cfg(feature = "research")]
+    if let Some(result) = research_pane_command(&app, &action, &args).await {
+        return result.map_err(|e| format!("{e:#}"));
+    }
     if action=="fetch_public_authority" {
         let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before authority retrieval");require_session_epoch(&state,&args)?;anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),url))})();
         let (case_id,epoch,url)=prepared.map_err(|e|e.to_string())?;
@@ -161,14 +183,118 @@ async fn command(app: tauri::AppHandle, webview: tauri::Webview, action: String,
     }
 
 
+    #[cfg(feature = "research")]
+    let enforce_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || dispatch(&app, &action, args))
 
         .await
 
         .map_err(|e| e.to_string())?;
 
+    // Any command may switch or close the case, go offline or turn research off.
+    #[cfg(feature = "research")]
+    enforce_research_pane(&enforce_app);
     result.map_err(|e| e.to_string())
 
+}
+
+/// Research pane commands. They run here, not in `dispatch`, because creating the child
+/// webview blocks on the UI thread and must never happen under the case mutex.
+#[cfg(feature = "research")]
+async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Value) -> Option<anyhow::Result<Value>> {
+    use crate::research::pane;
+    let result = match action {
+        "open_research_pane" => async {
+            let rect: pane::Rect = serde_json::from_value(args["rect"].clone()).context("Missing research pane position")?;
+            let (case_id, root, sso_hosts) = {
+                let state = app.state::<AppState>();
+                let guard = state.case.lock().unwrap_or_else(|e| e.into_inner());
+                let case = guard.as_ref().context("Open a case first")?;
+                require_session_epoch(&state, args)?;
+                let id = case.meta("id")?.unwrap_or_default();
+                anyhow::ensure!(id == text(args, "case_id")?, "Case changed before opening the research browser");
+                anyhow::ensure!(!case.settings()?.offline, "Offline mode enabled");
+                let grant = crate::research::grant(case)?.filter(|grant| grant.enabled).context("Turn on the research browser for this case in Settings")?;
+                (id, case.root.clone(), grant.sso_hosts)
+            };
+            let state = app.state::<pane::PaneState>();
+            if let Some(owner) = state.owner() {
+                anyhow::ensure!(owner == case_id, "The research browser is open for another case");
+            }
+            let (handle, profile) = (app.clone(), pane::profile_dir(app)?);
+            tauri::async_runtime::spawn_blocking(move || pane::open(&handle, &pane::start_url(), profile, Some(&root), sso_hosts, rect).map(|_| ()))
+                .await
+                .context("Research pane task failed")??;
+            if state.owner().is_none() {
+                state.set_owner(Some(case_id.clone()));
+                with_case_expected(app, &case_id, None, |case| case.audit("research_pane_opened", json!({})))?;
+            }
+            Ok(json!({"open": true}))
+        }
+        .await,
+        "research_pane_layout" => (|| {
+            let rect: pane::Rect = serde_json::from_value(args["rect"].clone()).context("Missing research pane position")?;
+            pane::layout(app, rect, args["visible"].as_bool().unwrap_or(false))?;
+            Ok(Value::Null)
+        })(),
+        "research_pane_state" => (|| {
+            let pane = pane::webview(app);
+            let url = pane.as_ref().and_then(|pane| pane.url().ok());
+            Ok(json!({
+                "open": pane.is_some(),
+                "case_id": app.state::<pane::PaneState>().owner(),
+                "host": url.as_ref().and_then(|url| url.host_str().map(str::to_string)),
+                "secure": url.as_ref().map(|url| url.scheme() == "https"),
+            }))
+        })(),
+        "close_research_pane" => close_research_pane(app, "user"),
+        "clear_research_session" => async {
+            let owner = app.state::<pane::PaneState>().owner();
+            let handle = app.clone();
+            tauri::async_runtime::spawn_blocking(move || pane::clear_session(&handle)).await.context("Research session task failed")??;
+            if let Some(case_id) = owner {
+                let _ = with_case_expected(app, &case_id, None, |case| case.audit("research_session_cleared", json!({})));
+            }
+            Ok(Value::Null)
+        }
+        .await,
+        _ => return None,
+    };
+    Some(result)
+}
+
+#[cfg(feature = "research")]
+fn close_research_pane(app: &tauri::AppHandle, reason: &str) -> anyhow::Result<Value> {
+    use crate::research::pane;
+    let owner = app.state::<pane::PaneState>().owner();
+    let was_open = pane::webview(app).is_some();
+    pane::close(app)?;
+    if let (Some(case_id), true) = (owner, was_open) {
+        let _ = with_case_expected(app, &case_id, None, |case| case.audit("research_pane_closed", json!({"reason": reason})));
+    }
+    Ok(Value::Null)
+}
+
+/// Closes the research pane when its case is no longer the open case, the case went offline,
+/// or the research browser was switched off for it.
+#[cfg(feature = "research")]
+fn enforce_research_pane(app: &tauri::AppHandle) {
+    use crate::research::pane;
+    let Some(owner) = app.state::<pane::PaneState>().owner() else { return };
+    let allowed = {
+        let state = app.state::<AppState>();
+        let guard = state.case.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().is_some_and(|case| {
+            case.meta("id").ok().flatten().as_deref() == Some(owner.as_str())
+                && case.settings().is_ok_and(|settings| !settings.offline)
+                && crate::research::enabled(case)
+        })
+    };
+    if !allowed {
+        let reason = "case changed, offline or research switched off";
+        let _ = pane::close(app);
+        let _ = with_case_expected(app, &owner, None, |case| case.audit("research_pane_closed", json!({"reason": reason})));
+    }
 }
 
 fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result<Value> {
@@ -579,6 +705,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         let path = PathBuf::from(text(&args, "path")?);
+        ensure_test_case_path(&path)?;
 
         let mut c = match action {
 
@@ -1062,6 +1189,16 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             c.audit("ai_scope_changed",json!({"scope":scope}))?;
             json!({"scope":scope})
         },
+        #[cfg(feature = "research")]
+        "research_grant" => serde_json::to_value(crate::research::grant(c)?)?,
+        #[cfg(feature = "research")]
+        "set_research_grant" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before research browser update");
+            require_session_epoch(&state,&args)?;
+            let enabled=args["enabled"].as_bool().context("Missing research browser setting")?;
+            let sso_hosts:Vec<String>=serde_json::from_value(args.get("sso_hosts").cloned().unwrap_or(json!([]))).context("Invalid sign-in hosts")?;
+            serde_json::to_value(crate::research::set_grant(c,enabled,&sso_hosts)?)?
+        },
         "set_direct_media_permission" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before media permission update");require_session_epoch(&state,&args)?;let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
         "ai_config" => serde_json::to_value(crate::providers::load(c)?)?,
         "save_ai_config" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI configuration update");require_session_epoch(&state,&args)?;crate::providers::save(c,serde_json::from_value(args["config"].clone())?)?;c.set_meta("ai_scope","case")?;Value::Null},
@@ -1245,7 +1382,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     if ![
 
         "snapshot",
-        "ai_config", "direct_media_permission", "investigation_workbench", "coverage_map", "incident_replay", "processing_recovery", "team_status", "read_dossier", "read_coverage", "evidence_list", "evidence_read", "evidence_search", "fit_clock",
+        "ai_config", "direct_media_permission", "research_grant", "investigation_workbench", "coverage_map", "incident_replay", "processing_recovery", "team_status", "read_dossier", "read_coverage", "evidence_list", "evidence_read", "evidence_search", "fit_clock",
 
         "full_transcription_status",
         "transcript_segment_page",
