@@ -158,6 +158,8 @@ pub fn prepare(case: &mut Case, parent: &str, phase: &str) -> Result<Vec<String>
                     &format!("task_profile:{child}"),
                     &serde_json::to_string(profile)?,
                 )?;
+                let access=crate::ai_access::task_access(case,parent)?;
+                crate::ai_access::snapshot_task(case,&child,&access)?;
                 case.audit("agent_assigned",json!({"task":child,"parent":parent,"role":role,"phase":phase,"provider":profile.provider,"model":profile.model}))?;
             }
             Ok(())
@@ -279,6 +281,8 @@ pub fn delegate(case: &mut Case, parent: &str, args: &Value) -> Result<Value> {
             case.db.execute("INSERT INTO tasks(id,prompt,mode,status,scope,edit_scope,budget,history,generation,created_at,updated_at) VALUES(?,?,?,'running',?,?,0,?,?,?,?)",params![child,prompt,mode,scope,records,history.to_string(),generation,now(),now()])?;
             case.db.execute("INSERT INTO agent_assignments(task_id,parent_id,role,phase,provider,model) VALUES(?,?,?,?,?,?)",params![child,parent,format!("Delegated task {}",ids.len()+1),phase,serde_json::to_string(&profile.provider)?,profile.model])?;
             case.set_meta(&format!("task_profile:{child}"),&serde_json::to_string(profile)?)?;
+            let access=crate::ai_access::task_access(case,parent)?;
+            crate::ai_access::snapshot_task(case,&child,&access)?;
             case.audit("agent_delegated",json!({"parent":parent,"task":child,"phase":phase,"provider":profile.provider,"model":profile.model}))?;
             ids.push(child);
         }

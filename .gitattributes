@@ -3,6 +3,7 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.png binary
+*.pdf binary
 *.jpg binary
 *.ico binary
 *.wav binary

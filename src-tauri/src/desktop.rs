@@ -703,7 +703,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "start_task" => {
-            anyhow::ensure!(crate::ai_access::read(&app.path().app_config_dir()?)? == crate::ai_access::AccessRoute::ApiKeys,
+            let access = crate::ai_access::read_settings(&app.path().app_config_dir()?)?;
+            anyhow::ensure!(access.route == crate::ai_access::AccessRoute::ApiKeys,
                 "ChatGPT subscription execution is unavailable; no API key was used. Select API keys in Settings to run this task.");
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
@@ -738,6 +739,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             )?;
 
             c.set_meta(&format!("task_profile:{task}"), &serde_json::to_string(&selected)?)?;
+            crate::ai_access::snapshot_task(c, &task, &access)?;
             let conversation = match agent::continue_conversation(c, &task, args["parent_task_id"].as_str()) {
 
                 Ok(id)=>id,
@@ -778,11 +780,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "resume_task" => {
-            anyhow::ensure!(crate::ai_access::read(&app.path().app_config_dir()?)? == crate::ai_access::AccessRoute::ApiKeys,
-                "ChatGPT subscription execution is unavailable; no API key was used. Select API keys in Settings to resume this task.");
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
             let task = text(&args, "task_id")?.to_string();
+            anyhow::ensure!(crate::ai_access::task_access(c,&task)?.route == crate::ai_access::AccessRoute::ApiKeys,
+                "This ChatGPT subscription task cannot resume until subscription execution is available; no API key was used.");
 
             agent::resume(c, &task)?;
 
@@ -805,9 +807,13 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "continue_paused_task" => {
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
             let old=text(&args,"task_id")?;
+            let access=crate::ai_access::task_access(c,old)?;
+            anyhow::ensure!(access.route==crate::ai_access::AccessRoute::ApiKeys,
+                "This ChatGPT subscription task cannot continue until subscription execution is available; no API key was used.");
             let profile=crate::providers::task_profile(c,old)?;
             provider_key_entry(profile.provider)?.get_password().map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
             let (task,conversation)=agent::continue_paused(c,old)?;
+            crate::ai_access::snapshot_task(c,&task,&access)?;
             let case_id=c.meta("id")?.unwrap_or_default();
             let handle=app.clone();let tid=task.clone();
             tauri::async_runtime::spawn(async move {run_agent(handle,case_id,tid).await;});
@@ -987,7 +993,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,task:String,coordinator:bool)
 
     let result=async {
 
-        anyhow::ensure!(crate::ai_access::read(&app.path().app_config_dir()?)? == crate::ai_access::AccessRoute::ApiKeys,
+        anyhow::ensure!(with_case(&app,&case_id,|c|Ok(crate::ai_access::task_access(c,&task)?.route))? == crate::ai_access::AccessRoute::ApiKeys,
             "ChatGPT subscription execution is unavailable; no API key was used");
 
 
@@ -1292,7 +1298,9 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
             if crate::ai_access::read(&app.path().app_config_dir()?)? != crate::ai_access::AccessRoute::ApiKeys {return Ok(None);}
             let provider=crate::providers::load(c)?.provider;
             if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
-            crate::automatic::start_review(c)
+            let task=crate::automatic::start_review(c)?;
+            if let Some(task)=&task {crate::ai_access::snapshot_task_if_new(c,task,&crate::ai_access::read_settings(&app.path().app_config_dir()?)?)?;}
+            Ok(task)
         });
         if let Ok(Some(task))=task {
             let _=app.emit("case-changed",());
@@ -1312,14 +1320,16 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
                 let result=crate::processing::run_prepared(&job.processor);
                 let _=with_case(&app,&case_id,|c|crate::automatic::publish(c,&job,result));
                 let _=app.emit("case-changed",());
-                let task=with_case(&app,&case_id,|c| {if crate::ai_access::read(&app.path().app_config_dir()?)? != crate::ai_access::AccessRoute::ApiKeys {return Ok(None);}let provider=crate::providers::load(c)?.provider;if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}crate::automatic::start_review(c)});
+                let task=with_case(&app,&case_id,|c| {let access=crate::ai_access::read_settings(&app.path().app_config_dir()?)?;if access.route != crate::ai_access::AccessRoute::ApiKeys {return Ok(None);}let provider=crate::providers::load(c)?.provider;if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}let task=crate::automatic::start_review(c)?;if let Some(task)=&task {crate::ai_access::snapshot_task_if_new(c,task,&access)?;}Ok(task)});
                 if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,task).await;});}
             }
             let task=with_case(&app,&case_id,|c| {
                 if crate::ai_access::read(&app.path().app_config_dir()?)? != crate::ai_access::AccessRoute::ApiKeys {return Ok(None);}
                 let provider=crate::providers::load(c)?.provider;
                 if provider_key_entry(provider)?.get_password().is_err(){return Ok(None);}
-                crate::automatic::start_review(c)
+                let task=crate::automatic::start_review(c)?;
+                if let Some(task)=&task {crate::ai_access::snapshot_task_if_new(c,task,&crate::ai_access::read_settings(&app.path().app_config_dir()?)?)?;}
+                Ok(task)
             });
             if let Ok(Some(task))=task {
                 let _=app.emit("case-changed",());

@@ -20,6 +20,14 @@
     if(!second.reused || first.extraction_locator!==second.extraction_locator || !text.total_lines)throw new Error('Document extraction/cache failed: '+name);
     documents.push({name,total_lines:text.total_lines,reused:second.reused});
   }
+  // Release workers can still be preparing imported files after the document checks.
+  for(let i=0;i<240;i++) {
+    const current=await invoke('snapshot');
+    const pending=current.jobs.some(j=>['auto_prepare','full_audio','video_ocr_index','video_overview_index'].includes(j.kind)&&['queued','running'].includes(j.status));
+    if(!pending)break;
+    if(i===239)throw new Error('Import preparation did not settle before chat');
+    await new Promise(resolve=>setTimeout(resolve,500));
+  }
   await invoke('save_settings',{settings:{...snapshot.settings,offline:false,allow_text:true,model:'synthetic'}});
   const inventoryTask=await invoke('start_task',{prompt:'how many files we have?'});
   const inventorySnapshot=await invoke('snapshot');
