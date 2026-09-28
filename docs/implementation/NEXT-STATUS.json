@@ -568,25 +568,73 @@
       "state": "pending"
     },
     "R38": {
-      "state": "pending"
+      "branch": "claude/research-browser",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "state": "verified",
+      "commit": "71333c2",
+      "evidence": "src-tauri/src/research/{mod,driver,cdp,pane}.rs unit tests; docs/implementation/RESEARCH-SPIKE-2026-10.md; native spikes",
+      "commands": [
+        "cargo test --locked (default features) -> 270 passed at 71333c2",
+        "scripts/native-research-spike.ps1 and native-research-spike-startup.ps1 -> ok, isolation invariants asserted"
+      ],
+      "reviewer": "Independent review of 6c83511: 0 blockers, 3 majors, 7 minors; all fixed in 71333c2 and re-verified natively."
     },
     "R39": {
-      "state": "pending"
+      "branch": "claude/research-browser",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "state": "verified",
+      "commit": "71333c2",
+      "evidence": "src-tauri/tests/research.rs grant tests; scripts/native-research-pane.ps1 (refusals, open, layout, auto-close on toggle-off/offline/case switch, sign-out deletes a real pane profile; real app profile and real case untouched)",
+      "commands": [
+        "cargo test --test research -> pass",
+        "powershell -File scripts/native-research-pane.ps1 -> passed"
+      ],
+      "reviewer": "Independent review of 6c83511; findings fixed in 71333c2 (race-safe open, audit before case switch, isolated test profiles)."
     },
     "R40": {
       "state": "pending"
     },
     "R41": {
-      "state": "pending"
+      "branch": "claude/research-browser",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "state": "implemented",
+      "commit": "pending",
+      "evidence": "docs/SECURITY.md research browser paragraphs (pane isolation, refusals, tool rules, audit, test mode)",
+      "remaining": "Update again when capture (R46/R47) lands."
     },
     "R42": {
-      "state": "pending"
+      "branch": "claude/research-browser",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "state": "implemented",
+      "commit": "71333c2",
+      "evidence": "research/snapshot.rs and actions.rs FakeDriver tests; native session checks in the startup spike (typing, trusted click, stale refs, sign-in page refusal, off-site refusal)",
+      "commands": [
+        "cargo test --lib research -> 19 passed",
+        "scripts/native-research-spike-startup.ps1 -> ok"
+      ],
+      "remaining": "Westlaw-specific selector map and macros need the R36 survey."
     },
     "R43": {
-      "state": "pending"
+      "branch": "claude/research-browser",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "state": "implemented",
+      "commit": "cc1f6a2",
+      "evidence": "src-tauri/tests/research.rs agent tests (exposure, checks/audit/caps, exact-call results, run_job, authority refusal, background tasks excluded); tests/master_v4.rs strict schemas incl. research tools",
+      "commands": [
+        "cargo test --locked -> 276 passed at cc1f6a2; 277 after merging main"
+      ],
+      "reviewer": "Independent review of cc1f6a2 in progress."
     },
     "R44": {
-      "state": "pending"
+      "branch": "claude/research-browser",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "state": "implemented",
+      "commit": "cc1f6a2",
+      "evidence": "scripts/native-research-agent.ps1: a real chat task navigates, types, clicks, reads and answers through the agent loop against the loopback fixture with a scripted synthetic provider; receipts complete",
+      "commands": [
+        "powershell -File scripts/native-research-agent.ps1 -> research agent journey passed"
+      ],
+      "reviewer": "Independent review of cc1f6a2 in progress."
     },
     "R45": {
       "state": "pending"
