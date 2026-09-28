@@ -19,10 +19,29 @@ class DocumentFormats(unittest.TestCase):
                 sheet.cell(row,2,f'=A{row}*2')
             workbook.save(job/'input')
             result=process(job,{'kind':'xlsx'})
-            self.assertEqual(len(result['pages']),400)
+            self.assertEqual(len([p for p in result['pages'] if '!' in p['locator']]),400)
+            self.assertEqual(result['pages'][0]['locator'],f'sheet:{sheet.title}')
             self.assertEqual(result['pages'][-1]['locator'],f'sheet:{sheet.title}!B200')
             self.assertIn('Cached value: None',result['pages'][-1]['text'])
             self.assertIn('may be stale or absent',result['limitations'][0])
+
+    def test_xlsx_states_hidden_sheets_rows_and_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job=Path(directory)
+            workbook=Workbook()
+            first=workbook.active; first.title='Visible'
+            for row in range(1,8): first.cell(row,1,f'r{row}'); first.cell(row,3,'c')
+            for row in (3,4,5,7): first.row_dimensions[row].hidden=True
+            first.column_dimensions['C'].hidden=True
+            secret=workbook.create_sheet('Secret'); secret['A1']='SYNTHETIC'; secret.sheet_state='hidden'
+            workbook.save(job/'input')
+            result=process(job,{'kind':'xlsx'})
+            units={p['locator']:p['text'] for p in result['pages']}
+            self.assertIn('Sheet 1 of 2: Visible · visible',units['sheet:Visible'])
+            self.assertIn('Hidden rows: 3–5, 7',units['sheet:Visible'])
+            self.assertIn('Hidden columns: C',units['sheet:Visible'])
+            self.assertIn('Sheet 2 of 2: Secret · hidden sheet',units['sheet:Secret'])
+            self.assertEqual(units['sheet:Secret!A1'],'SYNTHETIC')
 
     def test_pdf_probe_then_page_render_uses_physical_count_and_individual_geometry(self):
         with tempfile.TemporaryDirectory() as directory:

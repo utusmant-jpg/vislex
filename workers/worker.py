@@ -380,8 +380,13 @@ def process(job: Path, request: dict) -> dict:
         with source.open('rb') as formulas_file, source.open('rb') as cached_file:
             formulas = load_workbook(formulas_file, read_only=True, data_only=False, keep_links=False)
             cached = load_workbook(cached_file, read_only=True, data_only=True, keep_links=False)
+            from xlsx_hidden import hidden_structure, summary
+            structure = {entry['name']: entry for entry in hidden_structure(source)}
             count = 0
-            for sheet in formulas:
+            total = len(formulas.sheetnames)
+            for position, sheet in enumerate(formulas, 1):
+                visibility = structure.get(sheet.title, {'name': sheet.title, 'state': sheet.sheet_state, 'hidden_rows': [], 'hidden_columns': [], 'hidden_rows_truncated': False})
+                pages.append({'locator': f'sheet:{sheet.title}', 'text': summary(visibility, position, total), 'method': 'xlsx workbook structure'})
                 cached_rows = iter(cached[sheet.title].iter_rows())
                 for row in sheet.iter_rows():
                     values = next(cached_rows, ())
@@ -398,7 +403,8 @@ def process(job: Path, request: dict) -> dict:
                         pages.append({'locator': f'sheet:{sheet.title}!{cell.coordinate}', 'text': text, 'method': 'openpyxl read-only', 'sheet_state': sheet.sheet_state})
             formulas.close()
             cached.close()
-        notes = ['Formulas are not executed. Cached values may be stale or absent. Row/column visibility and styles require original-workbook review.']
+            metadata['sheets'] = list(structure.values())
+        notes = ['Formulas are not executed. Cached values may be stale or absent.', 'Each sheet unit states hidden or very hidden sheets and hidden rows and columns as declared in the file; cells in them are still listed. Styles, filters and conditional formatting are not reviewed.']
     else:
         raise ValueError('Unsupported processor kind')
     if sum(len(p['text']) for p in pages) > MAX_TEXT:
