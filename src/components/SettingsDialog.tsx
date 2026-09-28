@@ -405,7 +405,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                 <ul className="settings-facts">
                   <li>Cases are stored in .ledcase folders on this machine. Originals are copied, hashed and never modified.</li>
                   <li>AI providers are contacted only when you enable them, and case text or images leave this machine solely through those enabled models.</li>
-                  <li>Keys live in Windows Credential Manager, outside this window and outside case folders.</li>
+                  <li>Saved API keys live in Windows Credential Manager, not in case folders. This window is only told whether a key is saved.</li>
                   <li>OpenRouter requests are sent with its data-collection preference set to deny.</li>
                   <li>No telemetry, hosted file storage, or runtime model downloads.</li>
                 </ul>
