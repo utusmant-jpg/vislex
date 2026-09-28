@@ -193,6 +193,47 @@ def process(job: Path, request: dict) -> dict:
         notes = ['Unverified machine transcription using the selected local multilingual model; check names, numbers, and faint speech against original audio.', 'Only the selected audio track and interval were decoded. Other tracks remain unprocessed.', 'VAD is disabled. Decoder gaps are accounted separately and zero-filled for timing; silence does not establish absence of events.', 'Transcription is not direct audio understanding, speaker identity, or legal interpretation.']
     elif kind == 'video':
         import av
+        if request.get('operation') == 'frame_at':
+            target = float(request.get('target', -1))
+            direction = request.get('direction')
+            if not math.isfinite(target) or target < 0 or direction not in ('previous', 'next'):
+                raise ValueError('Invalid exact frame request')
+            leased_source = Path(request['source_lease'])
+            with av.open(str(leased_source)) as container:
+                video = next((s for s in container.streams if s.type == 'video'), None)
+                if video is None:
+                    raise ValueError('No decodable video stream')
+                origin = float((video.start_time or 0) * video.time_base)
+                seek_before = max(0., target - (30. if direction == 'previous' else 2.))
+                container.seek(max(0, int((seek_before + origin) * av.time_base)), backward=True)
+                selected = None
+                decoded = 0
+                for frame in container.decode(video):
+                    decoded += 1
+                    if decoded > 10000:
+                        raise ValueError('Exact frame decode limit reached')
+                    if frame.pts is None:
+                        continue
+                    relative = float(frame.pts * frame.time_base) - origin
+                    if direction == 'next' and relative > target + 1e-7:
+                        selected = (frame, relative)
+                        break
+                    if direction == 'previous':
+                        if relative < target - 1e-7:
+                            selected = (frame, relative)
+                        else:
+                            break
+                if selected is None:
+                    raise ValueError('No adjacent decoded frame in the supported seek window')
+                frame, relative = selected
+                image = frame.to_image()
+                original_size = list(image.size)
+                image.thumbnail((1920, 1080))
+                image.save(job / 'exact-frame.jpg', quality=92)
+                previews = [{'path': 'exact-frame.jpg', 'pts': frame.pts, 'time_base': str(frame.time_base), 'source_relative_seconds': relative, 'presentation_seconds': float(frame.pts * frame.time_base), 'original_size': original_size, 'output_size': list(image.size)}]
+                metadata = {'video_stream': video.index, 'origin_seconds': origin, 'requested_time': target, 'direction': direction, 'frames_decoded': decoded, 'selection': 'adjacent decoded presentation frame'}
+            notes = ['Exact adjacent decoded frame PTS from the original recording. The JPEG is a resized derivative; original bytes are preserved.', 'Audio and intervening activity were not inspected.']
+            return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': metadata, 'limitations': notes, 'previews': previews}
         start, end = float(request.get('start', 0)), float(request.get('end', 10))
         interval = float(request.get('interval', 1))
         if not (0 <= start < end and end - start <= 30 and interval >= 0.1 and (end-start)/interval <= 24):
@@ -229,21 +270,36 @@ def process(job: Path, request: dict) -> dict:
                     break
             metadata = {'streams': streams, 'video_stream': video.index, 'origin_seconds': origin, 'requested_interval': [start, end], 'sample_interval': interval, 'frames_decoded': decoded, 'sampled_frames': len(previews)}
         notes = ['Ordered sampled frames with actual decoder PTS; gaps between samples were not visually inspected.', 'Frames may be resized to fit 1920x1080. Originals are preserved. Audio was not inspected.', 'No object presence/absence or identity conclusion is established by decoding.']
+    elif kind == 'pdf_probe':
+        import pypdfium2 as pdfium
+        with pdfium.PdfDocument(str(Path(request['source_lease']))) as document:
+            count = len(document)
+            if count < 1:
+                raise ValueError('PDF has no physical pages')
+            first = document[0]
+            metadata = {'page_count': count, 'first_page_size_points': list(first.get_size()), 'numbering': 'physical PDF pages, starting at 1; printed labels may differ'}
+            first.close()
+        notes = ['Page count and geometry are metadata only; no page content was reviewed.']
     elif kind == 'pdf_page':
         import pypdfium2 as pdfium
         number = int(request.get('page', 1))
-        document = pdfium.PdfDocument(str(source))
-        if not 1 <= number <= len(document):
-            raise ValueError('PDF page is outside the document')
-        page = document[number - 1]
-        width, height = page.get_size()
-        scale = min(2.0, 2400/max(width, height))
-        bitmap = page.render(scale=scale)
-        image = bitmap.to_pil().convert('RGB')
-        image.save(job / 'pdf-page.jpg', quality=94)
-        metadata = {'page': number, 'page_count': len(document), 'page_size_points': [width, height], 'render_scale': scale, 'output_size': list(image.size)}
-        previews.append({'path': 'pdf-page.jpg', **metadata})
-        bitmap.close(); page.close(); document.close()
+        with pdfium.PdfDocument(str(Path(request['source_lease']))) as document:
+            if not 1 <= number <= len(document):
+                raise ValueError('PDF page is outside the document')
+            page = document[number - 1]
+            try:
+                width, height = page.get_size()
+                scale = min(2.0, 2400/max(width, height))
+                bitmap = page.render(scale=scale)
+                try:
+                    image = bitmap.to_pil().convert('RGB')
+                    image.save(job / 'pdf-page.jpg', quality=94)
+                finally:
+                    bitmap.close()
+                metadata = {'page': number, 'page_count': len(document), 'page_size_points': [width, height], 'render_scale': scale, 'output_size': list(image.size)}
+                previews.append({'path': 'pdf-page.jpg', **metadata})
+            finally:
+                page.close()
         notes = ['Rendered derivative of the physical PDF page. Printed/Bates labels may differ from the page index.', 'No OCR or interpretation is implied by rendering. Annotations and hidden document structures require separate review.']
     elif kind == 'pdf':
         from pypdf import PdfReader
@@ -325,8 +381,10 @@ def process(job: Path, request: dict) -> dict:
             cached = load_workbook(cached_file, read_only=True, data_only=True, keep_links=False)
             count = 0
             for sheet in formulas:
-                for row in sheet:
-                    for cell in row:
+                cached_rows = iter(cached[sheet.title].iter_rows())
+                for row in sheet.iter_rows():
+                    values = next(cached_rows, ())
+                    for column, cell in enumerate(row):
                         if cell.value is None:
                             continue
                         count += 1
@@ -335,11 +393,11 @@ def process(job: Path, request: dict) -> dict:
                         value = cell.value
                         text = str(value)
                         if cell.data_type == 'f':
-                            text += '\nCached value: ' + str(cached[sheet.title][cell.coordinate].value)
+                            text += '\nCached value: ' + str(values[column].value if column < len(values) else None)
                         pages.append({'locator': f'sheet:{sheet.title}!{cell.coordinate}', 'text': text, 'method': 'openpyxl read-only', 'sheet_state': sheet.sheet_state})
             formulas.close()
             cached.close()
-        notes = ['Formulas are not executed. Cached values may be stale. Row/column visibility and styles require original-workbook review.']
+        notes = ['Formulas are not executed. Cached values may be stale or absent. Row/column visibility and styles require original-workbook review.']
     else:
         raise ValueError('Unsupported processor kind')
     if sum(len(p['text']) for p in pages) > MAX_TEXT:

@@ -1,41 +1,46 @@
 // Design-system primitives shared by every surface: status pills, tooltips, menus,
-// popovers, toasts, skeletons, theme, model picker. Hand-rolled to stay offline.
-import { cloneElement, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+// popovers, combobox, toasts, skeletons, theme, model picker. Offline only.
+import { cloneElement, createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { Command } from 'cmdk';
 import {
-  AlertTriangle, Check, CheckCircle2, ChevronDown, CircleDashed, Copy, History, LoaderCircle, Lock,
-  Moon, Search, Sun, XCircle,
+  AlertTriangle, Check, CheckCircle2, ChevronDown, CircleDashed, CircleStop, Copy, History, Info, LoaderCircle, Lock,
+  Moon, Search, Settings2, Sun, X, XCircle,
 } from 'lucide-react';
 import { api, citationParts } from './bridge';
 import { configuredProfiles, profileKey, providerNames } from './aiProfiles';
+import { MotionConfig } from 'motion/react';
 import type { AIProfile, Snapshot } from './types';
 
 /* ---------------------------------- status --------------------------------- */
 
 export type PillState =
-  | 'unreviewed' | 'running' | 'queued' | 'paused' | 'complete' | 'accepted' | 'failed'
+  | 'unreviewed' | 'running' | 'queued' | 'paused' | 'stopped' | 'complete' | 'accepted' | 'failed'
   | 'interrupted' | 'stale' | 'protected' | 'restricted' | 'needs-attention' | 'cancelled';
 
 const pillTone: Record<PillState, string> = {
-  unreviewed: 'neutral', running: 'accent', queued: 'accent', paused: 'neutral', complete: 'success',
+  unreviewed: 'neutral', running: 'accent', queued: 'accent', paused: 'neutral', stopped: 'neutral', complete: 'success',
   accepted: 'success', failed: 'danger', interrupted: 'danger', stale: 'warning',
   protected: 'neutral', restricted: 'restricted', 'needs-attention': 'warning', cancelled: 'neutral',
 };
 
 function pillIcon(state: PillState, size: number) {
   switch (state) {
-    case 'running': case 'queued': return <LoaderCircle size={size} className="spin" />;
-    case 'complete': case 'accepted': return <CheckCircle2 size={size} />;
-    case 'failed': return <XCircle size={size} />;
-    case 'interrupted': return <AlertTriangle size={size} />;
-    case 'stale': case 'needs-attention': return <History size={size} />;
-    case 'protected': case 'restricted': return <Lock size={size} />;
-    default: return <CircleDashed size={size} />;
+    case 'running': case 'queued': return <LoaderCircle size={size} className="spin" aria-hidden="true" />;
+    case 'complete': case 'accepted': return <CheckCircle2 size={size} aria-hidden="true" />;
+    case 'failed': return <XCircle size={size} aria-hidden="true" />;
+    case 'interrupted': return <AlertTriangle size={size} aria-hidden="true" />;
+    case 'stale': case 'needs-attention': return <History size={size} aria-hidden="true" />;
+    case 'protected': case 'restricted': return <Lock size={size} aria-hidden="true" />;
+    case 'stopped': case 'cancelled': return <CircleStop size={size} aria-hidden="true" />;
+    default: return <CircleDashed size={size} aria-hidden="true" />;
   }
 }
 
-export function StatusPill({ state, label, small }: { state: PillState; label: string; small?: boolean }) {
-  return <span className={`pill tone-${pillTone[state]} ${small ? 'pill-sm' : ''}`}>{pillIcon(state, small ? 11 : 12)}{label}</span>;
+/** Icon + label. The label ellipsizes when its container is narrow; pass
+ *  `title` wherever that can happen so the full text stays available. */
+export function StatusPill({ state, label, small, title }: { state: PillState; label: string; small?: boolean; title?: string }) {
+  return <span className={`pill tone-${pillTone[state]} ${small ? 'pill-sm' : ''}`} title={title}>{pillIcon(state, small ? 12 : 13)}{label}</span>;
 }
 
 /* ---------------------------------- time ----------------------------------- */
@@ -58,7 +63,7 @@ export function relativeTime(iso: string | null | undefined): string {
   if (ms < 3_600_000) return `${Math.max(1, Math.round(ms / 60_000))}m ago`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
   if (ms < 7 * 86_400_000) return `${Math.round(ms / 86_400_000)}d ago`;
-  return new Date(ms > 0 ? Date.now() - ms : Date.parse(iso)).toLocaleDateString();
+  return new Date(Date.parse(iso)).toLocaleDateString();
 }
 
 export function formatClock(seconds: number, withMs = false): string {
@@ -72,39 +77,70 @@ export function formatClock(seconds: number, withMs = false): string {
 
 /* --------------------------------- tooltip --------------------------------- */
 
-export function Tooltip({ text, shortcut, children }: { text: string; shortcut?: string; children: ReactElement }) {
-  const [point, setPoint] = useState<{ x: number; y: number; below: boolean } | null>(null);
+// Moving between neighbouring controls shows the next tooltip without the
+// initial delay, like native toolbars.
+let lastTooltipHidden = 0;
+
+export function Tooltip({ text, shortcut, children, side = 'auto' }: { text: string; shortcut?: string; children: ReactElement; side?: 'auto' | 'top' | 'bottom' | 'right' }) {
+  const id = useId();
+  const [point, setPoint] = useState<{ x: number; y: number; side: 'top' | 'bottom' | 'right' } | null>(null);
   const timer = useRef<number>(0);
   const target = useRef<HTMLElement | null>(null);
-  const original = children.props as { onMouseEnter?: unknown; onMouseLeave?: unknown; onFocus?: unknown; onBlur?: unknown; ref?: unknown };
-  const show = () => {
-    window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => {
-      const rect = target.current?.getBoundingClientRect();
-      if (rect) setPoint({ x: rect.left + rect.width / 2, y: rect.top, below: false });
-    }, 450);
+  const original = children.props as {
+    onMouseEnter?: (event: React.MouseEvent) => void; onMouseLeave?: (event: React.MouseEvent) => void;
+    onFocus?: (event: React.FocusEvent) => void; onBlur?: (event: React.FocusEvent) => void;
+    onKeyDown?: (event: React.KeyboardEvent) => void; ref?: React.Ref<HTMLElement>;
+    'aria-describedby'?: string;
   };
-  const hide = () => { window.clearTimeout(timer.current); setPoint(null); };
-  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const show = (immediate: boolean) => {
+    window.clearTimeout(timer.current);
+    const display = () => {
+      const rect = target.current?.getBoundingClientRect();
+      if (!rect) return;
+      const placement = side === 'auto' ? (rect.top < 56 ? 'bottom' : 'top') : side;
+      if (placement === 'right') setPoint({ x: rect.right + 10, y: rect.top + rect.height / 2, side: 'right' });
+      else setPoint({ x: Math.max(16, Math.min(window.innerWidth - 16, rect.left + rect.width / 2)), y: placement === 'bottom' ? rect.bottom : rect.top, side: placement });
+    };
+    if (immediate || Date.now() - lastTooltipHidden < 450) display(); else timer.current = window.setTimeout(display, 450);
+  };
+  const hide = () => { window.clearTimeout(timer.current); setPoint(current => { if (current) lastTooltipHidden = Date.now(); return null; }); };
+  useEffect(() => {
+    window.addEventListener('scroll', hide, true);
+    return () => { window.clearTimeout(timer.current); window.removeEventListener('scroll', hide, true); };
+  }, []);
+  const style: React.CSSProperties | undefined = point ? point.side === 'right'
+    ? { position: 'fixed', left: point.x, top: point.y, transform: 'translateY(-50%)' }
+    : { position: 'fixed', left: point.x, top: point.y, transform: point.side === 'bottom' ? 'translate(-50%, 8px)' : 'translate(-50%, calc(-100% - 8px))' } : undefined;
   return <>
     {cloneElement(children, {
       ref: (node: HTMLElement | null) => {
         target.current = node;
         if (typeof original.ref === 'function') original.ref(node);
+        else if (original.ref && 'current' in original.ref) original.ref.current = node;
       },
-      onMouseEnter: (event: unknown) => { void (original.onMouseEnter as ((e: unknown) => void) | undefined)?.(event); show(); },
-      onMouseLeave: (event: unknown) => { void (original.onMouseLeave as ((e: unknown) => void) | undefined)?.(event); hide(); },
-      onFocus: (event: unknown) => { void (original.onFocus as ((e: unknown) => void) | undefined)?.(event); show(); },
-      onBlur: (event: unknown) => { void (original.onBlur as ((e: unknown) => void) | undefined)?.(event); hide(); },
+      'aria-describedby': point ? [original['aria-describedby'], id].filter(Boolean).join(' ') : original['aria-describedby'],
+      onMouseEnter: (event: React.MouseEvent) => { original.onMouseEnter?.(event); show(false); },
+      onMouseLeave: (event: React.MouseEvent) => { original.onMouseLeave?.(event); hide(); },
+      onFocus: (event: React.FocusEvent) => { original.onFocus?.(event); show(true); },
+      onBlur: (event: React.FocusEvent) => { original.onBlur?.(event); hide(); },
+      onKeyDown: (event: React.KeyboardEvent) => { original.onKeyDown?.(event); if (event.key === 'Escape') hide(); },
     } as Record<string, unknown>)}
     {point ? createPortal(
-      <div className="tooltip" role="tooltip" style={{ left: point.x, top: point.y }} data-below={point.below}>
-        {text}{shortcut ? <kbd>{shortcut}</kbd> : null}
-      </div>, document.body) : null}
+      <div id={id} className="tooltip" role="tooltip" style={style} data-side={point.side}>
+        {text}{shortcut ? <span className="tooltip-keys">{shortcut.split('+').map(key => <kbd key={key}>{key}</kbd>)}</span> : null}
+      </div>, overlayHost(target.current)) : null}
   </>;
 }
 
 /* ----------------------------- menus and popovers --------------------------- */
+
+/** Where an overlay is rendered. While a modal <dialog> is open it sits in the
+ *  top layer and the rest of the document is inert, so an overlay opened from
+ *  inside it must render inside that dialog to be visible and clickable.
+ *  Positions stay viewport-fixed: the dialog has no transform once open. */
+export function overlayHost(anchor: Element | null | undefined): HTMLElement {
+  return anchor?.closest<HTMLElement>('dialog[open]') ?? document.body;
+}
 
 export type MenuItem =
   | { label: string; icon?: ReactNode; shortcut?: string; danger?: boolean; disabled?: boolean; onSelect: () => void }
@@ -113,12 +149,15 @@ export type MenuItem =
 function menuNode(items: MenuItem[], close: () => void, highlight: number, setHighlight: (index: number) => void) {
   const selectable: number[] = [];
   const body = items.map((item, index) => {
-    if (item === 'separator') return <div className="menu-separator" key={index} />;
+    if (item === 'separator') return <div className="menu-separator" role="separator" key={index} />;
     if (!item.disabled) selectable.push(index);
     return <button
       key={index}
       className={`menu-item ${item.danger ? 'danger' : ''} ${highlight === index ? 'highlighted' : ''}`}
+      role="menuitem"
+      data-menu-index={index}
       disabled={item.disabled}
+      tabIndex={-1}
       onMouseEnter={() => setHighlight(index)}
       onClick={() => { close(); item.onSelect(); }}>
       {item.icon}{item.label}{item.shortcut ? <kbd>{item.shortcut}</kbd> : null}
@@ -127,13 +166,20 @@ function menuNode(items: MenuItem[], close: () => void, highlight: number, setHi
   return { body, selectable };
 }
 
-export function MenuPanel({ items, onClose, style, className }: { items: MenuItem[]; onClose: () => void; style?: React.CSSProperties; className?: string }) {
+export function MenuPanel({ items, onClose, style, className, label = 'Actions', anchor }: { items: MenuItem[]; onClose: () => void; style?: React.CSSProperties; className?: string; label?: string; anchor?: Element | null }) {
   const [highlight, setHighlight] = useState(-1);
+  const returnFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  const [host] = useState(() => overlayHost(anchor ?? returnFocus.current));
+  const panel = useRef<HTMLDivElement>(null);
+  useEffect(() => { panel.current?.focus(); return () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }; }, []);
+  // Roving focus: the highlighted item holds DOM focus, so assistive
+  // technology announces each item as the arrow keys move through the menu.
+  useEffect(() => { if (highlight >= 0) panel.current?.querySelector<HTMLElement>(`[data-menu-index="${highlight}"]`)?.focus(); }, [highlight]);
   const { body, selectable } = menuNode(items, onClose, highlight, setHighlight);
   const move = (direction: 1 | -1) => {
     if (!selectable.length) return;
     const position = selectable.indexOf(highlight);
-    const next = position === -1 ? (direction === 1 ? 0 : selectable.length - 1) : selectable[(position + direction + selectable.length) % selectable.length];
+    const next = position === -1 ? (direction === 1 ? selectable[0] : selectable[selectable.length - 1]) : selectable[(position + direction + selectable.length) % selectable.length];
     setHighlight(next);
   };
   return createPortal(<>
@@ -142,50 +188,173 @@ export function MenuPanel({ items, onClose, style, className }: { items: MenuIte
       className={`menu-panel ${className ?? ''}`}
       style={style}
       role="menu"
+      aria-label={label}
       onKeyDown={event => {
         if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
         else if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
-        else if (event.key === 'Enter' && highlight >= 0) { event.preventDefault(); const item = items[highlight]; onClose(); if (item !== 'separator' && !item.disabled) item.onSelect(); }
+        else if (event.key === 'Home') { event.preventDefault(); if (selectable.length) setHighlight(selectable[0]); }
+        else if (event.key === 'End') { event.preventDefault(); if (selectable.length) setHighlight(selectable[selectable.length - 1]); }
+        else if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); onClose(); }
+        else if ((event.key === 'Enter' || event.key === ' ') && highlight >= 0) { event.preventDefault(); const item = items[highlight]; onClose(); if (item !== 'separator' && !item.disabled) item.onSelect(); }
+        else if (event.key.length === 1 && /\S/.test(event.key)) {
+          const letter = event.key.toLowerCase();
+          const match = selectable.find(index => { const item = items[index]; return item !== 'separator' && item.label.toLowerCase().startsWith(letter); });
+          if (match !== undefined) setHighlight(match);
+        }
       }}
       tabIndex={-1}
-      ref={node => node?.focus()}>
+      ref={panel}>
       {body}
     </div>
-  </>, document.body);
+  </>, host);
 }
 
 export function ContextMenu({ items, children }: { items: MenuItem[]; children: ReactElement }) {
   const [point, setPoint] = useState<{ x: number; y: number } | null>(null);
-  const original = children.props as { onContextMenu?: (event: React.MouseEvent) => void };
-  const clamped = (x: number, y: number) => ({ x: Math.min(x, window.innerWidth - 230), y: Math.min(y, window.innerHeight - 40 - items.length * 34) });
+  const target = useRef<Element | null>(null);
+  const original = children.props as { onContextMenu?: (event: React.MouseEvent) => void; onKeyDown?: (event: React.KeyboardEvent) => void };
+  const clamped = (x: number, y: number) => ({ x: Math.max(8, Math.min(x, window.innerWidth - 232)), y: Math.max(8, Math.min(y, window.innerHeight - 16 - items.length * 32)) });
   return <>
     {cloneElement(children, {
       onContextMenu: (event: React.MouseEvent) => {
         original.onContextMenu?.(event);
         if (event.defaultPrevented) return;
         event.preventDefault();
+        target.current = event.currentTarget as Element;
         setPoint(clamped(event.clientX, event.clientY));
       },
+      onKeyDown: (event: React.KeyboardEvent) => {
+        original.onKeyDown?.(event);
+        if (event.defaultPrevented || !(event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        target.current = event.currentTarget as Element;
+        setPoint(clamped(rect.left + 12, rect.bottom));
+      },
     } as Record<string, unknown>)}
-    {point ? <MenuPanel items={items} onClose={() => setPoint(null)} style={{ left: point.x, top: point.y, position: 'fixed' }} /> : null}
+    {point ? <MenuPanel items={items} anchor={target.current} onClose={() => setPoint(null)} style={{ left: point.x, top: point.y, position: 'fixed' }} /> : null}
   </>;
 }
 
-export function AnchoredPopover({ anchor, onClose, children, className, align = 'start' }: {
-  anchor: HTMLElement | null; onClose: () => void; children: ReactNode; className?: string; align?: 'start' | 'end';
+/** Non-modal anchored panel: flips above when there is no room below, closes on
+ *  Escape or outside click, and returns focus to whatever opened it. */
+export function AnchoredPopover({ anchor, onClose, children, className, align = 'start', width = 340, label }: {
+  anchor: HTMLElement | null; onClose: () => void; children: ReactNode; className?: string; align?: 'start' | 'end'; width?: number; label?: string;
 }) {
+  const panel = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<React.CSSProperties | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  useEffect(() => () => {
+    const active = document.activeElement;
+    if (returnFocus.current?.isConnected && (!active || active === document.body || panel.current?.contains(active) || !active.isConnected)) returnFocus.current.focus();
+  }, []);
   useLayoutEffect(() => {
     if (!anchor) return;
     const rect = anchor.getBoundingClientRect();
-    const left = align === 'end' ? Math.max(8, rect.right - 340) : rect.left;
-    setStyle({ position: 'fixed', left: Math.min(left, window.innerWidth - 356), top: Math.min(rect.bottom + 6, window.innerHeight - 120), width: 340 });
-  }, [anchor, align]);
-  if (!anchor || !style) return null;
+    const panelWidth = Math.min(width, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(align === 'end' ? rect.right - panelWidth : rect.left, window.innerWidth - panelWidth - 8));
+    const height = panel.current?.offsetHeight ?? 0;
+    const below = window.innerHeight - rect.bottom - 12;
+    const above = rect.top - 12;
+    const flip = height > below && above > below;
+    setStyle(flip
+      ? { position: 'fixed', left, bottom: window.innerHeight - rect.top + 6, width: panelWidth, maxHeight: above - 8 }
+      : { position: 'fixed', left, top: rect.bottom + 6, width: panelWidth, maxHeight: Math.max(160, below - 8) });
+  }, [anchor, align, width, style === null]);
+  if (!anchor) return null;
   return createPortal(<>
     <div className="menu-scrim" onClick={onClose} onContextMenu={event => { event.preventDefault(); onClose(); }} />
-    <div className={`popover-panel ${className ?? ''}`} style={style}>{children}</div>
-  </>, document.body);
+    <div
+      ref={panel}
+      role="dialog"
+      aria-label={label}
+      className={`popover-panel ${className ?? ''}`}
+      // Unmeasured, the panel is transparent rather than visibility:hidden so the
+      // filter's autoFocus lands in it: a hidden input cannot take focus, and
+      // focus left on the trigger would let Escape close an enclosing dialog.
+      style={style ?? { position: 'fixed', opacity: 0, pointerEvents: 'none', top: 0, left: 0, width }}
+      onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); event.preventDefault(); onClose(); } }}>
+      {children}
+    </div>
+  </>, overlayHost(anchor));
+}
+
+/* --------------------------------- combobox --------------------------------- */
+
+export type ComboboxOption = {
+  value: string;
+  label: string;
+  group?: string;
+  description?: string;
+  keywords?: string[];
+  leading?: ReactNode;
+  meta?: ReactNode;
+  disabled?: boolean;
+};
+
+/** Searchable single-select built on cmdk: one listbox, grouped options,
+ *  arrow/Enter selection from the filter, Escape closes and restores focus.
+ *  The trigger's accessible name carries the current value ("Label: value"),
+ *  since an aria-label replaces the visible text a custom trigger renders. */
+export function Combobox({ label, value, options, onChange, trigger, valueText, placeholder = 'Select…', searchPlaceholder = 'Filter…', emptyText = 'Nothing matches.', disabled, footer, width = 340, align = 'start', className }: {
+  label: string; value: string; options: ComboboxOption[]; onChange: (value: string) => void;
+  trigger?: (state: { open: boolean; selected?: ComboboxOption }) => ReactNode;
+  /** The value as the trigger shows it; defaults to the selected option's label. */
+  valueText?: string;
+  placeholder?: string; searchPlaceholder?: string; emptyText?: string; disabled?: boolean;
+  footer?: (close: () => void) => ReactNode; width?: number; align?: 'start' | 'end'; className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement | null>(null);
+  const selected = options.find(option => option.value === value);
+  const spokenValue = valueText ?? selected?.label ?? (value || '');
+  const groups = [...new Set(options.map(option => option.group ?? ''))];
+  const close = () => setOpen(false);
+  return <>
+    <button
+      ref={anchor}
+      type="button"
+      className={className ?? 'combobox-trigger'}
+      aria-label={spokenValue ? `${label}: ${spokenValue}` : label}
+      aria-haspopup="listbox"
+      aria-expanded={open}
+      disabled={disabled}
+      onClick={() => setOpen(state => !state)}
+      onKeyDown={event => { if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !open) { event.preventDefault(); setOpen(true); } }}>
+      {trigger ? trigger({ open, selected }) : <>
+        <span className={`combobox-value ${selected ? '' : 'placeholder'}`}>{selected?.label ?? (value || placeholder)}</span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </>}
+    </button>
+    {open ? <AnchoredPopover anchor={anchor.current} onClose={close} width={width} align={align} label={label} className="combobox-popover">
+      <Command
+        className="combobox"
+        label={label}
+        loop
+        defaultValue={value || undefined}
+        filter={(item, search, keywords) => matchesModelFilter([item, ...(keywords ?? [])].join(' '), search) ? 1 : 0}>
+        <div className="combobox-input"><Search size={14} aria-hidden="true" /><Command.Input autoFocus placeholder={searchPlaceholder} aria-label={`Filter ${label.toLowerCase()}`} /></div>
+        <Command.List className="combobox-list">
+          <Command.Empty className="combobox-empty">{emptyText}</Command.Empty>
+          {groups.map(group => <Command.Group key={group || 'default'} heading={group || undefined} className="combobox-group">
+            {options.filter(option => (option.group ?? '') === group).map(option => <Command.Item
+              key={option.value}
+              value={option.value}
+              keywords={[option.label, ...(option.keywords ?? [])]}
+              disabled={option.disabled}
+              className="combobox-item"
+              onSelect={() => { onChange(option.value); close(); }}>
+              {option.leading}
+              <span className="combobox-item-name">{option.label}{option.description ? <small className="combobox-item-description">{option.description}</small> : null}</span>
+              {option.meta ? <span className="combobox-meta">{option.meta}</span> : null}
+              {option.value === value ? <Check size={14} aria-label="Selected" /> : null}
+            </Command.Item>)}
+          </Command.Group>)}
+        </Command.List>
+        {footer ? <div className="combobox-footer">{footer(close)}</div> : null}
+      </Command>
+    </AnchoredPopover> : null}
+  </>;
 }
 
 /* ---------------------------------- toasts --------------------------------- */
@@ -200,10 +369,12 @@ let toastId = 1;
 function emit() { for (const listener of toastListeners) listener(toastState); }
 
 function push(kind: ToastKind, title: string, detail?: string, action?: ToastEntry['action'], sticky = kind === 'error') {
+  const existing = toastState.find(toast => toast.kind === kind && toast.title === title && toast.detail === detail);
+  if (existing) return existing.id;
   const id = toastId++;
   toastState = [...toastState.slice(-2), { id, kind, title, detail, action }];
   emit();
-  if (!sticky) window.setTimeout(() => dismiss(id), 6000);
+  if (!sticky) window.setTimeout(() => dismiss(id), action ? 8000 : 6000);
   return id;
 }
 
@@ -213,23 +384,50 @@ export const notify = {
   error: (title: string, detail?: string) => push('error', title, detail),
   success: (title: string, detail?: string, action?: ToastEntry['action']) => push('success', title, detail, action),
   info: (title: string, detail?: string) => push('info', title, detail),
-  fromError: (prefix: string, error: unknown) => push('error', prefix, String(error)),
+  fromError: (prefix: string, error: unknown) => push('error', prefix, String(error).replace(/^Error:\s*/, '')),
   dismiss,
 };
 
+const toastIcon = { error: XCircle, success: CheckCircle2, info: Info } as const;
+
+/** The top open modal dialog, or <body>. A modal <dialog> makes the rest of the
+ *  document inert, so toasts shown while one is open must render inside it. */
+function toastHost(): HTMLElement {
+  const modal = [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')].filter(dialog => {
+    try { return dialog.matches(':modal'); } catch { return true; }
+  });
+  return modal.at(-1) ?? document.body;
+}
+
 export function ToastStack() {
   const [toasts, setToasts] = useState(toastState);
+  const [host, setHost] = useState<HTMLElement>(() => document.body);
   useEffect(() => { toastListeners = [...toastListeners, setToasts]; return () => { toastListeners = toastListeners.filter(listener => listener !== setToasts); }; }, []);
+  // Follow modal dialogs opening and closing only while a toast is showing.
+  const showing = toasts.length > 0;
+  useLayoutEffect(() => {
+    if (!showing) return;
+    const update = () => setHost(current => { const next = toastHost(); return next === current ? current : next; });
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['open'] });
+    return () => observer.disconnect();
+  }, [showing]);
   return createPortal(<div className="toast-stack" role="region" aria-label="Notifications" aria-live="polite">
-    {toasts.map(toast => <div className={`toast toast-${toast.kind}`} key={toast.id}>
-      <div className="toast-body">
-        <strong>{toast.title}</strong>
-        {toast.detail ? <details className="toast-detail"><summary>Show detail</summary><span>{toast.detail}</span></details> : null}
-      </div>
-      {toast.action ? <button className="toast-action" onClick={() => { toast.action?.run(); dismiss(toast.id); }}>{toast.action.label}</button> : null}
-      <button className="icon-button" aria-label="Dismiss notification" onClick={() => dismiss(toast.id)}>✕</button>
-    </div>)}
-  </div>, document.body);
+    {toasts.map(toast => {
+      const Icon = toastIcon[toast.kind];
+      return <div className={`toast toast-${toast.kind}`} key={toast.id} role={toast.kind === 'error' ? 'alert' : 'status'}>
+        <Icon size={17} className="toast-icon" aria-hidden="true" />
+        <div className="toast-body">
+          <strong>{toast.title}</strong>
+          {toast.detail && toast.kind !== 'error' ? <p className="toast-message">{toast.detail}</p> : null}
+          {toast.detail && toast.kind === 'error' ? <details className="toast-detail"><summary>Show detail</summary><span>{toast.detail}</span></details> : null}
+        </div>
+        {toast.action ? <button className="toast-action" onClick={() => { toast.action?.run(); dismiss(toast.id); }}>{toast.action.label}</button> : null}
+        <button className="icon-button icon-button-sm" aria-label="Dismiss notification" onClick={() => dismiss(toast.id)}><X size={14} /></button>
+      </div>;
+    })}
+  </div>, host.isConnected ? host : document.body);
 }
 
 /* --------------------------------- skeletons -------------------------------- */
@@ -247,26 +445,68 @@ export function SkeletonPage() {
 
 /* ---------------------------------- theme ---------------------------------- */
 
-type Theme = 'dark' | 'light';
-const ThemeContext = createContext<{ theme: Theme; setTheme: (theme: Theme) => void }>({ theme: 'dark', setTheme: () => {} });
+export type ThemePreference = 'dark' | 'light' | 'system';
+export type DensityPreference = 'comfortable' | 'compact';
+type ResolvedTheme = 'dark' | 'light';
+const ThemeContext = createContext<{
+  theme: ThemePreference;
+  resolvedTheme: ResolvedTheme;
+  setTheme: (theme: ThemePreference) => void;
+  density: DensityPreference;
+  setDensity: (density: DensityPreference) => void;
+}>({ theme: 'system', resolvedTheme: 'dark', setTheme: () => {}, density: 'comfortable', setDensity: () => {} });
+
+function systemTheme(): ResolvedTheme {
+  return typeof window.matchMedia === 'function' && !window.matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark';
+}
+
+function storedTheme(): ThemePreference {
+  try {
+    const saved = localStorage.getItem('vislex-theme');
+    return saved === 'dark' || saved === 'light' ? saved : 'system';
+  } catch { return 'system'; }
+}
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
-  const setTheme = (next: Theme) => {
+  const [theme, setThemeState] = useState<ThemePreference>(storedTheme);
+  const [system, setSystem] = useState<ResolvedTheme>(systemTheme);
+  const [density, setDensityState] = useState<DensityPreference>(() => {
+    try { return localStorage.getItem('vislex-density') === 'compact' ? 'compact' : 'comfortable'; }
+    catch { return 'comfortable'; }
+  });
+  const resolvedTheme = theme === 'system' ? system : theme;
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const changed = () => setSystem(media.matches ? 'dark' : 'light');
+    changed();
+    media.addEventListener?.('change', changed);
+    return () => media.removeEventListener?.('change', changed);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolvedTheme === 'dark' ? '#121419' : '#f6f5f1');
+  }, [resolvedTheme]);
+  useEffect(() => { document.documentElement.dataset.density = density; }, [density]);
+  const setTheme = (next: ThemePreference) => {
     setThemeState(next);
-    document.documentElement.dataset.theme = next;
     try { localStorage.setItem('vislex-theme', next); } catch { /* storage unavailable */ }
   };
-  return <ThemeContext.Provider value={{ theme, setTheme }}>{children}</ThemeContext.Provider>;
+  const setDensity = (next: DensityPreference) => {
+    setDensityState(next);
+    try { localStorage.setItem('vislex-density', next); } catch { /* storage unavailable */ }
+  };
+  // Motion components honour the OS reduced-motion preference everywhere.
+  return <ThemeContext.Provider value={{ theme, resolvedTheme, setTheme, density, setDensity }}><MotionConfig reducedMotion="user">{children}</MotionConfig></ThemeContext.Provider>;
 }
 
 export function useTheme() { return useContext(ThemeContext); }
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  return <Tooltip text={theme === 'dark' ? 'Light appearance' : 'Dark appearance'}>
-    <button className="icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-      {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+  const { resolvedTheme, setTheme } = useTheme();
+  return <Tooltip text={resolvedTheme === 'dark' ? 'Switch to light appearance' : 'Switch to dark appearance'}>
+    <button className="icon-button" aria-label="Toggle color theme" onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}>
+      {resolvedTheme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
     </button>
   </Tooltip>;
 }
@@ -280,7 +520,7 @@ export function CopyButton({ text, label, small }: { text: string; label?: strin
       className={`icon-button ${small ? 'icon-button-sm' : ''}`}
       aria-label={label ?? 'Copy to clipboard'}
       onClick={() => { void navigator.clipboard.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); }); }}>
-      {copied ? <Check size={small ? 12 : 14} /> : <Copy size={small ? 12 : 14} />}
+      {copied ? <Check size={small ? 13 : 15} /> : <Copy size={small ? 13 : 15} />}
     </button>
   </Tooltip>;
 }
@@ -288,6 +528,8 @@ export function CopyButton({ text, label, small }: { text: string; label?: strin
 /* -------------------------------- citations --------------------------------- */
 
 export function citationLabel(locator: string): string {
+  const pinned = /^R(\d+)L(\d+)-L(\d+)$/.exec(locator);
+  if (pinned) return `rev ${pinned[1]} · ${pinned[2]}–${pinned[3]}`;
   if (/^L\d+-L\d+$/.test(locator)) return locator.replaceAll('L', '');
   if (locator === 'image') return 'Image';
   if (locator === 'media') return 'Media';
@@ -295,103 +537,157 @@ export function citationLabel(locator: string): string {
   return locator;
 }
 
-type CitationPreview = { lines: { number: number; text: string }[] } | 'loading' | null;
+type CitationPreview = { lines: { number: number; text: string }[]; revision?: number } | 'loading' | 'failed' | null;
+/** The most cited lines a hover card fetches; longer ranges say how much is shown. */
+const PREVIEW_LINE_LIMIT = 12;
 
+/** Amber chip that opens the exact cited source. Hovering or focusing it shows
+ *  the cited lines (the pinned revision for R-form citations) without leaving
+ *  the current view. */
 export function CitationChip({ value, onOpen, previewable = true }: { value: string; onOpen: (sourceId: string, locator: string) => void; previewable?: boolean }) {
   const parts = citationParts(value);
   const [preview, setPreview] = useState<CitationPreview>(null);
   const [open, setOpen] = useState(false);
   const timer = useRef<number>(0);
   const host = useRef<HTMLButtonElement | null>(null);
+  const card = useRef<HTMLDivElement | null>(null);
   useEffect(() => () => window.clearTimeout(timer.current), []);
   if (!parts) return <span className="citation-raw">{value}</span>;
   const lineMatch = /^L(\d+)-L(\d+)$/.exec(parts.locator);
-  const startLine = lineMatch ? Number(lineMatch[1]) : null;
+  const pinnedMatch = /^R(\d+)L([1-9]\d*)-L([1-9]\d*)$/.exec(parts.locator);
+  const startLine = lineMatch ? Number(lineMatch[1]) : pinnedMatch ? Number(pinnedMatch[2]) : null;
+  const endLine = lineMatch ? Number(lineMatch[2]) : pinnedMatch ? Number(pinnedMatch[3]) : null;
+  // Only the cited range is fetched and labelled as cited; no context lines.
+  const citedCount = startLine !== null && endLine !== null ? Math.max(1, endLine - startLine + 1) : 0;
+  const pinnedRevision = pinnedMatch ? Number(pinnedMatch[1]) : null;
   const supported = previewable && startLine !== null;
+  const reveal = (delay: number) => {
+    if (!supported) return;
+    if (preview === null) loadPreview();
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setOpen(true), delay);
+  };
+  const conceal = () => { window.clearTimeout(timer.current); setOpen(false); };
+  // The card sits a few pixels from the chip: leaving either starts a short
+  // close delay that entering the other cancels, so the pointer can cross the
+  // gap to scroll the lines or press "Open in viewer".
+  const concealSoon = () => { window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setOpen(false), 200); };
+  const leavesPreview = (next: EventTarget | null) => !(next instanceof Node && (card.current?.contains(next) || host.current?.contains(next)));
   return <span className="citation-host">
     <button
       ref={host}
       className="citation"
       title={value}
-      onClick={() => onOpen(parts.sourceId, parts.locator)}
-      onMouseEnter={() => {
-        if (!supported) return;
-        if (preview === null) loadPreview();
-        timer.current = window.setTimeout(() => setOpen(true), 350);
-      }}
-      onMouseLeave={() => { window.clearTimeout(timer.current); setOpen(false); }}>
+      aria-label={`Open cited evidence, ${citationLabel(parts.locator)}`}
+      onClick={() => { conceal(); onOpen(parts.sourceId, parts.locator); }}
+      onMouseEnter={() => reveal(350)}
+      onMouseLeave={concealSoon}
+      onFocus={event => { if (event.currentTarget.matches(':focus-visible')) reveal(0); }}
+      onBlur={event => { if (leavesPreview(event.relatedTarget)) conceal(); }}
+      onKeyDown={event => { if (event.key === 'Escape') conceal(); }}>
       {citationLabel(parts.locator)}
     </button>
-    {open && supported ? <AnchoredPopover anchor={host.current} onClose={() => setOpen(false)} className="citation-preview">
-      {preview === 'loading' ? <p className="small muted citation-preview-loading">Loading lines…</p> : null}
-      {preview && preview !== 'loading' ? <div className="citation-preview-lines">
-        {preview.lines.map(line => <div className="citation-preview-line" key={line.number}><span className="line-number">{line.number}</span><span>{line.text}</span></div>)}
-        <button className="quiet citation-preview-open" onClick={() => onOpen(parts.sourceId, parts.locator)}>Open in viewer</button>
-      </div> : null}
-    </AnchoredPopover> : null}
+    {open && supported ? createPortal(<CitationPreviewCard anchor={host.current} preview={preview} pinnedRevision={pinnedRevision} range={{ start: startLine!, end: startLine! + citedCount - 1 }} cardRef={card} onOpen={() => { conceal(); onOpen(parts.sourceId, parts.locator); }} onEnter={() => window.clearTimeout(timer.current)} onLeave={concealSoon} onFocusLeave={next => { if (leavesPreview(next)) conceal(); }} />, overlayHost(host.current)) : null}
   </span>;
 
   function loadPreview() {
     if (startLine === null) return;
     setPreview('loading');
-    api<{ text: string; start: number }>('read_text', { source_id: parts!.sourceId, start: startLine, count: 10 })
+    // Hover previews show the pinned revision's wording for R-form citations,
+    // so a superseded extraction cannot silently preview as current text.
+    const request = pinnedRevision !== null
+      ? api<{ text: string; start: number; revision?: number }>('read_extract_revision', { source_id: parts!.sourceId, revision: pinnedRevision, start: startLine, count: Math.min(citedCount, PREVIEW_LINE_LIMIT) })
+      : api<{ text: string; start: number; revision?: number }>('read_text', { source_id: parts!.sourceId, start: startLine, count: Math.min(citedCount, PREVIEW_LINE_LIMIT) });
+    const last = startLine + Math.min(citedCount, PREVIEW_LINE_LIMIT) - 1;
+    request
       .then(page => {
-        const lines = page.text.split('\n').map((text, offset) => ({ number: page.start + offset, text })).filter(line => line.text.trim());
-        setPreview({ lines: lines.slice(0, 8) });
+        const lines = page.text.split('\n').map((text, offset) => ({ number: page.start + offset, text }))
+          .filter(line => line.number >= startLine && line.number <= last && line.text.trim());
+        setPreview({ lines, revision: page.revision });
       })
-      .catch(() => setPreview(null));
+      .catch(() => setPreview('failed'));
   }
+}
+
+function CitationPreviewCard({ anchor, preview, pinnedRevision, range, cardRef: card, onOpen, onEnter, onLeave, onFocusLeave }: { anchor: HTMLElement | null; preview: CitationPreview; pinnedRevision: number | null; range: { start: number; end: number }; cardRef: React.RefObject<HTMLDivElement | null>; onOpen: () => void; onEnter: () => void; onLeave: () => void; onFocusLeave: (next: EventTarget | null) => void }) {
+  const [style, setStyle] = useState<React.CSSProperties>({ position: 'fixed', visibility: 'hidden' });
+  useLayoutEffect(() => {
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const width = Math.min(420, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    const height = card.current?.offsetHeight ?? 200;
+    const top = rect.bottom + height + 12 > window.innerHeight ? Math.max(8, rect.top - height - 6) : rect.bottom + 6;
+    setStyle({ position: 'fixed', left, top, width });
+  }, [anchor, preview]);
+  return <div ref={card} className="popover-panel citation-preview" style={style} role="group" aria-label="Cited lines preview" onMouseEnter={onEnter} onMouseLeave={onLeave} onBlur={event => onFocusLeave(event.relatedTarget)}>
+    <div className="citation-preview-head">{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} · {pinnedRevision !== null ? `extraction revision ${pinnedRevision} · as cited` : 'current extraction'}</div>
+    {preview === 'loading' || preview === null ? <p className="small muted citation-preview-loading">Loading cited lines…</p> : null}
+    {preview === 'failed' ? <p className="small muted citation-preview-loading">Preview unavailable. Open the source to inspect it.</p> : null}
+    {preview && typeof preview === 'object' ? <div className="citation-preview-lines">
+      {preview.lines.map(line => <div className="citation-preview-line" key={line.number}><span className="line-number">{line.number}</span><span>{line.text}</span></div>)}
+      {!preview.lines.length ? <p className="small muted">The cited lines are blank in this extraction.</p> : null}
+    </div> : null}
+    {preview && typeof preview === 'object' && range.end - range.start + 1 > PREVIEW_LINE_LIMIT ? <p className="small muted">Showing the first {PREVIEW_LINE_LIMIT} of {range.end - range.start + 1} cited lines. Open the source for the rest.</p> : null}
+    <button className="quiet citation-preview-open" onClick={onOpen}>Open in viewer</button>
+  </div>;
 }
 
 /* ------------------------------- model picker ------------------------------- */
 
+/** Only facts VisLex actually knows: the saved default, and OpenRouter's
+ *  published ":free" variant naming. Capability is never guessed from a name. */
 export function modelBadges(model: string, isDefault: boolean): string[] {
-  const id = model.toLowerCase();
   const badges: string[] = [];
   if (isDefault) badges.push('Default');
-  if (/o1|o3|o4|reason|thinking|opus|r1/.test(id)) badges.push('Reasoning');
-  else if (/mini|flash|haiku|fast|nano/.test(id)) badges.push('Fast');
-  if (/vision|4o|gemini|gpt-5|sonnet|opus/.test(id)) badges.push('Vision');
-  return badges.slice(0, 2);
+  if (/:free$/i.test(model)) badges.push('Free variant');
+  return badges;
+}
+
+/** Subsequence fuzzy match: every filter character appears in order. */
+export function matchesModelFilter(model: string, filter: string): boolean {
+  const needle = filter.trim().toLowerCase();
+  if (!needle) return true;
+  const haystack = model.toLowerCase();
+  if (haystack.includes(needle)) return true;
+  let index = 0;
+  for (const character of haystack) {
+    if (character === needle[index]) index += 1;
+    if (index === needle.length) return true;
+  }
+  return false;
 }
 
 export function ModelPicker({ snapshot, selected, onSelect, onManage, disabled }: {
   snapshot: Snapshot | null; selected: AIProfile | undefined; onSelect: (profile: AIProfile) => void;
   onManage: () => void; disabled?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState('');
-  const anchor = useRef<HTMLButtonElement | null>(null);
-  const profiles = (snapshot ? configuredProfiles(snapshot).filter(profile => profile.allow_text) : []);
-  const groups = Object.entries(providerNames)
-    .map(([provider, name]) => ({ provider, name, models: profiles.filter(profile => profile.provider === provider && profile.model.toLowerCase().includes(filter.toLowerCase())) }))
-    .filter(group => group.models.length);
+  const profiles = snapshot ? configuredProfiles(snapshot).filter(profile => profile.allow_text) : [];
   const defaultKey = snapshot ? `${snapshot.ai_config?.provider ?? 'openai'}:${snapshot.settings.model}` : '';
-  return <>
-    <Tooltip text="Choose the model for your next message">
-      <button ref={anchor} className="model-picker" disabled={disabled || !profiles.length} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-        <span className="model-provider-dot" data-provider={selected?.provider} />
-        <span className="model-name">{selected?.model ?? 'Configure AI'}</span>
-        <ChevronDown size={13} />
-      </button>
-    </Tooltip>
-    {open ? <AnchoredPopover anchor={anchor.current} onClose={() => { setOpen(false); setFilter(''); }} className="model-popover">
-      <div className="model-filter"><Search size={13} /><input autoFocus aria-label="Filter models" placeholder="Filter models…" value={filter} onChange={event => setFilter(event.target.value)} /></div>
-      {!profiles.length ? <p className="small muted model-empty">No models configured. Add a provider key and choose models.</p> :
-        !groups.length ? <p className="small muted model-empty">No models match “{filter}”.</p> : null}
-      {groups.map(group => <div key={group.provider} className="model-group" role="listbox" aria-label={group.name}>
-        <div className="model-group-label">{group.name}</div>
-        {group.models.map(profile => {
-          const key = profileKey(profile);
-          return <button key={key} role="option" aria-selected={selected ? profileKey(selected) === key : false} className={`model-option ${selected && profileKey(selected) === key ? 'selected' : ''}`} onClick={() => { onSelect(profile); setOpen(false); setFilter(''); }}>
-            <span className="model-provider-dot" data-provider={profile.provider} />
-            <span className="model-option-name">{profile.model}</span>
-            {modelBadges(profile.model, key === defaultKey).map(badge => <span className="model-badge" key={badge}>{badge}</span>)}
-            {selected && profileKey(selected) === key ? <Check size={13} /> : null}
-          </button>;
-        })}
-      </div>)}
-      <button className="model-manage" onClick={() => { setOpen(false); onManage(); }}>Manage models &amp; keys…</button>
-    </AnchoredPopover> : null}
-  </>;
+  const options: ComboboxOption[] = profiles.map(profile => ({
+    value: profileKey(profile),
+    label: profile.model,
+    group: providerNames[profile.provider],
+    keywords: [providerNames[profile.provider]],
+    leading: <span className="provider-dot" data-provider={profile.provider} aria-hidden="true" />,
+    meta: modelBadges(profile.model, profileKey(profile) === defaultKey).map(badge => <span className="badge" key={badge}>{badge}</span>),
+  }));
+  return <Combobox
+    label="Model for your next message"
+    value={selected ? profileKey(selected) : ''}
+    options={options}
+    disabled={disabled || !profiles.length}
+    className="model-picker"
+    valueText={selected?.model ?? 'Configure AI'}
+    width={360}
+    searchPlaceholder="Filter permitted models…"
+    emptyText="No permitted model matches."
+    onChange={key => { const profile = profiles.find(item => profileKey(item) === key); if (profile) onSelect(profile); }}
+    trigger={() => <>
+      <span className="provider-dot" data-provider={selected?.provider} aria-hidden="true" />
+      <span className="model-name">{selected?.model ?? 'Configure AI'}</span>
+      <ChevronDown size={13} aria-hidden="true" />
+    </>}
+    footer={close => <button className="menu-item" onClick={() => { close(); onManage(); }}><Settings2 size={15} />Manage models &amp; permissions…</button>}
+  />;
 }

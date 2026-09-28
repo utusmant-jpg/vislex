@@ -4,82 +4,862 @@
   "meaning": "pending = proposed; implemented = code exists but acceptance incomplete; verified = specified task evidence recorded, not product certification; blocked requires reason. Edit manually, never infer from test counts.",
   "tasks": {
     "R00": {
-      "state": "pending"
+      "state": "verified",
+      "evidence": "docs/implementation/BASELINE-2026-09-21.md",
+      "environment": "Windows 10.0.26200 x64; Python 3.11.15; node 24.14.1/npm 11.11.0; rustc/cargo 1.98.1",
+      "commands": [
+        "python -m unittest discover -s scripts -p test_vislex_plan.py -> exit 0, 10 tests",
+        "python scripts/vislex_plan.py check -> exit 0",
+        "npm ci -> exit 0 (after clearing stale esbuild service lock; see baseline report)",
+        "npm test -> exit 0, 20 passed",
+        "npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 115 passed, 0 failed, 22 ignored",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0"
+      ],
+      "unrun_checks": "21 sandbox.rs + 1 discovery.rs packaged-worker tests ignored; native-acceptance.ps1, packaged journey, visual checks, CI runner all NOT RUN (release blockers)",
+      "note": "Characterization only; no production code changed. Verified as baseline characterization per task acceptance, not product certification.",
+      "commit": "92d364a2c1a4e8302b03a6d66d5b25273043ff60"
     },
     "R01": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "dff960a4d3ee58004e2dc2ddfa9374cb6c860406",
+      "evidence": "src-tauri/tests/backup_artifacts.rs (6 new/extended tests); docs/implementation/BASELINE-2026-09-21.md",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; branch impl/wave1-repairs",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test backup_artifacts -> exit 0, 10 passed (was 4; red-first: registered_transcripts_publish_backup_restore_round_trip FAILED pre-fix with 'The file exists. (os error 80)')",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test journey -> exit 0, 4 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 121 passed, 0 failed, 22 ignored",
+        "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --tests -> no warnings in changed files"
+      ],
+      "reviewer": "separate read-only adversarial review agent: PASS, 7 minor findings; findings 3,4,5 addressed in-code (artifact_formats type confusion closed, conflict test order-independent, anti-re-pin regression added); findings 1,2 (tampered-DB reserved names, case-renamed transcripts) fail closed at restore, not app-reachable; finding 6 (VISLEX_WORKER_PATH override debug-only) noted",
+      "unrun_checks": "packaged-worker sandbox suite (21 ignored), native acceptance, packaged Windows journey, visual checks NOT RUN (release blockers); reparse-point creation untested (needs symlink privilege)",
+      "note": "Real transcription::begin+publish via VISLEX_WORKER_PATH stand-in worker; publish -> backup -> restore -> reopen -> review -> second backup -> second restore verified with hash pinning and unique archive paths."
     },
     "R02": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "1250c7b4220d67b21a26f7ab35a29cb2e9bcf65b",
+      "evidence": "src-tauri/tests/extract_revisions.rs (4 new tests); src/bridge.test.ts, src/markdown.test.ts, src/citationLocator.test.ts (shared grammar fixtures); red-first shown by reverting evidence.rs (test pinned_citation_cannot_validate... FAILED pre-fix); 5f42cb8 historical agent read, finding click and record export regressions; src/citationJourney.test.tsx chat, finding and historical copy interactions; packaged Dev20 synthetic source-to-export journey",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test extract_revisions -> exit 0, 8 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 125 passed, 0 failed, 22 ignored",
+        "npm test -> exit 0, 26 passed (6 files)",
+        "npm run build -> exit 0 (tsc -b + vite)",
+        "cargo clippy --tests -> no warnings in R02-touched code",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test extract_revisions -> exit 0, 10 passed",
+        "npm test -> exit 0, 47 passed (11 files)",
+        "npm run build -> exit 0",
+        "npm test -> exit 0, 48 passed (11 files); npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 21 AppContainer tests (194 total before late-response-only test)",
+        "powershell -File scripts/native-acceptance.ps1 -BinaryPath artifacts/VisLex 0.3.0-dev20/VisLex.exe -Port 9342 -> exit 0, six synthetic sources, process/search/chat/preview/export/redaction/discovery; VISLEX_TEST_MODE=1, zero provider calls"
+      ],
+      "reviewer": "separate read-only adversarial review agent: PASS with 1 major + minors; major (pinned citation clicks displayed ACTIVE text in EvidenceViewer) FIXED (read_extract_revision fetch + historical banner + chip hover reads pinned revision); grammar canonicalization (no signs/leading zeros) applied to both Rust and TS; verify_source parity added to pinned branch",
+      "unrun_checks": "Live-case citation review and full release journey remain R23 gates; no real provider call was made in the synthetic native smoke.",
+      "note": "Grammar: evidence:SOURCE#R<rev>L<a>-L<b> pinned to immutable extract_revisions (bounds validated against that revision's own text); legacy #L kept and labeled active-text; read_text/read_text_revision emit pinned locators; wording survives supersession, restart, backup/restore (tested). Schema-5 fixture genuinely drops extract_revisions before migration. Agent now has a scoped, bounded read_extract_revision tool; retrieval ledger records its historical revision. Finding click and record export retain the exact pinned locator.",
+      "native_check": "Dev-build native smoke run 2026-09-22 against artifacts/VisLex 0.3.0-dev (exe sha256 7a2bbed2... byte-identical to tested build): production path create_case -> import 6 synthetic fixtures -> process_source (sandboxed worker, artifact locator + 2 fidelity limitations) -> read_text emitted #R1L1-L8 revision 1 -> validate_citation returned valid/revision_binding=pinned/revision=1 -> write_record succeeded. The stock scripts/test-native.ps1 offline invariant (fresh case offline) fails on this machine because the user's consent-marked ai-defaults.json (model gpt-5.6-luna, online) legitimately initializes new cases per R04; all other steps passed. UI click-path and visual checks remain unrun. Dev20 exact binary SHA256 E678396D5109DC7199BE1C2C8C94FF78F22D768BD5555137946A05C44E147056 passed native synthetic source-to-export run 1790431831373, with zero provider calls; new DOM tests exercise historical chat/finding/copy; Rust tests cover restart and encrypted restore."
     },
     "R03": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "fef2a86a7095db181d27df48d2072915204fd0ce; acceptance evidence 2d07d16",
+      "evidence": "src-tauri/tests/dossier.rs adversarial structured-publication suite and production finish/review/export status parity; src/components/QuestionDossier.test.tsx DOM display of support state separate from human acceptance; heuristics content_tokens/is_qualifier/citation_matches deleted from dossier.rs",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 33 passed (was 28; 3 flawed-invariant tests replaced per plan rules, 8 adversarial added)",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 130 passed, 0 failed, 22 ignored",
+        "npm test -> exit 0, 26 passed; npm run build -> exit 0",
+        "cargo clippy --tests -> no new warnings in changed code",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 36 passed after exported block-status parity test",
+        "npm test -- --run -> exit 0, 77 passed in 15 files including QuestionDossier block-status DOM test",
+        "npm run build -> exit 0 after acceptance evidence commit"
+      ],
+      "reviewer": "first adversarial review: FAIL with empirical probes (save_dossier schema blocker, strict-mode optional convention, non-factual smuggling, hypothesis-only certification, legacy empty-id binding); ALL fixed in-code with pinning tests; second-round items: reviewer also verified stamp binding, rendered-text indirection, replay resistance and legacy readability as sound",
+      "unrun_checks": "No live provider run of the new tool schemas; strict-mode acceptance is verified against the codebase's required+nullable convention only. Live provider compatibility and packaged release journey remain R19/R23 gates, not R03 certification claims.",
+      "note": "Certification now requires: structured blocks, every factual block claim-bound and block-review-supported against the exact candidate stamp, every block kind-disciplined and reviewed, every supported claim carried by a factual block, all claims supported, checks done, citations present, evidence current. Prose-only answers: visible 'unstructured free text' gap, never certified. Old completions/dossiers remain readable (serde default ids; empty ids unaddressable)."
     },
     "R04": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "1250c7b4220d67b21a26f7ab35a29cb2e9bcf65b",
+      "evidence": "src-tauri/tests/master_v4.rs app_preferences_apply_exactly_the_chosen_policy_without_forcing (rewritten from forcing-asserting test); src-tauri/tests/core.rs unmarked_ai_defaults..., direct_media_consent_round_trips..., case_grants_and_consents_survive_backup_and_restore_exactly, image_grant_without_text_grant_is_refused...; src/components/SettingsDialog.tsx Case permissions panel; scripts/native-consent-acceptance.ps1/.js packaged UI grant/revoke/restart on an isolated empty synthetic case without VISLEX_TEST_MODE",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 134 passed, 0 failed, 22 ignored",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 49 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test master_v4 -> exit 0, 24 passed",
+        "npm test -> exit 0, 26 passed; npm run build -> exit 0",
+        "cargo clippy --tests -> no warnings in changed files",
+        "powershell -File scripts/native-consent-acceptance.ps1 -> exit 0; packaged Dev20; offline UI grant text/images/direct media, challenge review, single execution, revoke all media, restart retains revocation",
+        "npm test -> exit 0, 48 passed (11 files); npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including case grant backup/restore and outgoing policy tests"
+      ],
+      "reviewer": "adversarial review: FAIL with 1 major (primary-model per-profile checkboxes shown but never applied) — FIXED truthfully (primary governed by case permissions, stated in UI); minors fixed: corrupt ai-defaults can no longer block case creation (ignored, case starts local), images-requires-text enforced server-side with test; known limitations recorded: first save after upgrade visibly confirms historically forced values as defaults (displayed as-is; no provenance marker per grant), no DOM interaction harness exists for the consent panel",
+      "unrun_checks": "No live provider transmission or client-case grant change was used. Release-wide live-case and installer checks remain R23 gates.",
+      "note": "apply_app_settings saves exactly the chosen policy (no forced online/text/images/standard/zero-budget); ai-defaults.json carries consent_version 2 and unmarked legacy files are ignored at create_case only; direct media has a visible audited opt-in; offline emergency-stop copy is truthful about in-flight requests; reopen/restore protection preserved. Dev20 packaged exe SHA256 E678396D5109DC7199BE1C2C8C94FF78F22D768BD5555137946A05C44E147056. Native UI test used no test-mode bypass and restored the machine ai-defaults.json bytes in finally. Synthetic case retained in artifacts. Model switching and backup/restore are covered by Rust acceptance tests."
     },
     "R05": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "9f5576e",
+      "evidence": "src-tauri/src/automatic.rs per-task completion event and typed pause marker; src-tauri/src/agent.rs pause recording; src-tauri/tests/core.rs repeat-reconciliation, partial completion, same-source revision, own-report, late response and continuation regressions",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 73 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, 194 passed before final typed-pause and late-response commits; focused tests after those commits passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 78 passed at 2e256c7",
+        "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0; executable SHA256 8E5EBC70CDBC130692013D3071BD356E0AB8C220816CBEE718ADC099F7960730",
+        "powershell -NoProfile -File scripts/native-provider-race.ps1 -> exit 0 twice; final run 1790457345850"
+      ],
+      "reviewer": "Single-owner separate code review pass: task ID scopes completion events; pause marker is tied to exact reason and falls back for legacy tasks; late response receives only on paused old task and cannot publish into new task.",
+      "unrun_checks": "A real provider's full declared-check completion remains unverified and belongs to the release gate. The coordinator run epoch is the distinct task ID, not a separate durable counter.",
+      "verification_commit": "2e256c7",
+      "verification_evidence": "Debug packaged Tauri bridge with loopback-only synthetic provider transport: first response delayed four seconds, original task stopped with its transmission uncertain, continuation sent a second request and completed from response 2. After the delayed response arrived, original stayed paused and continuation answer excluded response 1. Synthetic case DB readback showed old transmission uncertain and new transmission received. The mock saw exactly two requests and no held response at test end. Source, original evidence and user credentials were untouched. A separate owner reviewed the diff manually; no independent agent review occurred.",
+      "race_harness_followup": "The race fixture now imports a synthetic text source so the current no-source fast answer cannot bypass provider transport, checks the exact second reply, and fails early for release binaries or an absent Vite debug page. Debug executable plus npm run dev passed native-provider-race.ps1 run 1790462794895: first task paused, continuation completed with synthetic provider answer 2, exactly two loopback deliveries and none held. An attempted release run saw zero mock requests because synthetic endpoint override is compiled only under debug_assertions; this is now an explicit harness preflight, not counted as a provider regression.",
+      "note": "Finished run status now honors saved dossier outcome as well as visual coverage. Partial run audits once; a repaired global fingerprint cannot repeat the same task event. Same-source transcript/extract and newer failed processing invalidate currentness; own report does not.",
+      "worker_upgrade_followup": "Commit 08f4a93 fixes a WE-copy release observation: old discovery parent runs from the development worker failed with the exact worker-change error on the release worker, while completed lanes stayed valid. Startup now enqueues only each stale lane under a new worker revision, retains historical samples/receipts, and avoids repeatedly hashing the worker for missing-video enqueue. Latest-run browse/search order uses insertion order to prevent same-time UUID ordering from selecting an old revision. cargo test --locked --manifest-path src-tauri/Cargo.toml --test discovery -- --include-ignored exited 0 (13/13); full cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored exited 0 (all suites, including 26 AppContainer tests). Follow-up commit 041e13a also compares the stored revision before first worker claim, covering queued old runs without worker_sha256; packaged discovery suite 14/14 and full Rust/AppContainer suite exited 0. Exact patched release executable passed the offline six-source native journey. WE-copy reopen on 041e13a left eight OCR and eight overview current parents in complete/queued/running states, with no current discovery failures; two unsupported-source auto_prepare errors remain visible.",
+      "concurrent_chat_followup": "Commit 141d1a6 adds a native debug-only synthetic provider regression for the user-requested parallel chats. After a fresh offline-fixture import and explicit synthetic text grant, two distinct new chats started separate tasks/conversations. The mock held response 1 while response 2 completed; snapshot confirmed the first chat still running at second completion, then both completed with their own distinct answers. powershell -NoProfile -File scripts/native-concurrent-chats.ps1 -Port 9476 -MockPort 9364 exited 0 in about nine seconds; mock state confirmed exactly two completed requests and no held response. This verifies native task overlap on the current functionality branch without real provider calls; packaged release and combined subscription route are separate gates."
     },
     "R06": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "a96f586",
+      "evidence": "src/App.test.tsx DOM interactions for palette pointer/Enter exact historical hit, Evidence selection to Chat focus, record-preview citation, dirty saved-revision export, case-scoped drafts and working-file tab switch; src/viewerContext.test.ts exact range over viewport; src-tauri/tests/core.rs stale export conflict; src/App.tsx bounded in-memory back/forward location history",
+      "environment": "Windows 10.0.26200 x64; Node 24.14.1; Vitest happy-dom",
+      "commands": [
+        "npm test -> exit 0, 49 passed in 11 files",
+        "npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 73 passed"
+      ],
+      "reviewer": "Single-owner separate read-through: navigation entries stay case-local, retain locator with tab selection, and do not persist draft text in browser storage. Backend expected_revision rejects a concurrent edit.",
+      "unrun_checks": "A packaged UI run of the new history controls is deferred to R23; no live client draft or provider dispatch was used.",
+      "note": "Palette pointer and keyboard share activatePaletteItem. Ask keeps selected revision and moves to Chat before focus. Export explicitly uses the saved revision; dirty text stays in memory and is not silently sent."
     },
     "R07": {
-      "state": "pending"
+      "state": "verified",
+      "commit": "45cfd5c5fe4a3c6fc350bd4566509906cb727089",
+      "followup_commit": "ae31b2f source lookup rejects junction/reparse redirect; 78b89a8 opens a read-only, write/delete-denying hash handle and moves desktop explicit Verify outside the case mutex; 1e50c8e adds a packaged synthetic responsiveness journey",
+      "evidence": "src-tauri/tests/core.rs (same-size/same-mtime tamper caught by strong check; backup refuses metadata-preserving tamper; case-open clears stale cache; export prepare refuses tamper; artifact reads reject tamper) + src-tauri/tests/dossier.rs (replaced-review-receipt export refusal)",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; filetime 0.2 dev-dependency added (lockfile updated offline)",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 140 passed, 0 failed, 22 ignored (all 10 suites)",
+        "npm test -> exit 0, 26 passed; npm run build -> exit 0",
+        "cargo clippy --tests -> no warnings in changed code"
+      ],
+      "reviewer": "adversarial review: FAIL first round (desktop verify command and processing gates not actually switched - aborted edit script; artifact publication surface cached-only; write-time export recheck self-referential; wall-clock receipt identity) - ALL fixed: desktop verify_source command strong with honest method/verified_at response, processing reuse/recovery/artifact gates strong, DossierCopy pins registered sha and publish strong-hashes the STAGED bytes against it, human-review receipts carry unique id pinned by exports; second-round review confirmed interactive callers (read_text, validate_citation, agent pre-gates, restore, worker provenance) are legitimately non-publication; known residuals: file_hash_strong hash->metadata TOCTOU poisons only the documented non-tamper-proof interactive cache; reclaim_staging cleanup path stays cached (non-publication); create/open asymmetry fixed",
+      "unrun_checks": "No adversarial OS-level race repeatedly swaps the path during the narrow source-lookup-to-open interval. The opened hash handle denies write/delete during the 256 MiB check; canonical containment and junction redirection have separate tests. A 40–60 GB live-case hash time is not extrapolated from the synthetic 256 MiB fixture. Release-wide live case and installer checks remain R23 gates.",
+      "followup_commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core folder_import_skips_junctions_into_other_directories -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core original_storage_junction_cannot_redirect_a_registered_source -> exit 0",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0 after 78b89a8, including 26 sandbox/AppContainer tests and worker_video_e2e",
+        "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0; package-development.ps1 VisLex 0.3.0-dev21 -> exit 0",
+        "native-integrity-acceptance.ps1 against dev21 SHA256 6E036FFBC73F68D55A5F4DDE08EF964E0002AA381B854EAD60021867AE2BB2E9 -> exit 0; synthetic 268435456 bytes rehashed in 901.8 ms, 12 case summaries completed during hash at 2.7–13.3 ms"
+      ],
+      "measurement": "One packaged synthetic run only: explicit full SHA-256 verified 268435456 bytes in 901.8 ms; 12 case_summary calls while hashing returned in 2.7–13.3 ms each. The case mutex was released for the hash, and the result was case-fenced on publication. Original test fixture and case are isolated under ignored artifacts; user source folder and live case untouched.",
+      "note": "file_hash_cached documented as interactive/browsing (evades same-size+same-mtime edits by design); file_hash_strong = fresh full hash refreshing the shared cache, used by explicit Verify, backups, exports (incl. staged-bytes certification vs registered hashes), direct-media transmission, cached-artifact reuse/recovery and artifact reads; cache cleared on Case::open AND create."
     },
     "R08": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "a495879",
+      "followup_commit": "734cd6b case-ID fences for settings/findings; d74f5cd case-ID fences for PDF page rendering and redaction prepare/review/export; 128649c native fixture checks lexical leads separately from background semantic results; 3b935fd workbench claim/authority/package fences; f22c6df import/backup/transcription/record/staging fences and UI callers; 8893350 working-file review/rollback fences; 875f8bb media, indexing, processing, transcription fences; 57ecc97 legacy settings, speaker annotations and redaction export fences; f0e7afa optional per-open session epoch exposure and validation; 028e804 same-session publication fences for long-running user actions; c2ef5bd stale-session preflight; 9e7af25 delete requires current epoch and exact open case; 1269a26 captured epoch through evidence controls and rename/restriction case fences; 867a50a agent/team/discovery/transcription/automatic/semantic background lanes fenced by captured epoch",
+      "evidence": "74a9926 bounded task pages and on-demand conversation detail; 802c7a5 backend and renderer case fence for chat commands; 3541c77 source/record/job page endpoints; 5e31304 first-page snapshot, source and record detail, current-problem job page and traced large fixture; 7deb401 library, Jobs, findings and review continuation UI; a495879 explicit x64 packaging script and bounded native command checks",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 21 AppContainer tests (before final chat fence)",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core large_snapshot_excludes_full_working_record_bodies -- --nocapture -> exit 0; baseline 871967 bytes, current 63285 bytes / 34 ms / 26 traced SQL statements on 500 synthetic 2-KiB records, 500 historical tasks, 121 sources and 101 jobs",
+        "case_summary on same fixture -> 356 bytes / 1 ms / 12 traced SQL statements; old current failure outside first 50 jobs remains in attention_jobs",
+        "npm test -> exit 0, 61 passed (12 files); npm run build -> exit 0; cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites; include-ignored suite rerun in progress after final page changes",
+        "packaged release x64 executable SHA256 624C0C9C14A8DDF23A0ACDA264BE938D70FB77B806FE4E5E1B3842CF5A735E45 passed prior synthetic native source-to-export journey including chat case fence; final paging changes postdate this executable"
+      ],
+      "unrun_checks": "Session epoch remains optional on other desktop mutations. The renderer now consumes case-event identity/sequence envelopes, but a packaged lost-event/gap-recovery journey remains open. The 1 GiB tier used an opaque synthetic file; a large video and real provider journey remain unrun. Do not mark R08 verified yet.",
+      "followup_evidence": "src/components/SettingsDialog.test.tsx and src/citationJourney.test.tsx assert captured case IDs; packaged Dev22 SHA256 6174FB9B7E72ECEE2FC2C79E56945527CCF8C73E5649276B460ABF19291FE790 ran scripts/native-integrity-acceptance.ps1 through the production bridge. Stale permission, finding write and finding review calls were rejected; valid same-case write/review succeeded; 256 MiB explicit Verify took 883.7 ms with 12 concurrent case summaries at 2.1–6.4 ms. npm test 77/77, npm run build and desktop cargo check passed. The first native attempt exposed a WebView initial-navigation race in the harness; a bridge-ready probe fixed it and the rerun passed.",
+      "dev24_followup": "Dev24 SHA256 D90FBE14173096508DE1B18C572FE54CF3F4E6E85411048C5BAA3D0F4726A482 passed native-integrity-acceptance.ps1 run 1790452896932 (256 MiB strong hash 977.2 ms; 12 concurrent summaries 3.2-5.1 ms; stale settings/finding/workbench actions denied) and native-acceptance.ps1 run 1790452910015 (six originals, OCR/overview samples, rendered chat and DOCX preview, inventory without provider call, three lexical leads, PDF/DOCX export, cross-case denials, unreviewed redaction denial). Focused FolderImport/RecordEditor interaction tests 5/5, npm run build and desktop cargo check passed. This does not verify every command or 1-GB tier.",
+      "dev25_followup": "Dev25 SHA256 8C8AED991CE4FC2AA93A0AD30ED1EBCB64D4E6E4D638D8ECC53B8BF11D92BF9A passed native-integrity-acceptance.ps1 run 1790453368807: 256 MiB full hash 897.9 ms, 12 summaries during hash 1.9-3.3 ms, 22 stale case actions rejected before work. Native six-source journey run 1790453401231 passed import, OCR/overview, rendered chat/document, inventory with 0 provider calls, PDF/DOCX exports, cross-case denial and redaction review gate. Initial six-source run failed because the harness lacked case_id on process_source; script corrected and rerun passed. npm test 80/80, build and desktop cargo check passed. This does not verify every action, session epoch, or larger synthetic tier.",
+      "dev26_followup": "Dev26 SHA256 30D3DA0CB669AE8991ADAE34537E6E0A512564C91B195CDA870CCBCD2712CA53 passed native-integrity-acceptance.ps1 run 1790453626816 (26 stale case actions denied, 256 MiB full verify 911.8 ms, 12 concurrent summaries); native-consent-acceptance.ps1 grant/revoke/reopen on isolated case d09d4010-8c77-4bef-9cbf-ec811fa01fb8; native-acceptance.ps1 run 1790453668672 (six sources, OCR/overview, rendered chat/document, source-to-export, redaction denial, zero provider calls). npm test 80/80, build and desktop cargo check passed. Still no session epoch, full mutation audit, or 1-GB tier.",
+      "dev27_followup": "Dev27 SHA256 0A42E83D216AB8CAB6E3EF56ABEE412D20259195582A5E82764E70ECF82D6AF7 passed native-integrity-acceptance.ps1 run 1790454109454: same-case close/reopen advanced epoch 1 to 3, summary matched, stale supplied epoch denied a settings write, 26 stale case actions denied, and 256 MiB Verify took 998.2 ms with 12 concurrent summaries. Native six-source run 1790454138641 passed import-to-export and UI checks with 0 provider calls. Epoch validation is optional until all UI callers send it; this is infrastructure, not a verified R08 acceptance gate.",
+      "dev28_followup": "Dev28 SHA256 000AA6A72490F61B87563F6C8676EB4D2CB6882879FD13C56B77161EDA402304 passed native-integrity-acceptance.ps1 run 1790454686509 (same-case epoch 1 to 3, stale supplied epoch denied, 26 stale case actions denied, 256 MiB Verify 867 ms with 12 concurrent summaries) and native-acceptance.ps1 run 1790454747078 (six source import-to-export, rendered UI, zero provider calls). First six-source attempt hit expected generation/audit race between snapshot and source_page during background preparation; harness now retries from a new snapshot and rerun passed. Full cargo test --include-ignored passed all suites including 26 AppContainer tests; npm test 80/80 and build passed before this backend-only commit. Optional epoch is still not universal enforcement.",
+      "dev30_followup": "Dev29 packaged integrity run 1790454954825 rejected 8 stale same-case session operations before work. Dev30 SHA256 1BAEA34B1C39D6D698C3A061C7F10B794E843FABE399AD76D7AAF340840C246E passed native-integrity-acceptance.ps1 run 1790455088238: stale same-case deletion and wrong target denied, 26 stale case actions and 8 stale session operations denied, 256 MiB Verify 902.8 ms with 12 concurrent summaries. Desktop cargo check passed. The positive desktop delete journey and mandatory epoch on all mutations remain open; no user case was touched.",
+      "dev31_followup": "Dev31 SHA256 CAB8C636FDACA0298B2AC5344A3918CCEE02CB971F254D56C0FBBD22021D055C passed native-integrity-acceptance.ps1 run 1790455471534 (28 stale case actions, 8 stale session operations, stale and wrong-target delete denied, 256 MiB Verify 1065.8 ms) and repeat run 1790455555667 with positive deletion of a separate empty synthetic case. Six-source native journey run 1790455500487 passed import, document/chat UI, OCR/overview, PDF/DOCX export, redaction review gate and zero provider calls. npm test 80/80 and build, desktop cargo check passed. UI case epoch is still not threaded through every workbench/chat action; larger tiers remain open.",
+      "dev32_followup": "Dev32 SHA256 0A85571016528190F7DCEA6E71A19249858F637C5BC366176830FDF4BA2D1A27 passed native-integrity-acceptance.ps1 run 1790456197975 (28 stale case actions, 8 stale session operations, exact delete gate, 256 MiB full Verify 901.2 ms with 12 concurrent summaries) and native-acceptance.ps1 run 1790456210757 (six-source import-to-export UI journey, zero provider calls). Full cargo test --include-ignored passed all suites including 26 AppContainer tests after background epoch changes. These packaged runs do not exercise a delayed live provider response or the medium/large tier.",
+      "dev33_followup": "Dev33 packaged debug executable SHA256 AA576F9676A788F7645DFF7A360E4AF50743E5098C5C7661751F5EDC9EAD5A2F passed native-integrity-acceptance.ps1 run 1790458159136: same-case reopened epoch 3 to 5, stale finding write and review denied, current finding write/review passed, 28 stale case and 8 other stale session operations denied, 256 MiB Verify 944.7 ms with 12 concurrent summaries (2.1-4.7 ms). The same executable passed delayed local provider race run 1790458179399 and six-source import-to-export run 1790458191333 with two document formats, video discovery, chat/document UI, redaction export gate, PDF/DOCX exports and zero real provider calls. Backend finding epoch gate commit 216f4af; EvidenceNotebook caller and interaction test commit 5b9ac77. R08 remains implemented pending universal mutation enforcement and event sequence audit.",
+      "dev34_followup": "d596dab adds a monotonic process event sequence and case-event envelope with case ID and session epoch alongside the legacy case-changed event. Snapshot and case_summary expose event_seq. Packaged debug Dev34 SHA256 B28C378DBF0A3207DB807FAC4C762C9725C15577E72E92D79F6E52D5757F61EC passed native-integrity-acceptance.ps1 run 1790459148256: CDP received four ordered case-event envelopes, sequence 5→7→9→11 through finding edits and case A→B switch, stale epoch finding writes/reviews denied, 256 MiB Verify 870.2 ms with 12 responsive summaries. The exact executable also passed delayed provider race run 1790459171582 and six-source import-to-export run 1790459182649 with zero real provider calls. Full cargo test --include-ignored passed 214 tests including 26 AppContainer tests; npm run build passed. Renderer adoption and mandatory epoch on all mutations remain open.",
+      "review_gate_followup": "77f096d requires session_epoch for redaction review/export and speaker annotation save, after the case-ID check. Fresh debug executable passed native-integrity-acceptance.ps1 run 1790459543645 with 10 stale same-case operations denied and native-acceptance.ps1 run 1790459561241 with six-source import-to-export; the redaction assertion now requires the actual 'Human page review is required' error. The first packaged dev35 integrity attempt correctly caught reversed validation order for stale case IDs; it was fixed before the two successful debug runs. No real case or provider was used. The combined packaged candidate with this commit remains unrun.",
+      "session_chat_followup": "Mandatory current session_epoch added to dossier claim review, AI settings, direct-media permission, and start/stop/resume/continue chat actions after case-ID validation. Current frontend sends epochs. Release executable SHA256 810967632624E63B9B9695CC406E030E2BBF66B18057D471162F7E5E5159DEF1 passed native-integrity-acceptance.ps1 run 1790462591785: 17 stale same-case actions denied, seven missing-epoch actions denied, four ordered events, 256 MiB strong Verify 1056.9 ms with 12 summaries during hash. The same executable passed six-source native-acceptance.ps1 run 1790462607695 with chat/document rendering, OCR/overview, lexical/semantic results, PDF/DOCX exports, zero real provider calls. Frontend 110/110, npm build, cargo desktop check passed. An initial debug executable integrity attempt failed on missing Vite dev origin; the release executable passed. This is an R08 slice, not full verification.",
+      "session_edit_followup": "Mandatory current session_epoch added to reclaim_staging, rename, source restriction, working-record write/review/rollback, legacy AI config, case settings and conversation deletion after case-ID validation. Current UI callers already send epochs; native fixtures updated. Release executable SHA256 2697525C9E65C3570671B6958400C920077A7FCAE51903345CA0B850C05A20A4 passed native-integrity-acceptance.ps1 run 1790463188297: 26 stale same-case actions denied, 16 mandatory actions rejected without epoch, four ordered case events, 256 MiB strong Verify 1014.4 ms with 12 responsive summaries. Six-source native-acceptance.ps1 run 1790463201645 passed import, chat, OCR/overview, document preview, search, PDF/DOCX export and zero real provider calls. Native consent UI grant/revoke/reopen passed after updating the harness for the redesigned Settings tabs. Initial consent attempt failed only because its old selector assumed the permission controls were on the default tab. Frontend 110/110, npm build and desktop cargo check passed. Remaining mutations and lost-event recovery are not fully audited.",
+      "session_jobs_followup": "Mandatory current session_epoch added to processing/transcription resume, video discovery queue/retry/cancel, processing cancel, ASR profile, full/all transcription, transcript correction proposal/review and transcription cancel after case-ID validation. Release executable SHA256 447D05C2675338FCCB3DB1EDEA16F40EE2A08624980E11BB317AAD7E5444F2AC passed native-integrity-acceptance.ps1 run 1790463579683: 38 stale same-case actions denied, 28 mandatory actions rejected without epoch, 256 MiB strong Verify 1002.6 ms with 12 responsive summaries and ordered case events. Six-source journey run 1790463843290 passed and ended with no open dialog, chat/document preview, search, OCR/overview, PDF/DOCX export and zero real provider calls. Frontend 110/110, npm build, desktop cargo check and JS syntax checks passed. An earlier six-source run returned unobscured_ui=false and screenshot showed an open command palette; test now fails on any open dialog. A subsequent run reached the end unobscured but the test edit had an undefined return field; corrected and rerun passed. Palette cause remains unconfirmed; no claim that it is fixed. Long file/export actions and lost-event recovery remain for R08 audit.",
+      "session_long_work_followup": "Mandatory current session_epoch and case ID now gate import, source processor requests, playback proxy, explicit Verify, encrypted backup, document and dossier export, public-authority retrieval, and hybrid search before work starts. Existing publication fences still reject results after same-case reopen. Palette search now sends case identity and ignores results after its case epoch changes; App interaction test checks the request. Release executable SHA256 D5D03690CA55AB6E2691B73E1160143B247F1B8B3683D1D5520255C4DE6A48C0 passed native-integrity-acceptance.ps1 run 1790464299064: 56 stale same-case actions denied, 46 mandatory actions rejected without epoch, four ordered events, 256 MiB Verify 924.3 ms with 12 responsive summaries. Six-source native journey run 1790464312652 passed unobscured, import through export and zero real provider calls. Native 1 GiB non-sparse synthetic run 1790464373702: import 16068.5 ms, strong Verify 4800.5 ms, 20 summaries completed during hashing, late old-session Verify denied after same-case reopen, measured case disk delta 1081200640 bytes, peak app private 30568448 bytes and process tree private 232144896 bytes. cargo desktop check, 110/110 frontend tests and npm build passed. The fixture is opaque bytes rather than large video; lost event/gap recovery and remaining entry-point audit remain open.",
+      "session_switch_followup": "When a case is already open, create/open/restore/close now require its current case ID and session epoch before switching. Startup and no-case opens remain available. UI project, picker, create and restore actions send the captured session; interaction test asserts project-switch args. Release executable SHA256 8DBE09C92AF6D5E93F91581AF3FDCA38D072336BD54AF83A15C11273F1988164 passed native-integrity-acceptance.ps1 run 1790464747393: 60 stale same-case actions denied, 50 mandatory actions rejected without epoch, valid close/reopen advanced epochs and four ordered case events observed. Six-source native run 1790464921885 passed source-to-export with unobscured UI and zero real provider calls. First 1 GiB run refused close because a synthetic automatic AI task was still running; this is expected app protection, not a passed reopen test. Harness then set that synthetic case offline before import; rerun 1790464875024 passed import 28263.8 ms, Verify 4968.1 ms, 20 summaries during Verify, old-session late Verify denied, case disk delta 1076338688 bytes, peak process-tree private 233361408 bytes. cargo desktop check, frontend 110/110 and npm build passed. A full case-switch race and lost-event recovery matrix remains open.",
+      "credential_session_followup": "Provider key save/delete and legacy API key save/delete now require the current open case ID and session epoch while the case lock is held through the credential mutation. Release executable SHA256 A128A07395346974D6FA0E0DC5A2D5C3FBA37717EAFA8BF9030979EE0B76AD17 passed native-integrity-acceptance.ps1 run 1790465244236: 64 stale same-case actions denied, 54 mandatory actions rejected without epoch, valid synthetic close/reopen and four ordered events; 256 MiB Verify 1191.3 ms with 12 responsive summaries. Rejected synthetic-key attempts never reached Windows Credential Manager. cargo desktop check passed. This does not verify a positive credential save or all R24 authorization boundaries.",
+      "large_tier_followup": "Dev32 packaged executable SHA256 0A85571016528190F7DCEA6E71A19249858F637C5BC366176830FDF4BA2D1A27 ran scripts/native-large-session.ps1 on one non-sparse 1 GiB synthetic .bin fixture. Repeat run 1790456513532: import 23893.1 ms, full strong Verify 3640.3 ms, 20/20 case summaries before Verify completed (p95 4.7 ms; max 5.1 ms); close/reopen during a second Verify rejected the late old-session result. Peak private bytes for app main process plus descendants sampled every 500 ms was 222408704 (212.1 MiB); app main process alone 27901952. The case retained 1073741824 original bytes plus 425984 DB bytes, with staging empty. System-wide free-space delta 2417176576 bytes includes concurrent unrelated work and is not attributed solely to this case. Tests use an opaque synthetic file, not a video or real case; no provider call.",
+      "packaged_followup": "Dev23 SHA256 E9CD9CAA799448E69839DBAAEDBE041456D2192FCD19C2F5B1BFD848A390D323 passed scripts/native-acceptance.ps1 (run 1790452234918): 6 synthetic originals, 2 document formats, 4 OCR and 4 overview samples, inventory answer with 0 provider calls, PDF/DOCX export hashes, PDF/image redaction prepare with unreviewed export denied, playback origin, and UI chat/document preview. One initial run failed at an outdated assertion that looked only at semantic results in VISLEX_TEST_MODE; the second run used the exact synthetic lexical term and passed with 3 lexical leads. These runs do not establish 1-GB tier performance or release readiness.",
+      "note": "Routine polling uses case_summary; recovery snapshot limits source, record, task and job lists to first pages with exact totals and current failures. Keyset/rowid pages are case fenced; mutable source/record pages additionally require the audit epoch. Older items remain accessible through list controls or exact detail fetch, including citations and source pickers. The 500-record fixture tests no duplicates/skips and query-plan indexes. Current UI counts reflect total case scope."
     },
     "R09": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "e9bb0fc, 0fd6966, 8a26dcd, 1b952f9, d4a81e4",
+      "evidence": "Processor, discovery, automatic and agent media artifacts now hash/copy to content-addressed storage outside the case mutex; staged journal and read leases gate short registration. Playback derivative, document draft, full transcript, dossier, redaction and encrypted backup production paths stage or verify large bytes outside the case mutex.",
+      "measurements": "Four synthetic 32 MiB derivatives: old publication lock p50 795 ms, p95/max 1031 ms; staged registration p50/p95/max 5 ms on this Windows host. Sample size 4; not a release-wide latency claim.",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after processor staging, before playback/document edits",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml staged_publication -> exit 0, cancellation, journal tamper/recovery and duplicate registration",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml playback_staging_registers_once -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml staged_document_rechecks_revision -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml staged_transcript_is_recoverable -> exit 0 after stable job-derived artifact ID",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after staged transcription wiring",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 35 tests after deferred evidence hashing and short reviewed-bundle commit",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test backup_artifacts -> exit 0, 10 tests",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 21 native AppContainer tests after dossier/redaction/backup staging",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after staged playback/document and strong-preparation compatibility fix",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0"
+      ],
+      "unrun_checks": "Legacy direct APIs intentionally retain some in-lock validation for compatibility; desktop production paths use staging. Full crash boundary, disk-full, case-close concurrency and large tiers remain open. The exact pre-R10 x64 packaged build passed the six-source synthetic native journey (run 1790442231875; artifacts/native-acceptance-automated.json) with zero provider calls; do not mark verified.",
+      "note": "Unregistered content-addressed outputs are retained for recovery inventory; cancelled and failed staged jobs stay visible. Legacy document and backup preparation keep immediate strong verification while desktop staging checks bytes outside the mutex."
     },
     "R10": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "1e7de8a",
+      "evidence": "Video OCR and overview jobs now share one verified private input per source hash and source policy epoch. The isolated worker gets exact read access to that file and traverse access only to its parent path; each job keeps its own writable output directory. Source restriction cancels active child jobs and invalidates the lease; case close/switch releases cached leases. A crash leaves a hash-checked private input eligible for reuse on restart.",
+      "measurements": "Generated 7200-second MP4, 240 one-minute jobs across OCR and overview: prior per-job input writes 754800 bytes by measured fixture size times 240 jobs; new private-input writes 3145 bytes once in 2456 ms of lease setup and job preparation. This small fixture proves I/O scaling, not wall-clock speed on a large recording. Copied and leased worker runs produced identical metadata, sample timestamps and JPEG hashes on the variable-timing fixture.",
+      "commands": [
+        "powershell -File scripts/build-worker.ps1 -> exit 0, rebuilt packaged Python worker with source_lease support",
+        ".venv-worker/Scripts/python.exe -m unittest discover -s workers -p test_*.py -> exit 0, 18 tests",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib two_hour_recording_lease_writes_one_input -- --include-ignored --nocapture -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox simultaneous_workers_share_read_only_input_but_not_output_directories -- --include-ignored -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox leased_and_copied_video_input_produce_identical_timestamp_receipts -- --include-ignored -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including all 23 AppContainer tests"
+      ],
+      "unrun_checks": "The rebuilt x64 desktop executable (SHA256 0B33D9DF30C357BB04FAA50C70DB1FEC1CCD562703F1136279E41696EF021E40) passed native synthetic acceptance run 1790443386652 with zero provider calls and both video discovery passes. Its installer built successfully (SHA256 BF3BB503925B88E45DA02063C84ED36E17D984BACD6ADFB96DD1054B9FD51689). A medium/large realistic recording, peak disk/RAM, crash-left ACL cleanup and source-lease receipt in Jobs remain open. Do not mark verified.",
+      "note": "No writable hardlink or broad case read grant was added. The shared input is a private, hash-verified duplicate held by Windows read leases, not access to the original. A source policy epoch prevents a pre-restriction discovery job from publishing after permissions change."
     },
     "R11": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "2dbdbf3 (scheduler), 4c8c609 (native harness), e9fc80f (capacity and Jobs progress)",
+      "evidence": "Schema 7 adds durable per-job priority, attempt, input hash, parent dependency, heartbeat, and cancellation reason. One worker scheduler owns two general permits and one heavy permit; interactive work has priority while a waiting background job is admitted after three interactive grants. Queued waits check cancellation every 200 ms. Stopping a chat cancels its prepared local workers. Discovery child jobs link to their parent. Reopen reconciles running jobs to interrupted before resumption. Follow-up checks free space before making private source copies and adds a bounded case-scoped Jobs progress read with indexed/transcribed units and attempt count.",
+      "measurements": "Queued cancellation test completed in 0.22 s under saturated permits. Mixed-task peak RAM/disk, sleep-resume stop latency, and starvation timing on native workloads remain unmeasured.",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core schema_seven_tracks_attempts_and_reconciles_interrupted_jobs -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib queued_worker_cancels_without_waiting_for_busy_permits -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox stopping_chat_cancels_its_prepared_local_worker_before_launch -- --include-ignored -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 24 AppContainer tests and 1 video worker end-to-end test",
+        "npm test -> exit 0, 61 passed (12 files); npm run build -> exit 0",
+        "python scripts/vislex_plan.py check -> exit 0, 26 task records structurally valid",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib automatic_office_work_keeps_background_priority_after_normalizing_request -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core job_progress_exposes_bounded_units_and_durable_attempt -> exit 0",
+        "npm test -> exit 0, 62 passed (12 files); npm run build -> exit 0"
+      ],
+      "unrun_checks": "The rebuilt x64 desktop executable passed synthetic native acceptance run 1790443386652 (six sources; OCR and overview complete; chat/export/review/case fences passed; zero provider calls). That executable predates the follow-up disk and Jobs progress edits. Virtual-clock fake-transport scheduling test, mixed simultaneous transcription/page/overview/cancel/sleep-resume journey, more precise disk estimates and measured resource peaks remain open. Do not mark verified.",
+      "note": "Scheduler selection is deterministic and keeps background work moving after three interactive grants. Heartbeat writes are best effort; a failed heartbeat never weakens source or publication checks. Clippy with -D warnings failed on pre-existing style lints in dossier/coverage/agent/discovery; regular desktop cargo check passed."
     },
     "R12": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "67e3f55 (schema, publication, corrections), 3f3c122 (paged UI and bounded worker journal)",
+      "evidence": "Schema 8 adds immutable per-run transcript segments and separate versioned correction proposals. The production staged publisher saves segment and word timing rows, complete TXT/JSON/track SRT artifacts, and a small working record for transcripts over 64 KiB while retaining full searchable extraction text. Case-scoped cursor pages return 25 segments; exact word timing is available by segment detail. Corrections are proposed and reviewed in separate audited transactions; later proposals begin pending and never replace the machine text. The UI pages segments and offers explicit correction review. Worker length accounting is linear and its private partial journal remains small.",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib large_transcript_keeps_later_segments_searchable_and_paged -- --nocapture -> exit 0; 1400 synthetic segments exceed 1 MiB, final segment searchable, cursor page and word detail present, correction review does not transfer, encrypted backup/restore preserves rows",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core schema_eight_migrates_seven_with_backup_and_empty_segment_store -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0 after initial R12 segment publication, including 24 AppContainer tests; later correction/detail edits covered by focused test",
+        "npm test -> exit 0, 63 passed (13 files), including long transcript pagination, seek and correction interaction; npm run build -> exit 0",
+        ".venv-worker/Scripts/python.exe -m unittest discover -s workers -p test_*.py -> exit 0, 18 tests",
+        "powershell -File scripts/build-worker.ps1 -> exit 0 after bounded journal edit",
+        "npm exec tauri build -- --debug --features desktop --no-bundle; powershell -File scripts/package-development.ps1 -OutputName 'VisLex 0.3.0-r12' -> exit 0; packaged exe SHA256 38E77F890731050EE81D4358BA3EEEFEC2D962B63F18E892327E2384646226DE",
+        "powershell -File scripts/native-acceptance.ps1 -BinaryPath 'artifacts/VisLex 0.3.0-r12/VisLex.exe' -Port 9353 -> exit 0, run 1790445337892: six synthetic sources, both discovery passes, chat, review gates, exports, playback and cross-case fences; zero provider calls",
+        "python scripts/vislex_plan.py check -> exit 0, 26 task records structurally valid"
+      ],
+      "unrun_checks": "Completed chunks are still private until whole-run publication; interrupted/running partial wording is not yet exposed as qualified progress. Long TXT/JSON/SRT generation still materializes the final value in memory instead of streaming rows. Frontend search covers loaded segments only and follow-playback beyond the loaded page is incomplete. No large-run peak memory measurement or packaged large-transcript UI journey yet. Do not mark verified.",
+      "note": "The exact x64 installer SHA256 BF3BB503925B88E45DA02063C84ED36E17D984BACD6ADFB96DD1054B9FD51689 predates R12 and the final R11 Jobs changes; its passed synthetic journey is a checkpoint. The later R12 debug package passed the native six-source journey, while long-transcript UI behavior is covered by Rust and React tests. User originals and live case were untouched."
     },
     "R13": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "c9e56a1",
+      "evidence": "src-tauri/tests/semantic_baseline.rs; synthetic 5,000-line debug timing and production-path native worker regression suite",
+      "environment": "Windows x64; Rust 1.98.1; synthetic fixtures only",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test semantic_baseline -- --include-ignored --nocapture -> exit 0, 3 passed; lexical 5,000 lines p50 0 ms, p95 3 ms and last-line hit 3 ms; packed-vector ranking p50 227 ms, p95 239 ms; legacy JSON ranking p50 921 ms, p95 1001 ms",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 24 native AppContainer tests and one worker video end-to-end test",
+        "cargo check --locked --features desktop --manifest-path src-tauri/Cargo.toml -> exit 0",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Separate self-review found and fixed a missed-trigger race when new extraction arrived as the indexer exited. No independent reviewer was available for this slice.",
+      "unrun_checks": "No packaged R13 search journey, large-corpus peak RAM or case-lock measurement, transcript-first indexing quality evaluation, multimodal result evaluation, or wrong-person/negation retrieval set. The 5,000-line lexical timing is one synthetic fixture and excludes model worker time; it is not a full chat latency result. Working products and video OCR are not yet unified into this semantic result. Background batches still rescan active extraction text under the case lock; optimize and measure at larger tiers before verification.",
+      "note": "New queries no longer index up to 256 passages or tell the agent to repeat calls. A low-priority worker indexes revision-pinned extraction lines into existing SQLite storage; saved legacy JSON vectors remain readable, and new vectors use packed f32. Query results include fast scoped lexical leads even before vector completion, with partial currentness clearly labeled. Original sources and live case untouched."
     },
     "R14": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "bc6e7f2",
+      "evidence": "workers/test_exact_frame.py; src-tauri/tests/sandbox.rs exact_video_frame_steps_publish_adjacent_pts_without_recopying_source; src/components/EvidenceViewer.test.tsx proxy/loop/exact-frame interactions",
+      "environment": "Windows x64; rebuilt PyInstaller worker; synthetic 24/30/60 fps and VFR fixtures only",
+      "commands": [
+        "powershell -File scripts/build-worker.ps1 -> exit 0",
+        ".venv-worker/Scripts/python.exe -m unittest discover -s workers -p 'test_*.py' -> exit 0, 21 tests; includes 24/30/60 fps and VFR adjacent PTS",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox exact_video_frame_steps_publish_adjacent_pts_without_recopying_source -- --include-ignored --nocapture -> exit 0; two exact frames in AppContainer, citations valid, one verified source copy reused",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, including 25 native AppContainer tests and one video worker end-to-end test",
+        "npm test -> exit 0, 65 passed in 13 files after an earlier concurrent-load run timed out in an unrelated App test; npm run build -> exit 0",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Self-review checked source policy epoch, restricted-source recheck, lease reuse, proxy listener identity, invalid loop bounds, and stale asynchronous exact-frame responses. No independent reviewer was available for this slice.",
+      "unrun_checks": "Exact packaged UI journey with original-to-proxy transition and track offsets; native 24/30/60 fixtures (Python decoder tests cover these but native test covers VFR); synchronized replay against accepted clock mapping; memory/disk and cancellation timing. Filmstrip refresh uses a 150-second window and first 22 results but has not been evaluated for dense scenes. Do not mark verified.",
+      "note": "Browser 33 ms buttons are labeled approximate. Dedicated exact buttons decode the preceding or following frame from the original source, publish a PTS-bearing artifact/citation, and show the derivative. Browser requestVideoFrameCallback supplies mediaTime when available. Controls initialize and rebind on proxy replacement, ignore keyboard shortcuts in form fields, and reject invalid A/B order. Original source files untouched."
     },
     "R15": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "1de6a7c",
+      "evidence": "src/components/EvidenceViewer.test.tsx one-page, mixed-orientation, visible-context and 10,000-page mounted-window tests; workers/test_document_formats.py mixed geometry and linear XLSX rows; src-tauri/tests/sandbox.rs pdf_probe_prevents_page_twelve_guess_and_reuses_one_source_lease",
+      "environment": "Windows x64; rebuilt PyInstaller worker; synthetic fixtures only",
+      "commands": [
+        "powershell -File scripts/build-worker.ps1 -> exit 0 after PDF/XLSX worker edits",
+        "npm test -> exit 0, 68 passed in 13 files; npm run build -> exit 0",
+        ".venv-worker/Scripts/python.exe -m unittest discover -s workers -p 'test_*.py' -> exit 0, 23 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox pdf_probe_prevents_page_twelve_guess_and_reuses_one_source_lease -- --include-ignored --nocapture -> exit 0; one-page native probe/render, citation and one source copy",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 1, 25/26 native sandbox tests passed; agent-prepared PDF render failed because internal lease fields were compared to user options; fixed in agent.rs",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox -- --include-ignored -> exit 0, 26 passed after fix",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Separate self-review traced and fixed the production-path agent-prepared render regression; checked lease policy epoch, source status preservation, page bounds, proxy worker provenance and stale UI responses. No independent reviewer was available for this slice.",
+      "unrun_checks": "No packaged large-PDF UI journey or measured peak RAM/case-lock time on a large real-sized synthetic PDF. PDF printed/Bates labels remain separate from physical page indices but are not read into the viewer. Malformed, rotated and encrypted PDF cases beyond current fixtures need explicit acceptance checks. Oversized documents and mid-render cancellation need native measurement before verification.",
+      "note": "Viewer probes physical count before rendering, so a one-page file never schedules page 12. Per-page render metadata sets geometry; prefetch cannot claim the visible page. The mounted page window is at most 13 even for a 10,000-page fixture, and recent artifact/ratio UI caches are bounded. Invalid page input is rejected before worker launch; page-copy control explicitly says navigation-only. PDF probe/render reuse one verified private source copy; probe/render do not overwrite extraction status. XLSX formula/cached rows iterate linearly. User originals and live case untouched."
     },
     "R16": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "d6c0169",
+      "evidence": "src/components/RecordEditor.test.tsx case switch/revision conflict/failed save; src/components/FullTranscript.test.tsx ten cursor pages and 10,000-line legacy text with bounded rendered rows",
+      "environment": "Windows x64; frontend synthetic interaction fixtures",
+      "commands": [
+        "npm test -> exit 0, 73 passed in 14 files after preserving the prior export-warning text expected by App.test.tsx",
+        "npm run build -> exit 0",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Self-review found that adding the draft-lifetime warning had broken an existing exact-copy assertion; separated the warning and reran the full suite. No independent reviewer was available for this slice.",
+      "unrun_checks": "The >64 KiB live streaming path, normalized case store/selectors, action/message virtualization, reactive viewer context, render-count profile, interaction p95 and packaged UI journey remain unverified. A separate isolated UI redesign task owns App.tsx, AgentPanel.tsx, ui.tsx and markdown.tsx and is investigating the stream truncation; its code is not merged into this branch. Long transcript test proves a mounted-row bound and search of saved text, not total latency on 40–60 GB cases. Memory-only drafts deliberately do not survive app exit/crash; this is now stated in the UI.",
+      "note": "RecordEditor remounts on case/record identity and retains case-scoped in-memory drafts; clean records follow new server revisions, conflicting drafts remain local and block save, failed saves keep text. FullTranscript keeps at most 200 rendered segment or legacy text rows while preserving loaded data/search and cursor pagination. User originals and live case untouched."
     },
     "R17": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "137f61f",
+      "evidence": "src/citationJourney.test.tsx exercises two-source comparison, exact-locator navigation, accepted-finding-to-draft dependencies and structured product rendering; existing dossier.rs work-product and authority contracts retained",
+      "environment": "Windows x64; React DOM interaction fixtures and Rust dossier contracts",
+      "commands": [
+        "npm test -- --run -> exit 0, 76 passed in 14 files",
+        "npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test dossier -> exit 0, 35 passed",
+        "git diff --cached --check -> exit 0"
+      ],
+      "reviewer": "Self-review only. Checked citation source membership is enforced by evidence::write, accepted finding dependency is pinned to its revision, and legal authority remains explicitly unchecked. No independent reviewer was available for this slice.",
+      "unrun_checks": "Native packaged witness comparison -> source -> finding -> draft -> review/export journey has not run. Existing agent work-product workflows for contract review and deposition lack equivalent direct structured manual forms. Structured manual work products use evidence_write validation rather than the task-scoped agent save_work_product path; schema parity and multi-row editing need further backend/UI acceptance. Source comparison draft persistence across workspace remounts and large-case interactions are not measured. R17 is implemented, not verified.",
+      "note": "The existing versioned evidence store now presents a direct comparison form with inconsistency, omission, changed account, uncertain clock and extraction error categories, both account texts, exact citations and next check. Direct issue matrix, production gap, exhibit and draft forms save versioned records; an optional accepted finding pins a dependency. Saved JSON work products render as fields while raw provenance stays expandable. Existing replay, hypotheses and AI product launchers remain. No source originals or live case were changed."
     },
     "R18": {
-      "state": "pending"
+      "state": "pending",
+      "worker_followup": "d648afc adds synthetic exported-byte checks for hidden PDF text, attachment and source metadata removal, pixel masking, rotated PDF page geometry, EXIF-oriented image coordinates, wrong-page and out-of-bounds rectangles. Initial test failed twice on Windows because PDFium retained the input handle after success and validation errors; the worker now closes page, bitmap, image and document resources. Focused 4/4 and full worker 27/27 Python tests passed; git diff --check passed. Single-owner diff review only; no independent visual review. This is a partial R18 slice, not release verification.",
+      "review_followup": "46fce03 adds a cancelled three-page PDF test: no review PDF or page preview is published and Windows temp cleanup succeeds. 043b31e extends staged export review testing: after a fresh review, restricting the parent source blocks preparation and creates no output. Focused Rust export test passed; full worker 28/28 and backup_artifacts 10/10 passed on Windows. The backup suite includes reviewed redaction artifact restore and changed-hash refusal. These tests do not substitute for packaged worker or visual review.",
+      "native_worker_followup": "powershell -NoProfile -File scripts/build-worker.ps1 rebuilt the x64 worker successfully from the current redaction source; bundled evidence-worker.exe SHA256 573C205B55C7E678E1D271EB9EA9CF3AFA9354303245CC646ACCBD35E7E05316. cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox flattened_redaction_requires_page_review_and_exports_only_derivative -- --include-ignored passed through native AppContainer: unreviewed export denied, reviewed flattened derivative exported, original hash remained valid and re-extraction yielded no text. This is a targeted native test, not the final installer journey.",
+      "full_native_followup": "At branch eddc093 plus fa2f5d7 test-only change, cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored passed all 230 Rust tests across library, backup, core, discovery, dossier, extraction, journey, provider, AppContainer sandbox, semantic and worker-video suites with the rebuilt worker. This does not cover the final installer UI or large physical tier.",
+      "unrun_checks": "Large multipage cancellation/resource tier, reviewed-output hash and revocation matrix through the exact packaged UI, visual inspection and disclosure-package boundary acceptance remain open. R15/R17 prerequisites are implemented, not verified.",
+      "release_visual_followup": "On code commit 041e13a patched x64 release executable, the native offline six-source journey created an unreviewed synthetic one-page image redaction derivative and rejected export before page review. Read-only PDF rendering showed the top-left mask in the expected position; pypdf found one page, zero extractable text, zero attachments and zero annotations. This visual pass found the worker PDF metadata title falsely said Reviewed before human approval. Commit 774fd23 changes it to neutral Redaction derivative and adds an exact metadata regression. All 28 worker tests and the focused native AppContainer redaction test passed with the rebuilt x64 worker. A new packaged desktop and reviewed-output export check are still pending; this single synthetic check does not prove all sensitive regions were located. No client source was used. The composed portable candidate combined the unchanged NSIS-patched 041e13a desktop EXE with the rebuilt worker from 774fd23 under the correct resources/worker path; 439-file manifest write/verify passed and verified again after the no-test-mode offline native journey (six synthetic sources, export/backup/restore, zero provider calls). Read-only pypdf inspection of its generated redaction PDF confirmed metadata title Redaction derivative, one page, no extractable text, no attachments and no annotations. The first staging attempt put the worker at the wrong path and failed closed; it is not counted. A full NSIS rebuild after the worker change remains open."
     },
     "R19": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "c0c0143",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1",
+      "evidence": "Gemini signed text and thought parts now round-trip through the REST adapter before function calls; context compaction retains native signed parts with their tool call and result. Regression first failed at two returned parts versus three expected, then passed. Official Gemini guidance: https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures ; Claude thinking block guidance: https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test master_v4 -> exit 0, 28 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 79 passed",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Single-owner separate diff review: Gemini native parts are used only for assistant messages from the Gemini adapter; provider-native thought parts remain hidden from the user answer; original tool call/result IDs remain paired. No independent reviewer yet.",
+      "stop_reason_followup": "9c1bf06 reports allowlisted Claude and Gemini stop reasons separately for truncation, refusal, pause and malformed function calls; unknown provider text is not echoed. Synthetic regression failed first on pause_turn then passed, and master_v4 29/29 passed. Official source checks: https://platform.claude.com/docs/en/api/http/messages and https://ai.google.dev/api/generate-content . No live provider call was made.",
+      "client_followup": "74b51a8 reuses separate reqwest clients for inference and model catalogues while retaining their prior redirect and timeout policies; cloned handles share connection pools. The uncertain-transmission chat error now describes uncertain delivery/completion without money wording, and the existing no-replay gate remains. master_v4 synthetic provider suite passed 29/29; git diff --check passed. Separate diff review found no new destination, credential or consent path. There was no before/after latency measurement, and no packaged run on this exact commit.",
+      "team_status_followup": "304098f removes the legacy spent field from team-status JSON used by the chat activity panel; the persisted legacy schema is unchanged. The focused same-model team test asserts its absence and passed. No teammate reply/merge semantics changed.",
+      "claude_stream_followup": "f83e7fc enables Claude Messages SSE and assembles indexed text, signed thinking and multiple tool_use blocks; text deltas reach the live chat immediately, while tool calls publish only after every block closes and message_stop validates the completed response. Empty initial JSON deltas, fragmented SSE bytes, malformed tool JSON and premature message_stop have synthetic tests. master_v4 31/31 and cargo check passed. Official event contract checked at https://platform.claude.com/docs/en/build-with-claude/streaming . No real account probe or packaged Claude stream run was made; this is not R19 verification.",
+      "full_suite_followup": "After eddc093 validated deltas before displaying drafts and fa2f5d7 added streamed truncation/error checks, cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored passed all 230 Rust tests, including 26 AppContainer tests. The transport has not been exercised against a real Claude account; R19 remains implemented.",
+      "transport_followup": "bdbae69 splits the exact send path behind a private wire sender and exercises it against a local HTTP SSE server. The production reqwest path emitted one text progress delta and returned only after message_stop; a truncated stream exposed the live draft but returned an error rather than a completed answer. Focused cargo --lib transport test passed. No real account or client evidence was sent.",
+      "gemini_stream_followup": "cb35bae uses Gemini GenerateContent SSE. It joins only adjacent unsigned text fragments and preserves ordered signed thought, function-call and final empty-text parts; calls are complete JSON parts under the documented legacy GenerateContent stream and are not executed before finishReason. Synthetic chunk and local HTTP transport tests cover multiple calls, signature round-trip, text progress, incomplete function calls, MAX_TOKENS and missing final reason. master_v4 32/32 and focused local transport passed. Official sources: https://ai.google.dev/api/generate-content ; https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures ; https://ai.google.dev/gemini-api/docs/migrate-to-interactions . No account probe was run.",
+      "unrun_checks": "Full adapter capability table, real-account Claude/Gemini streaming and malformed chunk/refusal/uncertain transmission matrices, scoped team merge acceptance, current-model synthetic probes, packaged Windows journey and release build remain open. Synthetic local transports are not provider compatibility certification. This is not R19 verification."
     },
     "R20": {
-      "state": "pending"
+      "state": "pending",
+      "subscription_route_followup": "On combined branch codex/vislex-redesign, a8d0cdf implements ChatGPT device-code account UI, app-wide route and per-case override, account-catalogue model/effort selection, and isolated Codex App Server turns through the existing grant-checked VisLex action dispatcher. Media and semantic tools use staged workers; task history retains receipts, review/citation checks, pause/cancel, usage and case-session fences. 2408a97 merged the functionality branch through 125140d; later native regression and status commits through 463c9bf were integrated. Patched upstream Codex commit 985cf47 built as x64 release SHA-256 E1D6B21D4D53A4ECE8F3A034DB86A7022B3FDD3F07916E53A1C032FC42781C55 and was pinned in 54a73e5. Synthetic AppContainer read/write denial, device-code start and persistent profile tests passed. npm test -- --run passed 127/127; npm run build passed; cargo check --locked --features desktop passed; cargo test --locked passed all non-ignored suites; cargo test --locked --features desktop --lib passed 22/22 with 3 ignored. The packaged portable native WebView account/read smoke passed with subscription_ready true, connected false. No personal login or model call was made. R20's optional ACP work remains pending. Live authenticated turn, signed-in catalogue/rate-limit response, installed NSIS copy and case turn through real dynamicTools remain NOT RUN; this is not product verification.",
+      "subscription_package_followup": "On 2026-09-27 npm run desktop:build:x64 exited 0 on combined code commit 54a73e5 (later test-script commit ab62729 does not change application bytes). NSIS installer VisLex_0.3.0_x64-setup.exe is 757,666,513 bytes, SHA-256 8482BD68A85A7409473F5ADC3BE1E3B12D41226494CE81C122C68EC1B6820B05. A portable folder staged the exact release EXE SHA-256 3DC308B23C28DEB31467C9BD7F40C305AE109E5991AF1FD7C7D0613F96DEAC00 and matched sidecar SHA-256 E1D6B21D4D53A4ECE8F3A034DB86A7022B3FDD3F07916E53A1C032FC42781C55; package_manifest.py write/verify passed for 442 files using a Windows extended-length root. Native portable WebView account/read and CORS origin tests exited 0. A no-test-mode offline six-source source-to-export, backup/restore journey exited 0 with zero provider calls. Strict cargo clippy --features desktop --all-targets -- -D warnings failed on dozens of pre-existing style lints; it is not counted as a passing gate. The NSIS installed copy, authenticated account/model turn and real subscription case dynamic-tool call remain unverified.",
+      "subscription_protocol_followup": "Commit 01e8b69 adds an ignored, no-credential App Server probe. With VISLEX_CODEX_BINARY pointing to the verified release sidecar, cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop --lib patched_server_accepts_ephemeral_case_tool_policy -- --ignored exited 0: one ephemeral thread accepted the restricted vislex dynamic tool schema. No model turn, case text or tool execution was used; authenticated runtime compatibility remains open.",
+      "subscription_live_tool_repair": "Code commit e3c5bee. On the installed 2026-09-27 case, the affected ChatGPT subscription tasks recorded zero case-inspection actions and one auto-synthesized finish_task each; prepared sources were not inspected. A signed-in synthetic one-tool turn against the old sidecar exited 1 with the model reporting vislex.ping unavailable. Allowing Code Mode exec exposed the tool but exited 1 because its tool-host executable was unavailable inside AppContainer. The pinned sidecar patch now selects direct dynamic tools for a vislex namespace while retaining only brokered vislex tools in ToolPolicy. The rebuilt x64 sidecar SHA-256 D44A2857F07087304F5A5409413F0297893EBF8B51DF5AC6BA1C2F86AA823897 passed signed_in_turn_calls_synthetic_case_tool with one actual ping callback (exit 0); no case data was used. scripts/test-codex-boundary.ps1 on that binary exited 0 with synthetic out-of-scope read/write denied. cargo test --locked --features desktop --lib passed 22/22 non-ignored; the focused core subscription receipt/replay test passed 1/1. npm run desktop:build:x64 exited 0; release EXE SHA-256 A9E4F327E405C2D67C8F499464046A08A047B6CC54848384833DB2E5A29265B4, NSIS SHA-256 AB1378A385E69BB8BDEBA1D423ACDD05816CEAA53F44C48D0D5478E8A858EBAD. Plain model text can no longer synthesize a completed subscription finish. Self-review only; no independent reviewer. The running installed app was not replaced or restarted; packaged installed synthetic case-tool journey, full live-case analysis, support review, and legal accuracy remain unverified.",
+      "subscription_saved_review_gate_repair": "Code commit 9f10e23. Live case task metadata showed list_source_artifacts, list_sources, read_conversation, read_coverage and read_dossier blocked by a pending quick-answer phase derived from a complete automatic report with zero citations. This prevented a new subscription turn from inspecting prepared sources. completed_review_context now rejects uncited reports, subscription tasks start with the full case-tool catalogue, and subscription_context expands the gate for legacy pending tasks before tool use. A production-path synthetic regression first failed, then passed; cargo test --locked --manifest-path src-tauri/Cargo.toml --test core passed 81/81; cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop --lib passed 22/22 non-ignored with 5 ignored. npm run desktop:build:x64 exited 0; release EXE SHA-256 37DC7F19A5EE04DB811691488FF867C6497885886121FE7A604903281EA1F18D, NSIS SHA-256 D6CD91B58787D566437152C37F81A965D982FBF5343C999E7B6D3EAE45C3811E. Self-review only. The running installed app has not been replaced or restarted with this fix; a live case retry, complete evidence review, support review, and legal accuracy remain unverified."
     },
     "R21": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "a9090e2",
+      "branch": "claude/redesign-v14qbo",
+      "environment": "Cloud Linux container; Node 22.22.2; Chromium 1194 headless via PW_CHROMIUM_PATH; no Windows, WebView2, Edge or Rust toolchain run",
+      "evidence": "Claude-led redesign per docs/CLAUDE-REDESIGN-PROMPT.md; decisions, agents and per-slice results in docs/implementation/REDESIGN-CLAUDE-HANDOFF.md and docs/implementation/REDESIGN-SPEC.md. Single token source src/tokens.css with contrast unit test (src/tokens.test.ts); shared primitives in src/ui.tsx and src/styles/primitives.css; redesigned shell/onboarding/library/jobs/palette, assistant chat, evidence viewer family, findings/workbench/dossier and settings. Mocked-IPC Playwright harness (harness.html, src/testing/harness/**, e2e/harness-*.spec.ts, e2e/HARNESS.md) drives the real app code paths with a 250-source synthetic case; excluded from the production bundle (vite build grep). Screenshots reviewed by the lead (vision) at 1366x768, 1440x900 and 1920x1080 in dark and light.",
+      "commands": [
+        "npx tsc -p tsconfig.json --noEmit -> exit 0 at a9090e2",
+        "npx vitest run -> 29 files, 277 passed at a9090e2",
+        "PW_CHROMIUM_PATH=/opt/pw-browsers/chromium CI=1 npx playwright test -> 52 passed at 34a19f3 (includes axe WCAG A/AA dark+light over harness scenes with an empty baseline, keyboard/focus, reduced motion, forced colors, overflow at target sizes); a9090e2 only changes src/App.test.tsx",
+        "npx vite build --outDir <scratch> -> ok; grep for __vislexHarness/SyntheticBackend in output -> 0 files"
+      ],
+      "reviewer": "Workflow wf_3fc12f9a-9d8: independent adversarial reviewer per surface branch, then fix pass. Workflow wf_62db8cf5-34b: five-lens review (behaviour, honesty/evidence, a11y, test integrity, state/perf) of c04c8c3..HEAD with a separate refuting verifier per finding; 26 confirmed findings fixed in 5c47cd9. Reviewers are agents, not a human; agreement is not evidence.",
+      "unrun_checks": [
+        "Native Tauri/WebView2 build of this branch on Windows, including scripts/native-protocol-origin-test.ps1 for the merged CORS fix",
+        "Native screenshot matrix at 125/150/200 percent Windows scaling and human review",
+        "Screen reader (NVDA/Narrator) session; touch-target audit",
+        "cargo test (no Rust changed in this redesign, but not run in this environment)",
+        "Performance measurement on named hardware (no performance claim is made)"
+      ],
+      "note": "Implemented, not verified. R21 depends on R14/R15/R16/R17, which are implemented but not verified, so R21 cannot be verified before them. Browser mocks do not establish packaged Tauri correctness."
     },
     "R22": {
-      "state": "pending"
+      "state": "pending",
+      "capture_restriction_followup": "Red-first benchmark capture regression showed a stopped task whose saved scope contained only an unrestricted source could still export raw answer/tool receipts while another source in the case was restricted. capture.py now refuses raw capture if any current source is restricted; README states the reason and requires a separate authorized deidentified evaluation case. python -m unittest discover -s benchmarks -p test_capture.py -v failed before fix and passed after; full benchmark suite 9/9 passed. This is a privacy slice only; no held-out human-adjudicated quality result or independent comparator has been produced.",
+      "preregistration_followup": "Scorer now requires a supplied preregistration JSON whose byte SHA-256 matches truth, with exact held-out dataset, candidate/baseline, incident-ID digest and threshold matches; at least two matched repeats per incident are required. A bare hash string cannot enable the comparison claim. Synthetic tests include positive protocol match and negative hash/artifact/repeat cases; benchmark suite 10/10 passed, git diff --check passed. This does not establish when a real protocol was frozen or supply real adjudicated results; R22 remains pending."
     },
     "R24": {
-      "state": "pending"
+      "state": "pending",
+      "credential_followup": "Current-session preflight now covers provider and legacy API credential mutations; no real key was modified during native negative testing. A full command/tool authorization matrix, prompt-injection fixtures, capability-origin audit and opt-in diagnostic review remain open.",
+      "benchmark_capture_followup": "Raw benchmark capture now fails closed when any source in the case is restricted, because task answers and tool receipts can include out-of-scope source references. Synthetic SQLite regression passed after a red-first failure; no client case was read.",
+      "export_boundary_doc_followup": "docs/SECURITY.md had an obsolete claim that only draft text/JSON export existed. Current desktop and exports code supports PDF/DOCX drafts, reviewed dossier bundles including unsanitized cited source copies, and reviewed flattened redaction PDFs. The note now states each boundary and its human-review limit. Read-only code inspection and git diff --check completed; no new export behavior or independent disclosure review is claimed.",
+      "local_scan_followup": "On 2026-09-27, Node 24.14.1/npm 11.11.0 npm audit --omit=dev --json exited 0 with zero reported production npm vulnerabilities (auditReportVersion 2). A bounded local heuristic scan of 211 tracked text files (excluding binary files and files over 5 MB) found zero matches for private-key blocks, OpenAI-shaped keys, GitHub tokens or Google API keys; no matched content was printed. cargo-audit and pip-audit were not installed, so Rust/Python advisory audits were NOT RUN. These scans do not replace the command/tool authorization matrix, prompt-injection tests, runtime transmission capture, license audit or independent security review.",
+      "protocol_origin_followup": "Synthetic native CDP probe on the patched 041e13a desktop EXE confirmed a protocol CORS boundary failure: after opening an offline six-source synthetic case, the same WebView navigated from http://tauri.localhost to a data: document (origin null), whose default fetch to http://evidence.localhost/<synthetic image ID> succeeded with HTTP 200 and read 5,103 bytes. desktop.rs evidence handler emits Access-Control-Allow-Origin: *. This proves a foreign/opaque WebView origin can read case bytes if navigated there; the test did not establish a normal UI navigation path or use client data. Desktop file owner was sent the reproduction for a scoped fix and a native negative/positive preview regression. R24 remains pending until patched and retested. Commit b1064a5 adds a reusable native regression with an isolated offline synthetic import, positive in-app image preview, deliberate navigation to origin null and a default foreign-origin fetch that must fail. Against the vulnerable patched 041e13a package, powershell -NoProfile -File scripts/native-protocol-origin-test.ps1 -BinaryPath artifacts/VisLex 0.3.0-installer-candidate-041e13a/VisLex.exe -Port 9475 exited 1 as intended: positive preview succeeded, then foreign origin read 5,103 synthetic bytes at HTTP 200. The regression is red until the desktop protocol fix is built and retested.",
+      "protocol_origin_fix_followup": "Combined branch d8bcaba removed wildcard CORS from the evidence protocol. Red-first scripts/native-protocol-origin-test.ps1 failed against the older package after a positive synthetic app image preview; the same native test passed against the new portable release: app_preview=true, foreign_origin=null, foreign_read_blocked=true. This closes the demonstrated cross-origin fetch disclosure. The full R24 authorization matrix and independent security review remain pending."
     },
     "R25": {
-      "state": "pending"
+      "state": "pending",
+      "package_manifest_followup": "Standalone scripts/package_manifest.py creates a deterministic commit-tagged SHA-256 and byte-size inventory for every regular file in a fresh package folder and verifies missing, changed or extra files. It refuses links, Windows junction/reparse points and a second write to the same folder. Three synthetic tests passed, including a real Windows junction to a private sibling folder. The 439-file portable release folder at code commit f99167114fcc94fbd29e68ee6456dc73bbac4b93 passed write and verify, then verify again after the offline native journey. The x64 NSIS installer has a recorded SHA-256 but its installed contents and a second-machine package are unverified. The manifest is an integrity inventory, not a signature or complete SBOM. The latest 041e13a x64 installer and patched EXE have recorded byte sizes/SHA-256; the patched EXE plus bundled worker passed the 439-file manifest and offline native journey. Installed NSIS contents and a second-machine run remain unverified."
     },
     "R23": {
-      "state": "pending"
+      "state": "pending",
+      "capacity_preflight": "Windows C: Get-PSDrive measured 8,015,208,448 free bytes on 2026-09-26 while a separate fixed-source installer was building. The mandatory 10-GB and 40–60-GB non-sparse synthetic tiers cannot run on this volume without additional provisioned storage; no substitute sparse-file result will be counted. The 1-GB opaque synthetic file measured earlier is not a realistic video tier or release acceptance. No live client case was touched.",
+      "capacity_recheck": "Later on 2026-09-26, after concurrent build cleanup, C: had 128.71 GiB free and G: had 122.28 GiB free; capacity is dynamic. The untouched Downloads/WE sample contained 83 files totaling 3,374,145,064 bytes (3.14 GiB). A development package folder measured 1,130,379,973 bytes (1.05 GiB), including 1,094,058,023 bytes of bundled worker resources. A 60-GB figure refers only to the proposed large media stress input, not the app. Recheck free space immediately before provisioning a non-sparse large tier and account for separate source/import/derivative/backup bytes; no such tier has run yet.",
+      "real_sample_copy_checkpoint": "User-authorized read-only sample folder was imported into a separate offline test case through the dev35 packaged native bridge; 83/83 files imported in 36.5 seconds. Case originals totaled 3,374,145,064 bytes. A read-only SHA-256 multiset comparison of every source input, every private original and every case registration passed: 83 files and identical bytes/hashes on each side. Eight videos total 2.61 hours; the longest is 70.8 minutes. After controlled stops/reopens and a normal-mode run, the last observed local jobs were 72 auto_prepare complete, two terminal unsupported-source failures, seven queued and two running; nine full_audio complete; one video OCR parent running and seven queued; one video overview parent complete, one running and six queued; 290 artifacts. These are a processing checkpoint from an older development package, not full extraction, exact release-package verification or a provider test. No source content or filenames were copied into repository fixtures or status.",
+      "local_test_checkpoint": "On merged code commit f99167114fcc94fbd29e68ee6456dc73bbac4b93, cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored exited 0: 233 Rust tests across 11 suites, including native sandbox/AppContainer and worker video e2e. .venv-worker Python worker discovery exited 0 (28 tests); npm test -- --run exited 0 (121 tests across 21 files); npm run build exited 0; benchmark suite 10/10 and package manifest suite 3/3 passed. These local tests do not satisfy the complete release gate.",
+      "release_package_checkpoint": "On 2026-09-26, npm exec tauri build -- --target x86_64-pc-windows-msvc --features desktop exited 0 on merged code commit f99167114fcc94fbd29e68ee6456dc73bbac4b93. NSIS produced VisLex_0.3.0_x64-setup.exe: 703,335,276 bytes, SHA-256 56A5C407C24A8A1C222F06CABD2E6B6FA488BAC16EA27FBBA63BE11EE99481E9. A portable release folder with the release EXE and bundled worker had 439 files; scripts/package_manifest.py write/verify passed and verify passed again after native execution. The release EXE SHA-256 is 5EA28E8AC12AA013FD35B47F73DCA65F827FEF8611C566C6ABE8D2043ACD288B. A no-test-mode native bridge run of this portable release exited 0 in about 29 seconds: six synthetic sources, strong Verify, saved extraction reuse for PDF/DOCX/XLSX, both video discovery passes, timestamped samples, PDF locator read, draft record, PDF and DOCX exports, unreviewed redaction denied, playback origin, encrypted backup/restore/reopen, and zero provider calls with offline grants. The NSIS installation path itself, WE full processing, human-reviewed citation/dossier export, real provider, and realistic large tiers are not yet verified.",
+      "candidate_status": "Code commit 041e13a5969fd9985def1dfbd4d4ba3ecb051a21 is the latest tested package checkpoint. npm exec tauri build -- --target x86_64-pc-windows-msvc --features desktop exited 0 and produced VisLex_0.3.0_x64-setup.exe (703,438,412 bytes; SHA-256 AF25BB32B5777FE319A7A7E379AEF9DA266E1444FDEB60F12F6BEDDA7CD0846F). The NSIS-patched release EXE is 20,612,608 bytes, SHA-256 A88264C97704457A7569E49ECE4FBC6A3CCD3A82E482C6059E0D0A774F4251A9. A separate 439-file portable folder staged that exact patched EXE and worker resources; scripts/package_manifest.py write/verify passed and verify passed again after execution. Its no-test-mode offline native journey exited 0: six synthetic sources, strong Verify, saved PDF/DOCX/XLSX extraction reuse, both video discovery passes, PDF locator, draft record, PDF/DOCX export, unreviewed redaction denial, encrypted backup/restore/reopen, zero provider calls. The WE copy was also reopened on the same code before the NSIS patch; 83/83 originals were previously verified and all current discovery parents were complete/queued/running with no current discovery failures. NSIS installed-copy runtime, full WE processing, reviewed dossier/disclosure journey, real provider, target-scale tiers, and independent sign-off remain unverified. Worker metadata fix 774fd23 and a rebuilt worker now supersede this checkpoint; the exact patched x64 package must be rebuilt before release sign-off."
     }
+  },
+  "packaged_worker_and_acceptance_evidence": {
+    "date": "2026-09-22",
+    "commit_under_test": "993911d",
+    "summary": "Packaged-worker test suite (the 22 formerly ignored Rust tests: 21 sandbox.rs + 1 discovery.rs) and the full native acceptance journey were run and pass on this machine; all bundled model weights verified against committed manifests.",
+    "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; Python 3.11.15 (.venv-worker); node 24.14.1",
+    "commands": [
+      "OCR model hash check: workers/ocr-model-manifest.json sha256 entries verified byte-identical in .venv-worker site-packages and in packaged worker src-tauri/resources/worker (6/6 OK)",
+      "python scripts/download-model.py [tiny|small|minilm] + scripts/download-diarization.py -> all 'pinned model verified'",
+      ".venv-worker python -m unittest discover -s workers -p 'test_*.py' -> exit 0, 17 tests (video discovery, OCR empty-vs-failure, document formats, result safety, sound events)",
+      "Direct worker run: video_discovery.discover(kind=video_ocr) on fixtures/generated/variable-timing.mp4 -> 4 samples at authored PTS 0.0/1.4/2.5/3.0s, real RapidOCR text read (SYNTHETIC FRAME / N ms; one typical misread 2500->2S00), 0 failures, eof=True",
+      "cargo test --locked --test discovery packaged_video_indexes -- --ignored -> 1 passed (packaged AppContainer worker indexes full fixture, both video_ocr and video_overview)",
+      "cargo test --locked --test sandbox -- --ignored -> 21 passed (packaged worker suite incl. automatic_ocr_and_media_inventory_publish_with_originals_preserved, video_samples_retain_actual_decoder_timestamps_and_survive_backup)",
+      "cargo test --locked -- --include-ignored -> 167 passed, 0 failed, 0 ignored (all 10 suites)",
+      "npm test -> exit 0, 26 passed",
+      "Native acceptance: debug desktop exe rebuilt from current tree (cargo build --features desktop), launched with CDP; scripts/native-acceptance.js executed in the live page (driver: raw CDP Runtime.evaluate, because agent-browser eval hangs in this environment) -> journey PASSED: 6 fixtures imported, video_ocr 4 samples + video_overview 4 samples both complete, semantic search 30 results, transcripts settled, docx/pdf exports hashed, unreviewed redaction export denied, playback origin explicit, chat answer + DOCX preview rendered, provider_calls 0. Result: artifacts/native-acceptance-automated.json + .png"
+    ],
+    "fixes": [
+      "scripts/native-acceptance.js UI steps were stale against the redesigned UI (committed in 9916bb9) and could never pass: exact-text button match hit the relative-time label now rendered inside chat buttons, '.answer-text' was renamed '.answer', and the 'Evidence (6)'/'Case tools & files' sidebar controls became rail + evidence-library views. Updated selectors with equal-strength assertions (exact chat title attribute, exact library-name text, exact aria-label); no assertions weakened."
+    ],
+    "unrun_checks": "scripts/native-acceptance.ps1 end-to-end not run as-is (its agent-browser eval step hangs with unpinned npx agent-browser 0.38.1 in this environment; the same .js journey was driven over raw CDP instead); release-build journey, CI runner, and human visual checks still NOT RUN; OCR accuracy on real-world footage unmeasured (fixtures only).",
+    "note": "Cross-cutting machine evidence, not a task state change: no task was moved to verified by this record. Supersedes the 'packaged-worker suite / native acceptance NOT RUN' lines recorded per-task earlier, which were true at their recording time.",
+    "dev_build": {
+      "path": "artifacts/VisLex 0.3.0-dev2/VisLex.exe",
+      "sha256": "782cabf62775164dd67e26f7b82c774183d007ccec6eef4fc49f513875b78026",
+      "built_from": "commit 3d60361 (tauri build --debug --features desktop --no-bundle + scripts/package-development.ps1 -OutputName 'VisLex 0.3.0-dev2'); frontend rebuilt from source at package time",
+      "tested": "Full native acceptance journey run against this exact exe (launched from its own folder with VISLEX_TEST_MODE=1, driven over raw CDP): 6 fixtures imported, video_ocr 4 samples + video_overview 4 samples complete via the bundle-internal packaged worker, semantic search 30 results, transcripts settled, DOCX/PDF exports hashed, unreviewed redaction export denied, playback origin explicit, chat answer + DOCX preview rendered, provider_calls 0. exe sha256 re-verified byte-identical after the run. Result: artifacts/native-acceptance-automated.json; screenshot artifacts/native-acceptance-dev2.png.",
+      "note": "Debug-profile build: VISLEX_TEST_MODE bypass applies (debug_assertions). Not a release build; release journey still untested."
+    }
+  },
+  "additional_work": {
+    "CASE-SCOPED-DRAFTS-2026-09-26": {
+      "state": "implemented",
+      "commit": "1aa94e0",
+      "evidence": "Unsaved working-file drafts are keyed by case and record, with a DOM interaction that edits case A, opens case B using the same record ID, then returns to A and recovers only A's draft.",
+      "commands": [
+        "npm test -- --run -> exit 0, 46 tests in 11 files",
+        "npm run build -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "Drafts remain memory-only and do not survive full app exit; R06 close/restart handling is still open. Dev19 packaged native journey predates this UI edit and must not be claimed as covering it.",
+      "note": "No case data or source originals were modified."
+    },
+    "DEV19-NATIVE-JOURNEY-2026-09-26": {
+      "state": "verified",
+      "environment": "Windows x64; isolated synthetic case; debug packaged build with VISLEX_TEST_MODE=1",
+      "build": "artifacts/VisLex 0.3.0-dev19/VisLex.exe; SHA-256 DB91B7D25DC1C6D2A0F602041DC0E85FFB7C26F20A26A0D72AC6A6963C43108D",
+      "evidence": "artifacts/native-acceptance-automated.json and artifacts/native-acceptance-automated.png (local generated artifacts); production Tauri bridge and bundled Windows AppContainer worker used",
+      "commands": [
+        "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0",
+        "scripts/package-development.ps1 -OutputName 'VisLex 0.3.0-dev19' -> exit 0",
+        "scripts/native-acceptance.ps1 -Port 9349 -BinaryPath artifacts/VisLex 0.3.0-dev19/VisLex.exe -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0, 192 passed including all 21 Windows AppContainer sandbox tests, 12 discovery tests and worker_video_e2e"
+      ],
+      "observed": "6 synthetic originals imported; video OCR and overview each returned 4 samples; DOCX and XLSX extracted; semantic search returned 30 results; DOCX/PDF exports hashed; unreviewed redaction denied; playback provenance and chat rendering present; 0 provider calls. Snapshot samples 6.1-70.4 ms; discovery snapshot samples 7.2-93 ms, single journey only.",
+      "unrun_checks": "This debug journey bypasses normal consent and provider paths; it is not the R04 production settings journey or a release build. No two live provider chats, full-duration video review, live-case export/restore/reopen, or small/medium/large performance comparison was run. R23 remains open.",
+      "note": "Synthetic case only; user's source folder and existing case remained untouched."
+    },
+    "CASE-REFRESH-FENCE-2026-09-26": {
+      "state": "implemented",
+      "commits": [
+        "20aa09e",
+        "ce77c51"
+      ],
+      "evidence": "Renderer case epoch discards a snapshot response started before a project switch; request sequence also discards an older same-case response arriving after a newer one. DOM regressions cover both orders.",
+      "commands": [
+        "npm test -- --run -> exit 0, 45 tests in 11 files",
+        "npm run build -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "R08 backend request/session fences, bounded typed lists, query-plan evidence and large-case latency measurements remain open. Renderer sequence is local request order, not a durable backend event sequence. No packaged cross-case race run.",
+      "note": "This is a renderer race fix, not R08 verification."
+    },
+    "REVIEW-INPUT-STATE-2026-09-26": {
+      "state": "implemented",
+      "commit": "6720c3f",
+      "evidence": "Automatic review input stamp now includes the latest preparation/discovery attempt and its status, so a later failed attempt invalidates an old completion. A saved AI-authored report does not invalidate its own review.",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core automatic_review -> exit 0, 2 passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core a_new_failed_processing_attempt_invalidates_old_automatic_completion -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 71 passed",
+        "git diff --check -> exit 0"
+      ],
+      "unrun_checks": "R05 delayed-provider response/run-epoch interleavings and full declared-check completion remain unverified. No packaged or live-case run after this commit.",
+      "note": "The status change is derived from current job records; source bytes and historical records remain intact."
+    },
+    "EXACT-NAVIGATION-2026-09-26": {
+      "state": "implemented",
+      "commit": "9ca1b35",
+      "evidence": "Palette pointer and Enter activation open the selected source or search hit directly with its historical locator; Evidence Ask keeps the selected extraction revision and switches to Chat before focusing the composer; the attachment builder preserves an exact selected locator over a generic viewer position.",
+      "commands": [
+        "npm test -- --run -> exit 0, 43 tests in 11 files, including DOM palette pointer/Enter and Evidence-to-Chat focus interactions",
+        "npm run build -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "R06 remains incomplete: navigation history, tab/editor draft restoration, selected-range attachment in a live provider request and a packaged UI journey are not yet verified.",
+      "note": "No live case or source originals were touched."
+    },
+    "PINNED-CITATION-EXPORT-2026-09-26": {
+      "state": "implemented",
+      "commit": "38b40ff",
+      "evidence": "Record preview citations now navigate to the pinned extraction; a DOM chat-citation journey verifies hover and click read historical wording after active text changes. Passage and semantic producer tests assert revisioned locators. Export UI states and passes the selected saved revision, and the backend rejects an intervening record edit before creating a text or document export.",
+      "commands": [
+        "npm test -- --run -> exit 0, 40 tests in 11 files",
+        "npm run build -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core record_export_refuses_a_revision_changed_while_choosing_destination -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox semantic_search_finds_synonyms_and_rejects_changed_permissions -- --include-ignored -> exit 0",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "No packaged UI click/export journey or live case export after this commit. R02 finding/copy/export cross-surface acceptance is not fully rechecked; R06 palette, exact selection, history and tab-switch acceptance still open. Neither task is marked verified by this slice.",
+      "note": "Legacy export callers remain accepted without an expected_revision for compatibility; the current UI supplies it. No case data or original source files changed."
+    },
+    "PHASED-RELIABILITY-2026-09-25": {
+      "state": "implemented",
+      "commits": [
+        "91da827",
+        "0480d26"
+      ],
+      "environment": "Windows 10.0.26200 x64; branch impl/phased-reliability-20260925; source HEAD before changes 4591612",
+      "evidence": "Production settings and case snapshot remove AI currency values; new transmissions reserve 0 while token/timing display remains; chat unlocks after preparation even during automatic review; current fingerprinted checkpoints can seed a quick answer; hidden paused automatic chats continue into a visible new conversation; Jobs shows active/failed automatic analysis and its recovery action.",
+      "commands": [
+        "npm test -- --reporter=dot -> exit 0, 37 tests after 91da827; 38 after 0480d26",
+        "npm run build -> exit 0 after both code commits",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored -> exit 0 after 91da827, including 21 native AppContainer tests and packaged worker video test",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core continuing_a_deleted_automatic_chat_creates_a_visible_conversation -> exit 0 after 0480d26",
+        "python scripts/vislex_plan.py check -> exit 0, 26 task contracts structurally valid; no dependency-ready task yet"
+      ],
+      "reviewer": "Separate self-review of changed interfaces, legacy settings compatibility, hidden conversation recovery, and test evidence; no independent reviewer or real provider call in this slice.",
+      "unrun_checks": "No new packaged executable or validation-case migration was performed. R02/R03/R04/R07 acceptance remains implemented rather than verified; R05/R08-R23 mandatory acceptance and large-case measurements remain open. Concurrent live provider chats and first-response measurements remain unrun.",
+      "note": "Incremental implementation only. The live case and Downloads source folder were not opened or modified. Existing database money columns remain inert for compatibility with old cases and backups; historical audit entries remain intact. Tool/UI wording and current snapshot no longer expose pricing controls."
+    },
+    "CHAT-FIX": {
+      "state": "implemented",
+      "evidence": "src-tauri/src/agent.rs (review_candidate candidate.blocks items given the finish_task block shape; list_sources.details made nullable+required), src-tauri/src/providers.rs (provider_rejection surfaces bounded provider error bodies on HTTP failures in send and list_models; stream failure events include the provider message), src-tauri/tests/master_v4.rs (tool_schemas_satisfy_openai_strict_mode, review_candidate_candidate_blocks_match_finish_task_block_shape)",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; branch impl/wave1-repairs",
+      "commands": [
+        "live replay of the exact app wire body (dumped through agent::start -> prepare_request -> providers::encode from a synthetic case) against https://api.openai.com/v1/responses with the user's stored key -> pre-fix HTTP 400 {error.message: Invalid schema for function 'review_candidate': In context=('properties','candidate','properties','blocks','type','0','items'), 'additionalProperties' is required to be supplied and to be false.}; post-fix HTTP 200 with response.completed",
+        "minimal OpenAI probes (bare/stream/store/reasoning/strict tools with minimum,maximum,minItems,type-union schemas) all HTTP 200, isolating the two schema violations",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 145 passed, 0 failed, 22 ignored (2 new schema guards)",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0; npm test -> 26 passed; npm run build -> exit 0; cargo clippy --tests -> no new warnings in changed code"
+      ],
+      "reviewer": "self-review (no separate reviewer agent available this session, stated limitation); diagnosis was empirical: failure replayed byte-exact from the real code path, fix replayed to HTTP 200, strict-mode rules encoded as a permanent schema-walking test over every agent tool plus the visual-review tool",
+      "unrun_checks": "xAI and Anthropic/Gemini live chat runs NOT re-attempted post-fix (xAI team out of credits per provider body; Gemini untested in this session); no UI interaction test (Rust-side fix)",
+      "note": "User-reported all-provider chat failure with working key validation and model pull. Root cause for OpenAI: every chat posted the full strict:true tool set to /v1/responses; review_candidate.candidate.blocks items was {type:object} without additionalProperties:false (OpenAI strict rejects the whole request), and list_sources.details was a non-required property (strict requires all properties required) which would have been the next 400. Both predate R03's recorded unrun_check 'no live provider run of the new tool schemas'. xAI 403 is a provider-side account condition (team out of credits) that the old generic error text hid; provider error messages are now surfaced bounded (4xx/5xx bodies are account/quota/schema diagnostics, never evidence content; successful response bodies remain unlogged). Model gpt-5.6-luna was never at fault."
+    },
+    "VIDEO-OCR-FIX": {
+      "state": "implemented",
+      "evidence": "workers/worker.py video_ocr/video_overview dispatch (already correct at HEAD); rebuilt frozen bundle src-tauri/resources/worker/evidence-worker via scripts/build-worker.ps1; src-tauri/tests/worker_video_e2e.rs (worker_runs_video_ocr_in_appcontainer, uses committed fixtures/generated/variable-timing.mp4)",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; Python worker venv (.venv-worker) with PyInstaller; branch impl/wave1-repairs",
+      "commands": [
+        "user case DB (yug.ledcase) shows every video_overview processing job failed with error 'Unsupported processor kind' while full_audio jobs completed",
+        "root cause: evidence-worker.exe was built 2026-09-20 19:47; the worker.py video_ocr/video_overview branch was committed 2026-09-21 18:11 (593305d); the app bundle artifacts/VisLex 0.3.0-dev (rebuilt 2026-09-22 15:57) packaged the stale Sep 20 exe, so discovery fell through to the old dispatch's else-raise",
+        "pipeline verified on the user's real recording: video_discovery.discover over a 14 MB mp4 (0-10 s, interval 5) -> 2 frames sampled, zero failures, RapidOCR 1.4.4 read the banner text with 0.96-0.99 raw scores",
+        "scripts/build-worker.ps1 -> exit 0, new exe 13,653,770 bytes 2026-09-22 16:48; exe refuses to run outside AppContainer as designed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test worker_video_e2e -> exit 0 (real worker, real AppContainer, committed fixture, OCR payload per frame)",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 145 passed, 0 failed, 22 ignored"
+      ],
+      "reviewer": "self-review (no separate reviewer agent available this session, stated limitation); fix is a build artifact refresh, no worker source change needed",
+      "unrun_checks": "full native acceptance and packaged journey NOT RUN; the user's existing failed discovery runs stay failed by design - recovery needs an explicit retry (VideoDiscovery 'Build / resume indexes' or queue_video_discovery), which computes a new index revision from the new worker hash",
+      "note": "The video OCR error persisted after the worker code was fixed because the frozen PyInstaller evidence-worker.exe ships separately from app code and was never rebuilt; scripts/build-worker.ps1 must be run before packaging when workers/ changes. The new permanent e2e test runs the packaged worker through sandbox::run_worker so a stale bundle now fails CI instead of the user's cases."
+    },
+    "CASE-DELETE": {
+      "state": "implemented",
+      "evidence": "src-tauri/tests/core.rs delete_case_requires_free_lock_exact_confirmation_and_removes_everything, delete_case_refuses_folders_that_are_not_cases; src-tauri/src/case.rs delete_case; src-tauri/src/desktop.rs delete_case dispatch branch; src/App.tsx Delete case menu item + typed-confirmation dialog; README.md case-management paragraph",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; branch impl/wave1-repairs",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core delete_case -> exit 0, 2 passed (red-first not applicable: new feature, no prior behavior)",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 127 passed, 0 failed, 21 ignored",
+        "npm test -> exit 0, 26 passed (6 files)",
+        "npm run build -> exit 0 (tsc -b + vite)",
+        "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --tests -> no new warnings in changed lines (permissions_set_readonly_false lint fires on pre-existing reclaim_staging idiom that delete_case deliberately mirrors)"
+      ],
+      "reviewer": "self-review pass (no separate reviewer agent available in this session, stated limitation): lock-before-read ordering, canonicalize() equality for open-case detection (verbatim \\?\\ forms), Connection dropped before removal, reparse points skipped in walk and unlinked-not-followed by remove_dir_all, confirmation checked before any destructive action, read-only originals cleared before remove_dir_all (covered by Windows test asserting !root.exists())",
+      "unrun_checks": "DOM-level interaction test of the delete dialog NOT RUN (vitest has no DOM environment/testing-library in this repo; AGENTS.md requires interaction tests for UI changes — gap recorded, consistent with R04's recorded limitation); native packaged journey with a real deletion NOT RUN; symlink/reparse-point adversarial fixture NOT RUN (needs Windows symlink privilege)",
+      "note": "New user-requested feature outside the R-queue. Backend gates: exclusive case.lock must be free (case open in another instance is refused), typed case-name confirmation must match on-disk meta name, folder must contain case.sqlite3 with user_version<=6 and a meta id/name. Deleting the open case stops on running tasks/jobs and active imports, closes the case first, then removes the whole folder and returns a bytes/sources/records receipt. Frontend: case menu Delete case… (disabled without an open native case) and command-palette entry open a dialog warning that originals/working files/chats/review history/archives inside the case folder are erased irreversibly; the destructive button enables only when the typed name matches; on success the projects list, last-case pointer and conversation pointer are cleared and the app returns to onboarding. Exports/archives the user saved outside the case folder are intentionally untouched. Deletion runs while holding the app case mutex by design: renderer stays responsive (spawn_blocking), other case commands queue honestly behind the removal. Known non-goal: a backup/export streaming concurrently from another trigger has no tracked in-flight state and would fail with an IO error rather than corrupt other data.",
+      "commit": "85f47aa7a6a24a3714b82451535b4730e6c9a04c"
+    },
+    "CHAT-CONCURRENCY-2026-09-22": {
+      "state": "implemented",
+      "commit": "8bf196f",
+      "environment": "Windows 10.0.26200 x64; node 24.14.1; rustc/cargo 1.98.1; branch impl/wave1-repairs",
+      "evidence": "src-tauri/tests/core.rs independent_chats_can_run_together_and_followups_use_bounded_continuity, chats_wait_for_file_preparation_but_failures_release_the_gate, automatic_review_completion_fingerprint_written_only_on_observed_success; src/components/AgentPanel.test.tsx real React DOM interactions via happy-dom",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites passed; 21 sandbox worker tests ignored by default, separate worker_video_e2e passed",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 58 passed",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "npm test -> exit 0, 28 passed in 7 files",
+        "npm run build -> exit 0",
+        "python -m unittest discover -s scripts -p test_vislex_plan.py -> exit 0, 10 passed",
+        "python scripts/vislex_plan.py check -> exit 0, 26 planned tasks",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Self-review only: checked per-chat task ownership, source-scope guards on archived turns, old failed-job supersession, review input revision binding, test-mode-only bypass, and immutable originals. No separate reviewer used.",
+      "unrun_checks": "Live provider timing/token measurements and a packaged Windows UI journey with two simultaneous network chats NOT RUN; hidden console confirmed by Windows subsystem compile, not by launching a new packaged exe. Native acceptance was not rerun against this commit. Performance improvement is architectural and test-bounded, not measured p95 or billing proof. Packaged startup smoke attempt was rejected by automatic approval review (Start-Process hidden with temporary WebView CDP port), stated reason: blocked by policy; no live startup result.",
+      "note": "New chats can run concurrently after active file preparation/automatic review settles; failures release the chat gate. Follow-ups carry a bounded prior answer/progress and retain exact history/receipts for on-demand retrieval. New chats receive only a current, bounded automatic review context keyed to source hashes, active extraction revisions, and latest completed preparation jobs. The former three unrelated full-answer summaries were removed. Debug Windows app uses the Windows subsystem to suppress its console. Extra historical work entries were moved from tasks to additional_work so the 26-task plan check works again. R05/R08/R16/R19 remain pending or implemented per their existing acceptance evidence; this work does not certify them.",
+      "dev_build": {
+        "path": "artifacts/VisLex 0.3.0-dev3/VisLex.exe",
+        "sha256": "f3e887485756f9c47af3ec4c553e941894f040cd3207464db009d9efc3a93e25",
+        "bytes": 32002048,
+        "command": "npm exec tauri build -- --debug --features desktop --no-bundle; scripts/package-development.ps1 -OutputName VisLex 0.3.0-dev3 -> both exit 0",
+        "pe_subsystem": "2 (Windows GUI), checked directly from packaged PE optional header",
+        "startup": "NOT RUN: automatic approval review rejected Start-Process of packaged EXE with a hidden window and temporary WebView debugging port; rejection stated blocked by policy without further detail"
+      }
+    },
+    "CHAT-RESPONSE-2026-09-22": {
+      "state": "implemented",
+      "commit": "8f4767a",
+      "environment": "Windows 10.0.26200 x64; rustc/cargo 1.98.1; node 24.14.1; branch impl/wave1-repairs",
+      "evidence": "src-tauri/tests/core.rs cited_answers_require_review_and_are_saved_for_followups, visual_requests_are_steered_to_frames_after_text_retrieval_and_disclose_gaps; src-tauri/tests/dossier.rs citation_free_completion_is_explicitly_unreviewed; src/components/AgentPanel.test.tsx completed-answer interaction",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites passed; 21 packaged-worker tests ignored by default",
+        "npm test -> exit 0, 29 passed in 7 files",
+        "npm run build -> exit 0",
+        "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0",
+        "scripts/package-development.ps1 -OutputName VisLex 0.3.0-dev4 -> exit 0",
+        "git diff --check -> exit 0"
+      ],
+      "reviewer": "Self-review only; checked chat answer, saved report, dossier completion, and citation-free status remain distinct. The direct answer no longer gains blanket AI or gap boilerplate; exact unresolved checks stay in completion metadata and the saved working report.",
+      "unrun_checks": "Live provider wording and packaged UI interaction NOT RUN; automatic approval review previously rejected starting the packaged EXE for a smoke test. No timing measurement for response speed.",
+      "dev_build": {
+        "path": "artifacts/VisLex 0.3.0-dev4/VisLex.exe",
+        "sha256": "012a211adf148f048dc76ab48c5d5d27c8b17d0c11212bb93b366fee5e868e41",
+        "pe_subsystem": "2 (Windows GUI), checked from packaged PE header"
+      },
+      "note": "Chat shows the model answer directly and adds a compact source list only for citations omitted from the answer. Routine gaps and review diagnostics remain retrievable on request in the dossier/completion and saved report. The per-message AI assessment badge was removed. No claim of human certification is introduced; metadata and review gates remain."
+    },
+    "RELIABILITY-SLICE-2026-09-22": {
+      "state": "implemented",
+      "commit": "37896dc",
+      "followup_commit": "66d822d (same-source processor transcript changes invalidate automatic review; focused core regression passed)",
+      "failure_state_commit": "9646465 (provider-paused automatic review reports failed; user stop/chat preemption remain paused; focused core regression passed)",
+      "partial_progress_commit": "f67ed97 (after two identical failed final submissions, saved checkpoint summary and gaps remain visible; unsupported failed final wording is discarded; focused core regression passed)",
+      "visual_coverage_commit": "4d0b2e1 (automatic task forces batches of registered discovery frames, one chosen per 20-second bin plus scene boundaries; only successful visual-observation receipts count; version 1 per-source coverage reports missing bins, scene counts, EOF and discovery gaps; synthetic production-path selection and provenance checks passed)",
+      "coordinator_commit": "909541f (discovery terminal transition wakes automatic review even when preparation workers finished earlier; resource error 1450 records allowlisted physical/pagefile availability; discovery suite 7 passed, 1 packaged test ignored; desktop feature check passed)",
+      "new_build": "artifacts/VisLex 0.3.0-dev5/VisLex.exe; SHA-256 4891623c7b6e329d792f94c0ac777b0b40d802d6e720cb5318d9e71229c0fa18; npm exec tauri build -- --debug --features desktop --no-bundle and package-development.ps1 both exited 0. This package has not been run or verified against the live case.",
+      "request_size_commit": "5af4527 (forced single-tool requests omit unused tool schemas; synthetic investigator request tool-schema bytes measured 29,822 -> 1,189, full default Rust suite passed; this is a per-request schema comparison, not a measured live token/latency reduction)",
+      "continuation_commits": "c8e4f72 + aa4a3ab (paused task can start a new task from saved progress and the same selected model without replaying the old uncertain transmission; backend and UI interaction regressions pass; existing chat interaction tests restored, frontend suite 32 passed and build passed)",
+      "bounded_snapshot_commit": "f1da476 (working-record bodies removed from polled snapshot and loaded by case-ID/revision-fenced detail action; 500 synthetic 2-KiB records measured 1,156,389 -> 125,886 serialized snapshot bytes; Rust core 64 passed, React 33 passed, UI stale-case interaction passed, native script syntax checked but native journey not run)",
+      "latest_build": "artifacts/VisLex 0.3.0-dev7/VisLex.exe; SHA-256 48f4b1209ddee303efc75635efbed578ec9f3a10698bea9f6fa813a2e3664bdb; includes safe paused-task continuation; Tauri debug desktop build and isolated packaging exited 0. Not launched against the live case.",
+      "environment": "Windows x64; packaged VisLex 0.3.0-dev4 remains running on the live case; code changes tested in the repository only",
+      "evidence": "src-tauri/tests/discovery.rs, src-tauri/tests/core.rs, src-tauri/tests/dossier.rs, src-tauri/tests/master_v4.rs, src/App.test.tsx",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0; default suite passed with packaged-worker cases ignored",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "npm test -- --run -> exit 0, 31 passed in 8 files",
+        "npm run build -> exit 0",
+        "git diff --cached --check -> exit 0"
+      ],
+      "implemented_scope": "Automatic review waits for discovery; failed discovery parent resumes from its published cursor and a linked child routes to that recovery; Windows resource error 1450 gets two delayed retries; memory-heavy workers serialize; Jobs groups old tool errors and counts active attention; dossier schema matches runtime inspection values; two identical failed tool submissions force a qualified finish; provider incomplete reason is allowlisted; automatic completion audit is idempotent; agent ledger bounds old read/visual detail with exact receipts retained.",
+      "unrun_checks": "Dev7 predates the bounded-snapshot change and needs a fresh package. No native interaction journey against these changes. Encrypted live-case backup and controlled restart await backup verification. The deterministic visual-bin ledger has only synthetic checks, no full-duration packaged/live run; document-page and text-unit coverage remain unfinished. No measured post-change token/latency/memory improvement; no synthetic medium/large tier run. R05 and R08-R23 remain subject to their own acceptance gates.",
+      "reviewer": "Self-review and focused production-path tests; no separate reviewer or live provider run. The terminal observed on this desktop is a separate Class Assistant cmd process launched by Explorer; running VisLex.exe has GUI subsystem and its worker uses CREATE_NO_WINDOW, so the reported terminal association remains unconfirmed.",
+      "note": "Implemented slice, not release verification or legal-accuracy certification. The running case and old packaged executable were not modified or restarted."
+    },
+    "NEW-CASE-VALIDATION-2026-09-22": {
+      "state": "in_progress",
+      "environment": "Packaged VisLex 0.3.0-dev14 on Windows; new isolated case created from copies of 10 source files; source folder and older case untouched",
+      "evidence": "Production Tauri bridge import, preparation, transcription, encrypted backup, and live request audit; client identifiers and content omitted",
+      "commands": [
+        "New case: 10 of 10 sources imported; 10 auto_prepare and 8 full_audio jobs completed; 17 PDF pages and 54 DOCX text lines extracted",
+        "Live request audit: 8 transmissions, 7 received and 1 uncertain; 96,690 input and 1,825 output tokens; automatic task paused without resending the uncertain transmission",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test core -> exit 0, 66 passed after 630758d",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites passed; 21 packaged-worker sandbox tests ignored by default; worker_video_e2e passed",
+        "npm test -- --run -> exit 0, 34 React interaction/unit tests passed",
+        "npm exec tauri build -- --debug --features desktop --no-bundle and scripts/package-development.ps1 -OutputName VisLex 0.3.0-dev15 -> exit 0",
+        "Encrypted backup completed: 3,395,733,078-byte .age archive, SHA-256 ADCE801AD28B1F78C67BD3A11D88A330CD1310D954F3BC9D6916E3B4509F190D",
+        "Production Tauri restore to a separate new folder succeeded; restored case opened with 10 sources and 3,366,790,450 original bytes; SQLite quick_check -> ok",
+        "Production Tauri queue_video_discovery -> 8 of 8 videos queued successfully; 16 latest OCR/overview index jobs present, 1 running and 15 queued at start",
+        "Dev16 controlled restart during discovery -> 16 parent runs resumed from their saved 60-120 second cursors; old automatic task remained paused and no new transmission was made",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test discovery -> exit 0, 10 passed and 1 packaged fixture test ignored after chunk alternation change",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after 45d3378, all non-ignored suites passed; 21 packaged-worker sandbox tests ignored by default; worker_video_e2e passed",
+        "Dev17 packaged live run -> one video OCR index and one video overview index running concurrently, 4 index runs complete, 10 queued; 2 worker processes and approximately 6 GB available physical memory at observation",
+        "npm exec tauri build -- --debug --features desktop --no-bundle and scripts/package-development.ps1 -OutputName VisLex 0.3.0-dev17 -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test discovery -> exit 0, 11 passed and 1 packaged fixture test ignored after 113b3b0",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0 after 113b3b0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0 after 113b3b0, all non-ignored suites passed; worker_video_e2e passed",
+        "Packaged live snapshot during dual discovery: 62,749 serialized bytes and 54 ms bridge latency with 10 sources, 172 job summaries, and 1 paused task; single observed sample, not p95",
+        "Packaged live resource sample during dual discovery: 2 worker processes, 1,046,339,584 combined private bytes, 6,608,670,720 available physical bytes; no current processing failure",
+        "Latest live discovery snapshot before handoff: 6 of 16 index runs complete, 8 queued, 2 running; 0 active processing failures; automatic AI task paused",
+        "Dev15 packaged PE subsystem -> 2 (Windows GUI); app child processes were evidence-worker.exe and msedgewebview2.exe, with no console child",
+        "npm test -- --run -> exit 0, 36 tests in 10 files after 935864d and 234f03c; npm run build -> exit 0",
+        "Python worker unit tests -> exit 0, 18 passed after overview scaling and scheduling changes",
+        "Packaged AppContainer worker_e2e and discovery tests -> exit 0 after 34176b0"
+      ],
+      "commits": [
+        "e6c775f",
+        "c41a0df",
+        "1344b82",
+        "81229f2",
+        "de613f7",
+        "34176b0",
+        "fa80948",
+        "630758d",
+        "935864d",
+        "234f03c",
+        "45d3378",
+        "113b3b0"
+      ],
+      "implemented_scope": "Sanitized per-request size metrics, bounded current-review first answer, faster overview scaling, historical Jobs grouping, alternating overview/OCR chunks with one concurrent lane for each, cancelled-discovery finalization, and paused automatic review continuation from current inventory while preserving uncertain delivery",
+      "unrun_checks": "The 16 new full-duration video index jobs have not all reached EOF; the visual-bin ledger is pending. No packaged citation/export/reopen journey on this new case, two concurrent provider chats, medium/large tier benchmark, or measured follow-up latency yet. Dev17 contains the coordinated lanes and is now running on the case. This entry is not release verification.",
+      "note": "The user redirected validation to a new case from copies of the source folder. No case material or names were committed. The earlier case remains untouched. The encrypted backup restored successfully into a separate folder; both case versions were retained. Full-duration discovery must finish before the paused AI task can be continued from current saved progress."
+    },
+    "LIVE-CASE-AUDIT-2026-09-22": {
+      "state": "diagnosed",
+      "environment": "Running packaged VisLex 0.3.0-dev4 on Windows; live case inspected read-only through Computer Use and SQLite read-only URI; branch impl/wave1-repairs",
+      "evidence": "docs/implementation/LIVE-CASE-ERROR-AUDIT-2026-09-22.md",
+      "commands": [
+        "Computer Use: inspected the running chat and Jobs & issues panel; automatic review paused, 11 discovery jobs pending, 48 attention items displayed",
+        "Read-only SQLite: PRAGMA quick_check -> ok; 1,302 registered artifact paths present; 10 source preparation jobs and 8 full-audio jobs complete",
+        "Read-only SQLite: latest automatic review 76 transmissions, 1,287,309 reported input tokens and 18,285 output tokens on received calls; no final answer; provider incomplete event",
+        "Source inspection: automatic::start_review excludes video discovery from readiness; Jobs discovery recovery routes to processing::resume without discovery::store_chunk; dossier schema accepts free-form check tool but runtime allows exact inspection tools"
+      ],
+      "reviewer": "Self-review only; compared live UI, case job/action/transmission summaries, registered artifact files, and source control paths. Client document content and identifiers omitted from report.",
+      "unrun_checks": "No changes were applied to the running case or app. Error 1450's exact OS resource cause is unproven without worker memory/commit diagnostics. Provider's omitted incomplete reason cannot be recovered from stored transmission metadata. Proposed repairs and packaged end-to-end verification remain open.",
+      "note": "A diagnostic audit, not an implementation or verification claim. Prioritize discovery readiness/recovery, bounded error loops, resource handling, and provider diagnostics. The paused automatic task has an uncertain transmission and should not be blindly resent."
+    },
+    "APP-AI-SCOPE-2026-09-26": {
+      "state": "implemented",
+      "commit": "71d6253; combined through 38e25e3",
+      "environment": "Windows 10.0.26200 x64; isolated codex/vislex-redesign worktree; synthetic UI fixtures",
+      "evidence": "App-wide AI preferences now load/save without an open case; new cases inherit, legacy cases retain their prior policy until explicitly opted in, and case overrides remain separate. Visible execution/review/agent-count controls were removed; current case grants and review gates remain enforced. Frontend interactions cover app defaults, case override, return to inheritance, offline setup and focus. A late app-defaults response no longer overwrites the selected case editor. Browser accessibility/workspace checks pass. Native debug binary synthetic journeys verified app inheritance/override/reopen with zero provider calls, and UI consent grant/revoke/reopen while preserving hidden review/execution policy.",
+      "commands": [
+        "npm run build -> exit 0",
+        "npm test -> exit 0, 120 tests in 21 files on final rerun (one preceding full run had a transient lazy-view timeout; its targeted rerun passed)",
+        "npm run test:a11y -> exit 0, 1 Playwright test",
+        "npm run test:e2e -> exit 0, 10 Playwright tests",
+        "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop --lib -> exit 0, 18 passed and 2 intentionally ignored",
+        "node --check scripts/native-consent-acceptance.js and new native CDP runners -> exit 0",
+        "npm exec tauri build -- --debug --features desktop --no-bundle -> exit 0",
+        "scripts/native-app-ai-acceptance.ps1 against fresh debug binary -> exit 0; synthetic app A/B/C inheritance, case override and reopen, zero provider calls",
+        "scripts/native-consent-acceptance.ps1 against fresh debug binary -> exit 0; synthetic UI text/image/direct-media grant and revoke, hidden challenge/single policy retained, restart revocation retained",
+        "git diff --cached --check -> exit 0"
+      ],
+      "unrun_checks": "The new native journeys ran against an unbundled debug executable, not a release installer. Packaged release/installer verification and a live provider call remain unrun; release verification is not claimed."
+    },
+    "CODEX-PERSISTENT-PROFILE-2026-09-27": {
+      "state": "implemented",
+      "commit": "a8f110e",
+      "environment": "Windows packaged x64 VisLex; installed sidecar SHA256 E1D6B21D4D53A4ECE8F3A034DB86A7022B3FDD3F07916E53A1C032FC42781C55",
+      "evidence": "Live case task paused with zero actions because subscription AppContainer startup failed. Fresh installed-app CDP smoke reproduced it. A diagnostic release build revealed icacls /T failed on a missing cached-plugin path inside the persistent Codex profile. The fix grants the profile root with inheritance without recursively scanning account data; the bundled runtime grant and AppContainer boundary remain. Fixed release EXE SHA256 42C307096766CE16730E3E59E99BD5A22D38F6EDFF2DA71EC3A9A627B8E2A6A3 was installed after a graceful app close, then reopened. Its exact installed binary returned subscription_ready=true, account_protocol=true, connected=true. The persistent synthetic probe allowed profile access and denied out-of-scope read/write. Matching NSIS bundle SHA256 AFC77F352D48CFBF50977BCD0712815EEC762BD0CA928ABAB712222E64FCD420; its release EXE SHA256 7685891569F54CABF98EBB9CEEF39185AFE2A2467A1059D373D9C837F589C557 passed the same account smoke from the build directory. The paused case task was not automatically resumed.",
+      "commands": [
+        "npx tauri build --features desktop --target x86_64-pc-windows-msvc --no-bundle -> exit 0",
+        "scripts/native-codex-account-test.ps1 -BinaryPath <fixed installed EXE> -Port 9487 -> exit 0, connected=true",
+        "npx tauri build --features desktop --target x86_64-pc-windows-msvc --bundles nsis -> exit 0",
+        "scripts/native-codex-account-test.ps1 -BinaryPath <bundled release EXE> -Port 9488 -> exit 0, connected=true",
+        "scripts/test-codex-boundary.ps1 -BinaryPath <installed sidecar> -PersistentProfile -> exit 0, synthetic boundary held",
+        "git diff --cached --check -> exit 0"
+      ],
+      "reviewer": "Self-review only; no independent reviewer available for this live fix.",
+      "unrun_checks": "No live case task retry, model turn, installer extraction/install journey, or complete case-analysis journey was run. This verifies the startup blocker and installed account route, not case-analysis correctness or release certification."
+    },
+    "CODEX-SUBSCRIPTION-GATE-2026-09-26": {
+      "state": "blocked",
+      "commit": "148cb5d and later isolated account/boundary commits through 28d0c6f; subscription case execution disabled",
+      "evidence": "docs/implementation/CODEX-SUBSCRIPTION-GATE.md; installed codex-cli custom permission profile leaked DENIED_SYNTHETIC, so that runtime is not used for case work. Pinned openai/codex 985cf47 with narrow Windows AppContainer patch built as standalone codex-app-server.exe, SHA256 5DCD761100DF76C236FCF23931242C9E9F0052E8183DCA5A0A0F59EB88BABAFD. Synthetic .ledcase allowed read and out-of-scope read/write denial passed against that release resource; device-code OAuth start and persistent AppContainer profile reuse passed. Desktop account/read smoke passed against release sidecar; cargo test --features desktop --lib passed 20, 3 ignored; frontend production build and npm run desktop:build:x64 passed. Release app EXE SHA256 7910150E3E4754AFAD44796AB11904362B15D8B086E145C2843DE6F8D7925602; NSIS SHA256 D38CBA96BD2AD93EC6C9303FF1EF6E7071D0CB725B2C7700AA8BC8E473934AE0. Earlier SettingsDialog device-code and disabled-route tests passed, and npm test -- --maxWorkers=2 passed 123 tests in 21 files.",
+      "unrun_checks": "No actual user OAuth completion, Codex model turn, dynamic-tool bridge, installed-installer binary extraction/runtime probe, or case-evidence transfer was attempted. Case-root/profile overlap rejection and prompt/tool-result retention isolation remain unimplemented. Subscription-backed case chat remains unavailable until the case-grant/review/provenance/cancellation bridge and those checks pass."
+    },
+    "LIVE-SUBSCRIPTION-STALL-2026-09-27": {
+      "state": "implemented",
+      "commit": "020d9d6",
+      "evidence": "Read-only live case metadata at 2026-09-27 15:52 America/Toronto showed two subscription investigation tasks still marked running with no new task action since 15:32:49. One video processing job had a staged result but remained running; three transmissions remained pending. The displayed 29-step task had real source/text/video/artifact actions. Its two failed save_dossier actions were receipt ownership and evidence-locator validation failures, not proof of missing case tools. A separate immediate SQLite writer probe succeeded, so the reported database-is-locked error was transient rather than a persistent lock. Code adds a twelve-minute no-activity watchdog for subscription turns, pauses the task, requests cancellation of its active media jobs, and marks pending transmissions uncertain. The case SQLite connection now tolerates up to fifteen seconds of writer contention. The running UI labels zero usage as pending rather than implying zero model tokens. Synthetic writer contention longer than the old five-second limit passed; cargo test --locked --manifest-path src-tauri/Cargo.toml --test core passed 82/82; cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop --lib passed 22/22 non-ignored with 5 ignored; AgentPanel interaction tests passed 15/15. npm exec tauri build -- --debug --features desktop --no-bundle exited 0. Debug EXE SHA-256 438D9C4E3E4CF4C84125F924C8D4770246403AC5ED841F81574C19C49E34DB01, with matching verified sidecar SHA-256 D44A2857F07087304F5A5409413F0297893EBF8B51DF5AC6BA1C2F86AA823897. scripts/native-codex-account-test.ps1 on the exact debug EXE exited 0 with subscription_ready, account_protocol and connected true.",
+      "unrun_checks": "The user's installed app remains on the preceding build and the current stalled live tasks were not altered. The watchdog and database wait have not been exercised in a fresh live case journey; the exact cause of the stalled callback and the transient SQLite contention remains unproven. No full evidence analysis, human support review, legal accuracy, or product certification is claimed. Self-review only."
+    }
+  },
+  "redesign_worktree_progress": {
+    "state": "in_progress",
+    "branch": "codex/vislex-redesign",
+    "base_commit": "298ab4291659ab4235c9c7e497a7a74190c0a6e0",
+    "slice_commit": "4ba546e",
+    "latest_slice_commit": "6cac65b (evidence reader theme, source identity/provenance, PDF page entry; frontend/browser tests)",
+    "integrated_functionality_commits": "f4ed6f6 (R13 from c9e56a1), 8889fe8 (R14 from bc6e7f2), 521244e (R15 from 1de6a7c), c2e3904 (R16 from d6c0169), 22756c0 (R17 from 137f61f), a0d925b (R03 acceptance tests from 2d07d16), 478cc11 (R07 containment from ae31b2f), 7eed9f4 (R07 explicit verification from 78b89a8), fe4bf3f (R07 native integrity journey from 1e50c8e), e3735df (R08 case settings/findings from 734cd6b), bd67d77 (R08 PDF/redaction from d74f5cd), d90463f (native synthetic search harness from 128649c), 1268ac7 (workbench from 3b935fd), 13f95c6 (imports/backups/working records from f22c6df), 1f25882 (record review/rollback from 8893350), 42c08d9 (media/transcription from 875f8bb), 2426bec (Dev25 evidence from 6363f70), 63dc16c (Dev26 from 57ecc97), 9a89767 (Dev26 evidence from 0609d22), 5a2e914 (session epoch from f0e7afa), 7ecdd51 (Dev27 evidence from 7e65e3c), 6135bb6 (stale publication from 028e804), 50338ea (Dev28 evidence from d16104b), 82904c9 (long-operation epoch from c2ef5bd), ba35069 (exact delete epoch from 9e7af25), ca867b8 (Dev30 evidence from dcc4f33), 46e0cdd (evidence-control epoch from 1269a26), f161945 (Dev31 evidence from f5a727f), 6eee654 (async background epoch from 867a50a), 1d32203 (Dev32 evidence from 7fed901), 17ba754 (1 GiB harness/evidence from b438813), 5fb4228 (R05 race harness from 2e256c7), 0305caa (R05 evidence from fcfcf7e), 692045f (Gemini signed parts from c0c0143), ec78cdc (finding caller test from 5b9ac77; equivalent UI epoch code already present), d6efa78 (R08 finding epoch gate from 216f4af), a2f14e5 (Dev33 evidence from ddd3c75), 9bc936a (R19 stop reasons from 9c1bf06), 2309e91 (R19 evidence from 4eab67d), d67163f (R08 case-event contract from d596dab), 426ea17 (Dev34 evidence from bbe14fd), db6e2c4 (redaction/speaker epoch gate from 77f096d), 3b22407 (R19 provider client reuse from 74b51a8), e630c33 (R19 evidence from 2031dbb)",
+    "evidence": "docs/implementation/REDESIGN-COVERAGE.md; src/appearance.test.tsx; src/App.test.tsx; src/components/AgentPanel.test.tsx; src/components/SettingsDialog.test.tsx; src/citationJourney.test.tsx; e2e/workspace.spec.ts; e2e/accessibility.spec.ts; docs/implementation/REDESIGN-RELEASE-CANDIDATE-2026-09-26.md; src/caseSession.ts; src/components/InvestigationWorkbench.test.tsx; src/components/RedactionPanel.test.tsx; src/caseEvents.ts; src/caseEvents.test.ts; docs/implementation/REDESIGN-RELEASE-CANDIDATE-2026-09-26.md (4b5dc96 package hashes and native runs)",
+    "environment": "Windows x64 isolated worktree; Edge/Playwright synthetic browser preview; final NSIS package built from fixed functionality cutoff 4b5dc96 plus reader commit 6cac65b and exercised by native integrity and six-source journeys on exact final release bytes; 4b5dc96 package also exercised 1 GiB and reviewed-redaction backend gates.",
+    "commands": [
+      "npm ci --ignore-scripts -> exit 0",
+      "npm test -> exit 0, 93 tests in 16 files after R17/R03/R07 cherry-picks; one preceding full run had a 1-second large-PDF viewer wait timeout, targeted and full reruns passed; reported to R15 owner",
+      "npm run build -> exit 0; initial 123.54 kB gzip JS and 12.94 kB gzip CSS after R17 integration, against pre-redesign initial 131.61 kB gzip JS and 11.18 kB gzip CSS; local Inter font asset 352.24 kB",
+      "npm run test:e2e -> exit 0, 7 Edge/Playwright tests for theme/density persistence, OS System changes, reduced motion, forced-colors affordances, case dialog validation/focus, navigation, narrow source return and no page-level overflow in five workspaces at 1000x680, 1280x720, 1500x960, 1920x1080",
+      "npm run test:a11y -> exit 0, axe WCAG A/AA scans in dark/light on startup, create/restore dialogs, five sample-case workspaces and settings sections with reduced motion; synthetic preview only",
+      "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 1 without packaged worker in this fresh isolated checkout; six processor-dependent unit tests failed for missing worker resource",
+      "VISLEX_WORKER_PATH=<existing local development worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0; all non-ignored Rust unit and integration tests passed, including worker AppContainer e2e",
+      "cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0 with ignored worktree worker-resource junction to existing local resources; no tracked resource changes",
+      "After cherry-picking R13/R14: VISLEX_WORKER_PATH=<existing local development worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0; cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+      "After R15/R16 integration: first cargo test with an incorrect VISLEX_WORKER_PATH failed six processor-dependent unit tests for missing file; corrected to existing evidence-worker.exe and cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites including AppContainer worker e2e; cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0",
+      "After R17/R03/R07 integration: targeted Rust tests original_storage_junction_cannot_redirect_a_registered_source and structured_block_status_matches_saved_export_view -> exit 0",
+      "After R07 explicit verification cherry-pick: VISLEX_WORKER_PATH=<existing local development worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites including AppContainer worker e2e; cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0; cargo build --locked --manifest-path src-tauri/Cargo.toml --features desktop -> exit 0, debug executable only",
+      "First native integrity run failed before the debug Vite server was started; after starting it, debug executable passed: 256 MiB hash in 900 ms with 12/12 case-summary reads before completion and stale permission/write/review denials",
+      "npm run desktop:build:x64 -> exit 0 at source commit e3735df12e7db0a6bfe91701daf99e365334b1f8; release EXE SHA-256 8FCA03EB4AAD84657D3858AAE15D2733E3C6E4A50C7EC818970649AAB89C9B46; NSIS installer SHA-256 B60E18C63E3F26B77C17B36FE1932952B986E78DD2BF604160A724508E731C13",
+      "Release EXE native-integrity-acceptance.ps1 -Port 9369 -> exit 0: 256 MiB full reread 874 ms, 12/12 case-summary reads completed during hashing, stale permission/write/review denied, synthetic only",
+      "Initial six-source native acceptance failed because ignored statement.pdf was stale/broken in isolated worktree; regenerated synthetic fixtures via existing worker venv (statement.pdf SHA-256 56AA30A95C42AEBA4EC001F9215295593D72522147FC22F48FC08096D604423C, matching main synthetic fixture). Release EXE native-acceptance.ps1 -Port 9372 -> exit 0: six sources, chat/docx preview, lexical 3/semantic 30 results, DOCX/PDF exports, cross-case denials, unreviewed redaction denial, zero provider calls",
+      "python scripts/vislex_plan.py check -> exit 0; plan structure only",
+      "git diff --cached --check -> exit 0",
+      "After R08 Dev25 integration and preview summary fixture: npm test -> exit 0, 97 tests in 17 files; npm run build -> exit 0, initial JS 123.85 kB gzip and CSS 13.07 kB gzip; npm run test:e2e -> exit 0, 9 tests including review keyboard tabs, form retention, and quiet synthetic summary polling",
+      "npm run test:a11y concurrent with test:e2e -> exit 1 because both web servers requested port 4174; sequential rerun -> exit 0, one test containing dark/light axe WCAG A/AA scans",
+      "After Dev32 integration: VISLEX_WORKER_PATH=<existing local evidence-worker.exe> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored suites including AppContainer worker e2e",
+      "After Dev32 integration: npm test -> exit 0, 104 tests in 19 files; npm run test:e2e -> exit 0, nine Edge synthetic-preview tests; npm run test:a11y -> exit 0, one dark/light axe scan suite",
+      "npm run desktop:build:x64 -> exit 0 at application source 1d322033927499caa169a4472374d6706bc20396; release EXE SHA-256 012263A121202CFC71657F705DC298869C025724E5D8AD8D4FD8A4866B6697FC; NSIS installer SHA-256 8C9C93B6105CEA63048CF06C304C286EAEAA47F8CD088CF36EE02AD9E8F7DFCC",
+      "Release EXE native-integrity-acceptance.ps1 -Port 9375 -> exit 0: 256 MiB verify 883 ms, 12/12 summaries during hash, 28 stale-case and 8 stale-session denials, wrong/stale deletion denied",
+      "Release EXE native-acceptance.ps1 -Port 9376 -> exit 0: six synthetic sources, chat/DOCX preview, lexical 3/semantic 30, DOCX/PDF exports, cross-case and unreviewed redaction denied, zero provider calls",
+      "Release EXE native-large-session.ps1 -Port 9377 -> exit 0: 1 GiB import 23.69 s, verification 3.47 s, 20 summaries during verify, late old-session verification denied; peak process-tree private bytes 225787904",
+      "python scripts/vislex_plan.py check -> exit 0 after 17ba754; structure only",
+      "After redaction UI 6f86cc3: npm test -> exit 0, 106 tests in 20 files; npm run build -> exit 0, initial JS 124.72 kB gzip and CSS 13.30 kB gzip; npm run test:e2e -> exit 0, nine synthetic Edge tests; npm run test:a11y -> exit 0, one dark/light axe suite",
+      "After c11c548: npm test -> exit 0, 110 tests in 21 files; npm run build -> exit 0, initial JS 125.23 kB gzip and CSS 13.30 kB gzip; npm run test:e2e -> exit 0, nine Edge tests; npm run test:a11y -> exit 0, one dark/light axe suite",
+      "After c11c548: VISLEX_WORKER_PATH=<existing local evidence-worker.exe> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, all non-ignored Rust suites including AppContainer worker video e2e; cargo test --test master_v4 -> 29/29 passed",
+      "npm run desktop:build:x64 -> exit 0 at application source c11c54896cbb42fef7e9b9318f584aabf58d0b02; release EXE SHA-256 5F1A0A9732AD4CB21557D4C7535BD9F0DE8A50A2860C1AB5D3035DE7B2A035D4; NSIS installer SHA-256 57DE8C03FDEF121827CDB70574C3969CCB5E62FDE54292052317E8E27DADDF06",
+      "Release EXE native-acceptance.ps1 -Port 9385 -> exit 0, six-source synthetic UI journey with chat/document rendering, video discovery, lexical 3/semantic 30, DOCX/PDF export, cross-case and unreviewed redaction denials, zero provider calls",
+      "Release EXE native-integrity-acceptance.ps1 -Port 9386 -> exit 0, 256 MiB verify 898 ms, 12 summaries during hash, 28 stale-case/10 stale-session denials, four ordered case-event envelopes",
+      "Release EXE native-large-session.ps1 -Port 9387 -> exit 0, 1 GiB import 12.16 s, verify 3.67 s, 20 summaries during verify, late old-session verify denied, process-tree private peak 230674432 bytes",
+      "Debug EXE native-provider-race.ps1 -Port 9388 -MockPort 9389 -> exit 0, late first provider response did not publish into paused task; continuation completed from second response",
+      "Pre-fix release six-source native-acceptance.ps1 -Port 9383 -> exit 1 because inventory conversation never appeared after bridge-opened case; case-event listener correction c11c548 passed debug and release reruns",
+      "python scripts/vislex_plan.py check -> exit 0 after c11c548; structure only",
+      "npm test -> exit 0, 111 frontend tests in 21 files after reader polish and fixed functionality cutoff",
+      "npm run build -> exit 0 after reader polish; initial JS 125.49 kB gzip, CSS 13.48 kB gzip",
+      "npx playwright test e2e/workspace.spec.ts e2e/accessibility.spec.ts -> exit 0, 11 Edge synthetic browser tests; fresh dark/light evidence screenshots and computed reading-surface theme assertion",
+      "cargo test --locked --manifest-path src-tauri/Cargo.toml with VISLEX_WORKER_PATH set to packaged worker -> exit 0, all non-ignored suites including AppContainer worker e2e",
+      "npm run desktop:build:x64 -> exit 0 from application source 4b5dc96; EXE SHA256 9C0F83FD4F13C33711C02F8CB84F33562A730409440D8B7C46044EFC39820B86; NSIS SHA256 BF2307FCF9DCA64D18B912A873B1F985942660D7F1E2EED1B2B66ADF628C93B8",
+      "scripts/native-integrity-acceptance.ps1 -Port 9390 on exact release EXE -> exit 0; run 1790463189636; 256 MiB verified, 12 summaries during hash, 28 stale-case and 10 stale-session actions denied, 4 ordered events",
+      "scripts/native-acceptance.ps1 -Port 9391 on exact release EXE -> exit 0; run 1790463214182; six originals, chat/DOCX preview, lexical/semantic, DOCX/PDF export, cross-case denials, unreviewed redaction denied, zero provider calls",
+      "scripts/native-large-session.ps1 -Port 9392 on exact release EXE -> exit 0; run 1790463407521; 1 GiB import 11.71 s, verify 3.56 s, 20 summaries during verify, late old-session verify denied; process-tree private peak 228564992 bytes",
+      "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox flattened_redaction_requires_page_review_and_exports_only_derivative -- --ignored --exact with packaged worker -> exit 0, reviewed derivative-only export gate",
+      "npm run desktop:build:x64 -> exit 0 with reader commit 6cac65b; final EXE SHA256 3A590BA63BD48D3CBED02E4FF9190A26D0FF73A92CF06CFDC52D878B8724F14C; final NSIS SHA256 F3A946D4F81B15044AD3E6316C55F7E8D371341A612B81B3B7B385B33CB5016A",
+      "scripts/native-integrity-acceptance.ps1 -Port 9395 on final hashed EXE -> exit 0; run 1790464357638; 256 MiB, 12 summaries, 28 stale-case and 10 stale-session denials, four ordered case events",
+      "scripts/native-acceptance.ps1 -Port 9396 on final hashed EXE -> exit 0; run 1790464371363; six originals, chat/DOCX preview, OCR/overview, search, DOCX/PDF export, cross-case and unreviewed-redaction denials, zero provider calls"
+    ],
+    "implemented_scope": "Graphite/blue dark and neutral light tokens; System theme and compact density persisted without case data; local Inter font; case-independent Appearance/About; separate provider/permission/review settings sections; collapsible and width-adjustable navigation; keyboard-resizable evidence pane; narrow one-pane return; layout presets; composer auto-growth; duplicate error-toast suppression. Secondary findings, review, settings, and record-editor views split into on-demand chunks with a delayed loading indicator. Tooltip keyboard description and Escape dismissal; accessible palette selection and case-independent settings command; chat response state and timestamp; evidence-count empty-chat workspace; keyboard context menu and focus return. Live chat progress is isolated in a child and batched once per animation frame, with a >64 KiB preserved-text test. Completed jobs are visible with status filters, and repeated job requests are deduplicated by case and operation while pending. Case lifecycle dialogs are named and have browser focus/validation checks. Review tabs support keyboard navigation and retain form values; assertion tables scroll within narrow work areas. Synthetic browser case_summary is case-scoped, stable between edits, and prevents repeated background refresh errors. R08 Dev25 case fences have been integrated with pending-action deduplication preserved. Added dev-only Playwright and axe-core checks; no new runtime dependency remains. UI session epochs now fence chat send/progress/stop, review, findings, dossier, settings, export/playback and Jobs on close/reopen, with focused same-case tests; backend session fencing through Dev32 is integrated. The 1 GiB synthetic native harness and three-harness combined candidate evidence are recorded. Redaction panel now presents mark/review/export stages and page count, names pending work, and fences source/session changes; focused tests preserve accept-before-export and ignore late preparation results. Redaction mark/review/export stages now expose page progress and invalidate approval after any rectangle edit, with captured session guards and at least 32 px removal targets. Sequenced case-event subscription filters by active case/session, deduplicates paired legacy notifications, reconciles sequence gaps with bounded case_summary, and refreshes on externally opened newer sessions; native regression found and corrected the initial null-snapshot gap.",
+    "reviewer": "Self-review, dark/light synthetic browser inspection, and exact-hash combined native journeys; no independent review, Windows scaling pass, or Narrator pass.",
+    "unrun_checks": "R21 full action/state matrix, Windows scaling 100/125/150/200%, Narrator, all ten protected journeys, complete native redaction review UI/derivative export, and comparable startup/navigation/10,000-row/memory before-after measurements remain unrun. The final 6cac65b package passed integrity and six-source checks; the 4b5dc96 backend-identical package passed 1 GiB and reviewed-redaction backend gates. No release verification or product certification is claimed.",
+    "note": "This records a reviewable implementation slice, not completion or verification of R21 or product certification.",
+    "fixed_functionality_cutoff": "4b5dc96 (includes redaction worker and Claude/Gemini streaming integrations; no further handoffs in this redesign pass)",
+    "additional_integrations_after_c11c548": "2dbfa87, c484a40, 4da4606, ed8a3e1, 5289c19, 321b315, e93d3e2, 6ea0684, 54866ac, c300813, 84f24f5, ac4956b, cb06341, 36eb7b7, 3051fa3, 84706a6, edd8c3c, 4b5dc96"
   }
 }

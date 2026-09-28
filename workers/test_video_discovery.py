@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 import av
 import numpy as np
-from video_discovery import discover
+from video_discovery import discover, _detector_size
 
 
 def recording(path):
@@ -24,6 +24,11 @@ def recording(path):
 
 
 class VideoDiscovery(unittest.TestCase):
+    def test_detector_scale_preserves_aspect_and_never_upscales(self):
+        self.assertEqual(_detector_size(1024, 768), (480, 360))
+        self.assertEqual(_detector_size(160, 90), (160, 90))
+        self.assertEqual(_detector_size(1920, 1080), (640, 360))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.job = Path(self.tmp.name)

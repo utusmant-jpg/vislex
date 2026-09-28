@@ -1,0 +1,91 @@
+/* VisLex stylesheet entry.
+ *
+ * Cascade (earliest loses): Tailwind theme values → tokens → base → primitives
+ * → legacy surface rules → redesigned surface sheets → Tailwind utilities.
+ * Colour, type, space, radius and motion live only in src/tokens.css; this file
+ * maps them into Tailwind so utilities and legacy classes share one system.
+ * Theme selection is <html data-theme="dark|light">, density is data-density.
+ */
+@layer theme, tokens, base, primitives, legacy, surfaces, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "./tokens.css";
+@import "./styles/base.css" layer(base);
+@import "./styles/primitives.css" layer(primitives);
+@import "./styles.css" layer(legacy);
+@import "./styles/shell.css" layer(surfaces);
+@import "./styles/assistant.css" layer(surfaces);
+@import "./styles/viewer.css" layer(surfaces);
+@import "./styles/workspaces.css" layer(surfaces);
+@import "./styles/settings.css" layer(surfaces);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Tailwind's dark: variant follows the app theme attribute, not the OS. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* No default palette: utilities may only use VisLex semantic colours. */
+@theme {
+  --color-*: initial;
+}
+
+@theme inline {
+  --color-background: var(--canvas);
+  --color-foreground: var(--text-1);
+  --color-canvas: var(--canvas);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-inset: var(--inset);
+  --color-field: var(--field);
+  --color-text-1: var(--text-1);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-muted: var(--surface-2);
+  --color-muted-foreground: var(--text-3);
+  --color-card: var(--surface-2);
+  --color-card-foreground: var(--text-1);
+  --color-popover: var(--surface-3);
+  --color-popover-foreground: var(--text-1);
+  --color-primary: var(--accent);
+  --color-primary-hover: var(--accent-hover);
+  --color-primary-foreground: var(--on-accent);
+  --color-secondary: var(--surface-2);
+  --color-secondary-foreground: var(--text-1);
+  /* shadcn "accent" is a hover fill, not the interaction colour. */
+  --color-accent: var(--hover);
+  --color-accent-foreground: var(--text-1);
+  --color-accent-text: var(--accent-text);
+  --color-destructive: var(--danger-fill);
+  --color-destructive-foreground: var(--on-accent);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-input: var(--border-control);
+  --color-ring: var(--ring);
+  --color-evidence: var(--evidence);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-restricted: var(--restricted);
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --text-xs: var(--text-caption);
+  --text-sm: var(--text-sm);
+  --text-base: var(--text-base);
+  --text-lg: var(--text-lg);
+  --text-xl: var(--text-xl);
+  --text-2xl: var(--text-2xl);
+
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}

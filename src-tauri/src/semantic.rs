@@ -3,11 +3,12 @@ use crate::case::{Case,digest};
 use anyhow::{ensure,Context,Result};
 use rusqlite::params;
 use serde_json::{json,Value};
+use std::collections::HashMap;
 const MODEL:&str="minilm-1110a243-quint8-avx2-mean256";
 #[derive(Clone)]
 pub struct Passage {source:String,revision:i64,line:u64,text:String,hash:String}
 pub struct SearchJob {pub staging:tempfile::TempDir,query:String,scope:Vec<String>,passages:Vec<Passage>,pending:usize}
-fn schema(case:&Case)->Result<()> {case.db.execute_batch("CREATE TABLE IF NOT EXISTS semantic_passages(source_id TEXT NOT NULL,revision INTEGER NOT NULL,line INTEGER NOT NULL,text_hash TEXT NOT NULL,text TEXT NOT NULL,vector TEXT NOT NULL,model TEXT NOT NULL,truncated INTEGER NOT NULL,PRIMARY KEY(source_id,revision,line,model));")?;Ok(())}
+fn schema(case:&Case)->Result<()> {case.db.execute_batch("CREATE TABLE IF NOT EXISTS semantic_passages(source_id TEXT NOT NULL,revision INTEGER NOT NULL,line INTEGER NOT NULL,text_hash TEXT NOT NULL,text TEXT NOT NULL,vector TEXT NOT NULL,model TEXT NOT NULL,truncated INTEGER NOT NULL,PRIMARY KEY(source_id,revision,line,model)); CREATE INDEX IF NOT EXISTS semantic_passages_model ON semantic_passages(source_id,revision,model,line);")?;Ok(())}
 pub fn prepare(case:&Case,query:&str,scope:Vec<String>)->Result<SearchJob> {
     ensure!(!query.trim().is_empty()&&query.len()<=4000,"Enter a bounded search query");schema(case)?;
     let mut passages=vec![];let mut pending=0;
@@ -15,15 +16,34 @@ pub fn prepare(case:&Case,query:&str,scope:Vec<String>)->Result<SearchJob> {
         ensure!(!case.source(source)?.restricted,"Restricted search source");
         let mut statement=case.db.prepare("SELECT revision,text FROM extracts WHERE source_id=?")?;
         let rows=statement.query_map([source],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        for (revision,text) in rows {for (index,line) in text.lines().enumerate() {if line.trim().is_empty(){continue;}let clipped:String=line.chars().take(1200).collect();let hash=digest(clipped.as_bytes());
-            let exists:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM semantic_passages WHERE source_id=? AND revision=? AND line=? AND model=? AND text_hash=?)",params![source,revision,index+1,MODEL,hash],|r|r.get(0))?;
-            if !exists {pending+=1;if passages.len()<256 {passages.push(Passage{source:source.clone(),revision,line:(index+1)as u64,text:clipped,hash});}}
+        for (revision,text) in rows {
+            let mut stored=HashMap::<u64,String>::new();
+            let mut indexed=case.db.prepare("SELECT line,text_hash FROM semantic_passages WHERE source_id=? AND revision=? AND model=?")?;
+            for row in indexed.query_map(params![source,revision,MODEL],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?)))? {let (line,hash)=row?;stored.insert(line,hash);}
+            for (index,line) in text.lines().enumerate() {if line.trim().is_empty(){continue;}let clipped:String=line.chars().take(1200).collect();let hash=digest(clipped.as_bytes());
+            if stored.get(&((index+1)as u64))!=Some(&hash) {pending+=1;if passages.len()<256 {passages.push(Passage{source:source.clone(),revision,line:(index+1)as u64,text:clipped,hash});}}
         }}
     }
     let staging=tempfile::tempdir_in(case.root.join("staging"))?;
     let texts=std::iter::once(query.to_string()).chain(passages.iter().map(|p|p.text.clone())).collect::<Vec<_>>();
     std::fs::write(staging.path().join("request.json"),json!({"version":1,"kind":"embeddings","texts":texts}).to_string())?;
     Ok(SearchJob{staging,query:query.into(),scope,passages,pending})
+}
+pub fn prepare_background(case:&Case,scope:Vec<String>)->Result<Option<SearchJob>> {
+    let job=prepare(case,"background index",scope)?;
+    if job.passages.is_empty(){return Ok(None)}
+    let path=job.staging.path().join("request.json");
+    let mut request:Value=serde_json::from_slice(&std::fs::read(&path)?)?;
+    request["scheduler_priority"]=json!("background");
+    std::fs::write(path,request.to_string())?;
+    Ok(Some(job))
+}
+pub fn prepare_query(case:&Case,query:&str,scope:Vec<String>)->Result<SearchJob> {
+    ensure!(!query.trim().is_empty()&&query.len()<=4000,"Enter a bounded search query");schema(case)?;
+    for source in &scope {ensure!(!case.source(source)?.restricted,"Restricted search source");}
+    let staging=tempfile::tempdir_in(case.root.join("staging"))?;
+    std::fs::write(staging.path().join("request.json"),json!({"version":1,"kind":"embeddings","texts":[query]}).to_string())?;
+    Ok(SearchJob{staging,query:query.into(),scope,passages:vec![],pending:0})
 }
 pub fn run(job:&SearchJob)->Result<Value> {
     #[cfg(windows)]
@@ -34,27 +54,61 @@ pub fn run(job:&SearchJob)->Result<Value> {
     let result:Value=serde_json::from_slice(&std::fs::read(path)?)?;ensure!(result["status"]=="complete"&&result["model"]==MODEL,"{}",result["error"].as_str().unwrap_or("Embedding worker failed"));Ok(result)
 }
 fn vector(value:&Value)->Result<Vec<f64>> {let vector=value.as_array().context("Invalid vector")?;ensure!(vector.len()==384,"Invalid vector dimensions");vector.iter().map(|v|{let n=v.as_f64().context("Invalid vector number")?;ensure!(n.is_finite()&&n.abs()<=1.01,"Invalid normalized vector");Ok(n)}).collect()}
-pub fn publish(case:&mut Case,job:&SearchJob,result:Value)->Result<Value> {
+fn packed_vector(value:&Value)->Result<Vec<u8>> {let values=vector(value)?;let mut bytes=Vec::with_capacity(384*4);for value in values {bytes.extend_from_slice(&(value as f32).to_le_bytes());}Ok(bytes)}
+fn similarity(query:&[f64],raw:&[u8])->Result<f64> {
+    if raw.first()==Some(&b'[') {let old=vector(&serde_json::from_slice(raw)?)?;return Ok(query.iter().zip(old).map(|(a,b)|a*b).sum());}
+    ensure!(raw.len()==384*4,"Invalid stored vector dimensions");
+    let mut score=0.;
+    for (weight,chunk) in query.iter().zip(raw.chunks_exact(4)) {let value=f32::from_le_bytes(chunk.try_into()?) as f64;ensure!(value.is_finite()&&value.abs()<=1.01,"Invalid stored vector");score+=weight*value;}
+    Ok(score)
+}
+pub fn publish_index(case:&mut Case,job:&SearchJob,result:&Value)->Result<usize> {
     schema(case)?;for source in &job.scope {ensure!(!case.source(source)?.restricted,"Source permission changed during search");}
-    let vectors=result["vectors"].as_array().context("Missing vectors")?;ensure!(vectors.len()==job.passages.len()+1,"Embedding count mismatch");let query=vector(&vectors[0])?;
+    let vectors=result["vectors"].as_array().context("Missing vectors")?;ensure!(vectors.len()==job.passages.len()+1,"Embedding count mismatch");vector(&vectors[0])?;
     case.db.execute_batch("SAVEPOINT semantic_publish")?;
     let published=(||->Result<()> {for (index,p) in job.passages.iter().enumerate() {
-        vector(&vectors[index+1])?;
+        let packed=packed_vector(&vectors[index+1])?;
         let revision:i64=case.db.query_row("SELECT revision FROM extracts WHERE source_id=?",[&p.source],|r|r.get(0))?;ensure!(revision==p.revision,"Extraction changed during indexing");
-        case.db.execute("INSERT INTO semantic_passages VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source_id,revision,line,model) DO UPDATE SET text_hash=excluded.text_hash,text=excluded.text,vector=excluded.vector,truncated=excluded.truncated",params![p.source,p.revision,p.line,p.hash,p.text,vectors[index+1].to_string(),MODEL,result["truncated"][index+1].as_bool().unwrap_or(true)])?;
+        case.db.execute("INSERT INTO semantic_passages VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source_id,revision,line,model) DO UPDATE SET text_hash=excluded.text_hash,text=excluded.text,vector=excluded.vector,truncated=excluded.truncated",params![p.source,p.revision,p.line,p.hash,p.text,packed,MODEL,result["truncated"][index+1].as_bool().unwrap_or(true)])?;
     }Ok(())})();
     if let Err(e)=published {case.db.execute_batch("ROLLBACK TO semantic_publish; RELEASE semantic_publish")?;return Err(e);}case.db.execute_batch("RELEASE semantic_publish")?;
+    Ok(job.pending.saturating_sub(job.passages.len()))
+}
+pub fn publish(case:&mut Case,job:&SearchJob,result:Value)->Result<Value> {
+    let query=vector(result["vectors"].as_array().and_then(|vectors|vectors.first()).context("Missing query vector")?)?;
+    let remaining=publish_index(case,job,&result)?;
     let terms=job.query.to_lowercase().split_whitespace().map(str::to_owned).collect::<Vec<_>>();
     let mut rows=vec![];
     for source in &job.scope {
-        let mut statement=case.db.prepare("SELECT p.line,p.text,p.vector,p.truncated FROM semantic_passages p JOIN extracts e ON e.source_id=p.source_id AND e.revision=p.revision WHERE p.source_id=? AND p.model=?")?;
-        for row in statement.query_map(params![source,MODEL],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?)))? {
-            let (line,text,raw,truncated)=row?;let values=vector(&serde_json::from_str(&raw)?)?;let score=query.iter().zip(values).map(|(a,b)|a*b).sum::<f64>();let lower=text.to_lowercase();let lexical=terms.iter().filter(|term|lower.contains(term.as_str())).count();
-            rows.push((score,lexical,json!({"source_id":source,"name":case.source(source)?.name,"locator":format!("evidence:{source}#L{line}-L{line}"),"excerpt":text,"embedding_truncated":truncated,"semantic_similarity":score})));
+        let mut statement=case.db.prepare("SELECT p.line,p.text,p.vector,p.truncated,p.revision,s.name FROM semantic_passages p JOIN extracts e ON e.source_id=p.source_id AND e.revision=p.revision JOIN sources s ON s.id=p.source_id AND s.restricted=0 WHERE p.source_id=? AND p.model=?")?;
+        for row in statement.query_map(params![source,MODEL],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?,r.get_ref(2)?.as_bytes()?.to_vec(),r.get::<_,bool>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?)))? {
+            let (line,text,raw,truncated,revision,name)=row?;let score=similarity(&query,&raw)?;let lower=text.to_lowercase();let lexical=terms.iter().filter(|term|lower.contains(term.as_str())).count();
+            rows.push((score,lexical,source.clone(),name,revision,line,text,truncated));
         }
     }
     let mut semantic=(0..rows.len()).collect::<Vec<_>>();semantic.sort_by(|a,b|rows[*b].0.total_cmp(&rows[*a].0));let mut lexical=semantic.clone();lexical.sort_by_key(|i|std::cmp::Reverse(rows[*i].1));
     let mut scores=vec![0.;rows.len()];for (rank,index) in semantic.iter().enumerate(){scores[*index]+=1./(60.+rank as f64+1.);}for(rank,index)in lexical.iter().enumerate(){if rows[*index].1>0{scores[*index]+=1./(60.+rank as f64+1.);}}
     semantic.sort_by(|a,b|scores[*b].total_cmp(&scores[*a]));
-    Ok(json!({"results":semantic.iter().take(30).map(|i|rows[*i].2.clone()).collect::<Vec<_>>(),"indexed_passages":rows.len(),"remaining_passages":job.pending.saturating_sub(job.passages.len()),"model":MODEL,"limitations":"English semantic similarity plus lexical rank fusion; not factual support. At most 256 new line passages indexed per call. Long lines use the first 1200 characters and may exceed the 256-token model window. Repeat to index remaining passages. No image or audio content search is implied."}))
+    let lexical=lexical_results(case,&job.query,&job.scope)?;
+    Ok(json!({"results":semantic.iter().take(30).map(|index|{let row=&rows[*index];json!({"source_id":row.2,"name":row.3,"revision":row.4,"locator":format!("evidence:{}#R{}L{}-L{}",row.2,row.4,row.5,row.5),"excerpt":row.6,"embedding_truncated":row.7,"semantic_similarity":row.0})}).collect::<Vec<_>>(),"lexical_results":lexical,"indexed_passages":rows.len(),"remaining_passages":if job.passages.is_empty(){None}else{Some(remaining)},"index_currentness":if job.passages.is_empty(){"saved_index_may_be_partial"}else if remaining==0{"current_for_this_batch"}else{"more_background_batches_needed"},"model":MODEL,"limitations":"Semantic and lexical hits are leads, not factual support. Saved vectors cover indexed extraction lines only; a zero-hit result does not establish absence. Long lines use the first 1200 characters and may exceed the model window."}))
+}
+pub fn lexical_results(case:&Case,query:&str,scope:&[String])->Result<Vec<Value>> {
+    ensure!(!query.trim().is_empty()&&query.len()<=4000,"Enter a bounded search query");
+    let terms=query.split_whitespace().take(12).map(|term|term.to_lowercase()).collect::<Vec<_>>();
+    let mut hits=vec![];
+    for source in scope {
+        ensure!(!case.source(source)?.restricted,"Restricted search source");
+        let mut stmt=case.db.prepare("SELECT s.name,e.revision,e.text FROM extracts e JOIN sources s ON s.id=e.source_id AND s.restricted=0 WHERE e.source_id=?")?;
+        let mut rows=stmt.query([source])?;
+        if let Some(row)=rows.next()? {
+            let name:String=row.get(0)?;let revision:i64=row.get(1)?;let text:String=row.get(2)?;
+            for (index,line) in text.lines().enumerate() {
+                if terms.iter().any(|term|line.to_lowercase().contains(term)) {
+                    hits.push(json!({"lead_type":"extracted_text","source_id":source,"name":name,"revision":revision,"locator":format!("evidence:{}#R{}L{}-L{}",source,revision,index+1,index+1),"excerpt":line.chars().take(1200).collect::<String>()}));break;
+                }
+            }
+        }
+        if hits.len()>=30 {break;}
+    }
+    Ok(hits)
 }

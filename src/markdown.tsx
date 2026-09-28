@@ -13,7 +13,7 @@ export type Block =
   | { kind: 'table'; header: string[]; rows: string[][] }
   | { kind: 'rule' };
 
-const citationPattern = /(evidence:[a-zA-Z0-9-]+#(?:L\d+-L\d+|image|media|artifact:[a-zA-Z0-9-]+))/g;
+const citationPattern = /(evidence:[a-zA-Z0-9-]+#(?:R[1-9]\d*L[1-9]\d*-L[1-9]\d*|L\d+-L\d+|image|media|artifact:[a-zA-Z0-9-]+))/g;
 
 export function splitCitations(text: string): string[] {
   return text.split(citationPattern);

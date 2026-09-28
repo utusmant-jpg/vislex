@@ -3,6 +3,11 @@ import math
 from pathlib import Path
 
 
+def _detector_size(width: int, height: int) -> tuple[int, int]:
+    scale = min(1.0, 640 / width, 360 / height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 def discover(job: Path, request: dict) -> dict:
     import av
     start = float(request.get('start', 0))
@@ -15,13 +20,15 @@ def discover(job: Path, request: dict) -> dict:
     if mode == 'video_overview':
         from scenedetect import ContentDetector
         from scenedetect.common import FrameTimecode, Timecode
+        import numpy as np
         detector = ContentDetector(threshold=27.0, min_scene_len=0)
     previews, failures, samples, boundaries = [], [], [], []
     next_sample = math.ceil(start / interval) * interval
     decoded, missing_pts, eof = 0, 0, True
     previous = None
     last_cut = -math.inf
-    with av.open(str(job / 'input')) as container:
+    source = Path(request['source_lease']) if request.get('source_lease') else job / 'input'
+    with av.open(str(source)) as container:
         index = request.get('stream')
         video = next((s for s in container.streams.video if index is None or s.index == index), None)
         if video is None:
@@ -50,11 +57,12 @@ def discover(job: Path, request: dict) -> dict:
             previous = relative
             cut = False
             if detector is not None:
-                # Detect using consecutive decoded frames, never the sparse thumbnail sequence.
-                rgb = frame.to_image()
-                rgb.thumbnail((640, 360))
-                import numpy as np
-                cut = bool(detector.process_frame(FrameTimecode(Timecode(frame.pts, frame.time_base), fps=video.average_rate or 30), np.asarray(rgb)[:, :, ::-1]))
+                # Scale in FFmpeg before converting to an array. Converting a
+                # full-resolution frame to PIL and then shrinking it made long
+                # recordings spend most of discovery in image conversion.
+                width, height = _detector_size(frame.width, frame.height)
+                rgb = frame.reformat(width=width, height=height, format='rgb24').to_ndarray()
+                cut = bool(detector.process_frame(FrameTimecode(Timecode(frame.pts, frame.time_base), fps=video.average_rate or 30), rgb[:, :, ::-1]))
                 if cut and relative-last_cut >= .5:
                     last_cut = relative
                 else:

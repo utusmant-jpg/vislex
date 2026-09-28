@@ -58,6 +58,60 @@ fn appcontainer_denies_outside_files_and_network() {
         "sentinel-must-not-be-readable-or-written"
     );
 }
+#[test]
+#[ignore = "Requires packaged worker with read-only source lease support"]
+fn simultaneous_workers_share_read_only_input_but_not_output_directories() {
+    let dir=tempfile::tempdir().unwrap();
+    let shared=dir.path().join("shared-input");fs::write(&shared,b"verified source lease").unwrap();
+    let worker=processing::worker_path().unwrap();
+    let first=dir.path().join("first");let second=dir.path().join("second");
+    fs::create_dir(&first).unwrap();fs::create_dir(&second).unwrap();
+    fs::write(first.join("marker"),b"first output").unwrap();fs::write(second.join("marker"),b"second output").unwrap();
+    fs::write(first.join("request.json"),json!({"kind":"probe","outside_path":second.join("marker"),"port":9}).to_string()).unwrap();
+    fs::write(second.join("request.json"),json!({"kind":"probe","outside_path":first.join("marker"),"port":9}).to_string()).unwrap();
+    std::thread::scope(|scope|{
+        let a=scope.spawn(||sandbox::run_worker_with_readonly(&worker,&first,Some(&shared),Duration::from_secs(30)));
+        let b=scope.spawn(||sandbox::run_worker_with_readonly(&worker,&second,Some(&shared),Duration::from_secs(30)));
+        a.join().unwrap().unwrap();b.join().unwrap().unwrap();
+    });
+    for job in [&first,&second] {
+        let result:Value=serde_json::from_slice(&fs::read(job.join("result.json")).unwrap()).unwrap();
+        assert_eq!(result["metadata"]["appcontainer"],true,"{result}");
+        assert_eq!(result["metadata"]["read_denied"],true,"{result}");
+        assert_eq!(result["metadata"]["write_denied"],true,"{result}");
+    }
+    let reader=dir.path().join("reader");fs::create_dir(&reader).unwrap();
+    fs::write(reader.join("request.json"),json!({"kind":"probe","outside_path":shared,"port":9}).to_string()).unwrap();
+    sandbox::run_worker_with_readonly(&worker,&reader,Some(&shared),Duration::from_secs(30)).unwrap();
+    let result:Value=serde_json::from_slice(&fs::read(reader.join("result.json")).unwrap()).unwrap();
+    assert_eq!(result["metadata"]["read_denied"],false,"{result}");
+    assert_eq!(result["metadata"]["write_denied"],true,"{result}");
+    assert_eq!(fs::read(shared).unwrap(),b"verified source lease");
+}
+#[test]
+#[ignore = "Requires packaged discovery worker and generated timestamp fixture"]
+fn leased_and_copied_video_input_produce_identical_timestamp_receipts() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut case=Case::create(&dir.path().join("case"),"Lease equivalence fixture").unwrap();
+    let source=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+    case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+    let source=case.sources().unwrap().into_iter().find(|item|item.kind=="video").unwrap();
+    let job=processing::prepare_request(&mut case,&source.id,json!({"operation":"video_overview","start":0.0,"end":60.0,"interval":5.0})).unwrap();
+    let leased=processing::run_prepared(&job).unwrap();
+    let legacy=tempfile::tempdir_in(case.root.join("staging")).unwrap();
+    let mut request=job.request.clone();request.as_object_mut().unwrap().remove("source_lease");request.as_object_mut().unwrap().remove("source_lease_epoch");
+    fs::write(legacy.path().join("request.json"),request.to_string()).unwrap();
+    fs::copy(case.source_path(&source.id).unwrap(),legacy.path().join("input")).unwrap();
+    sandbox::run_worker(&processing::worker_path().unwrap(),legacy.path(),Duration::from_secs(120)).unwrap();
+    let copied:Value=serde_json::from_slice(&fs::read(legacy.path().join("result.json")).unwrap()).unwrap();
+    assert_eq!(leased["metadata"],copied["metadata"]);
+    assert_eq!(leased["previews"],copied["previews"]);
+    for preview in leased["previews"].as_array().unwrap() {
+        let filename=preview["path"].as_str().unwrap();
+        assert_eq!(evidence_desk::case::file_hash(&job.staging.path().join(filename)).unwrap(),evidence_desk::case::file_hash(&legacy.path().join(filename)).unwrap());
+    }
+    processing::invalidate_case_leases(&case.root);
+}
 
 #[test]
 #[ignore = "Requires packaged worker and generated fixtures"]
@@ -399,6 +453,7 @@ fn semantic_search_finds_synonyms_and_rejects_changed_permissions() {
     let job=evidence_desk::semantic::prepare(&case,"A car hit a person walking",vec![id.clone()]).unwrap();
     let output=evidence_desk::semantic::run(&job).unwrap();
     let result=evidence_desk::semantic::publish(&mut case,&job,output.clone()).unwrap();
+    assert!(result["results"].as_array().unwrap().iter().all(|hit|hit["locator"].as_str().unwrap().starts_with(&format!("evidence:{id}#R1L"))));
     assert!(result["results"][0]["excerpt"].as_str().unwrap().contains("automobile"));assert_eq!(result["remaining_passages"],0);
     case.db.execute("UPDATE sources SET restricted=1 WHERE id=?",[&id]).unwrap();
     assert!(evidence_desk::semantic::publish(&mut case,&job,output).is_err());
@@ -432,12 +487,75 @@ fn agent_prepared_media_publishes_once_and_records_actual_page_receipt() {
     let task=agent::start(&mut case,"Inspect page","investigate",vec![source.clone()],vec![],0.).unwrap();let request=agent::prepare_request(&mut case,&task).unwrap();
     let response=json!({"status":"completed","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"function_call","call_id":"prepared-page","name":"inspect_document_page","arguments":json!({"source_id":source,"page":1}).to_string()}]});
     let jobs=agent::prepare_media(&mut case,&task,&request.transmission,&response).unwrap();assert_eq!(jobs.len(),1);
-    let mut media=agent::PreparedMedia{jobs:jobs.into_iter().map(|j|{let output=processing::run_prepared(&j);(j,output)}).collect(),external:true,error:None};
+    let mut media=agent::PreparedMedia{jobs:jobs.into_iter().map(|j|{let staged=processing::stage_prepared(&j,processing::run_prepared(&j));(j,staged)}).collect(),cleanup:vec![],external:true,error:None};
     agent::receive_prepared(&mut case,&task,&request.transmission,response.clone(),&mut media).unwrap();assert!(media.jobs.is_empty());
     assert_eq!(case.actions(&task).unwrap()[0]["status"],"complete");
     assert_eq!(case.db.query_row("SELECT count(*) FROM processing_jobs WHERE kind='pdf_page'",[],|r|r.get::<_,u64>(0)).unwrap(),1);
     assert_eq!(case.db.query_row("SELECT count(*) FROM coverage_receipts WHERE stage='page_rendered'",[],|r|r.get::<_,u64>(0)).unwrap(),1);
     assert!(agent::receive_prepared(&mut case,&task,&request.transmission,response,&mut media).is_err());
+}
+
+#[test]
+#[ignore = "Requires packaged worker and generated VFR fixture"]
+fn exact_video_frame_steps_publish_adjacent_pts_without_recopying_source() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut case=Case::create(&dir.path().join("case"),"Exact frame fixture").unwrap();
+    let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("fixtures/generated/variable-timing.mp4");
+    case.import_files(&[input.to_string_lossy().into()],"synthetic").unwrap();
+    let source=case.sources().unwrap()[0].id.clone();
+    for (target,direction,expected) in [(0.6,"previous",0.2),(0.6,"next",1.4)] {
+        let value=processing::process_request(&mut case,&source,json!({"operation":"frame_at","target":target,"direction":direction})).unwrap();
+        let frame=&value["published"][0];
+        assert!((frame["metadata"]["source_relative_seconds"].as_f64().unwrap()-expected).abs()<0.001);
+        case.validate_citation(frame["locator"].as_str().unwrap()).unwrap();
+        case.verify_source(&source).unwrap();
+    }
+    let count:i64=case.db.query_row("SELECT COUNT(*) FROM processing_jobs WHERE source_id=? AND kind='video' AND status='complete'",[&source],|r|r.get(0)).unwrap();
+    assert_eq!(count,2);
+    let receipts=fs::read_dir(case.root.join("staging")).unwrap().filter_map(Result::ok).filter_map(|entry|fs::read(entry.path().join("source-lease-receipt.json")).ok()).map(|raw|serde_json::from_slice::<Value>(&raw).unwrap()).collect::<Vec<_>>();
+    assert_eq!(receipts.len(),2);
+    assert_eq!(receipts.iter().filter(|receipt|receipt["copied_bytes_for_job"].as_u64().unwrap_or(0)>0).count(),1);
+    assert_eq!(receipts.iter().filter(|receipt|receipt["reused"]==true).count(),1);
+    assert!(processing::process_request(&mut case,&source,json!({"operation":"frame_at","target":0.6,"direction":"sideways"})).is_err());
+}
+
+#[test]
+#[ignore = "Requires packaged worker and generated one-page PDF"]
+fn pdf_probe_prevents_page_twelve_guess_and_reuses_one_source_lease() {
+    let dir=tempfile::tempdir().unwrap();
+    let mut case=Case::create(&dir.path().join("case"),"PDF geometry fixture").unwrap();
+    let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("fixtures/generated/statement.pdf");
+    case.import_files(&[input.to_string_lossy().into()],"synthetic").unwrap();
+    let source=case.sources().unwrap()[0].id.clone();
+    let original_status=case.source(&source).unwrap().status;
+    let probe=processing::process_request(&mut case,&source,json!({"operation":"probe_pdf"})).unwrap();
+    assert_eq!(probe["metadata"]["page_count"],1);
+    assert_eq!(case.source(&source).unwrap().status,original_status);
+    assert!(processing::process_request(&mut case,&source,json!({"operation":"render_page","page":0})).is_err());
+    assert!(processing::process_request(&mut case,&source,json!({"operation":"render_page","page":-1})).is_err());
+    let rendered=processing::process_request(&mut case,&source,json!({"operation":"render_page","page":1})).unwrap();
+    assert_eq!(rendered["published"][0]["metadata"]["page_count"],1);
+    assert_eq!(case.source(&source).unwrap().status,original_status);
+    case.validate_citation(rendered["published"][0]["locator"].as_str().unwrap()).unwrap();
+    let receipts=fs::read_dir(case.root.join("staging")).unwrap().filter_map(Result::ok).filter_map(|entry|fs::read(entry.path().join("source-lease-receipt.json")).ok()).map(|raw|serde_json::from_slice::<Value>(&raw).unwrap()).collect::<Vec<_>>();
+    assert_eq!(receipts.len(),2);
+    assert_eq!(receipts.iter().filter(|receipt|receipt["copied_bytes_for_job"].as_u64().unwrap_or(0)>0).count(),1);
+    assert_eq!(receipts.iter().filter(|receipt|receipt["reused"]==true).count(),1);
+    case.verify_source(&source).unwrap();
+}
+#[test]
+#[ignore = "Requires packaged worker for agent preparation"]
+fn stopping_chat_cancels_its_prepared_local_worker_before_launch() {
+    use evidence_desk::agent;
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Prepared cancellation fixture").unwrap();
+    let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/statement.pdf");case.import_files(&[path.to_string_lossy().into()],"Synthetic fixture").unwrap();let source=case.sources().unwrap()[0].id.clone();
+    let mut settings=case.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.allow_images=true;settings.model="synthetic".into();case.save_settings(settings).unwrap();
+    let task=agent::start(&mut case,"Inspect page","investigate",vec![source.clone()],vec![],0.).unwrap();let request=agent::prepare_request(&mut case,&task).unwrap();
+    let response=json!({"status":"completed","output":[{"type":"function_call","call_id":"prepared-cancel","name":"inspect_document_page","arguments":json!({"source_id":source,"page":1}).to_string()}]});
+    let jobs=agent::prepare_media(&mut case,&task,&request.transmission,&response).unwrap();assert_eq!(jobs.len(),1);
+    agent::pause(&mut case,&task,"Stopped by user").unwrap();
+    assert!(jobs[0].staging.path().join("cancel.request").exists());
+    assert!(processing::run_prepared(&jobs[0]).is_err());
 }
 #[test]
 #[ignore = "Requires packaged diarization models"]

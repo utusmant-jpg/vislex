@@ -1,4 +1,4 @@
-import copy, json, unittest
+import copy, hashlib, json, unittest
 from pathlib import Path
 from harness import evaluate
 ROOT=Path(__file__).parent
@@ -30,4 +30,23 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaises(ValueError): evaluate(self.truth,self.runs)
     def test_deterministic_cluster_bootstrap(self):
         self.assertEqual(evaluate(self.truth,self.runs,'vislex','baseline',100),evaluate(self.truth,self.runs,'vislex','baseline',100))
+    def test_competitive_gate_requires_matching_preregistration_and_repeats(self):
+        self.truth['synthetic']=False
+        self.truth['split']='held_out'
+        self.truth['incidents']=[dict(copy.deepcopy(self.truth['incidents'][0]),id=f'i-{n}') for n in range(30)]
+        self.truth['preregistered_targets']={'minimum_incidents':30,'recall_gain':0.15,'precision_margin':0.01,'review_time_reduction':0.4}
+        for system in self.runs['systems']:
+            template=system['runs'][0]
+            system['runs']=[dict(copy.deepcopy(template),incident_id=i['id'],repeat=repeat) for i in self.truth['incidents'] for repeat in (1,2)]
+        ids=sorted(i['id'] for i in self.truth['incidents'])
+        artifact={'schema_version':1,'dataset':self.truth['name'],'split':'held_out','candidate':'vislex','baseline':'baseline','incident_ids_sha256':hashlib.sha256(json.dumps(ids,separators=(',',':')).encode()).hexdigest(),'targets':self.truth['preregistered_targets']}
+        digest=hashlib.sha256(json.dumps(artifact,sort_keys=True).encode()).hexdigest()
+        self.truth['preregistration_sha256']=digest
+        def eligible(art=artifact, sha=digest):
+            return evaluate(self.truth,self.runs,'vislex','baseline',100,preregistration=art,preregistration_sha256=sha)['comparison']['competitive_claim_eligible']
+        self.assertFalse(eligible(sha='a'*64))
+        self.assertFalse(eligible(art={**artifact,'baseline':'other'}))
+        self.assertTrue(eligible())
+        self.runs['systems'][1]['runs'].pop()
+        self.assertFalse(eligible())
 if __name__=='__main__': unittest.main()

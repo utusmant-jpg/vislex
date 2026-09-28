@@ -39,11 +39,11 @@ export function buildViewerAttachment(
   return {
     type: selection.type,
     id: selection.id,
-    locator: viewed?.page
+    locator: selection.locator ?? (viewed?.page
       ? `page:${viewed.page}`
       : selection.type === 'source' && viewed?.lineStart
         ? `L${viewed.lineStart}`
-        : selection.locator ?? null,
+        : null),
     time_seconds: viewed?.timeSeconds ?? null,
   };
 }
