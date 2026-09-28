@@ -113,9 +113,11 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         "odt"
     } else if ext == "xlsx" {
         "xlsx"
+    } else if ext == "eml" {
+        "email"
     } else {
         anyhow::bail!(
-            "Sandboxed extraction currently supports PDF, images, video frames, DOCX, and XLSX"
+            "Sandboxed extraction currently supports PDF, images, video frames, DOCX, XLSX, PPTX, ODT and EML"
         )
     };
     ensure!(
@@ -127,7 +129,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     let job_id = id();
     let staging = JobDirectory(tempfile::tempdir_in(case.root.join("staging"))?.keep());
     let mut request = options;
-    if ["docx","xlsx","pptx","odt"].contains(&kind) {if let Some(object)=request.as_object_mut(){object.remove("operation");object.remove("crop");}}
+    if ["docx","xlsx","pptx","odt","email"].contains(&kind) {if let Some(object)=request.as_object_mut(){object.remove("operation");object.remove("crop");}}
     if automatic {request["scheduler_priority"]=json!("background");}
     if kind=="redaction" {request["source_kind"]=json!(source.kind);}
     request["asr_model"] = json!(case.meta("asr_profile")?.unwrap_or_else(||"tiny".into()));
@@ -789,6 +791,19 @@ mod publication_tests {
         let source_id=case.sources().unwrap()[0].id.clone();
         let job=prepare_request(&mut case,&source_id,json!({"operation":"automatic"})).unwrap();
         assert_eq!(job.request["scheduler_priority"],"background");
+        assert!(job.request.get("operation").is_none());
+    }
+    #[test]
+    fn email_originals_get_a_pending_status_and_a_sandboxed_email_request() {
+        let dir=tempfile::tempdir().unwrap();
+        let source=dir.path().join("Door alarm (SYNTHETIC).eml");
+        fs::write(&source,b"From: facilities@synthetic.invalid\r\nTo: review@synthetic.invalid\r\nSubject: Alarm log (SYNTHETIC)\r\n\r\nTwo openings.\r\n").unwrap();
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic email").unwrap();
+        case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let imported=case.sources().unwrap().remove(0);
+        assert_eq!(imported.status,"viewer available · extraction pending");
+        let job=prepare_request(&mut case,&imported.id,json!({"operation":"automatic"})).unwrap();
+        assert_eq!(job.request["kind"],"email");
         assert!(job.request.get("operation").is_none());
     }
     fn staged_fixture()->(tempfile::TempDir,Case,PreparedJob,StagedPublication) {

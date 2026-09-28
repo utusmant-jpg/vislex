@@ -40,6 +40,9 @@ def process(job: Path, request: dict) -> dict:
     if kind in ('video_ocr', 'video_overview'):
         from video_discovery import discover
         return discover(job, request)
+    if kind == 'email':
+        from email_extract import extract
+        return extract(job, request)
     if kind == 'media_clip':
         from media_clip import clip
         return clip(job, request)

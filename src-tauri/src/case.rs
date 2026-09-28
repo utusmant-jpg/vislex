@@ -747,7 +747,7 @@ impl Case {
                 "text indexed"
             } else if kind == "text" {
                 "text viewable · over 10 MB, not indexed"
-            } else if ["image", "video", "audio", "pdf"].contains(&kind) || ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
+            } else if ["image", "video", "audio", "pdf"].contains(&kind) || crate::case::DOCUMENT_EXTENSIONS.contains(&ext.as_str()) {
                 "viewer available · extraction pending"
             } else {
                 "unsupported · preserved"
@@ -1585,10 +1585,13 @@ pub fn folder_paths(case_root:&Path,folder:&Path)->Result<(Vec<String>,Vec<Value
 
 fn normalize_document_status(source:&mut Source) {
     let ext=Path::new(&source.name).extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
-    if source.status=="unsupported · preserved" && ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
+    if source.status=="unsupported · preserved" && crate::case::DOCUMENT_EXTENSIONS.contains(&ext.as_str()) {
         source.status="document preview available · extraction pending".into();
     }
 }
+
+/// Originals that get a sandboxed document extraction when opened.
+pub const DOCUMENT_EXTENSIONS: [&str; 5] = ["docx", "xlsx", "pptx", "odt", "eml"];
 
 /// Sparse line index for large plain-text originals: the byte offset of every
 /// LINE_INDEX_STEP-th line, cached per (path, length, mtime). Reading a page

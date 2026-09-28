@@ -234,7 +234,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const [start, setStart] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
-  const officeDocument = /\.(docx|xlsx|pptx|odt)$/i.test(source.name);
+  const officeDocument = /\.(docx|xlsx|pptx|odt|eml)$/i.test(source.name);
   const [showText, setShowText] = useState(source.kind === 'text' || (source.kind === 'other' && source.status.startsWith('text')));
   const [limitations, setLimitations] = useState<string[]>([]);
   const [derived, setDerived] = useState<string | null>(null);
