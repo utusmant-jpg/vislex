@@ -12,3 +12,5 @@
 *.zip binary
 *.onnx binary
 *.age binary
+# Byte-exact generated bundle: its hash and reproducibility check must not depend on checkout line endings.
+src-tauri/resources/research/injected-script.js -text
