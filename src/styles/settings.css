@@ -1,0 +1,24 @@
+/* Settings sheet: navigation, accounts and models, case permissions,
+   appearance. Owned by the workspaces/settings surface implementer. */
+
+.settings-nav-item { position: relative; }
+.settings-nav-pill {
+  position: absolute; inset: 1px 0; border-radius: var(--radius-md);
+  background: var(--accent-subtle); border: 1px solid var(--accent-border);
+}
+.settings-nav-item .settings-nav-icon { position: relative; z-index: 1; display: inline-flex; }
+.settings-nav-item span:last-child { position: relative; z-index: 1; }
+.provider-legend { display: flex; align-items: center; gap: 8px; }
+.provider-status { font-size: var(--text-caption); font-weight: var(--weight-medium); }
+.provider-status.ok { color: var(--success); }
+.provider-status.none { color: var(--text-3); }
+.provider-status.error { color: var(--danger); }
+.model-select {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-width: 260px; height: var(--control-h); padding: 0 10px; border: 1px solid var(--border-control);
+  border-radius: var(--radius-md); background: var(--field);
+  color: var(--text-1); font-size: var(--text-sm); text-align: left;
+}
+.model-select:hover:not(:disabled) { border-color: var(--text-3); }
+.model-select .model-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-select .model-select-value.placeholder { color: var(--text-3); }

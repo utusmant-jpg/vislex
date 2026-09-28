@@ -1,0 +1,12 @@
+/* Assistant surface: conversation, composer, activity receipts, model picker.
+   Owned by the assistant surface implementer. */
+
+.glyph-halo-wrap { position: relative; display: inline-block; margin-bottom: 14px; }
+.glyph-halo {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 52px; height: 52px; border-radius: var(--radius-lg);
+  border: 1px solid var(--border); color: var(--accent-text);
+  background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
+  box-shadow: var(--shadow-md), var(--shadow-raised);
+}
+.welcome-summary strong.stat-zero { color: var(--text-3); }

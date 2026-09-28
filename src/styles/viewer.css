@@ -1,0 +1,4 @@
+/* Evidence viewer family: source header, text/PDF/image/media stages,
+   transport, transcript, speakers, discovery, redaction, record editor.
+   Owned by the viewer surface implementer. The evidence canvas itself is
+   never recoloured, filtered or animated. */

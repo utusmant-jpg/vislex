@@ -1,269 +1,91 @@
-/* VisLex Modern design system — Tailwind v4 entry point.
+/* VisLex stylesheet entry.
  *
- * The legacy styles.css is imported into the `legacy` cascade layer so that
- * migrated Tailwind utilities (in the later `utilities` layer) can override
- * old rules at equal specificity while a surface is being ported. Preflight
- * is deliberately NOT imported until the legacy sheet is retired, so this
- * file changes nothing about the current rendering on its own.
- *
- * Theming follows the app's existing convention: <html data-theme="dark|light">.
+ * Cascade (earliest loses): Tailwind theme values → tokens → base → primitives
+ * → legacy surface rules → redesigned surface sheets → Tailwind utilities.
+ * Colour, type, space, radius and motion live only in src/tokens.css; this file
+ * maps them into Tailwind so utilities and legacy classes share one system.
+ * Theme selection is <html data-theme="dark|light">, density is data-density.
  */
+@layer theme, tokens, base, primitives, legacy, surfaces, utilities;
+
 @import "tailwindcss/theme.css" layer(theme);
-@import "tw-animate-css";
+@import "./tokens.css";
+@import "./styles/base.css" layer(base);
+@import "./styles/primitives.css" layer(primitives);
 @import "./styles.css" layer(legacy);
+@import "./styles/shell.css" layer(surfaces);
+@import "./styles/assistant.css" layer(surfaces);
+@import "./styles/viewer.css" layer(surfaces);
+@import "./styles/workspaces.css" layer(surfaces);
+@import "./styles/settings.css" layer(surfaces);
 @import "tailwindcss/utilities.css" layer(utilities);
 
-/* ---------------------------------------------------------------------------
- * Dark theme (app default)
- * ------------------------------------------------------------------------- */
-:root {
-  color-scheme: dark;
-  --background: oklch(14% 0.008 260);
-  --surface-1: oklch(17% 0.010 260);
-  --surface-2: oklch(21% 0.012 260);
-  --surface-3: oklch(25% 0.014 262);
-  --foreground: oklch(93% 0.005 260);
-  --muted-foreground: oklch(70% 0.012 262);
-  --subtle-foreground: oklch(52% 0.012 264);
-  --card: var(--surface-2);
-  --card-foreground: var(--foreground);
-  --popover: var(--surface-3);
-  --popover-foreground: var(--foreground);
-  --primary: oklch(68% 0.14 280);
-  --primary-foreground: oklch(12% 0.01 280);
-  --primary-hover: oklch(73% 0.14 280);
-  --secondary: var(--surface-2);
-  --secondary-foreground: var(--foreground);
-  --muted: var(--surface-1);
-  --accent: oklch(24% 0.03 280);
-  --accent-foreground: var(--foreground);
-  --destructive: oklch(62% 0.20 20);
-  --destructive-foreground: oklch(98% 0 0);
-  --border: oklch(100% 0 0 / 8%);
-  --border-strong: oklch(100% 0 0 / 14%);
-  --input: oklch(100% 0 0 / 10%);
-  --ring: oklch(68% 0.14 280 / 60%);
-  --radius: 0.75rem;
+/* Tailwind's dark: variant follows the app theme attribute, not the OS. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* No default palette: utilities may only use VisLex semantic colours. */
+@theme {
+  --color-*: initial;
 }
 
-/* ---------------------------------------------------------------------------
- * Light theme — rebuilt from scratch (warm paper neutrals, true elevation)
- * ------------------------------------------------------------------------- */
-[data-theme="light"] {
-  color-scheme: light;
-  --background: oklch(97.5% 0.003 90);
-  --surface-1: oklch(99.3% 0.002 90);
-  --surface-2: oklch(100% 0 0);
-  --surface-3: oklch(100% 0 0);
-  --foreground: oklch(22% 0.01 260);
-  --muted-foreground: oklch(48% 0.012 260);
-  --subtle-foreground: oklch(60% 0.010 260);
-  --card: var(--surface-2);
-  --card-foreground: var(--foreground);
-  --popover: var(--surface-3);
-  --popover-foreground: var(--foreground);
-  --primary: oklch(58% 0.17 280);
-  --primary-foreground: oklch(99% 0 0);
-  --primary-hover: oklch(53% 0.17 280);
-  --secondary: oklch(94.5% 0.004 90);
-  --secondary-foreground: var(--foreground);
-  --muted: oklch(95% 0.004 90);
-  --accent: oklch(93% 0.015 280);
-  --accent-foreground: oklch(30% 0.06 280);
-  --destructive: oklch(55% 0.21 25);
-  --destructive-foreground: oklch(99% 0 0);
-  --border: oklch(20% 0.01 260 / 10%);
-  --border-strong: oklch(20% 0.01 260 / 18%);
-  --input: oklch(20% 0.01 260 / 14%);
-  --ring: oklch(58% 0.17 280 / 55%);
-}
-
-/* ---------------------------------------------------------------------------
- * Token bridge — expose the CSS variables as Tailwind design tokens
- * ------------------------------------------------------------------------- */
 @theme inline {
-  --color-background: var(--background);
+  --color-background: var(--canvas);
+  --color-foreground: var(--text-1);
+  --color-canvas: var(--canvas);
   --color-surface-1: var(--surface-1);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
-  --color-foreground: var(--foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-subtle-foreground: var(--subtle-foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-hover: var(--primary-hover);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
+  --color-inset: var(--inset);
+  --color-field: var(--field);
+  --color-text-1: var(--text-1);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-muted: var(--surface-2);
+  --color-muted-foreground: var(--text-3);
+  --color-card: var(--surface-2);
+  --color-card-foreground: var(--text-1);
+  --color-popover: var(--surface-3);
+  --color-popover-foreground: var(--text-1);
+  --color-primary: var(--accent);
+  --color-primary-hover: var(--accent-hover);
+  --color-primary-foreground: var(--on-accent);
+  --color-secondary: var(--surface-2);
+  --color-secondary-foreground: var(--text-1);
+  /* shadcn "accent" is a hover fill, not the interaction colour. */
+  --color-accent: var(--hover);
+  --color-accent-foreground: var(--text-1);
+  --color-accent-text: var(--accent-text);
+  --color-destructive: var(--danger-fill);
+  --color-destructive-foreground: var(--on-accent);
   --color-border: var(--border);
-  --color-border-strong: var(--border-strong);
-  --color-input: var(--input);
+  --color-border-subtle: var(--border-subtle);
+  --color-input: var(--border-control);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
-  --font-mono: 'Cascadia Code', 'Consolas', monospace;
-}
+  --color-evidence: var(--evidence);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-restricted: var(--restricted);
+  --color-transparent: transparent;
+  --color-current: currentColor;
 
-/* ---------------------------------------------------------------------------
- * VisLex Modern components — new surfaces styled with plain CSS classes until
- * the legacy sheet retires. Utilities are preferred; these are the pieces
- * that need keyframes or token math utilities cannot express.
- * ------------------------------------------------------------------------- */
-@layer components {
-  /* Chat welcome glyph: soft indigo aurora halo behind the mark. */
-  .glyph-halo-wrap { position: relative; display: inline-block; margin-bottom: 12px; }
-  .glyph-halo {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 56px;
-    height: 56px;
-    border-radius: 18px;
-    border: 1px solid var(--border-strong);
-    color: oklch(82% 0.11 280);
-    background:
-      radial-gradient(120% 120% at 20% 15%, oklch(30% 0.09 280 / 65%), transparent 55%),
-      radial-gradient(120% 120% at 85% 90%, oklch(26% 0.07 250 / 55%), transparent 60%),
-      var(--surface-2);
-    box-shadow: 0 8px 32px -10px oklch(45% 0.14 280 / 45%), inset 0 1px 0 oklch(100% 0 0 / 6%);
-  }
-  .glyph-halo::after {
-    content: '';
-    position: absolute;
-    inset: -22px;
-    border-radius: 9999px;
-    background: radial-gradient(closest-side, oklch(60% 0.16 280 / 22%), transparent);
-    animation: glyph-breathe 5.5s ease-in-out infinite;
-    pointer-events: none;
-  }
-  @keyframes glyph-breathe {
-    0%, 100% { opacity: 0.55; transform: scale(1); }
-    50% { opacity: 1; transform: scale(1.12); }
-  }
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --text-xs: var(--text-caption);
+  --text-sm: var(--text-sm);
+  --text-base: var(--text-base);
+  --text-lg: var(--text-lg);
+  --text-xl: var(--text-xl);
+  --text-2xl: var(--text-2xl);
 
-  /* Zero-valued welcome stats step back instead of reading as findings. */
-  .welcome-summary strong.stat-zero { color: var(--subtle-foreground); opacity: 0.7; }
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
 
-  /* Rail navigation: a sliding active pill replaces the static tint. The
-     forced-colors/high-contrast outline block in the legacy sheet still marks
-     the active button when backgrounds are stripped. */
-  .rail-button.active { background: transparent; border-left-color: transparent; box-shadow: none; }
-  .rail-button > svg { position: relative; z-index: 1; }
-  .rail-active-pill {
-    position: absolute;
-    inset: 3px 3px 3px 5px;
-    border-radius: 10px;
-    background: color-mix(in oklab, var(--primary) 20%, transparent);
-    border: 1px solid color-mix(in oklab, var(--primary) 38%, transparent);
-    box-shadow: 0 4px 16px -8px color-mix(in oklab, var(--primary) 55%, transparent);
-  }
-
-  /* Model picker: keyboard-highlight row + availability count. */
-  .model-option.highlight { background: color-mix(in oklab, var(--primary) 12%, transparent); }
-  .model-count { padding: 4px 12px 2px; margin: 0; font-size: 10.5px; }
-
-  /* Settings: nav pill, provider status chips, searchable select trigger. */
-  .settings-nav-item { position: relative; }
-  .settings-nav-pill {
-    position: absolute;
-    inset: 2px 4px;
-    border-radius: 8px;
-    background: color-mix(in oklab, var(--primary) 14%, transparent);
-    border: 1px solid color-mix(in oklab, var(--primary) 30%, transparent);
-  }
-  .settings-nav-item .settings-nav-icon { position: relative; z-index: 1; display: inline-flex; opacity: 0.8; }
-  .settings-nav-item span:last-child { position: relative; z-index: 1; }
-  .provider-legend { display: flex; align-items: center; gap: 8px; }
-  .provider-status { font-size: 10.5px; letter-spacing: 0.3px; font-weight: 500; }
-  .provider-status.ok { color: var(--success, oklch(72% 0.15 155)); }
-  .provider-status.none { color: var(--muted-foreground); }
-  .provider-status.error { color: var(--destructive); }
-  .settings-provider-card { border-radius: 14px; border-color: var(--border); background: color-mix(in oklab, var(--surface-2) 60%, transparent); }
-  .model-select {
-    display: inline-flex; align-items: center; justify-content: space-between; gap: 10px;
-    min-width: 260px; padding: 7px 10px; border: 1px solid var(--border-strong);
-    color: var(--foreground); font-size: 12.5px; text-align: left;
-    transition: border-color 0.15s var(--ease-out, ease-out), box-shadow 0.15s ease-out;
-  }
-  .model-select:hover:not(:disabled) { border-color: var(--primary); }
-  .model-select:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-  .model-select .model-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .model-select .model-select-value.placeholder { color: var(--muted-foreground); }
-
-  /* Command palette: kbd hint chips + springy open (native dialog element). */
-  .palette-kbd {
-    margin-left: auto; flex-shrink: 0;
-    font-family: var(--font-mono); font-size: 10px; line-height: 1;
-    padding: 4px 6px; border-radius: 5px;
-    border: 1px solid var(--border-strong);
-    background: color-mix(in oklab, var(--surface-3) 70%, transparent);
-    color: var(--muted-foreground);
-  }
-  dialog.command-palette[open] { animation: palette-open 0.16s var(--ease-out, ease-out); }
-  @keyframes palette-open {
-    from { opacity: 0; transform: translateY(6px) scale(0.985); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
-  }
-
-  /* Workbench: sliding tab pill + seeded empty state. */
-  .workbench-tabs button { position: relative; }
-  .workbench-tab-pill {
-    position: absolute;
-    inset: 2px 6px;
-    border-radius: 7px;
-    background: color-mix(in oklab, var(--primary) 14%, transparent);
-    border: 1px solid color-mix(in oklab, var(--primary) 30%, transparent);
-  }
-  .workbench-tab-label { position: relative; z-index: 1; }
-
-  /* Jobs: determinate + indeterminate animated progress. */
-  .job-progress {
-    height: 6px; border-radius: 999px; overflow: hidden;
-    background: color-mix(in oklab, var(--foreground) 8%, transparent);
-    border: 1px solid var(--border);
-    margin: 6px 0;
-  }
-  .job-progress-fill {
-    height: 100%; border-radius: inherit;
-    background: linear-gradient(90deg, color-mix(in oklab, var(--primary) 75%, transparent), var(--primary));
-    transition: width 0.5s var(--ease-out, ease-out);
-    position: relative;
-  }
-  .job-progress-fill::after {
-    content: ''; position: absolute; inset: 0;
-    background: linear-gradient(100deg, transparent 20%, oklch(100% 0 0 / 25%) 50%, transparent 80%);
-    animation: job-shimmer 1.6s linear infinite;
-  }
-  @keyframes job-shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
-  .job-progress-indeterminate .job-progress-fill {
-    width: 34% !important;
-    animation: job-slide 1.4s var(--ease-out, ease-in-out) infinite;
-  }
-  @keyframes job-slide { 0% { margin-left: -34%; } 100% { margin-left: 100%; } }
-  .empty-seeds { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
-  .empty-seed {
-    font-size: 12px; color: var(--muted-foreground); text-align: left;
-    padding: 8px 12px; border-radius: 9px;
-    border: 1px dashed var(--border-strong);
-    background: color-mix(in oklab, var(--surface-2) 50%, transparent);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .glyph-halo::after { animation: none; }
-  dialog.command-palette[open] { animation: none; }
-  .job-progress-fill::after { animation: none; }
-  .job-progress-indeterminate .job-progress-fill { animation: none; }
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
 }

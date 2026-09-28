@@ -1,0 +1,21 @@
+/* Shell surfaces: titlebar, rail, sidebar, library, jobs, palette, onboarding,
+   status bar. Owned by the integration lead. */
+
+/* Rail: a sliding selection indicator explains where navigation moved. */
+.rail-button.active { background: transparent; box-shadow: none; }
+.rail-button > svg { position: relative; z-index: 1; }
+.rail-active-pill {
+  position: absolute; inset: 3px 4px; border-radius: var(--radius-md);
+  background: var(--accent-subtle); border: 1px solid var(--accent-border);
+}
+@media (forced-colors: active) {
+  .rail-button.active { outline: 2px solid Highlight; outline-offset: -2px; }
+}
+
+/* Command palette */
+.palette-kbd { margin-left: auto; flex-shrink: 0; }
+
+/* Jobs: progress is drawn only from reported units. */
+.job-progress { height: 6px; border-radius: var(--radius-pill); overflow: hidden; background: var(--hover); margin: 8px 0 4px; }
+.job-progress-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-slower) var(--ease-standard); }
+.job-activity { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); font-size: var(--text-sm); margin: 6px 0 2px; }

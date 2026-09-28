@@ -1,0 +1,15 @@
+/* Findings and investigation workspaces: notebook, workbench, dossier,
+   clock and sound labs. Owned by the workspaces surface implementer. */
+
+.workbench-tabs button { position: relative; }
+.workbench-tab-pill {
+  position: absolute; inset: 2px 4px; border-radius: var(--radius-sm);
+  background: var(--accent-subtle); border: 1px solid var(--accent-border);
+}
+.workbench-tab-label { position: relative; z-index: 1; }
+.empty-seeds { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.empty-seed {
+  font-size: var(--text-sm); color: var(--text-2); text-align: left;
+  padding: 8px 12px; border-radius: var(--radius-md);
+  border: 1px dashed var(--border-control); background: var(--surface-2);
+}
