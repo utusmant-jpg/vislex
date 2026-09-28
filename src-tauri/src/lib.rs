@@ -1,9 +1,16 @@
 pub mod agent;
+pub mod ai_access;
 pub mod artifact_registry;
 pub mod backup;
 pub mod case;
 #[cfg(feature = "desktop")]
 pub mod desktop;
+#[cfg(feature = "desktop")]
+pub mod codex_account;
+#[cfg(feature = "desktop")]
+pub mod codex_case;
+#[cfg(windows)]
+pub mod codex_sandbox;
 pub mod processing;
 pub mod review_progress;
 #[cfg(windows)]

@@ -251,7 +251,10 @@ impl Case {
             fs::create_dir_all(root.join(dir))?;
         }
         let db = Connection::open(root.join("case.sqlite3"))?;
-        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Worker heartbeats use a separate SQLite connection. A foreground
+        // chat write should wait through brief writer contention rather than
+        // fail with a raw SQLITE_BUSY error.
+        db.busy_timeout(std::time::Duration::from_secs(15))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
         ensure!(version <= 8, "This case requires a newer application");
         if create {

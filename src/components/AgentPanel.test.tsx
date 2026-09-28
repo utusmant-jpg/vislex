@@ -76,6 +76,30 @@ describe('chat composer interaction', () => {
     expect(screen.queryByText('AI assessment')).toBeNull();
   });
 
+  it('labels pending usage while a subscription turn is running', () => {
+    panel(snapshot([task('current-task', 'current-chat')]), 'current-chat');
+    fireEvent.click(screen.getByRole('button', { name: /Considering the evidence/ }));
+    expect(screen.getByRole('status').textContent).toContain('Token usage pending');
+    expect(screen.queryByText(/0 tokens reported/)).toBeNull();
+  });
+
+  it('sends a subscription chat without requiring or passing an API provider model', async () => {
+    const data=snapshot();
+    data.settings.model='';
+    api.mockImplementation(async (action: string) => action === 'ai_access_route'
+      ? { route: 'chatgpt_subscription', subscription: { model: 'codex-model', effort: 'high' } }
+      : action === 'case_ai_access_route' ? { effective: 'chatgpt_subscription', selection: { model: 'codex-model', effort: 'high' } }
+      : { task_id: 'new-task', conversation_id: 'new-chat' });
+    panel(data);
+    expect(await screen.findByRole('button', { name: 'ChatGPT subscription model' })).toHaveProperty('textContent', 'ChatGPT · codex-model');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Inspect the synthetic source' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('start_task', expect.objectContaining({ prompt: 'Inspect the synthetic source' })));
+    const args = api.mock.calls.find(([action]) => action === 'start_task')?.[1] as Record<string, unknown>;
+    expect(args).not.toHaveProperty('provider');
+    expect(args).not.toHaveProperty('model');
+  });
+
   it('sends the captured open-case epoch with a new task', async () => {
     const data = snapshot(); data.session_epoch = 12;
     panel(data);

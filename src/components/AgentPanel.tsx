@@ -160,8 +160,9 @@ function LiveResponse({ caseId, sessionEpoch, taskId, onSource, scroll, followin
 function RunStatus({ turn }: { turn: Task }) {
   const now = useNow(true);
   const elapsed = Math.max(0, Math.floor((now - Date.parse(turn.created_at)) / 1000));
+  const tokens = turn.input_tokens + turn.output_tokens;
   return <div className="run-status" role="status">
-    {formatClock(elapsed)} elapsed · step {turn.step} · {(turn.input_tokens + turn.output_tokens).toLocaleString()} tokens reported
+    {formatClock(elapsed)} elapsed · step {turn.step} · {tokens ? `${tokens.toLocaleString()} tokens reported` : 'Token usage pending'}
     {elapsed > 60 ? ' · Still working. You can stop this run below.' : ''}
   </div>;
 }
@@ -190,6 +191,22 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const [selectedModel, setSelectedModel] = useState('');
   const availableModels = useMemo(() => snapshot ? configuredProfiles(snapshot).filter(profile => profile.allow_text) : [], [snapshot]);
   const selectedProfile: AIProfile | undefined = availableModels.find(profile => profileKey(profile) === selectedModel) ?? availableModels[0];
+  const [accessChoice, setAccessChoice] = useState<{ route: 'api_keys' | 'chatgpt_subscription'; model?: string; effort?: string } | null>({route:'api_keys'});
+  useEffect(() => {
+    if (!native || !snapshot) { setAccessChoice(null); return; }
+    let active = true;
+    const session = caseSessionArgs(snapshot.id, snapshot.session_epoch);
+    const load = () => Promise.all([
+      api<{ route: 'api_keys' | 'chatgpt_subscription'; subscription?: { model: string; effort: string } | null }>('ai_access_route'),
+      api<{ effective: 'api_keys' | 'chatgpt_subscription'; selection?: { model: string; effort: string } | null }>('case_ai_access_route', session),
+    ]).then(([app, currentCase]) => { if (active) setAccessChoice({ route: currentCase.effective ?? app.route, model: currentCase.selection?.model ?? app.subscription?.model, effort: currentCase.selection?.effort ?? app.subscription?.effort }); })
+      .catch(() => { if (active) setAccessChoice(null); });
+    void load();
+    window.addEventListener('vislex:ai-access-changed', load);
+    return () => { active = false; window.removeEventListener('vislex:ai-access-changed', load); };
+  }, [snapshot?.id, snapshot?.session_epoch]);
+  const subscriptionActive = accessChoice?.route === 'chatgpt_subscription';
+  const modelReady = !!accessChoice && (subscriptionActive ? !!accessChoice.model && !!accessChoice.effort : !!selectedProfile);
   const [sending, setSending] = useState(false);
   const sessionKey = snapshot ? `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}` : null;
   const currentCaseId = useRef(sessionKey);
@@ -265,7 +282,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   }
 
   function submit(text: string = prompt) {
-    if (sending || chatBlocked || !text.trim() || !native || !snapshot || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile) return;
+    if (sending || chatBlocked || !text.trim() || !native || !snapshot || snapshot.settings.offline || !snapshot.settings.allow_text || !modelReady) return;
     setSending(true);
     run(async () => {
       try {
@@ -273,8 +290,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
         const result = await api<{ task_id: string; conversation_id: string }>('start_task', {
           ...caseSessionArgs(snapshot.id, snapshot.session_epoch),
           prompt: text,
-          provider: selectedProfile!.provider,
-          model: selectedProfile!.model,
+          ...(subscriptionActive ? {} : { provider: selectedProfile!.provider, model: selectedProfile!.model }),
           parent_task_id: task?.id ?? null,
           viewer_context: viewerContext,
         });
@@ -418,7 +434,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
       >Latest ↓</motion.button> : null}
     </AnimatePresence>
     <div className="composer-area">
-      {snapshot && (snapshot.settings.offline || !snapshot.settings.allow_text || !availableModels.length) ? <button className="offline-notice" onClick={onSettings}>Set up or enable AI in settings</button> : null}
+      {snapshot && (snapshot.settings.offline || !snapshot.settings.allow_text || !modelReady) ? <button className="offline-notice" onClick={onSettings}>Set up or enable AI in settings</button> : null}
       {chatBlocked && !running ? <p role="status" className="small muted">Preparing case files before chat is available.</p> : null}
       <div className="composer bg-surface-2/90 backdrop-blur-xl rounded-2xl border-border shadow-[0_12px_40px_-16px_rgba(0,0,0,0.55)]">
         {contextName ? <div className="viewer-context" title="The agent receives this open file, its page and playback position">
@@ -429,13 +445,13 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
         {skipContext && contextName ? <p className="small muted context-off">This file will not be attached to your next message.</p> : null}
         <textarea ref={composer} aria-label="Agent task" placeholder={task ? 'Follow up, challenge a finding, or ask something else…' : 'Ask VisLex about your case…'} value={prompt} onChange={event => draft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
         <div className="composer-bottom">
-          <ModelPicker
+          {subscriptionActive ? <button className="chip" type="button" onClick={onSettings} aria-label="ChatGPT subscription model">ChatGPT · {accessChoice?.model ?? 'Choose model'}</button> : <ModelPicker
             snapshot={snapshot}
             selected={selectedProfile}
             onSelect={profile => { setSelectedModel(profileKey(profile)); sessionStorage.setItem(modelKey(snapshot?.id, conversationId), profileKey(profile)); }}
             onManage={onSettings}
             disabled={chatBlocked || sending || !availableModels.length}
-          />
+          />}
           <div className="spacer" />
           {running
             ? <Tooltip text="Stop the current response"><motion.button
@@ -448,7 +464,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
             : <Tooltip text={chatBlocked ? 'Waiting for case preparation' : 'Send message (Enter)'}><motion.button
                 className="send bg-primary text-primary-foreground hover:bg-primary-hover rounded-full"
                 aria-label="Send message"
-                disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !selectedProfile}
+                disabled={chatBlocked || sending || !prompt.trim() || !snapshot || !native || snapshot.settings.offline || !snapshot.settings.allow_text || !modelReady}
                 whileHover={reducedMotion || chatBlocked || sending || !prompt.trim() ? undefined : { scale: 1.05 }}
                 whileTap={reducedMotion ? undefined : { scale: 0.92 }}
                 transition={springs.snappy}

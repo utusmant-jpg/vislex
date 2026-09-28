@@ -161,6 +161,77 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         return Ok(json!({"saved":true,"current_case_updated":current_case_updated}));
     }
 
+    if ["ai_access_route","set_ai_access_route","save_codex_selection","codex_account_status","codex_account_login","codex_account_cancel_login","codex_account_logout","codex_account_models","codex_account_limits"].contains(&action) {
+        let directory = app.path().app_config_dir()?;
+        let home=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
+        if action == "ai_access_route" {
+            let settings=crate::ai_access::read_settings(&directory)?;
+            let available=crate::codex_account::available(&home);
+            return Ok(json!({"route":settings.route,"subscription":settings.subscription,"subscription_ready":available,"account_ready":available,
+                "blocker":if available {""} else {"The pinned Codex runtime is missing or does not match this verified build"}}));
+        }
+        if action == "set_ai_access_route" {
+            let route:crate::ai_access::AccessRoute=serde_json::from_value(args["route"].clone())?;
+            if route == crate::ai_access::AccessRoute::ChatgptSubscription {
+                anyhow::ensure!(crate::codex_account::available(&home),"Verified Codex sidecar is unavailable");
+                anyhow::ensure!(crate::codex_account::status(&home)?["connected"]==true,"Sign in with ChatGPT first");
+                anyhow::ensure!(crate::ai_access::read_settings(&directory)?.subscription.is_some(),"Select a subscription model first");
+            }
+            crate::ai_access::write(&directory,route)?;
+            return Ok(json!({"route":route}));
+        }
+        if action == "save_codex_selection" {
+            let model=text(&args,"model")?;
+            let effort=text(&args,"effort")?;
+            let catalogue=crate::codex_account::models(&home)?;
+            anyhow::ensure!(catalogue.as_array().is_some_and(|entries|entries.iter().any(|entry|
+                entry["id"]==model && entry["efforts"].as_array().is_some_and(|options|options.iter().any(|option|option==effort)))),
+                "Choose a reasoning effort returned for this ChatGPT model");
+            let mut settings=crate::ai_access::read_settings(&directory)?;
+            settings.subscription=Some(crate::ai_access::SubscriptionSelection{model:model.into(),effort:effort.into()});
+            crate::ai_access::write_settings(&directory,settings)?;
+            return Ok(Value::Null);
+        }
+        return match action {
+            "codex_account_status"=>crate::codex_account::status(&home),
+            "codex_account_login"=>crate::codex_account::begin_login(&home),
+            "codex_account_cancel_login"=>{crate::codex_account::cancel_login(&home,text(&args,"login_id")?)?;Ok(Value::Null)},
+            "codex_account_logout"=>{
+                let state=app.state::<AppState>();
+                let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+                if let Some(case)=guard.as_mut() {
+                    let mut statement=case.db.prepare("SELECT id FROM tasks WHERE status='running'")?;
+                    let tasks=statement.query_map([],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    for task in tasks {
+                        if case.meta(&format!("task_access_route:{task}"))?.as_deref()==Some("chatgpt_subscription") {
+                            agent::pause(case,&task,"ChatGPT account signed out")?;
+                        }
+                    }
+                }
+                drop(guard);
+                crate::codex_account::logout(&home)?;
+                emit_case_changed(app);
+                Ok(Value::Null)
+            },
+            "codex_account_models"=>crate::codex_account::models(&home),
+            "codex_account_limits"=>crate::codex_account::limits(&home),
+            _=>unreachable!(),
+        };
+    }
+
+    // Catalogue lookup can contact the account service. Validate before the
+    // case mutex is held; the case/session is checked again at the write.
+    if action=="save_case_codex_selection" && args["use_app"]!=true {
+        let model=text(&args,"model")?;
+        let effort=text(&args,"effort")?;
+        let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
+        let catalogue=crate::codex_account::models(&runtime)?;
+        anyhow::ensure!(catalogue.as_array().is_some_and(|entries|entries.iter().any(|entry|
+            entry["id"]==model && entry["efforts"].as_array().is_some_and(|options|options.iter().any(|option|option==effort)))),
+            "Choose a reasoning effort returned for this ChatGPT model");
+    }
+
     if action=="hybrid_search" {
         let (case_id,epoch,job)={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before search");require_session_epoch(&state,&args)?;let scope=case.sources()?.into_iter().filter(|s|!s.restricted).map(|s|s.id).collect();(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::semantic::prepare_query(case,text(&args,"query")?,scope)?)};
         let result=crate::semantic::run(&job)?;
@@ -855,6 +926,38 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         },
         "direct_media_permission" => json!({"enabled":crate::providers::direct_media_enabled(c)}),
         "case_ai_scope" => json!({"scope":if c.meta("ai_scope")?.as_deref()==Some("app") {"app"} else {"case"}}),
+        "case_ai_access_route" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI access read");
+            require_session_epoch(&state,&args)?;
+            json!({"override":c.meta("ai_access_override")?.unwrap_or_else(||"app".into()),"effective":case_access_route(c,app)?,
+                "selection_override":c.meta("codex_selection")?.is_some_and(|value|!value.is_empty()),"selection":case_subscription_selection(c,app)?})
+        },
+        "set_case_ai_access_route" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI access update");
+            require_session_epoch(&state,&args)?;
+            let route=text(&args,"route")?;
+            anyhow::ensure!(matches!(route,"app"|"api_keys"|"chatgpt_subscription"),"Invalid case AI access route");
+            if route=="chatgpt_subscription" {
+                let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
+                anyhow::ensure!(crate::codex_account::available(&runtime),"Verified Codex sidecar is unavailable");
+            }
+            c.set_meta("ai_access_override",route)?;
+            c.audit("ai_access_override_changed",json!({"route":route}))?;
+            json!({"override":route,"effective":case_access_route(c,app)?,"selection_override":c.meta("codex_selection")?.is_some_and(|value|!value.is_empty()),"selection":case_subscription_selection(c,app)?})
+        },
+        "save_case_codex_selection" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before subscription model update");
+            require_session_epoch(&state,&args)?;
+            if args["use_app"].as_bool()==Some(true) {
+                c.set_meta("codex_selection","")?;
+            } else {
+                let model=text(&args,"model")?;
+                let effort=text(&args,"effort")?;
+                c.set_meta("codex_selection",&serde_json::to_string(&crate::ai_access::SubscriptionSelection{model:model.into(),effort:effort.into()})?)?;
+            }
+            c.audit("codex_selection_changed",json!({"use_app":args["use_app"]==true}))?;
+            json!({"selection_override":c.meta("codex_selection")?.is_some_and(|value|!value.is_empty()),"selection":case_subscription_selection(c,app)?})
+        },
         "set_case_ai_scope" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before AI scope update");
             require_session_epoch(&state,&args)?;
@@ -918,36 +1021,38 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "start_task" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before chat started");
             require_session_epoch(&state,&args)?;
+            let access_route=case_access_route(c,app)?;
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
 
-            let selected = if let (Some(provider), Some(model)) = (args.get("provider"), args["model"].as_str()) {
-                crate::providers::select_profile(c, serde_json::from_value(provider.clone())?, model)?
-            } else { crate::providers::task_profile(c, "")? };
-            crate::providers::check_permission(c, &selected)?;
-            if !agent::is_file_count_question(text(&args,"prompt")?) {
-            provider_key_for_case(selected.provider)
-                .map_err(|_| anyhow::anyhow!("Save an API key in Settings first"))?;
-
-            }
+            let selected = if access_route == crate::ai_access::AccessRoute::ApiKeys {
+                let selected = if let (Some(provider), Some(model)) = (args.get("provider"), args["model"].as_str()) {
+                    crate::providers::select_profile(c, serde_json::from_value(provider.clone())?, model)?
+                } else { crate::providers::task_profile(c, "")? };
+                crate::providers::check_permission(c, &selected)?;
+                if !agent::is_file_count_question(text(&args,"prompt")?) {
+                    provider_key_for_case(selected.provider)
+                        .map_err(|_| anyhow::anyhow!("Save an API key in Settings first"))?;
+                }
+                Some(selected)
+            } else {
+                let settings=c.settings()?;
+                anyhow::ensure!(!settings.offline && settings.allow_text,"Enable AI text access for this case in Settings");
+                let selection=case_subscription_selection(c,app)?.context("Choose a ChatGPT subscription model in Settings")?;
+                anyhow::ensure!(!selection.model.is_empty() && !selection.effort.is_empty(),"Choose a ChatGPT subscription model in Settings");
+                let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
+                anyhow::ensure!(crate::codex_account::available(&runtime),"Verified Codex sidecar is unavailable");
+                None
+            };
             let (source_ids, record_ids) = agent::case_scope(c)?;
 
-            let task = agent::start(
+            let task = if access_route == crate::ai_access::AccessRoute::ChatgptSubscription {
+                agent::start_subscription(c,text(&args,"prompt")?,"investigate",source_ids,record_ids)?
+            } else {
+                agent::start(c,text(&args,"prompt")?,"investigate",source_ids,record_ids,0.0)?
+            };
 
-                c,
-
-                text(&args, "prompt")?,
-
-                "investigate",
-
-                source_ids,
-
-                record_ids,
-
-                0.0,
-
-            )?;
-
-            c.set_meta(&format!("task_profile:{task}"), &serde_json::to_string(&selected)?)?;
+            c.set_meta(&format!("task_access_route:{task}"), if access_route == crate::ai_access::AccessRoute::ChatgptSubscription {"chatgpt_subscription"} else {"api_keys"})?;
+            if let Some(selected)=selected { c.set_meta(&format!("task_profile:{task}"), &serde_json::to_string(&selected)?)?; }
             let conversation = match agent::continue_conversation(c, &task, args["parent_task_id"].as_str()) {
 
                 Ok(id)=>id,
@@ -1021,9 +1126,13 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             require_session_epoch(&state,&args)?;
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
             let old=text(&args,"task_id")?;
-            let profile=crate::providers::task_profile(c,old)?;
-            provider_key_for_case(profile.provider).map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
+            let subscription=c.meta(&format!("task_access_route:{old}"))?.as_deref()==Some("chatgpt_subscription");
+            if !subscription {
+                let profile=crate::providers::task_profile(c,old)?;
+                provider_key_for_case(profile.provider).map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
+            }
             let (task,conversation)=agent::continue_paused(c,old)?;
+            c.set_meta(&format!("task_access_route:{task}"),if subscription {"chatgpt_subscription"} else {"api_keys"})?;
             let case_id=c.meta("id")?.unwrap_or_default();
             let session_epoch=state.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
             let handle=app.clone();let tid=task.clone();
@@ -1221,6 +1330,8 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
     Box::pin(async move {
 
     let result=async {
+        let subscription=with_case_expected(&app,&case_id,Some(epoch),|c|Ok(c.meta(&format!("task_access_route:{task}"))?.as_deref()==Some("chatgpt_subscription")))?;
+        if subscription { return run_subscription_session(&app,&case_id,epoch,&task).await; }
 
 
 
@@ -1288,6 +1399,195 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
     emit_case_changed(&app);
 
     })
+}
+
+fn case_access_route(case:&Case,app:&tauri::AppHandle)->anyhow::Result<crate::ai_access::AccessRoute> {
+    match case.meta("ai_access_override")?.as_deref() {
+        Some("api_keys")=>Ok(crate::ai_access::AccessRoute::ApiKeys),
+        Some("chatgpt_subscription")=>Ok(crate::ai_access::AccessRoute::ChatgptSubscription),
+        _=>crate::ai_access::read(&app.path().app_config_dir()?),
+    }
+}
+fn case_subscription_selection(case:&Case,app:&tauri::AppHandle)->anyhow::Result<Option<crate::ai_access::SubscriptionSelection>> {
+    if let Some(saved)=case.meta("codex_selection")? {
+        if !saved.is_empty() {return Ok(Some(serde_json::from_str(&saved)?));}
+    }
+    Ok(crate::ai_access::read_settings(&app.path().app_config_dir()?)?.subscription)
+}
+
+fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<Option<String>> {
+    let route=case_access_route(case,app)?;
+    let subscription=route==crate::ai_access::AccessRoute::ChatgptSubscription;
+    let previous_task=case.meta("auto_review_task")?;
+    if let Some(previous)=&previous_task {
+        let paused=case.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[previous],|r|r.get(0)).ok().as_deref()==Some("paused");
+        let prior_subscription=case.meta(&format!("task_access_route:{previous}"))?.as_deref()==Some("chatgpt_subscription");
+        if paused && prior_subscription!=subscription {return Ok(None);}
+    }
+    if subscription {
+        if case_subscription_selection(case,app)?.is_none() {return Ok(None);}
+    } else {
+        let provider=crate::providers::load(case)?.provider;
+        if provider_key_for_case(provider).is_err() {return Ok(None);}
+    }
+    let task=crate::automatic::start_review_with_access(case,subscription)?;
+    if let Some(task)=&task {
+        if case.meta(&format!("task_access_route:{task}"))?.is_none() {
+            let new_task=previous_task.as_deref()!=Some(task);
+            case.set_meta(&format!("task_access_route:{task}"),if subscription && new_task {"chatgpt_subscription"} else {"api_keys"})?;
+        }
+    }
+    Ok(task)
+}
+
+async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str)->anyhow::Result<()> {
+    let selection=with_case_expected(app,case_id,Some(epoch),|c|case_subscription_selection(c,app))?.context("Select a ChatGPT subscription model")?;
+    let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
+    anyhow::ensure!(crate::codex_account::available(&runtime),"Verified Codex sidecar is unavailable");
+    let status=crate::codex_account::status(&runtime)?;
+    anyhow::ensure!(status["connected"]==true,"Sign in with ChatGPT in Settings first");
+    let private_home=crate::codex_account::isolated_home(&runtime)?.canonicalize()?;
+    let runtime_root=runtime.canonicalize()?;
+    with_case_expected(app,case_id,Some(epoch),|case|{
+        ensure_subscription_path_boundary(&case.root.canonicalize()?,&runtime_root,&private_home)
+    })?;
+    let (instructions,definitions,context)=with_case_expected(app,case_id,Some(epoch),|c|agent::subscription_context(c,task))?;
+    let transmission=with_case_expected(app,case_id,Some(epoch),|c|{
+        let source_ids:String=c.db.query_row("SELECT scope FROM tasks WHERE id=?",[task],|r|r.get(0))?;
+        let transmission=crate::case::id();
+        c.db.execute("INSERT INTO transmissions(id,task_id,payload_hash,model,source_ids,reserved,status,created_at) VALUES(?,?,?,?,?,0,'pending',?)",
+            rusqlite::params![transmission,task,crate::case::digest(context.as_bytes()),format!("chatgpt_subscription:{}",selection.model),source_ids,crate::case::now()])?;
+        c.db.execute("UPDATE tasks SET step=step+1,updated_at=? WHERE id=?",rusqlite::params![crate::case::now(),task])?;
+        Ok(transmission)
+    })?;
+    let handle=app.clone();let cid=case_id.to_owned();let tid=task.to_owned();
+    let last_activity=std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let worker_activity=last_activity.clone();
+    let active_jobs=std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let worker_jobs=active_jobs.clone();
+    let watchdog_cancelled=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancelled=watchdog_cancelled.clone();
+    let mut worker=tauri::async_runtime::spawn_blocking(move || {
+        crate::codex_case::run(&runtime,&selection.model,&selection.effort,&instructions,&definitions,&context,
+            |call_id,name,args| {
+                *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
+                let result=run_subscription_tool(&handle,&cid,epoch,&tid,call_id,name,args,&worker_jobs);
+                *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
+                result
+            },
+            |delta| {
+                *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
+                let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":format!("subscription:{tid}"),"delta":{"text":delta}}));
+            },
+            || worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) || with_case_expected(&handle,&cid,Some(epoch),|c|Ok(c.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[&tid],|r|r.get(0))?))
+                .map(|status| status=="paused" || status=="cancelled").unwrap_or(true),
+        )
+    });
+    let mut check=tokio::time::interval(std::time::Duration::from_secs(10));
+    let completed=loop {
+        tokio::select! {
+            result=&mut worker => break result,
+            _=check.tick() => {
+                if last_activity.lock().unwrap_or_else(|e|e.into_inner()).elapsed()>std::time::Duration::from_secs(12*60) {
+                    watchdog_cancelled.store(true,std::sync::atomic::Ordering::SeqCst);
+                    let reason="ChatGPT subscription had no case action or answer progress for twelve minutes. The unfinished turn was paused; saved receipts remain available to a new task.";
+                    let jobs=active_jobs.lock().unwrap_or_else(|e|e.into_inner()).clone();
+                    with_case_expected(app,case_id,Some(epoch),|c|{
+                        agent::pause(c,task,reason)?;
+                        for job in jobs {
+                            let cancelled=crate::processing::cancel(c,&job).is_ok();
+                            c.db.execute("UPDATE processing_jobs SET status=?,error=? WHERE id=? AND status='running'",rusqlite::params![if cancelled {"cancelled"} else {"failed"},reason,job])?;
+                        }
+                        c.db.execute("UPDATE transmissions SET status='uncertain' WHERE task_id=? AND status='pending'",[task])?;
+                        Ok(())
+                    })?;
+                    return Err(anyhow::anyhow!(reason));
+                }
+            }
+        }
+    };
+    let (result,usage)=match completed {
+        Ok(Ok(value))=>value,
+        Ok(Err(error))=>{
+            let _=with_case_expected(app,case_id,Some(epoch),|c|{c.db.execute("UPDATE transmissions SET status='uncertain' WHERE id=? AND status='pending'",[&transmission])?;Ok(())});
+            return Err(error);
+        },
+        Err(error)=>{
+            let _=with_case_expected(app,case_id,Some(epoch),|c|{c.db.execute("UPDATE transmissions SET status='uncertain' WHERE id=? AND status='pending'",[&transmission])?;Ok(())});
+            return Err(error.into());
+        },
+    };
+    with_case_expected(app,case_id,Some(epoch),|c|{
+        c.db.execute("UPDATE transmissions SET status='received',usage=? WHERE id=? AND status='pending'",rusqlite::params![usage.as_ref().map(Value::to_string),transmission])?;
+        Ok(())
+    })?;
+    let still_running=with_case_expected(app,case_id,Some(epoch),|c|Ok(c.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[task],|r|r.get(0))?=="running"))?;
+    if still_running {
+        // A final model message is not a brokered finish_task action. In
+        // particular, it must not turn an uninspected case into a completed
+        // task just because the model says its tools were unavailable.
+        let _ = result;
+        anyhow::bail!("ChatGPT subscription ended without calling VisLex finish_task. Case inspection and support review were not completed; retry after the case tools are available.");
+    }
+    emit_case_changed(app);
+    Ok(())
+}
+
+fn run_subscription_tool(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str,call_id:&str,name:&str,args:Value,active_jobs:&std::sync::Mutex<Vec<String>>)->anyhow::Result<Value> {
+    let call=with_case_expected(app,case_id,Some(epoch),|c|agent::prepare_subscription_call(c,task,call_id,name,args.clone()))?;
+    let registered=with_case_expected(app,case_id,Some(epoch),|c|agent::prepare_media(c,task,&call.transmission,&call.response));
+    let (jobs,preparation_error)=match registered {Ok(j)=>(j,None),Err(e)=>(vec![],Some(e.to_string()))};
+    let job_ids=jobs.iter().map(|j|j.job_id.clone()).collect::<Vec<_>>();
+    *active_jobs.lock().unwrap_or_else(|e|e.into_inner())=job_ids.clone();
+    let mut media=agent::PreparedMedia{jobs:jobs.into_iter().map(|job|{
+        let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
+        (job,staged)
+    }).collect(),cleanup:vec![],external:true,error:preparation_error};
+    let semantic=with_case_expected(app,case_id,Some(epoch),|c|{
+        c.set_meta(&format!("semantic_result:{task}"),"")?;
+        agent::prepare_semantic(c,task,&call.transmission,&call.response)
+    })?;
+    if let Some(job)=semantic {
+        let output=crate::semantic::run(&job);
+        with_case_expected(app,case_id,Some(epoch),|c|{
+            let result=output.and_then(|value|crate::semantic::publish(c,&job,value));
+            let stored=match result {Ok(value)=>json!({"query":args["query"],"result":value}),Err(error)=>json!({"query":args["query"],"error":error.to_string()})};
+            c.set_meta(&format!("semantic_result:{task}"),&stored.to_string())?;
+            Ok(())
+        })?;
+    }
+    let result=with_case_expected(app,case_id,Some(epoch),|c|{
+        let result=agent::finish_subscription_call(c,task,call,&mut media)?;
+        agent::subscription_tool_items(c,task,call_id,result)
+    });
+    for job in &media.cleanup {let _=crate::processing::cleanup_published_input(job);}
+    with_case_expected(app,case_id,Some(epoch),|c|{
+        for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}
+        Ok(())
+    })?;
+    active_jobs.lock().unwrap_or_else(|e|e.into_inner()).clear();
+    result
+}
+
+fn ensure_subscription_path_boundary(case_root:&Path,runtime_root:&Path,private_home:&Path)->anyhow::Result<()> {
+    anyhow::ensure!(!case_root.starts_with(private_home) && !private_home.starts_with(case_root)
+        && !case_root.starts_with(runtime_root) && !runtime_root.starts_with(case_root),
+        "This case overlaps the isolated Codex runtime or credential profile; move the case before using ChatGPT subscription");
+    Ok(())
+}
+
+#[cfg(test)]
+mod subscription_path_tests {
+    use super::ensure_subscription_path_boundary;
+    use std::path::Path;
+    #[test]
+    fn refuses_case_inside_runtime_or_credential_profile() {
+        let runtime=Path::new(r"C:\Program Files\VisLex\resources\codex");
+        let home=Path::new(r"C:\Users\Synthetic\AppData\Local\Packages\VisLex.Codex.Subscription");
+        assert!(ensure_subscription_path_boundary(Path::new(r"D:\Cases\Matter.ledcase"),runtime,home).is_ok());
+        assert!(ensure_subscription_path_boundary(&runtime.join("Matter.ledcase"),runtime,home).is_err());
+        assert!(ensure_subscription_path_boundary(&home.join("Matter.ledcase"),runtime,home).is_err());
+    }
 }
 
 
@@ -1444,9 +1744,7 @@ pub fn run() {
 
                     .header("X-Content-Type-Options", "nosniff")
 
-                    .header("Cache-Control", "no-store")
-
-                    .header("Access-Control-Allow-Origin", "*");
+                    .header("Cache-Control", "no-store");
 
                 if partial {
 
@@ -1510,7 +1808,8 @@ fn write_ai_defaults(app:&tauri::AppHandle,config:&crate::providers::Config,sett
     let defaults=json!({"config":config,"settings":settings,"consent_version":crate::providers::AI_DEFAULTS_CONSENT_VERSION});
     anyhow::ensure!(crate::providers::parse_ai_defaults(&defaults)?.is_some(),"Invalid app AI settings");
     anyhow::ensure!(!settings.allow_images||settings.allow_text,"Image analysis requires text permission");
-    anyhow::ensure!(settings.offline || !settings.allow_text || !settings.model.is_empty(),"Select a model before enabling AI");
+    let subscription=crate::ai_access::read(&app.path().app_config_dir()?)?==crate::ai_access::AccessRoute::ChatgptSubscription;
+    anyhow::ensure!(settings.offline || !settings.allow_text || !settings.model.is_empty() || subscription,"Select a model before enabling AI");
     let path=ai_defaults_path(app)?;
     let directory=path.parent().context("App AI settings path has no parent")?;
     std::fs::create_dir_all(directory)?;
@@ -1555,11 +1854,7 @@ fn kick_discovery(app:tauri::AppHandle,case_id:String) {
                 scope.spawn(move || run_discovery_lane(&app,&case_id,epoch));
             }
         });
-        let task=with_case_expected(&app,&case_id,Some(epoch),|c| {
-            let provider=crate::providers::load(c)?.provider;
-            if provider_key_for_case(provider).is_err(){return Ok(None);}
-            crate::automatic::start_review(c)
-        });
+        let task=with_case_expected(&app,&case_id,Some(epoch),|c|start_automatic_review(c,&app));
         if let Ok(Some(task))=task {
             emit_case_changed(&app);
             tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});
@@ -1594,14 +1889,10 @@ fn kick_automatic(app:tauri::AppHandle,case_id:String) {
                 let published=with_case_expected(&app,&case_id,Some(epoch),|c|{crate::automatic::publish_staged(c,&job,staged)?;Ok(c.db.query_row("SELECT status='complete' FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get::<_,bool>(0))?) });
                 if matches!(published,Ok(true)){let _=crate::processing::cleanup_published_input(&job.processor);kick_semantic(app.clone(),case_id.clone());}
                 emit_case_changed(&app);
-                let task=with_case_expected(&app,&case_id,Some(epoch),|c| {let provider=crate::providers::load(c)?.provider;if provider_key_for_case(provider).is_err(){return Ok(None);}crate::automatic::start_review(c)});
+                let task=with_case_expected(&app,&case_id,Some(epoch),|c|start_automatic_review(c,&app));
                 if let Ok(Some(task))=task {let app=app.clone();let case_id=case_id.clone();tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});}
             }
-            let task=with_case_expected(&app,&case_id,Some(epoch),|c| {
-                let provider=crate::providers::load(c)?.provider;
-                if provider_key_for_case(provider).is_err(){return Ok(None);}
-                crate::automatic::start_review(c)
-            });
+            let task=with_case_expected(&app,&case_id,Some(epoch),|c|start_automatic_review(c,&app));
             if let Ok(Some(task))=task {
                 emit_case_changed(&app);
                 tauri::async_runtime::spawn(async move {run_agent(app,case_id,epoch,task).await;});
