@@ -46,7 +46,7 @@
 
 /* ------------------------------------------------------------ sub-tabs and toolbars */
 .viewer-tabbar { display: flex; align-items: flex-end; padding: 0 var(--space-3); background: var(--surface-1); border-bottom: 1px solid var(--border-subtle); flex-shrink: 0; }
-.viewer-tabs { border-bottom: 0; flex: 1; min-width: 0; }
+.viewer-tabs { border-bottom: 0; flex: 0 1 auto; min-width: 0; }
 .viewer-tabs [role="tab"] { display: inline-flex; align-items: center; gap: 6px; height: 38px; }
 .viewer-tabs [role="tab"] > svg { color: var(--text-3); }
 .viewer-tabs [role="tab"][aria-selected="true"] > svg { color: var(--text-2); }
@@ -146,7 +146,7 @@
 .pdf-page-skeleton .skeleton { height: 12px; background: var(--hover); }
 /* Label sits in the gap below the paper; it never overlays page pixels. */
 .pdf-page-label {
-  position: absolute; left: 50%; bottom: -22px; transform: translateX(-50%); font-size: var(--text-caption); color: var(--text-3);
+  position: absolute; left: 50%; right: auto; bottom: -22px; transform: translateX(-50%); font-size: var(--text-caption); color: var(--text-3);
   background: none; padding: 0; border-radius: 0; backdrop-filter: none; font-variant-numeric: tabular-nums; pointer-events: none;
 }
 
@@ -275,6 +275,11 @@
   background: var(--inset); border: 1px solid var(--border-subtle); color: var(--text-3); font-size: var(--text-caption);
 }
 .caption-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+@container viewer (max-width: 520px) {
+  .caption-row { flex-wrap: wrap; row-gap: 2px; }
+  .caption-text { flex-basis: 100%; }
+  .transcript-correction, .transcript-correction-actions, .transcript-correction-editor { margin-left: 8px; }
+}
 .caption-text mark, .transcript-plain mark { background: var(--evidence-bg); color: inherit; border-radius: 2px; box-shadow: 0 1px 0 var(--evidence); padding: 0 1px; }
 .transcript-plain { font-size: var(--text-sm); color: var(--text-3); padding: 4px 8px; }
 .transcript-correction { margin: 0 0 4px 44px; padding: 4px 10px; border-left: 2px solid var(--border-control); font-size: var(--text-caption); color: var(--text-2); line-height: 1.5; }
