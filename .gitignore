@@ -20,4 +20,5 @@ tmp/
 output/
 .claude/worktrees/
 .codex/
+.agent-team/
 src-tauri/gen/schemas/linux-schema.json

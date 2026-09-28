@@ -1,0 +1,55 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "zai-coding-plan/glm-5.3",
+  "enabled_providers": ["zai-coding-plan"],
+  "share": "disabled",
+  "instructions": ["AGENTS.md", "CLAUDE.md"],
+  "provider": {
+    "zai-coding-plan": {
+      "models": {
+        "glm-5.3": {
+          "options": {"reasoningEffort": "max"}
+        }
+      }
+    }
+  },
+  "permission": {
+    "*": "ask",
+    "read": {"*": "allow", "*.env": "deny", "*.env.*": "deny", "**/auth.json": "deny", "**/credentials.json": "deny"},
+    "glob": "allow",
+    "grep": "deny",
+    "edit": "ask",
+    "external_directory": "deny",
+    "task": "deny",
+    "bash": {
+      "*": "ask",
+      "rg *": "deny",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "npm test*": "allow",
+      "npm run test*": "allow",
+      "npm run build": "allow",
+      "cargo test*": "allow",
+      "cargo check*": "allow",
+      "python scripts/vislex_plan.py *": "allow",
+      "git push*": "deny",
+      "git reset*": "deny",
+      "git clean*": "deny",
+      "git stash*": "deny"
+    }
+  },
+  "agent": {
+    "team-review": {
+      "description": "Inspect code and report findings without editing or running shell commands",
+      "mode": "primary",
+      "permission": {"edit": "deny", "bash": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny"}
+    },
+    "team-build": {
+      "description": "Implement an assigned packet in an isolated worktree",
+      "mode": "primary",
+      "permission": {"edit": {"*": "allow", "*.env": "deny", "*.env.*": "deny", "**/auth.json": "deny", "**/credentials.json": "deny"}}
+    }
+  }
+}
