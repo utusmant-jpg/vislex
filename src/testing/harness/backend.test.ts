@@ -186,10 +186,10 @@ describe('SyntheticBackend guards and paging', () => {
     const current = await command<{ text: string; historical?: boolean }>('read_text', { source_id: FIXTURE.statement, start: 5, count: 1 });
     expect(current.historical).toBeUndefined();
     expect(current.text).toContain('approximately 14:32');
-    // case.rs read_text_revision reports historical: true for every revision,
-    // including the one that is currently active.
+    // case.rs read_text_revision reports historical only when another
+    // revision is active, so pinning the current revision is not historical.
     const pinnedCurrent = await command<{ text: string; historical?: boolean; revision: number }>('read_extract_revision', { source_id: FIXTURE.statement, revision: 2, start: 5, count: 1 });
-    expect(pinnedCurrent).toMatchObject({ historical: true, revision: 2, source_id: FIXTURE.statement });
+    expect(pinnedCurrent).toMatchObject({ historical: false, revision: 2, active_revision: 2, source_id: FIXTURE.statement });
     expect(pinnedCurrent.text).toContain('approximately 14:32');
     await expect(command('read_text', { source_id: FIXTURE.statement, start: 1, count: 201 })).rejects.toBe('Request 1–200 lines starting at line 1 or later');
   });

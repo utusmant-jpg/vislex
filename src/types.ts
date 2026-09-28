@@ -1,7 +1,7 @@
 export type Provider = 'openai' | 'anthropic' | 'gemini' | 'xai' | 'openrouter';
 export type AIProfile = { provider: Provider; model: string; allow_text: boolean; allow_images: boolean };
 export type AIConfig = { provider: Provider; execution: 'single' | 'parallel' | 'auto'; review: 'standard' | 'independent' | 'challenge'; pool: AIProfile[] };
-export type ModelOption = { id: string; name: string };
+export type ModelOption = { id: string; name: string; /** Published catalogue facts (OpenRouter); absent means unknown. */ input_modalities?: string[]; context_length?: number; prompt_price?: string; completion_price?: string };
 
 export type Source = { id: string; name: string; sha256: string; size: number; mime: string; kind: string; status: string; restricted: boolean; occurrences: number; created_at: string };
 

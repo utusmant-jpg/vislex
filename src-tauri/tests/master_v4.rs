@@ -878,3 +878,31 @@ fn app_preferences_apply_exactly_the_chosen_policy_without_forcing() {
     assert!(providers::apply_app_settings(&mut c,&invalid).is_err());
     assert_eq!(c.settings().unwrap().model,"replacement-model");
 }
+
+#[test]
+fn openrouter_catalogue_uses_published_capabilities_and_keeps_facts() {
+    use evidence_desk::providers::{self, Provider};
+    let catalogue = json!({"data":[
+        {"id":"google/gemini-2.5-flash","name":"Gemini Flash","context_length":1048576,
+         "architecture":{"input_modalities":["text","image","audio","video"],"output_modalities":["text"]},
+         "supported_parameters":["tools","reasoning"],"pricing":{"prompt":"0.0000003","completion":"0.0000025"}},
+        {"id":"openai/gpt-audio","name":"GPT Audio","architecture":{"input_modalities":["text","audio"],"output_modalities":["text","audio"]},"supported_parameters":["tools"]},
+        {"id":"vendor/no-tools","name":"No tools","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["temperature"]},
+        {"id":"vendor/image-gen","name":"Images","architecture":{"input_modalities":["text"],"output_modalities":["image"]}},
+        {"id":"perplexity/sonar-pro","name":"Sonar","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["tools"]},
+        {"id":"legacy/chat-model","name":"Legacy"},
+        {"id":"legacy/whisper-large","name":"Legacy audio"},
+        {"id":"vendor/bad-price","name":"Bad price","architecture":{"output_modalities":["text"]},"pricing":{"prompt":"free!"}}
+    ]});
+    let models = providers::model_options(Provider::Openrouter, &catalogue).unwrap();
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    // An audio-capable chat model is no longer hidden because its id says
+    // "audio"; models without tools, image-only and search models are dropped.
+    assert_eq!(ids, vec!["google/gemini-2.5-flash", "legacy/chat-model", "openai/gpt-audio", "vendor/bad-price"]);
+    let flash = &models[0];
+    assert_eq!(flash.input_modalities.as_deref(), Some(&["text".to_string(), "image".into(), "audio".into(), "video".into()][..]));
+    assert_eq!(flash.context_length, Some(1048576));
+    assert_eq!(flash.prompt_price.as_deref(), Some("0.0000003"));
+    assert!(models[3].prompt_price.is_none(), "unparseable prices are dropped, not shown");
+    assert!(models[1].input_modalities.is_none(), "unknown stays unknown");
+}

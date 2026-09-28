@@ -574,12 +574,17 @@ function CitationPreviewCard({ anchor, preview, pinnedRevision, onOpen, onEnter,
 
 /* ------------------------------- model picker ------------------------------- */
 
-/** Only facts VisLex actually knows: the saved default, and OpenRouter's
- *  published ":free" variant naming. Capability is never guessed from a name. */
-export function modelBadges(model: string, isDefault: boolean): string[] {
+/** Only facts VisLex actually knows: the saved default, OpenRouter's
+ *  published ":free" variant naming, and capabilities the catalogue itself
+ *  published. Capability is never guessed from a name. */
+export function modelBadges(model: string, isDefault: boolean, facts?: { input_modalities?: string[]; context_length?: number }): string[] {
   const badges: string[] = [];
   if (isDefault) badges.push('Default');
-  if (/:free$/i.test(model)) badges.push('Free variant');
+  // Free endpoints often log or train on requests, so VisLex's no-retention
+  // routing may find no eligible endpoint for them.
+  if (/:free$/i.test(model)) badges.push('Free · may fail privacy routing');
+  if (facts?.input_modalities?.includes('audio')) badges.push('Audio input');
+  if (facts?.context_length && facts.context_length >= 1_000_000) badges.push(`${Math.round(facts.context_length / 1_000_000)}M context`);
   return badges;
 }
 

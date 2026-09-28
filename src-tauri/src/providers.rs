@@ -944,7 +944,21 @@ pub fn select_profile(case: &crate::case::Case, provider: Provider, model: &str)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelOption { pub id: String, pub name: String }
+pub struct ModelOption {
+    pub id: String,
+    pub name: String,
+    /// Published catalogue facts (OpenRouter only). Absent means unknown,
+    /// never "unsupported"; they are shown, not used to widen any grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
+    /// USD per token as published, kept as text to avoid rounding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_price: Option<String>,
+}
 /// Catalogue membership is not a tool/modality capability certification.
 pub fn model_options(provider: Provider, value: &Value) -> Result<Vec<ModelOption>> {
     let rows=value[if provider==Provider::Gemini {"models"} else {"data"}].as_array().context("Provider returned an invalid model catalogue")?;
@@ -958,15 +972,30 @@ pub fn model_options(provider: Provider, value: &Value) -> Result<Vec<ModelOptio
             Provider::Anthropic => lower.starts_with("claude-"),
             Provider::Gemini => row["supportedGenerationMethods"].as_array().is_some_and(|methods|methods.iter().any(|m|m=="generateContent")) && !["tts","image","robotics"].iter().any(|part|lower.contains(part)),
             Provider::Xai => lower.starts_with("grok-") && !["image","video","imagine"].iter().any(|part|lower.contains(part)),
-            // OpenRouter aggregates many vendors; exclude non-chat families and
-            // keep everything else, including the ":free" tier suffixes.
-            Provider::Openrouter => !["image","video","tts","audio","realtime","embed","rerank","moderation","speech","voice","whisper","dall-e","sora","veo","imagen","safe"].iter().any(|part|lower.contains(part)),
+            // OpenRouter publishes capabilities: keep models that answer in text
+            // and accept tool calls (the agent needs them). Only when that
+            // metadata is missing fall back to excluding non-chat name families.
+            // Web-search models are never offered for case work.
+            Provider::Openrouter => !openrouter_model_is_search(id) && match row["architecture"]["output_modalities"].as_array() {
+                Some(outputs) => outputs.iter().any(|m| m == "text")
+                    && row["supported_parameters"].as_array().is_none_or(|params| params.iter().any(|p| p == "tools")),
+                None => !["image","video","tts","audio","realtime","embed","rerank","moderation","speech","voice","whisper","dall-e","sora","veo","imagen","safe"].iter().any(|part|lower.contains(part)),
+            },
         };
-        if candidate {result.push(ModelOption{id:id.into(),name:row[
-            if provider==Provider::Gemini {"displayName"}
-            else if provider==Provider::Openrouter {"name"}
-            else {"display_name"}
-        ].as_str().unwrap_or(id).into()});}
+        if candidate {
+            let text_list = |value: &Value| value.as_array().map(|items| items.iter().filter_map(Value::as_str).map(|s| s.chars().take(20).collect::<String>()).take(8).collect::<Vec<_>>());
+            let price = |value: &Value| value.as_str().filter(|p| p.len() <= 24 && p.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)).map(str::to_string);
+            let openrouter = provider == Provider::Openrouter;
+            result.push(ModelOption{id:id.into(),name:row[
+                if provider==Provider::Gemini {"displayName"}
+                else if provider==Provider::Openrouter {"name"}
+                else {"display_name"}
+            ].as_str().unwrap_or(id).into(),
+            input_modalities: if openrouter { text_list(&row["architecture"]["input_modalities"]) } else { None },
+            context_length: if openrouter { row["context_length"].as_u64() } else { None },
+            prompt_price: if openrouter { price(&row["pricing"]["prompt"]) } else { None },
+            completion_price: if openrouter { price(&row["pricing"]["completion"]) } else { None }});
+        }
     }
     result.sort_by(|a,b|a.id.cmp(&b.id));result.dedup_by(|a,b|a.id==b.id);Ok(result)
 }
