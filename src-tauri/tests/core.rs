@@ -1847,3 +1847,26 @@ fn a_case_from_a_newer_app_is_refused_without_changes() {
     assert!(error.contains("requires a newer application"),"{error}");
     assert_eq!(std::fs::read(&db).unwrap(),before,"refusal must not modify the case database");
 }
+
+#[test]
+fn new_source_text_marks_only_dependent_records_stale() {
+    let (dir, mut c, a) = setup();
+    let other = dir.path().join("other.txt");
+    fs::write(&other, "An unrelated synthetic statement.\n").unwrap();
+    c.import_files(&[other.to_string_lossy().into()], "Production B").unwrap();
+    let b = c.sources().unwrap().into_iter().find(|s| s.id != a).unwrap().id;
+    let on_a = c.write_record(None,0,"About A","note","Depends on A.","human","test",None,vec![a.clone()]).unwrap();
+    let on_b = c.write_record(None,0,"About B","note","Depends on B.","human","test",None,vec![b.clone()]).unwrap();
+    let unscoped = c.write_record(None,0,"Case-wide","note","No stated dependencies.","human","test",None,vec![]).unwrap();
+    c.db.execute("UPDATE records SET stale=0", []).unwrap();
+    c.publish_extract(&a, "A witness reported a blue bag, corrected.", "Synthetic re-extraction", true).unwrap();
+    fn stale(c: &Case, id: &str) -> bool { c.db.query_row("SELECT stale FROM records WHERE id=?", [id], |r| r.get(0)).unwrap() }
+    assert!(stale(&c, &on_a.id), "a record citing the changed source must be re-checked");
+    assert!(stale(&c, &unscoped.id), "records without dependencies stay conservative");
+    assert!(!stale(&c, &on_b.id), "an unrelated record must stay reviewable");
+    // Imports still mark every record stale until record dependencies exist.
+    let third = dir.path().join("third.txt");
+    fs::write(&third, "Another synthetic statement.\n").unwrap();
+    c.import_files(&[third.to_string_lossy().into()], "Production C").unwrap();
+    assert!(stale(&c, &on_b.id));
+}

@@ -311,7 +311,7 @@ pub fn publish(case: &mut Case, job: &Job, value: Value) -> Result<Value> {
             ],
         )?;
         case.db
-            .execute("UPDATE records SET stale=1 WHERE (actor<>'processor' OR kind<>'transcript') AND id<>?", [&record.id])?;
+            .execute(crate::case::STALE_DEPENDENTS_OF_SOURCE, params![job.source.id, record.id])?;
         case.db.execute(
             "UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'",
             [],
@@ -416,7 +416,7 @@ pub fn publish_staged_transcript(case:&mut Case,job:&Job,staged:StagedTranscript
         let record=case.write_record(None,0,&format!("Full transcript · {}",job.source.name.chars().take(170).collect::<String>()),"transcript",&staged.record_text,"processor","All audio tracks decoded to EOF; unreviewed machine transcription",None,vec![job.source.id.clone()])?;
         case.publish_extract(&job.source.id,&staged.text,"Full local machine transcription; unreviewed",true)?;
         case.db.execute("UPDATE sources SET status=? WHERE id=?",params![if staged.value["metadata"]["no_audio_tracks"]==true{"no audio tracks · visual review pending"}else{"text transcribed · all audio tracks · unreviewed"},job.source.id])?;
-        case.db.execute("UPDATE records SET stale=1 WHERE (actor<>'processor' OR kind<>'transcript') AND id<>?",[&record.id])?;
+        case.db.execute(crate::case::STALE_DEPENDENTS_OF_SOURCE,params![job.source.id,record.id])?;
         case.db.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'",[])?;
         let receipt=json!({"job_id":job.id,"record_id":record.id,"locator":staged.locator,"segments":staged.value["pages"].as_array().map_or(0,Vec::len),"segmented":staged.record_text.len()<staged.text.len(),"metadata":staged.value["metadata"],"saved_files":staged.files.iter().skip(1).map(|file|&file.relative).collect::<Vec<_>>()});
         case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![receipt.to_string(),job.id])?;

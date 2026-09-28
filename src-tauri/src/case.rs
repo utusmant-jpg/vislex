@@ -15,6 +15,13 @@ use uuid::Uuid;
 /// The case database schema version this build migrates to. Cases with a
 /// higher `user_version` were written by a newer app and are refused.
 pub const CASE_SCHEMA: i64 = 8;
+/// Marks working records stale after a source's text changes (a new active
+/// extraction or transcript). Only records that depend on that source, or
+/// whose dependencies are empty or unreadable, are marked: an unrelated note
+/// no longer needs re-saving before review. Imports, restriction changes and
+/// record saves stay case-wide until record-to-record dependencies exist.
+/// Parameters: the changed source id, then a record id to exclude ("" for none).
+pub(crate) const STALE_DEPENDENTS_OF_SOURCE: &str = "UPDATE records SET stale=1 WHERE (actor<>'processor' OR kind<>'transcript') AND id<>?2 AND CASE WHEN json_valid(dependencies) THEN json_array_length(dependencies)=0 OR EXISTS(SELECT 1 FROM json_each(records.dependencies) WHERE json_each.value=?1) ELSE 1 END";
 pub fn id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -590,7 +597,7 @@ impl Case {
             tx.execute("DELETE FROM source_fts WHERE source_id=?", [source_id])?;
             tx.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)", params![source_id, name, text])?;
             tx.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'", [])?;
-            tx.execute("UPDATE records SET stale=1 WHERE actor<>'processor' OR kind<>'transcript'", [])?;
+            tx.execute(STALE_DEPENDENTS_OF_SOURCE, params![source_id, ""])?;
             tx.commit()?;
         }
         Ok(revision)
