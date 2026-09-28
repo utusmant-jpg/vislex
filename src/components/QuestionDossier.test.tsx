@@ -13,8 +13,22 @@ it('shows the saved block support state separately from human acceptance', async
   fireEvent.click(screen.getByText('Question dossier · evidence, checks and gaps'));
   expect(await screen.findByText('Declared checks complete · AI assessment')).toBeTruthy();
   expect(screen.getByText(/support reviewed/)).toBeTruthy();
-  fireEvent.click(screen.getByText('The account reports a call', { selector: 'summary' }));
+  fireEvent.click(screen.getByText('The account reports a call', { selector: 'summary .dossier-claim-text' }));
   expect(screen.getByText('No human review recorded.')).toBeTruthy();
   fireEvent.click(screen.getByText('Accept finding'));
   await waitFor(() => expect(api).toHaveBeenCalledWith('review_dossier_claim', { case_id: 'case-one', session_epoch: 9, task_id: 'task-one', revision: 1, claim_index: 0, decision: 'accepted', note: '' }));
+});
+
+it('labels human review state per finding and blocks review of a stale dossier', async () => {
+  const claim = (proposition: string) => ({ proposition, assessment: 'contested', supporting: [], contrary: [], uncertainty: '', next_check: '' });
+  api.mockResolvedValue({ dossier: { revision: 2, scope: 'Synthetic scope', checks: [{ id: 'k', description: 'Inspect frames', state: 'blocked', reason: 'Derivative outdated', receipts: [] }], claims: [claim('First claim'), claim('Second claim'), claim('Third claim')] }, stale: true, completion_stale: false, completion: null, human_reviews: [{ decision: 'accepted', note: '', stale: false }, { decision: 'needs_review', note: '', stale: true }, null], coverage_note: 'Declared checks only.' });
+  render(<QuestionDossier caseId="case-one" sessionEpoch={9} taskId="task-one" step={2} status="complete" evidenceVersion="one" onSource={vi.fn()} />);
+  fireEvent.click(screen.getByText('Question dossier · evidence, checks and gaps'));
+  expect(await screen.findByText('Evidence changed — recheck required')).toBeTruthy();
+  expect(screen.getByText('1 of 3 findings have a current human review')).toBeTruthy();
+  expect(screen.getByText('Blocked')).toBeTruthy();
+  const states = [...document.querySelectorAll('.dossier-claim-state')].map(node => node.textContent);
+  expect(states).toEqual(['Accepted', 'Needs review · stale', 'Not reviewed']);
+  for (const button of screen.getAllByRole('button', { name: 'Accept finding' })) expect((button as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getAllByText(/Recheck before recording a review/)).toHaveLength(3);
 });
