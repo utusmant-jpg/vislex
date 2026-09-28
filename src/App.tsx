@@ -837,6 +837,7 @@ export default function App() {
   const totalStorage = storage ? Object.values(storage).reduce((total, bytes) => total + bytes, 0) : 0;
   const recordCount = snapshot?.counts?.record_count ?? snapshot?.records.length ?? 0;
   const aiState = !snapshot ? null : snapshot.settings.offline ? { label: 'AI off for this case', tone: 'off' } : !snapshot.settings.allow_text ? { label: 'AI may not read case text', tone: 'off' } : { label: snapshot.settings.model ? `AI permitted · ${snapshot.settings.model}` : 'AI permitted', tone: 'on' };
+  const sourceCount = snapshot ? snapshot.counts?.source_count ?? snapshot.sources.length : 0;
   const caseStatus: { state: PillState; label: string } | null = !snapshot ? null : pendingCount ? { state: 'running', label: `${pendingCount} job${pendingCount === 1 ? '' : 's'} in progress` } : needsAttention ? { state: 'needs-attention', label: `${needsAttention} need${needsAttention === 1 ? 's' : ''} attention` } : { state: 'complete', label: 'Processing up to date' };
   const otherCases = projects.filter(project => project.id !== snapshot?.id);
   const caseMenuItems: MenuItem[] = [
@@ -910,7 +911,7 @@ export default function App() {
           <div className="sidebar-case">
             <button className="matter-identity" disabled={!snapshot} title="Rename case (F2)" onClick={() => snapshot && beginRename('case', snapshot.id, snapshot.name)} onKeyDown={event => { if (event.key === 'F2' && snapshot) { event.preventDefault(); beginRename('case', snapshot.id, snapshot.name); } }}>
               <span className="matter-name">{snapshot?.name ?? 'No case open'}</span>
-              <span className="matter-meta">{snapshot ? `${(snapshot.counts?.source_count ?? snapshot.sources.length).toLocaleString()} sources · ${formatBytes(totalBytes)}` : 'Local evidence workspace'}</span>
+              <span className="matter-meta">{snapshot ? `${sourceCount.toLocaleString()} source${sourceCount === 1 ? '' : 's'} · ${formatBytes(totalBytes)}` : 'Local evidence workspace'}</span>
             </button>
             {caseStatus ? <button className="matter-status" onClick={() => setView('jobs')} aria-label={`Case status: ${caseStatus.label}. Open activity`}><StatusPill state={caseStatus.state} label={caseStatus.label} small /></button> : null}
             {suggestedName && suggestedName !== snapshot?.name ? <button className="quiet suggest-name" title="Suggested from PDF filename; confirm against the charging document" onClick={() => snapshot && beginRename('case', snapshot.id, suggestedName)}>Use suggested matter name</button> : null}
