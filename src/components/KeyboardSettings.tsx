@@ -12,6 +12,7 @@ export const shortcutGroups: { label: string; rows: { keys: string[][]; action: 
   ] },
   { label: 'Evidence', rows: [
     { keys: [['Ctrl', 'W']], action: 'Close the open evidence tab' },
+    { keys: [['Delete']], action: 'Close the focused open-file tab' },
     { keys: [['Alt', '←'], ['Alt', '→']], action: 'Previous or next location' },
     { keys: [['F2']], action: 'Rename the focused item' },
   ] },
