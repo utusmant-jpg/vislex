@@ -88,7 +88,8 @@ test.describe('assistant surface', () => {
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await toggle.focus();
     await page.keyboard.press('Enter');
-    await expect(turn.getByRole('button', { name: /3 actions/ })).toHaveAttribute('aria-expanded', 'true');
+    // The collapsed line recaps the steps in plain words; the name keeps its "Activity" prefix.
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     const receipts = turn.getByRole('list', { name: 'Recorded actions' });
     await expect(receipts.getByRole('listitem')).toHaveCount(3);
     // Status is an icon plus a word, never colour alone.
@@ -96,7 +97,8 @@ test.describe('assistant surface', () => {
     await expect(receipts.getByRole('listitem').filter({ hasText: 'Search' })).toContainText('Done');
     await expect(turn.getByRole('button', { name: /1 failed/ })).toBeVisible();
     await receipts.getByText('Render page').click();
-    await expect(receipts.getByText('Synthetic failure: page renderer timed out.')).toBeVisible();
+    // The reason shows on the failed step itself; the raw receipt repeats it behind "Technical receipt".
+    await expect(receipts.getByText('Synthetic failure: page renderer timed out.').last()).toBeVisible();
     expect((await lastCall(page, 'actions')).args).toMatchObject({ task_id: expect.any(String) });
   });
 
@@ -165,6 +167,31 @@ test.describe('assistant surface', () => {
     const viewer = page.getByRole('main', { name: 'Evidence viewer' });
     await expect(viewer.locator('.viewer-source-header')).toContainText('Email from facilities');
     expect((await calls(page, 'read_text')).at(-1)!.args).toMatchObject({ source_id: fx.email, start: 6 });
+  });
+
+  test('the citation card is reachable with Tab, Escape returns to the marker, and Tab leaves it in reading order', async ({ page }) => {
+    await openHarness(page);
+    await expect(page.locator('.conversation-turn').first()).toContainText('Displayed clocks remain unverified');
+    const chip = page.getByRole('button', { name: 'Open cited evidence, rev 1 · 5–5' }).first();
+    const card = page.getByRole('group', { name: 'Cited lines preview' });
+    const openButton = card.getByRole('button', { name: 'Open in viewer' });
+    // Keyboard focus opens the card; Tab moves into it.
+    await chip.focus();
+    await expect(card).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(openButton).toBeFocused();
+    // Escape returns to the marker and the card stays closed.
+    await page.keyboard.press('Escape');
+    await expect(chip).toBeFocused();
+    await page.waitForTimeout(400);
+    await expect(card).toHaveCount(0);
+    // Tab past the card continues with the next marker, not the top of the page.
+    await chip.blur(); await chip.focus();
+    await expect(card).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(openButton).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Open cited evidence, 6-6' }).first()).toBeFocused();
   });
 
   test('only the newly sent turn animates in; history and switches render in place', async ({ page }) => {

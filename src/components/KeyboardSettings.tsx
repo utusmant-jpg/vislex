@@ -9,6 +9,15 @@ export const shortcutGroups: { label: string; rows: { keys: string[][]; action: 
     { keys: [['Ctrl', '1'], ['Ctrl', '5']], joiner: 'to', action: 'Chat, Evidence, Findings, Investigate, Jobs' },
     { keys: [['Ctrl', 'B']], action: 'Show or hide navigation' },
     { keys: [['Ctrl', 'N']], action: 'New chat (with a case open)' },
+    { keys: [['Ctrl', '/']], action: 'Show keyboard shortcuts' },
+  ] },
+  { label: 'Chat', rows: [
+    { keys: [['Enter']], action: 'Send the message' },
+    { keys: [['Shift', 'Enter']], action: 'New line in the message' },
+    { keys: [['Esc']], action: 'Stop the running response (from the message box)' },
+    { keys: [['↑']], action: 'Recall your last message into an empty message box' },
+    { keys: [['Ctrl', 'Shift', ';']], action: 'Focus the message box' },
+    { keys: [['Ctrl', 'Shift', 'C']], action: 'Copy the latest answer' },
   ] },
   { label: 'Evidence', rows: [
     { keys: [['Ctrl', 'W']], action: 'Close the open evidence tab' },

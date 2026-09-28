@@ -225,7 +225,7 @@ export class SyntheticBackend {
     const task = owner?.tasks.find(item => item.id === taskId);
     if (!owner || !task) throw new Error(`Unknown task ${taskId}`);
     const stream = this.streams.get(taskId); if (stream) clearTimeout(stream.timer); this.streams.delete(taskId);
-    task.status = 'complete'; task.answer = answer ?? this.liveText.get(taskId) ?? this.scenario.stream.chunks.join(''); task.input_tokens += 9_000;
+    task.status = 'complete'; task.updated_at = new Date().toISOString(); task.answer = answer ?? this.liveText.get(taskId) ?? this.scenario.stream.chunks.join(''); task.input_tokens += 9_000;
     task.progress = { summary: 'Synthetic run complete', citations: [], gaps: ['Synthetic harness answer; no evidence was read'], next_steps: ['Open the cited statement lines', 'Check the door alarm clock'], checkpoint_step: task.step, duplicate_reads: 0 };
     (owner.actions[taskId] ??= []).push({ id: syntheticId('action', hashTask(taskId) + 7), name: 'finish_task', input: '{}', output: 'Synthetic completion receipt.', status: 'complete', created_at: new Date().toISOString() });
     this.liveText.delete(taskId);
@@ -281,7 +281,7 @@ export class SyntheticBackend {
   private visibleTasks(c: HarnessCase) { return [...c.tasks].filter(task => !c.hiddenConversations.has(task.conversation_id ?? task.id)).sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id)); }
   private taskPage(c: HarnessCase, before: { created_at: string; id: string } | null) {
     const all = this.visibleTasks(c).filter(task => !before || task.created_at < before.created_at || (task.created_at === before.created_at && task.id < before.id));
-    const page = all.slice(0, 50).map(task => ({ id: task.id, prompt: task.prompt.slice(0, 500), mode: task.mode, status: task.status, step: task.step, answer: task.answer.slice(0, 200), error: task.error.slice(0, 300), generation: task.generation, created_at: task.created_at, input_tokens: task.input_tokens, output_tokens: task.output_tokens, conversation_id: task.conversation_id ?? task.id, answer_truncated: task.answer.length > 200, title: c.titles[task.conversation_id ?? task.id] ?? null }));
+    const page = all.slice(0, 50).map(task => ({ id: task.id, prompt: task.prompt.slice(0, 500), mode: task.mode, status: task.status, step: task.step, answer: task.answer.slice(0, 200), error: task.error.slice(0, 300), generation: task.generation, created_at: task.created_at, updated_at: task.updated_at, input_tokens: task.input_tokens, output_tokens: task.output_tokens, conversation_id: task.conversation_id ?? task.id, answer_truncated: task.answer.length > 200, title: c.titles[task.conversation_id ?? task.id] ?? null }));
     return { tasks: page, next_cursor: all.length > 50 ? { created_at: page.at(-1)!.created_at, id: page.at(-1)!.id } : null };
   }
   private jobPage(c: HarnessCase, before: number | null, attention = false) {

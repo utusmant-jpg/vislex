@@ -840,6 +840,14 @@ fn catalogue_client() -> Result<reqwest::Client> {
     Ok(CLIENT.get_or_init(|| client).clone())
 }
 
+/// Tool names in one streamed Gemini event's function-call parts.
+fn gemini_function_calls(event: &Value) -> Vec<String> {
+    event["candidates"].as_array().into_iter().flatten()
+        .flat_map(|candidate| candidate["content"]["parts"].as_array().into_iter().flatten())
+        .filter_map(|part| part["functionCall"]["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
 pub async fn send(
     provider: Provider,
     key: &str,
@@ -884,11 +892,20 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
                 if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta" {
                     progress(json!({"text":event["delta"]["text"]}));
                 }
+                // Tool-use progress, as the OpenAI branch reports it: the tool
+                // name when the call starts, then argument characters received.
+                if event["type"] == "content_block_start" && event["content_block"]["type"] == "tool_use" {
+                    if let Some(name) = event["content_block"]["name"].as_str() { progress(json!({"activity":name})); }
+                }
+                if event["type"] == "content_block_delta" && event["delta"]["type"] == "input_json_delta" {
+                    progress(json!({"characters":event["delta"]["partial_json"].as_str().map(str::len).unwrap_or(0)}));
+                }
                 continue;
             }
             if provider == Provider::Gemini {
                 let (deltas, completed) = gemini.push(&event)?;
                 for delta in deltas { progress(json!({"text":delta})); }
+                for name in gemini_function_calls(&event) { progress(json!({"activity":name})); }
                 if let Some(value) = completed { return Ok(value); }
                 continue;
             }
@@ -1111,6 +1128,14 @@ pub fn direct_media_enabled(case:&crate::case::Case)->bool {
 mod stream_transport_tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn gemini_function_call_names_are_reported_as_activity() {
+        let event = json!({"candidates":[{"content":{"parts":[{"text":"x"},{"functionCall":{"name":"search_passages","args":{}}}]}}]});
+        assert_eq!(gemini_function_calls(&event), vec!["search_passages".to_string()]);
+        assert!(gemini_function_calls(&json!({"candidates":[{"content":{"parts":[{"text":"only text"}]}}]})).is_empty());
+        assert!(gemini_function_calls(&json!({})).is_empty());
+    }
 
     fn local_sse(events: Vec<Value>) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

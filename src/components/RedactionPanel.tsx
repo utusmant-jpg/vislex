@@ -149,7 +149,7 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
     </header>
     <ol className="redaction-steps" aria-label="Redaction progress">
       {steps.map((item, index) => <li key={item.label} className={item.done ? 'ready' : ''} aria-current={step === index + 1 ? 'step' : undefined}>
-        <span className="redaction-step-index" aria-hidden="true">{item.done ? <Check size={12} /> : index + 1}</span>
+        <span className="redaction-step-index" aria-hidden="true">{item.done ? <Check size={14} /> : index + 1}</span>
         <span>{item.label}</span>{item.done ? <span className="visually-hidden"> (done)</span> : null}
       </li>)}
     </ol>
@@ -192,11 +192,11 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
           className="redaction-box-overlay"
           key={index}
           style={(() => { const rect = imgRef.current?.getBoundingClientRect(); const natural = baseSize ?? (imgRef.current ? { w: imgRef.current.naturalWidth } : null); if (!rect || !natural) return undefined; const scale = rect.width / natural.w; return { left: box.x * scale, top: box.y * scale, width: box.width * scale, height: box.height * scale }; })()}>
-          <button className="redaction-box-remove" disabled={!!busy} aria-label={`Remove redaction box ${index + 1}`} onClick={() => { setBoxes(previous => previous.filter((_, position) => position !== boxes.indexOf(box))); invalidatePrepared(); }}><Trash2 size={12} /></button>
+          <button className="redaction-box-remove" disabled={!!busy} aria-label={`Remove redaction box ${index + 1}`} onClick={() => { setBoxes(previous => previous.filter((_, position) => position !== boxes.indexOf(box))); invalidatePrepared(); }}><Trash2 size={14} /></button>
         </div>)}
         {drag ? <div className="redaction-box-overlay drafting" style={{ left: Math.min(drag.x0, drag.x1), top: Math.min(drag.y0, drag.y1), width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0) }} /> : null}
       </div> : !loadingBase ? <p className="redaction-hint">Page preview unavailable. Enter coordinates below.</p> : null}
-      <p className="redaction-hint"><MousePointer2 size={12} aria-hidden="true" />Drag on the page to add a rectangle. Click a rectangle to remove it.</p>
+      <p className="redaction-hint"><MousePointer2 size={14} aria-hidden="true" />Drag on the page to add a rectangle. Click a rectangle to remove it.</p>
     </div> : null}
 
     <div className="redaction-boxes">

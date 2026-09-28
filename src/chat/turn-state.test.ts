@@ -73,6 +73,15 @@ describe('composerBlock', () => {
     expect(composerBlock({ ...base, preparing: true })).toEqual({ reason: 'preparing', message: 'Preparing case files before chat is available.' });
   });
 
+  it('states an unavailable subscription route before sending, with its reason', () => {
+    const block = composerBlock({ ...base, subscriptionActive: true, routeBlocker: 'The pinned Codex runtime is missing or does not match this verified build' });
+    expect(block).toMatchObject({ reason: 'route-unavailable', section: 'Accounts & models', scope: 'case', message: 'The ChatGPT subscription route is unavailable: The pinned Codex runtime is missing or does not match this verified build.' });
+    // The API-key route is unaffected by a subscription blocker.
+    expect(composerBlock({ ...base, subscriptionActive: false, routeBlocker: 'anything' })).toBeNull();
+    // The case grant still comes first.
+    expect(composerBlock({ ...base, subscriptionActive: true, routeBlocker: 'x', snapshot: { settings: { ...settings, allow_text: false } } })?.reason).toBe('text-grant');
+  });
+
   it('checks the case text grant separately from model availability', () => {
     // A ready model does not make case text sendable.
     expect(composerBlock({ ...base, modelReady: true, snapshot: { settings: { ...settings, allow_text: false } } })?.reason).toBe('text-grant');

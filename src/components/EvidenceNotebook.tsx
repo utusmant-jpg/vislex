@@ -160,8 +160,8 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
         <p>Statements, observations and hypotheses remain separate. A valid citation identifies a location; human review and factual support remain separate judgments.</p>
       </div>
       <div className="surface-actions">
-        <button className="quiet" onClick={onClose}><ArrowLeft size={15} />Back to chat</button>
-        <button className="primary" disabled={busy || !native} onClick={create}><Plus size={15} />New object</button>
+        <button className="quiet" onClick={onClose}><ArrowLeft size={16} />Back to chat</button>
+        <button className="primary" disabled={busy || !native} onClick={create}><Plus size={16} />New object</button>
       </div>
     </header>
     {!native ? <p className="notice info notebook-preview-note"><Info size={16} aria-hidden="true" /><span>Structured evidence storage is available in the Windows desktop app. This browser shows the layout only.</span></p> : null}
@@ -192,7 +192,7 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
     {native && !loaded ? <div className="object-list" aria-busy="true" aria-label="Loading findings">{[0, 1, 2].map(i => <div className="object-card skeleton-card" key={i}><Skeleton height={14} className="skeleton-title" /><Skeleton height={10} className="skeleton-short" /></div>)}</div> : null}
     {loaded && page.objects.length ? <div className="object-list" ref={listRef} aria-busy={refreshing || undefined}>{page.objects.map(o => <details key={`${o.id}:${o.revision}`} data-object-key={`${o.id}:${o.revision}`} className={`object-card ${o.stale ? 'is-stale' : ''}`}>
       <summary>
-        <ChevronRight size={15} className="object-card-chevron" aria-hidden="true" />
+        <ChevronRight size={16} className="object-card-chevron" aria-hidden="true" />
         <span className="object-card-title" title={o.title}>{o.title}</span>
         <span className="object-card-meta"><span className="badge">{humanize(o.kind)}</span><span className="object-card-rev">r{o.revision}</span>{reviewPill(o)}</span>
       </summary>
@@ -209,7 +209,7 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
         </div>
       </div>
     </details>)}</div> : null}
-    {loaded && !page.objects.length ? <div className="empty-state notebook-empty"><NotebookPen size={20}/><h3>No findings on this page</h3><p>Create a structured object or ask VisLex to save an observation. New revisions remain unreviewed until you decide.</p>{native && !kind && offset === 0 ? <button className="primary" disabled={busy} onClick={create}><Plus size={15} />New object</button> : null}</div> : null}
+    {loaded && !page.objects.length ? <div className="empty-state notebook-empty"><NotebookPen size={20}/><h3>No findings on this page</h3><p>Create a structured object or ask VisLex to save an observation. New revisions remain unreviewed until you decide.</p>{native && !kind && offset === 0 ? <button className="primary" disabled={busy} onClick={create}><Plus size={16} />New object</button> : null}</div> : null}
     {showPagination && loaded ? <nav className="notebook-pagination" aria-label="Findings pages"><button className="secondary" data-size="sm" disabled={offset === 0} onClick={() => setOffset(n => Math.max(0, n - 50))}>Previous</button><span>Page {Math.floor(offset / 50) + 1}</span><button className="secondary" data-size="sm" disabled={page.next_offset === null} onClick={() => setOffset(page.next_offset ?? 0)}>Next</button></nav> : null}
 
     <h3 className="section-title notebook-tools-title">Structured tools</h3>
@@ -247,7 +247,7 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
           <p className="fit-equation">Incident seconds = {fit.scale.toPrecision(10)} × source seconds + {fit.offset_seconds.toFixed(6)}. Diagnostic uncertainty: ±{fit.uncertainty_seconds.toFixed(6)} s. Valid source range: {fit.valid_source_range.join(' – ')} s.</p>
           <div className="data-table-wrap"><table className="data-table"><thead><tr><th>Anchor</th><th>Use</th><th className="numeric">Residual (s)</th><th>Check</th></tr></thead><tbody>{fit.residuals.map((r, i) => <tr key={i}><td className="numeric">{i + 1}</td><td>{r.held_out ? 'Held out' : 'Fit'}</td><td className="numeric">{r.residual_seconds.toFixed(6)}</td><td>{r.within_tolerance ? <StatusPill state="complete" label="Within tolerance" small /> : <StatusPill state="failed" label="Failed" small />}</td></tr>)}</tbody></table></div>
           {fit.limitations.map(l => <p className="field-hint" key={l}>{l}</p>)}
-          <div className="tool-footer"><button className="primary" disabled={busy || !source} onClick={() => void action(async () => { await api('evidence_write', { ...caseSessionArgs(snapshot.id,snapshot.session_epoch), object: { id: null, base_revision: 0, kind: 'clock', title: `Clock proposal · ${sourcePages.sources.find(s => s.id === source)?.name}`, content: JSON.stringify({ clock_domain: "container_relative", anchors: fitAnchors, fit }, null, 2), source_ids: [source], locators: [], dependencies: [], start_seconds: null, end_seconds: null } }); setRefresh(v => v + 1); })}><FilePlus2 size={15} />Save unreviewed proposal</button>{!source ? <span className="field-hint">Select the recording before saving.</span> : null}</div>
+          <div className="tool-footer"><button className="primary" disabled={busy || !source} onClick={() => void action(async () => { await api('evidence_write', { ...caseSessionArgs(snapshot.id,snapshot.session_epoch), object: { id: null, base_revision: 0, kind: 'clock', title: `Clock proposal · ${sourcePages.sources.find(s => s.id === source)?.name}`, content: JSON.stringify({ clock_domain: "container_relative", anchors: fitAnchors, fit }, null, 2), source_ids: [source], locators: [], dependencies: [], start_seconds: null, end_seconds: null } }); setRefresh(v => v + 1); })}><FilePlus2 size={16} />Save unreviewed proposal</button>{!source ? <span className="field-hint">Select the recording before saving.</span> : null}</div>
         </div> : null}
       </ToolPanel>
     </div>

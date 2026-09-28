@@ -13,6 +13,7 @@ body {
   font-weight: var(--weight-regular);
   font-synthesis: none;
   font-optical-sizing: auto;
+  font-feature-settings: var(--font-features);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   letter-spacing: -0.003em;
@@ -51,7 +52,8 @@ button:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outline
 
 h1, h2, h3, h4, h5, p { margin: 0; }
 h1, h2, h3 { letter-spacing: var(--tracking-tight); font-weight: var(--weight-semibold); }
-p { line-height: 1.6; }
+p { line-height: 1.6; text-wrap: pretty; }
+h1, h2, h3, h4 { text-wrap: balance; }
 ul, ol { margin: 8px 0; padding-left: 22px; }
 code, kbd, pre, .mono { font-family: var(--font-mono); font-variant-ligatures: none; }
 code { font-size: .92em; }
@@ -62,7 +64,7 @@ blockquote {
 }
 table { border-collapse: collapse; }
 th { font-size: var(--text-caption); font-weight: var(--weight-semibold); text-transform: uppercase; letter-spacing: var(--tracking-caps); color: var(--text-3); }
-time, .tabular, .media-time, .line-number, .caption-time { font-variant-numeric: tabular-nums; }
+time, .tabular, .media-time, .line-number, .caption-time, [role="timer"] { font-variant-numeric: tabular-nums; }
 
 /* utilities that predate Tailwind and are used everywhere */
 .spacer { flex: 1; }
