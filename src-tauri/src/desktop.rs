@@ -110,7 +110,6 @@ fn provider_key_for_case(provider: crate::providers::Provider) -> anyhow::Result
 
 
 
-fn key_entry() -> anyhow::Result<keyring::Entry> { provider_key_entry(crate::providers::Provider::Openai) }
 
 #[tauri::command]
 
@@ -121,6 +120,13 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
         let download=crate::authority::retrieve(&url).await.map_err(|e|e.to_string())?;
         let value=with_case_expected(&app,&case_id,Some(epoch),|case|crate::authority::publish(case,download,text(&args,"title")?,text(&args,"jurisdiction")?,text(&args,"relevant_date")?)).map_err(|e|e.to_string())?;
         kick_automatic(app.clone(),case_id);emit_case_changed(&app);return Ok(value);
+    }
+    // Second opinion: the network send runs here, outside the case mutex, after
+    // prepare_send re-checked the grant, restriction, offline mode and clip hash.
+    if action=="send_second_opinion" {
+        let result=send_second_opinion(&app,&args).await;
+        emit_case_changed(&app);
+        return result.map_err(|e|e.to_string());
     }
     // Explicit account metadata lookup: no case material and no case mutex during network I/O.
     if action == "provider_models" {
@@ -184,6 +190,22 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     if ["ai_access_route","set_ai_access_route","save_codex_selection","codex_account_status","codex_account_login","codex_account_cancel_login","codex_account_logout","codex_account_models","codex_account_limits"].contains(&action) {
         let directory = app.path().app_config_dir()?;
         let home=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
+        if !crate::ai_access::SUBSCRIPTION_ROUTE_ENABLED {
+            // The saved route stays readable; everything that would use the
+            // sidecar is refused with the same stated reason.
+            if action == "ai_access_route" {
+                let settings=crate::ai_access::read_settings(&directory)?;
+                return Ok(json!({"route":settings.route,"subscription":settings.subscription,"subscription_ready":false,"account_ready":false,"route_available":false,
+                    "blocker":crate::ai_access::SUBSCRIPTION_DISABLED_REASON}));
+            }
+            if action == "set_ai_access_route" {
+                let route:crate::ai_access::AccessRoute=serde_json::from_value(args["route"].clone())?;
+                if route == crate::ai_access::AccessRoute::ChatgptSubscription { crate::ai_access::ensure_subscription_enabled()?; }
+                crate::ai_access::write(&directory,route)?;
+                return Ok(json!({"route":route}));
+            }
+            crate::ai_access::ensure_subscription_enabled()?;
+        }
         if action == "ai_access_route" {
             let settings=crate::ai_access::read_settings(&directory)?;
             let available=crate::codex_account::available(&home);
@@ -243,6 +265,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     // Catalogue lookup can contact the account service. Validate before the
     // case mutex is held; the case/session is checked again at the write.
     if action=="save_case_codex_selection" && args["use_app"]!=true {
+        crate::ai_access::ensure_subscription_enabled()?;
         let model=text(&args,"model")?;
         let effort=text(&args,"effort")?;
         let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
@@ -296,6 +319,27 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         };
     }
     if ["import_files","import_folder"].contains(&action) {return import_background(app,action,args);}
+    if action=="prepare_second_opinion" {
+        let (case_id,epoch,row,job)={
+            let state=app.state::<AppState>();
+            let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+            let case=guard.as_mut().context("Open a case first")?;
+            ensure_session_epoch(&state,&args)?;
+            anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before preparing a second opinion");
+            require_session_epoch(&state,&args)?;
+            let source=text(&args,"source_id")?;
+            let clip:crate::escalation::ClipRequest=serde_json::from_value(args["clip"].clone())?;
+            let (row,options)=crate::escalation::begin_clip(case,source,text(&args,"run_id")?,&clip)?;
+            let job=match crate::processing::prepare_request(case,source,options) {Ok(job)=>job,Err(error)=>return crate::escalation::attach_clip(case,&row,Err(error))};
+            (case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),row,job)
+        };
+        emit_case_changed(&app);
+        let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
+        let result=with_case_expected(app,&case_id,Some(epoch),|case|{let published=crate::processing::publish_staged(case,&job,staged);crate::escalation::attach_clip(case,&row,published)});
+        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);}
+        emit_case_changed(&app);
+        return result;
+    }
     if ["process_source","probe_pdf","render_page","transcribe_source","scan_sound_events","prepare_redaction","diarize_source","step_video_frame"].contains(&action) {
         let (case_id,epoch,job)={
             let state=app.state::<AppState>();
@@ -325,41 +369,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         emit_case_changed(&app);
         return result;
     }
-    if action == "save_api_key" {
-        let state=app.state::<AppState>();
-        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
-        let case=guard.as_ref().context("Open a case first")?;
-        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before API key update");
-        require_session_epoch(&state,&args)?;
-
-        let key = text(&args, "key")?;
-
-        anyhow::ensure!(!key.trim().is_empty(), "Enter an API key");
-
-        key_entry()?.set_password(key.trim())?;
-
-        return Ok(json!({"saved":true}));
-
-    }
-
-    if action == "key_status" {
-
-        return Ok(json!({"configured":key_entry()?.get_password().is_ok()}));
-
-    }
-
-    if action == "delete_api_key" {
-        let state=app.state::<AppState>();
-        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
-        let case=guard.as_ref().context("Open a case first")?;
-        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before API key update");
-        require_session_epoch(&state,&args)?;
-
-        key_entry()?.delete_credential()?;
-
-        return Ok(json!({"deleted":true}));
-
-    }
+    // The OpenAI-only save_api_key/key_status/delete_api_key commands were
+    // removed; save_provider_key/provider_key_status/delete_provider_key with
+    // provider "openai" use the same Credential Manager entry.
 
     if action=="playback_proxy" {
 
@@ -791,6 +803,36 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript page");
             crate::transcription::segment_page(c,text(&args,"source_id")?,text(&args,"run_id")?,args["cursor"].as_i64())?
         },
+        "second_opinion_grant" => {
+            json!({"grant":crate::escalation::grant(c)?,"vendors":["openrouter","openai"],
+                "note":"Allows sending short audio clips that you confirm, one batch at a time, to the named model. It never sends case text and is separate from the case text and image permissions."})
+        },
+        "set_second_opinion_grant" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before updating the second-opinion permission");
+            require_session_epoch(&state,&args)?;
+            let choice=if args["revoke"]==true {None} else {Some((serde_json::from_value::<crate::escalation::Vendor>(args["vendor"].clone())?,text(&args,"model")?))};
+            json!({"grant":crate::escalation::set_grant(c,choice)?})
+        },
+        "list_second_opinions" => crate::escalation::list(c,text(&args,"source_id")?)?,
+        "second_opinion_preview" => crate::escalation::preview(c,text(&args,"id")?)?,
+        "cancel_second_opinion" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before cancelling");
+            require_session_epoch(&state,&args)?;
+            let row=text(&args,"id")?;
+            crate::escalation::entry(c,row)?;
+            c.set_meta(&format!("second_opinion_cancel:{row}"),"1")?;
+            json!({"cancel_requested":true})
+        },
+        "decide_second_opinion" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before recording the decision");
+            require_session_epoch(&state,&args)?;
+            let edits=args["edits"].as_array().map(|items|items.iter().filter_map(|e|Some((e["ordinal"].as_i64()?,e["text"].as_str()?.to_string()))).collect::<Vec<_>>()).unwrap_or_default();
+            crate::escalation::decide(c,text(&args,"id")?,text(&args,"decision")?,&edits)?
+        },
+        "second_opinion_candidates" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before uncertainty triage");
+            crate::escalation::candidates(c,text(&args,"source_id")?,text(&args,"run_id")?)?
+        },
         "transcript_segment_detail" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript detail");
             crate::transcription::segment_detail(c,text(&args,"source_id")?,text(&args,"run_id")?,args["ordinal"].as_i64().context("Missing segment ordinal")?)?
@@ -961,6 +1003,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let route=text(&args,"route")?;
             anyhow::ensure!(matches!(route,"app"|"api_keys"|"chatgpt_subscription"),"Invalid case AI access route");
             if route=="chatgpt_subscription" {
+                crate::ai_access::ensure_subscription_enabled()?;
                 let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
                 anyhow::ensure!(crate::codex_account::available(&runtime),"Verified Codex sidecar is unavailable");
             }
@@ -1013,7 +1056,6 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "review_redaction" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction review");require_session_epoch(&state,&args)?;crate::exports::review_redaction(c,text(&args,"artifact_id")?,&serde_json::from_value::<Vec<u64>>(args["pages"].clone())?,text(&args,"note")?)?},
-        "export_redaction" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction export");crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?},
         "export_record" => {
 
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");
@@ -1058,6 +1100,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 }
                 Some(selected)
             } else {
+                // Never fall back to API keys: that would send case text to a
+                // different vendor than the one this case chose.
+                crate::ai_access::ensure_subscription_enabled()?;
                 let settings=c.settings()?;
                 anyhow::ensure!(!settings.offline && settings.allow_text,"Enable AI text access for this case in Settings");
                 let selection=case_subscription_selection(c,app)?.context("Choose a ChatGPT subscription model in Settings")?;
@@ -1150,6 +1195,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
             let old=text(&args,"task_id")?;
             let subscription=c.meta(&format!("task_access_route:{old}"))?.as_deref()==Some("chatgpt_subscription");
+            if subscription { crate::ai_access::ensure_subscription_enabled()?; }
             if !subscription {
                 let profile=crate::providers::task_profile(c,old)?;
                 provider_key_for_case(profile.provider).map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
@@ -1180,6 +1226,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "full_transcription_status",
         "transcript_segment_page",
         "transcript_segment_detail",
+        "second_opinion_candidates",
+        "second_opinion_grant",
+        "list_second_opinions",
+        "second_opinion_preview",
 
         "artifact_info",
 
@@ -1248,6 +1298,50 @@ fn with_case_expected<T>(
 
 }
 
+async fn send_second_opinion(app:&tauri::AppHandle,args:&Value)->anyhow::Result<Value> {
+    let (case_id,epoch,vendor)={
+        let state=app.state::<AppState>();
+        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
+        let case=guard.as_ref().context("Open a case first")?;
+        ensure_session_epoch(&state,args)?;
+        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(args,"case_id")?),"Case changed before sending");
+        require_session_epoch(&state,args)?;
+        let grant=crate::escalation::grant(case)?.context("Allow a second opinion for this case in Settings first")?;
+        (case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),grant.vendor)
+    };
+    let key=provider_key_for_case(vendor.provider()).map_err(|_|anyhow::anyhow!("Save a {} API key in Settings first",vendor.provider().name()))?;
+    let row=text(args,"id")?.to_string();
+    let outbound=with_case_expected(app,&case_id,Some(epoch),|c|{c.set_meta(&format!("second_opinion_cancel:{row}"),"")?;crate::escalation::prepare_send(c,&row)})?;
+    emit_case_changed(app);
+    let url=crate::providers::synthetic_provider_url()?.unwrap_or_else(||vendor.endpoint().to_string());
+    let body=outbound.body.clone();
+    let send=async {
+        let client=crate::providers::inference_client()?;
+        let request=client.post(&url).bearer_auth(&key).json(&body);
+        let request=if vendor==crate::escalation::Vendor::Openrouter {request.header("X-Title","VisLex")} else {request};
+        let mut response=request.send().await?;
+        if !response.status().is_success() {
+            let detail=crate::providers::provider_rejection(&mut response).await;
+            anyhow::bail!("{} returned HTTP {}. {}",vendor.provider().name(),response.status().as_u16(),detail);
+        }
+        let bytes=response.bytes().await?;
+        anyhow::ensure!(bytes.len()<=1024*1024,"Second opinion reply is too large");
+        Ok::<Value,anyhow::Error>(serde_json::from_slice(&bytes)?)
+    };
+    let outcome=tokio::select! {
+        result=send=>result,
+        _=second_opinion_cancelled(app,&case_id,epoch,&row)=>Err(anyhow::anyhow!("Request cancelled; transmission may have occurred")),
+    };
+    with_case_expected(app,&case_id,Some(epoch),|c|crate::escalation::finish_send(c,&outbound,outcome))
+}
+/// Resolves when the reviewer cancels, the case goes offline, or the grant is revoked.
+async fn second_opinion_cancelled(app:&tauri::AppHandle,case_id:&str,epoch:u64,row:&str) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let active=with_case_expected(app,case_id,Some(epoch),|c|Ok(c.meta(&format!("second_opinion_cancel:{row}"))?.as_deref()!=Some("1")&&!c.settings()?.offline&&crate::escalation::grant(c)?.is_some())).unwrap_or(false);
+        if !active {return;}
+    }
+}
 async fn cancelled(app: &tauri::AppHandle, case_id: &str, epoch:u64, task: &str) {
 
     loop {
@@ -1375,7 +1469,15 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
 
             let response=tokio::select! {
 
-                result=crate::providers::send(prepared.provider,&key,prepared.body,|delta|{let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":delta}));})=>result,
+                result=crate::providers::send(prepared.provider,&key,prepared.body,|delta|{
+                    // Persist the provider's generation id while the row is pending,
+                    // so a cancelled or failed request can still be reconciled.
+                    if let Some(id)=delta["generation_id"].as_str() {
+                        let _=with_case_expected(&app,&case_id,Some(epoch),|c|{c.db.execute("UPDATE transmissions SET usage=json_object('generation_id',?) WHERE id=? AND status='pending'",rusqlite::params![id,prepared.transmission])?;Ok(())});
+                        return;
+                    }
+                    let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":delta}));
+                })=>result,
 
                 _=cancelled(&app,&case_id,epoch,&task)=>Err(anyhow::anyhow!("Request cancelled; transmission may have occurred")),
 
@@ -1448,6 +1550,8 @@ fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<
         if paused && prior_subscription!=subscription {return Ok(None);}
     }
     if subscription {
+        // Disabled route: automatic review waits rather than switching vendor.
+        if !crate::ai_access::SUBSCRIPTION_ROUTE_ENABLED {return Ok(None);}
         if case_subscription_selection(case,app)?.is_none() {return Ok(None);}
     } else {
         let provider=crate::providers::load(case)?.provider;
@@ -1464,6 +1568,13 @@ fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<
 }
 
 async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str)->anyhow::Result<()> {
+    if !crate::ai_access::SUBSCRIPTION_ROUTE_ENABLED {
+        // A task saved on the subscription route pauses with the stated reason;
+        // it is never re-sent through an API key.
+        with_case_expected(app,case_id,Some(epoch),|c|agent::pause(c,task,crate::ai_access::SUBSCRIPTION_DISABLED_REASON))?;
+        emit_case_changed(app);
+        return Ok(());
+    }
     let selection=with_case_expected(app,case_id,Some(epoch),|c|case_subscription_selection(c,app))?.context("Select a ChatGPT subscription model")?;
     let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
     anyhow::ensure!(crate::codex_account::available(&runtime),"Verified Codex sidecar is unavailable");
@@ -1671,13 +1782,17 @@ pub fn run() {
 
                     .ok_or_else(|| anyhow::anyhow!("Case closed"))?;
 
-                let (mime, path) = if let Some(artifact_id) = source_id.strip_prefix("artifact/") {
+                // Display only: resolve the artifact under the lock and verify it
+                // after releasing it, with the interactive (len, mtime) hash
+                // cache. Exports, redaction, agent reads and citations keep the
+                // strong hash in processing::artifact.
+                let (mime, path, expected) = if let Some(artifact_id) = source_id.strip_prefix("artifact/") {
 
-                    let (_, mime, path, _) = crate::processing::artifact(c, artifact_id)?;
+                    let (_, mime, path, hash, _) = crate::processing::artifact_descriptor(c, artifact_id)?;
 
                     anyhow::ensure!(["image/jpeg","video/mp4"].contains(&mime.as_str()), "Not a display artifact");
 
-                    (mime, path)
+                    (mime, path, Some(hash))
 
                 } else {
 
@@ -1691,11 +1806,14 @@ pub fn run() {
 
                     );
 
-                    (s.mime, c.source_path(source_id)?)
+                    (s.mime, c.source_path(source_id)?, None)
 
                 };
 
                 drop(guard); // File streaming must not block settings and agent control.
+                if let Some(expected) = expected {
+                    anyhow::ensure!(crate::case::file_hash_cached(&path)? == expected, "Artifact integrity check failed");
+                }
                 let mut file = std::fs::File::open(path)?;
 
                 let size = file.metadata()?.len();

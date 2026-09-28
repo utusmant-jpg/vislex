@@ -29,7 +29,7 @@ export default function ModelSelect({ label, value, onChange, options, loading, 
       label: row.name === row.id ? row.id : row.name,
       description: row.name === row.id || row.saved || hideIds ? undefined : row.id,
       keywords: [row.id],
-      meta: modelBadges(row.id, false).map(badge => <span className="badge" key={badge}>{badge}</span>),
+      meta: modelBadges(row.id, false, row).map(badge => <span className="badge" key={badge}>{badge}</span>),
     })),
   ];
   const selected = rows.find(row => row.id === value);

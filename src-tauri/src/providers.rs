@@ -87,6 +87,12 @@ impl Config {
         Ok(())
     }
 }
+/// The model name without a gateway vendor prefix or routing suffix:
+/// "openai/gpt-5:nitro" -> "gpt-5". Used only to recognise model families.
+pub fn base_model_id(model: &str) -> &str {
+    let tail = model.rsplit('/').next().unwrap_or(model);
+    tail.split(':').next().unwrap_or(tail)
+}
 pub fn validate_model(model: &str) -> Result<()> {
     ensure!(
         !model.trim().is_empty()
@@ -148,6 +154,10 @@ pub fn task_profile(case: &crate::case::Case, task: &str) -> Result<Profile> {
     })
 }
 pub fn check_permission(case: &crate::case::Case, p: &Profile) -> Result<()> {
+    ensure!(
+        p.provider != Provider::Openrouter || !openrouter_model_is_search(&p.model),
+        "Web-search models are not permitted for case work: their search queries leave to third-party engines"
+    );
     let s = case.settings()?;
     ensure!(
         !s.offline && s.allow_text && p.allow_text,
@@ -281,6 +291,9 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
         // "deny" restricts routing to upstreams that do not store or train on
         // requests; OpenRouter's documented default is "allow".
         let mut request = json!({"model":model,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true},"max_tokens":body["max_output_tokens"],"provider":{"data_collection":"deny"}});
+        // OpenRouter's unified reasoning parameter carries the same effort the
+        // coordinator chose for direct OpenAI requests.
+        if let Some(effort) = body["reasoning"]["effort"].as_str() { request["reasoning"] = json!({"effort": effort}); }
         request["tool_choice"] = match body["tool_choice"]["name"].as_str() {
             Some(name) => json!({"type":"function","function":{"name":name}}),
             None => json!("auto"),
@@ -458,7 +471,7 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
             output.push(json!({"type":"function_call","call_id":id,"name":name,"arguments":arguments}));
         }
         ensure!(!output.is_empty(), "OpenRouter completed without text or tool calls");
-        return Ok(json!({"status":"completed","output":output,"usage":{"input_tokens":response["usage"]["prompt_tokens"],"output_tokens":response["usage"]["completion_tokens"]}}));
+        return Ok(json!({"status":"completed","output":output,"usage":openrouter_usage(&response)}));
     }
     let mut output = Vec::new();
     if provider == Provider::Anthropic {
@@ -522,7 +535,7 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
 /// Error bodies carry account, quota and schema diagnostics — never evidence
 /// content — so surfacing the parsed message keeps failures diagnosable
 /// without logging a successful response body.
-async fn provider_rejection(response: &mut reqwest::Response) -> String {
+pub(crate) async fn provider_rejection(response: &mut reqwest::Response) -> String {
     let mut bytes = Vec::new();
     while let Ok(Some(chunk)) = response.chunk().await {
         bytes.extend_from_slice(&chunk);
@@ -588,14 +601,39 @@ pub struct ChatCompletionsStream {
     finish_reason: Option<String>,
     usage: Value,
     completed: Option<Value>,
+    generation_id: Option<String>,
+    upstream: Option<String>,
+    announced_generation: bool,
 }
 impl ChatCompletionsStream {
+    /// The generation id from the first chunk, reported once so the caller
+    /// can persist it before the stream finishes (cost lookup after cancel).
+    pub fn take_new_generation_id(&mut self) -> Option<String> {
+        if self.announced_generation { return None; }
+        let id = self.generation_id.clone()?;
+        self.announced_generation = true;
+        Some(id)
+    }
     /// Returns (text deltas, tool-name activity deltas, completed response).
     pub fn push(&mut self, chunk: &Value) -> Result<(Vec<String>, Vec<String>, Option<Value>)> {
+        // An upstream failure after HTTP 200 arrives as an error object and/or
+        // finish_reason "error"; report the bounded provider message.
+        if chunk["error"].is_object() {
+            bail!("OpenRouter stream error: {}", stream_failure_detail(chunk));
+        }
+        if self.generation_id.is_none() {
+            if let Some(id) = chunk["id"].as_str().filter(|id| valid_generation_id(id)) { self.generation_id = Some(id.into()); }
+        }
+        if self.upstream.is_none() {
+            if let Some(p) = chunk["provider"].as_str().filter(|p| !p.is_empty() && p.len() <= 80) { self.upstream = Some(p.into()); }
+        }
         if !chunk["usage"].is_null() { self.usage = chunk["usage"].clone(); }
         let mut deltas = Vec::new();
         let mut activity = Vec::new();
         if let Some(choice) = chunk["choices"].get(0) {
+            if choice["finish_reason"].as_str() == Some("error") {
+                bail!("OpenRouter stream error: {}", stream_failure_detail(chunk));
+            }
             if let Some(reason) = choice["finish_reason"].as_str() {
                 ensure!(self.finish_reason.is_none(), "Duplicate OpenRouter finish reason");
                 self.finish_reason = Some(reason.into());
@@ -627,7 +665,7 @@ impl ChatCompletionsStream {
                 "content": if self.text.is_empty() { Value::Null } else { json!(self.text) },
                 "tool_calls": if tool_calls.is_empty() { Value::Null } else { json!(tool_calls) },
             });
-            self.completed = Some(json!({"choices":[{"message":message,"finish_reason":self.finish_reason}],"usage":self.usage.clone()}));
+            self.completed = Some(json!({"id":self.generation_id,"provider":self.upstream,"choices":[{"message":message,"finish_reason":self.finish_reason}],"usage":self.usage.clone()}));
             // The usage-only chunk that follows (stream_options.include_usage)
             // carries final token counts; emit then. Without it, take_completed()
             // after the loop emits what arrived.
@@ -645,6 +683,36 @@ impl ChatCompletionsStream {
 }
 fn decode_openrouter(response: Value) -> Result<Value> {
     decode(Provider::Openrouter, response)
+}
+/// Usage as OpenRouter reported it. Cost is copied only when the provider
+/// reported a finite, non-negative number; absence stays absent so the UI can
+/// say "not reported" instead of showing zero.
+fn openrouter_usage(response: &Value) -> Value {
+    let usage = &response["usage"];
+    let mut out = json!({"input_tokens":usage["prompt_tokens"],"output_tokens":usage["completion_tokens"]});
+    if let Some(cost) = usage["cost"].as_f64().filter(|c| c.is_finite() && *c >= 0.0) { out["cost"] = json!(cost); }
+    if let Some(n) = usage["prompt_tokens_details"]["cached_tokens"].as_u64() { out["cached_tokens"] = json!(n); }
+    if let Some(n) = usage["completion_tokens_details"]["reasoning_tokens"].as_u64() { out["reasoning_tokens"] = json!(n); }
+    if let Some(id) = response["id"].as_str().filter(|id| valid_generation_id(id)) { out["generation_id"] = json!(id); }
+    if let Some(upstream) = response["provider"].as_str().filter(|p| p.len() <= 80) { out["upstream_provider"] = json!(upstream); }
+    out
+}
+/// Generation identifiers are opaque; accept only short printable ASCII so a
+/// hostile stream cannot inject arbitrary text into the ledger or UI.
+fn valid_generation_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:".contains(c))
+}
+/// Model families that run web search on the prompt. Search queries leave to
+/// third-party engines outside the provider's retention terms, so case text
+/// must never reach them through the OpenRouter route.
+pub fn openrouter_model_is_search(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.ends_with(":online")
+        || lower.starts_with("perplexity/")
+        || lower.contains("search-preview")
+        || lower.contains("-search")
+        || lower.contains("deep-research")
+        || lower.contains("/sonar")
 }
 impl GeminiStream {
     pub fn push(&mut self, chunk: &Value) -> Result<(Vec<String>, Option<Value>)> {
@@ -750,7 +818,7 @@ impl ClaudeStream {
     }
 }
 
-fn inference_client() -> Result<reqwest::Client> {
+pub(crate) fn inference_client() -> Result<reqwest::Client> {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     if let Some(client) = CLIENT.get() { return Ok(client.clone()); }
     let client = reqwest::Client::builder()
@@ -826,6 +894,7 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
             }
             if provider == Provider::Openrouter {
                 let (deltas, activity, completed) = chat.push(&event)?;
+                if let Some(id) = chat.take_new_generation_id() { progress(json!({"generation_id":id})); }
                 for delta in deltas { progress(json!({"text":delta})); }
                 for name in activity { progress(json!({"activity":name})); }
                 if let Some(value) = completed { return Ok(value); }
@@ -884,7 +953,21 @@ pub fn select_profile(case: &crate::case::Case, provider: Provider, model: &str)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelOption { pub id: String, pub name: String }
+pub struct ModelOption {
+    pub id: String,
+    pub name: String,
+    /// Published catalogue facts (OpenRouter only). Absent means unknown,
+    /// never "unsupported"; they are shown, not used to widen any grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
+    /// USD per token as published, kept as text to avoid rounding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_price: Option<String>,
+}
 /// Catalogue membership is not a tool/modality capability certification.
 pub fn model_options(provider: Provider, value: &Value) -> Result<Vec<ModelOption>> {
     let rows=value[if provider==Provider::Gemini {"models"} else {"data"}].as_array().context("Provider returned an invalid model catalogue")?;
@@ -898,15 +981,30 @@ pub fn model_options(provider: Provider, value: &Value) -> Result<Vec<ModelOptio
             Provider::Anthropic => lower.starts_with("claude-"),
             Provider::Gemini => row["supportedGenerationMethods"].as_array().is_some_and(|methods|methods.iter().any(|m|m=="generateContent")) && !["tts","image","robotics"].iter().any(|part|lower.contains(part)),
             Provider::Xai => lower.starts_with("grok-") && !["image","video","imagine"].iter().any(|part|lower.contains(part)),
-            // OpenRouter aggregates many vendors; exclude non-chat families and
-            // keep everything else, including the ":free" tier suffixes.
-            Provider::Openrouter => !["image","video","tts","audio","realtime","embed","rerank","moderation","speech","voice","whisper","dall-e","sora","veo","imagen","safe"].iter().any(|part|lower.contains(part)),
+            // OpenRouter publishes capabilities: keep models that answer in text
+            // and accept tool calls (the agent needs them). Only when that
+            // metadata is missing fall back to excluding non-chat name families.
+            // Web-search models are never offered for case work.
+            Provider::Openrouter => !openrouter_model_is_search(id) && match row["architecture"]["output_modalities"].as_array() {
+                Some(outputs) => outputs.iter().any(|m| m == "text")
+                    && row["supported_parameters"].as_array().is_none_or(|params| params.iter().any(|p| p == "tools")),
+                None => !["image","video","tts","audio","realtime","embed","rerank","moderation","speech","voice","whisper","dall-e","sora","veo","imagen","safe"].iter().any(|part|lower.contains(part)),
+            },
         };
-        if candidate {result.push(ModelOption{id:id.into(),name:row[
-            if provider==Provider::Gemini {"displayName"}
-            else if provider==Provider::Openrouter {"name"}
-            else {"display_name"}
-        ].as_str().unwrap_or(id).into()});}
+        if candidate {
+            let text_list = |value: &Value| value.as_array().map(|items| items.iter().filter_map(Value::as_str).map(|s| s.chars().take(20).collect::<String>()).take(8).collect::<Vec<_>>());
+            let price = |value: &Value| value.as_str().filter(|p| p.len() <= 24 && p.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)).map(str::to_string);
+            let openrouter = provider == Provider::Openrouter;
+            result.push(ModelOption{id:id.into(),name:row[
+                if provider==Provider::Gemini {"displayName"}
+                else if provider==Provider::Openrouter {"name"}
+                else {"display_name"}
+            ].as_str().unwrap_or(id).into(),
+            input_modalities: if openrouter { text_list(&row["architecture"]["input_modalities"]) } else { None },
+            context_length: if openrouter { row["context_length"].as_u64() } else { None },
+            prompt_price: if openrouter { price(&row["pricing"]["prompt"]) } else { None },
+            completion_price: if openrouter { price(&row["pricing"]["completion"]) } else { None }});
+        }
     }
     result.sort_by(|a,b|a.id.cmp(&b.id));result.dedup_by(|a,b|a.id==b.id);Ok(result)
 }
@@ -1137,6 +1235,88 @@ mod stream_transport_tests {
         let error = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |_| {}).await.unwrap_err();
         server.join().unwrap();
         assert!(error.to_string().contains("output token limit"));
+    }
+
+    #[tokio::test]
+    async fn openrouter_transport_reports_generation_cost_and_upstream() {
+        let lines = vec![
+            sse_data(json!({"id":"gen-synthetic-1","provider":"SyntheticUpstream","choices":[{"delta":{"content":"Done"}}]})),
+            sse_data(json!({"id":"gen-synthetic-1","provider":"SyntheticUpstream","choices":[{"delta":{},"finish_reason":"stop"}]})),
+            sse_data(json!({"id":"gen-synthetic-1","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"cost":0.00042,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":1}}})),
+            "data: [DONE]".to_string(),
+        ];
+        let (url, server) = local_sse_lines(lines);
+        let mut progress = Vec::new();
+        let response = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |delta| progress.push(delta)).await.unwrap();
+        server.join().unwrap();
+        // The generation id is announced once, before any text, so it can be
+        // persisted while the request is still pending.
+        assert_eq!(progress[0], json!({"generation_id":"gen-synthetic-1"}));
+        assert_eq!(progress.iter().filter(|p| p.get("generation_id").is_some()).count(), 1);
+        let usage = &response["usage"];
+        assert_eq!(usage["input_tokens"], 7);
+        assert_eq!(usage["output_tokens"], 3);
+        assert_eq!(usage["cost"], 0.00042);
+        assert_eq!(usage["cached_tokens"], 4);
+        assert_eq!(usage["reasoning_tokens"], 1);
+        assert_eq!(usage["generation_id"], "gen-synthetic-1");
+        assert_eq!(usage["upstream_provider"], "SyntheticUpstream");
+    }
+
+    #[tokio::test]
+    async fn openrouter_transport_leaves_unreported_or_invalid_cost_absent() {
+        let lines = vec![
+            sse_data(json!({"id":"bad id with spaces","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]})),
+            sse_data(json!({"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":-5}})),
+        ];
+        let (url, server) = local_sse_lines(lines);
+        let mut progress = Vec::new();
+        let response = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |delta| progress.push(delta)).await.unwrap();
+        server.join().unwrap();
+        assert!(response["usage"].get("cost").is_none());
+        assert!(response["usage"].get("generation_id").is_none());
+        assert!(progress.iter().all(|p| p.get("generation_id").is_none()));
+    }
+
+    #[tokio::test]
+    async fn openrouter_transport_surfaces_mid_stream_errors() {
+        let lines = vec![
+            sse_data(json!({"choices":[{"delta":{"content":"Partial"}}]})),
+            sse_data(json!({"error":{"code":502,"message":"Synthetic upstream overloaded"},"choices":[{"delta":{},"finish_reason":"error"}]})),
+        ];
+        let (url, server) = local_sse_lines(lines);
+        let error = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |_| {}).await.unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().contains("Synthetic upstream overloaded"), "{error}");
+        let long = "x".repeat(2000);
+        let lines = vec![sse_data(json!({"choices":[{"delta":{},"finish_reason":"error"}],"message":long}))];
+        let (url, server) = local_sse_lines(lines);
+        let error = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |_| {}).await.unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().len() < 500, "provider detail must stay bounded");
+    }
+
+    #[test]
+    fn gateway_model_ids_are_normalised_and_reasoning_effort_is_forwarded() {
+        assert_eq!(base_model_id("openai/gpt-5"), "gpt-5");
+        assert_eq!(base_model_id("openai/gpt-5-mini:nitro"), "gpt-5-mini");
+        assert_eq!(base_model_id("gpt-5"), "gpt-5");
+        let body = json!({"model":"openai/gpt-5","instructions":"Rules","max_output_tokens":16384,"reasoning":{"effort":"high"},"tools":[],"input":[{"type":"message","role":"user","content":"Question"}]});
+        let wire = encode(Provider::Openrouter, &body).unwrap();
+        assert_eq!(wire.body["reasoning"], json!({"effort":"high"}));
+        assert_eq!(wire.body["max_tokens"], 16384);
+        let plain = encode(Provider::Openrouter, &json!({"model":"vendor/model","instructions":"Rules","max_output_tokens":4096,"tools":[],"input":[]})).unwrap();
+        assert!(plain.body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn openrouter_web_search_models_are_recognised() {
+        for model in ["openai/gpt-5:online", "perplexity/sonar-pro", "openai/gpt-4o-search-preview", "openai/o3-deep-research", "vendor/model-search"] {
+            assert!(openrouter_model_is_search(model), "{model}");
+        }
+        for model in ["openai/gpt-5", "anthropic/claude-sonnet-5", "deepseek/deepseek-chat", "google/gemini-2.5-flash", "vendor/research-assistant"] {
+            assert!(!openrouter_model_is_search(model), "{model}");
+        }
     }
 
     #[tokio::test]

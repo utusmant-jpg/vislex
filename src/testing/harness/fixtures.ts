@@ -39,13 +39,15 @@ function syntheticSha(seed: string): string {
 }
 
 export type EvidenceObject = { id: string; revision: number; kind: string; title: string; content: string; source_ids: string[]; locators: string[]; review: string; stale: boolean; actor: string; start_seconds: number | null; end_seconds: number | null; dependencies: { id: string; revision: number }[] };
-export type Segment = { ordinal: number; track: number; start: number; end: number; text: string; correction?: { id: string; revision: number; text: string; review: 'pending' | 'accepted' | 'rejected' } };
+export type Segment = { ordinal: number; track: number; start: number; end: number; text: string; word_count?: number; uncertain_words?: { word: string; start: number; end: number; probability: number }[]; correction?: { id: string; revision: number; text: string; review: 'pending' | 'accepted' | 'rejected' } };
 export type HarnessSource = Source & {
   /** Extracted text by extraction revision; absent for sources without text. */
   revisions?: Record<number, string[]>;
   currentRevision: number;
   pageCount?: number;
   durationSeconds?: number;
+  /** Text original over the indexing limit: read page by page from the original, never cited by line. */
+  rawOriginal?: boolean;
 };
 export type HarnessJob = Job & { cursor: number; priority: string; attempt: number; progress: null | { unit: string; completed?: number; total?: number; segments?: number; track?: number; tracks?: number }; result?: Record<string, unknown> };
 export type Claim = { proposition: string; assessment: string; supporting: string[]; contrary: string[]; uncertainty: string; next_check: string };
@@ -182,6 +184,9 @@ export function buildHarborCase(now: number, sourceCount = 250): HarnessCase {
       currentRevision: 1, pageCount: spec.kind === 'pdf' ? 1 + Math.floor(random() * 40) : undefined, durationSeconds: ['audio', 'video'].includes(spec.kind) ? 30 + Math.floor(random() * 3600) : undefined,
     });
   }
+  // One oversized plain-text original: viewable page by page, not indexed or citable (mirrors case.rs read_original_lines).
+  const oversized = sources.find((item, index) => index >= fixed.length && item.kind === 'text' && !item.restricted);
+  if (oversized) Object.assign(oversized, { rawOriginal: true, status: 'text viewable · over 10 MB, not indexed', size: 48_000_000 });
   const statement = FIXTURE.statement, report = FIXTURE.report, photo = FIXTURE.photo, call = FIXTURE.call, camera = FIXTURE.camera, email = FIXTURE.email;
 
   const recordBase = (index: number, title: string, kind: string, content: string, extra: Partial<WorkingRecord>): WorkingRecord => ({ id: syntheticId('record', index), title, kind, content, revision: 1, actor: 'human', review: 'unreviewed', protected: false, stale: false, updated_at: iso(now, 30 + index * 11), dependencies: [], ...extra });
@@ -263,7 +268,7 @@ export function buildHarborCase(now: number, sourceCount = 250): HarnessCase {
   ];
 
   const transcripts: HarnessCase['transcripts'] = {
-    [call]: { jobId: syntheticId('job', 90), recordId: records[2].id, status: 'complete', segments: Array.from({ length: 60 }, (_, index) => ({ ordinal: index, track: 0, start: index * 3.5, end: index * 3.5 + 3, text: `${index % 2 ? 'Synthetic dispatcher' : 'Synthetic caller'}: fictional line ${index + 1} of the dispatch call.`, ...(index === 2 ? { correction: { id: syntheticId('correction', 2), revision: 1, text: 'Synthetic caller: I can see two people at the north door.', review: 'pending' as const } } : {}) })) },
+    [call]: { jobId: syntheticId('job', 90), recordId: records[2].id, status: 'complete', segments: Array.from({ length: 60 }, (_, index) => ({ ordinal: index, track: 0, start: index * 3.5, end: index * 3.5 + 3, text: `${index % 2 ? 'Synthetic dispatcher' : 'Synthetic caller'}: fictional line ${index + 1} of the dispatch call.`, word_count: 8, ...(index === 4 || index === 7 ? { uncertain_words: [{ word: ' fictional', start: index * 3.5 + 1, end: index * 3.5 + 1.4, probability: 0.32 }] } : {}), ...(index === 2 ? { correction: { id: syntheticId('correction', 2), revision: 1, text: 'Synthetic caller: I can see two people at the north door.', review: 'pending' as const } } : {}) })) },
     [sources[9].id]: { jobId: FIXTURE.jobs.transcriptRunning, recordId: '', status: 'running', segments: [], progress: { state: 'transcribing', track_number: 1, track_count: 1, processed_seconds: 96.4, estimated_seconds: 212, segments: 31 } },
   };
 

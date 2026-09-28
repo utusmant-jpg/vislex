@@ -254,6 +254,20 @@
 .transcript-model select { min-height: 28px; height: 28px; font-size: var(--text-sm); }
 .transcript-note { margin: var(--space-2) 0 0; font-size: var(--text-caption); color: var(--warning); }
 .transcript-window { margin: var(--space-3) 0 var(--space-1); font-size: var(--text-caption); color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* Low-confidence words: a dotted underline plus a tinted background, so the
+   mark does not rely on colour alone. The text colour is never changed. */
+.uncertain-word { text-decoration: underline dotted var(--warning); text-decoration-thickness: 2px; text-underline-offset: 3px; background: var(--warning-bg); border-radius: 2px; }
+.transcript-uncertain-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-3) 0 0; font-size: var(--text-caption); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.transcript-uncertain-bar > span { margin-right: auto; }
+.second-opinion { margin: var(--space-3) 0; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); display: grid; gap: var(--space-2); font-size: var(--text-caption); }
+.second-opinion-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.second-opinion-count { color: var(--text-2); margin-right: auto; font-variant-numeric: tabular-nums; }
+.second-opinion-list { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-1); }
+.second-opinion-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.second-opinion-reason { flex: 1; min-width: 12ch; color: var(--text-2); }
+.second-opinion-preview, .second-opinion-result { display: grid; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-md); background: var(--surface-2, transparent); }
+.second-opinion-diff { width: 100%; border-collapse: collapse; }
+.second-opinion-diff th, .second-opinion-diff td { text-align: left; vertical-align: top; padding: var(--space-1) var(--space-2); border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .full-transcript-text { display: flex; flex-direction: column; gap: 1px; max-height: none; overflow: visible; margin-top: 0; }
 .transcript-page { align-self: center; margin: 6px 0; }
 .transcript-segment { position: relative; border-radius: var(--radius-sm); }

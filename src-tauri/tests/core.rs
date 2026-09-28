@@ -83,8 +83,23 @@ fn schema_eight_migrates_seven_with_backup_and_empty_segment_store() {
     drop(c);
     let reopened=Case::open(&root).unwrap();
     assert!(root.join("pre-migration-v7.sqlite3").exists());
-    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),8);
+    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),evidence_desk::case::CASE_SCHEMA);
     assert_eq!(reopened.db.query_row("SELECT count(*) FROM transcript_segments",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+}
+#[test]
+fn schema_nine_adds_the_second_opinion_ledger_without_touching_existing_rows() {
+    let (_dir,c,source)=setup();let root=c.root.clone();
+    let before=c.source(&source).unwrap().sha256;
+    let audit_rows:i64=c.db.query_row("SELECT count(*) FROM audit",[],|r|r.get(0)).unwrap();
+    c.db.execute_batch("DROP TABLE second_opinions; PRAGMA user_version=8;").unwrap();
+    drop(c);
+    let reopened=Case::open(&root).unwrap();
+    assert!(root.join("pre-migration-v8.sqlite3").exists());
+    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),9);
+    assert_eq!(reopened.db.query_row("SELECT count(*) FROM second_opinions",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(reopened.source(&source).unwrap().sha256,before);
+    assert!(reopened.db.query_row("SELECT count(*) FROM audit",[],|r|r.get::<_,i64>(0)).unwrap()>=audit_rows);
+    reopened.verify_audit().unwrap();
 }
 fn enable(case: &mut Case) {
     case.save_settings(Settings {
@@ -1786,4 +1801,163 @@ fn delete_case_refuses_folders_that_are_not_cases() {
     assert!(evidence_desk::case::delete_case(&plain, "anything").is_err());
     assert!(plain.exists());
     assert!(evidence_desk::case::delete_case(&dir.path().join("missing"), "anything").is_err());
+}
+
+#[test]
+fn provider_reported_cost_reaches_the_task_and_missing_cost_stays_unreported() {
+    let (_dir, mut c, sid) = setup(); enable(&mut c);
+    let task=agent::start(&mut c,"Cost visibility", "investigate",vec![sid.clone()],vec![],0.).unwrap();
+    // First request: the generation id was persisted while pending (as the
+    // desktop progress callback does) and the final usage reports a cost.
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    c.db.execute("UPDATE transmissions SET usage=json_object('generation_id','gen-synthetic-7') WHERE id=?",[&request.transmission]).unwrap();
+    let text=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":5,"cost":0.25},"output":[{"type":"function_call","call_id":"read","name":"search_passages","arguments":json!({"terms":["blue"],"offset":0}).to_string()}]});
+    assert!(agent::receive(&mut c,&task,&request.transmission,text).unwrap());
+    let (actual,generation):(Option<f64>,Option<String>)=c.db.query_row("SELECT actual,json_extract(usage,'$.generation_id') FROM transmissions WHERE id=?",[&request.transmission],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(actual,Some(0.25));
+    assert_eq!(generation.as_deref(),Some("gen-synthetic-7"),"the pending generation id survives the final usage write");
+    let row=&c.task_page(None).unwrap()["tasks"][0];
+    assert_eq!(row["cost"],0.25);
+    assert_eq!(row["cost_partial"],false);
+    // Second request reports no cost: the total is kept but marked partial,
+    // and nothing is shown as zero.
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    let answer=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":5},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic answer."}]}]});
+    agent::receive(&mut c,&task,&request.transmission,answer).unwrap();
+    let actual:Option<f64>=c.db.query_row("SELECT actual FROM transmissions WHERE id=?",[&request.transmission],|r|r.get(0)).unwrap();
+    assert_eq!(actual,None);
+    let row=&c.task_page(None).unwrap()["tasks"][0];
+    assert_eq!(row["cost"],0.25);
+    assert_eq!(row["cost_partial"],true);
+    let detail=c.conversation_detail(row["conversation_id"].as_str().unwrap(),None).unwrap();
+    assert_eq!(detail["tasks"][0]["cost_partial"],true);
+}
+
+#[test]
+fn openrouter_web_search_models_never_receive_case_text() {
+    use evidence_desk::providers::{check_permission, Profile, Provider};
+    let (_dir, c, _sid) = { let (d, mut c, s) = setup(); enable(&mut c); (d, c, s) };
+    for model in ["openai/gpt-5:online", "perplexity/sonar-pro", "openai/gpt-4o-search-preview"] {
+        let profile=Profile{provider:Provider::Openrouter,model:model.into(),allow_text:true,allow_images:false};
+        let error=check_permission(&c,&profile).unwrap_err().to_string();
+        assert!(error.contains("Web-search models are not permitted"),"{model}: {error}");
+    }
+    let ordinary=Profile{provider:Provider::Openrouter,model:"openai/gpt-5".into(),allow_text:true,allow_images:false};
+    // Other rules (pool membership) may still refuse it, but never as web search.
+    let other=check_permission(&c,&ordinary).err().map(|e|e.to_string()).unwrap_or_default();
+    assert!(!other.contains("Web-search"),"{other}");
+}
+
+#[test]
+fn a_case_from_a_newer_app_is_refused_without_changes() {
+    let dir=tempfile::tempdir().unwrap();
+    let root=dir.path().join("case");
+    drop(Case::create(&root,"Newer schema").unwrap());
+    let db=root.join("case.sqlite3");
+    let conn=rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(&format!("PRAGMA user_version={};",evidence_desk::case::CASE_SCHEMA+1)).unwrap();
+    drop(conn);
+    let before=std::fs::read(&db).unwrap();
+    let error=Case::open(&root).err().expect("newer case must be refused").to_string();
+    assert!(error.contains("requires a newer application"),"{error}");
+    assert_eq!(std::fs::read(&db).unwrap(),before,"refusal must not modify the case database");
+}
+
+#[test]
+fn new_source_text_marks_only_dependent_records_stale() {
+    let (dir, mut c, a) = setup();
+    let other = dir.path().join("other.txt");
+    fs::write(&other, "An unrelated synthetic statement.\n").unwrap();
+    c.import_files(&[other.to_string_lossy().into()], "Production B").unwrap();
+    let b = c.sources().unwrap().into_iter().find(|s| s.id != a).unwrap().id;
+    let on_a = c.write_record(None,0,"About A","note","Depends on A.","human","test",None,vec![a.clone()]).unwrap();
+    let on_b = c.write_record(None,0,"About B","note","Depends on B.","human","test",None,vec![b.clone()]).unwrap();
+    let unscoped = c.write_record(None,0,"Case-wide","note","No stated dependencies.","human","test",None,vec![]).unwrap();
+    c.db.execute("UPDATE records SET stale=0", []).unwrap();
+    c.publish_extract(&a, "A witness reported a blue bag, corrected.", "Synthetic re-extraction", true).unwrap();
+    fn stale(c: &Case, id: &str) -> bool { c.db.query_row("SELECT stale FROM records WHERE id=?", [id], |r| r.get(0)).unwrap() }
+    assert!(stale(&c, &on_a.id), "a record citing the changed source must be re-checked");
+    assert!(stale(&c, &unscoped.id), "records without dependencies stay conservative");
+    assert!(!stale(&c, &on_b.id), "an unrelated record must stay reviewable");
+    // Imports still mark every record stale until record dependencies exist.
+    let third = dir.path().join("third.txt");
+    fs::write(&third, "Another synthetic statement.\n").unwrap();
+    c.import_files(&[third.to_string_lossy().into()], "Production C").unwrap();
+    assert!(stale(&c, &on_b.id));
+}
+
+#[test]
+fn protected_artifact_reads_detect_tampering_the_display_cache_cannot() {
+    let (_dir, c, sid) = setup();
+    let bytes = b"synthetic display artifact bytes".to_vec();
+    let hash = evidence_desk::case::digest(&bytes);
+    let relative = format!("artifacts/{hash}.jpg");
+    fs::create_dir_all(c.root.join("artifacts")).unwrap();
+    let path = c.root.join(&relative);
+    fs::write(&path, &bytes).unwrap();
+    c.db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)", rusqlite::params!["artifact-tamper", sid, hash, "image/jpeg", relative, "{}", "2026-09-28T00:00:00Z"]).unwrap();
+    assert!(evidence_desk::processing::artifact(&c, "artifact-tamper").is_ok());
+    // Prime the interactive cache, then change a byte without changing the
+    // length or the modification time.
+    assert_eq!(evidence_desk::case::file_hash_cached(&path).unwrap(), hash);
+    let stamp = filetime::FileTime::from_last_modification_time(&fs::metadata(&path).unwrap());
+    let mut tampered = bytes.clone();
+    tampered[0] ^= 1;
+    fs::write(&path, &tampered).unwrap();
+    filetime::set_file_mtime(&path, stamp).unwrap();
+    // Display may still see the cached value, which is documented as a
+    // browsing optimisation; protected reads must refuse.
+    let error = evidence_desk::processing::artifact(&c, "artifact-tamper").unwrap_err().to_string();
+    assert!(error.contains("integrity"), "{error}");
+}
+
+#[test]
+fn saved_provider_keys_keep_their_credential_names() {
+    use evidence_desk::providers::Provider;
+    // Existing users' keys live under these Credential Manager names; renaming
+    // one would silently lose a saved key.
+    assert_eq!(Provider::Openai.credential(), "openai-api-key");
+    assert_eq!(Provider::Openrouter.credential(), "openrouter-api-key");
+}
+
+#[test]
+fn only_superseded_revisions_are_labelled_historical() {
+    let (_dir, mut c, sid) = setup();
+    let active = c.read_text_revision(&sid, 1, 1, 10).unwrap();
+    assert_eq!(active["historical"], false, "the active revision is current wording");
+    c.publish_extract(&sid, "Corrected synthetic wording.\n", "Synthetic re-extraction", true).unwrap();
+    let old = c.read_text_revision(&sid, 1, 1, 10).unwrap();
+    let new = c.read_text_revision(&sid, 2, 1, 10).unwrap();
+    assert_eq!(old["historical"], true);
+    assert_eq!(new["historical"], false);
+    assert_eq!(new["active_revision"], 2);
+}
+
+#[test]
+fn text_files_over_the_indexing_limit_are_readable_page_by_page_but_not_citable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut case = Case::create(&dir.path().join("big.ledcase"), "Large log").unwrap();
+    let log = dir.path().join("server.log");
+    let mut body = Vec::new();
+    for n in 1..=160_000u32 { body.extend_from_slice(format!("{n:06} synthetic log line with padding to make the file large enough\n").as_bytes()); }
+    body.extend_from_slice(b"\xff\xfe not utf-8 \xc3\x28 bytes\n");
+    body.extend_from_slice(b"final line without newline");
+    assert!(body.len() > 10 * 1024 * 1024);
+    fs::write(&log, &body).unwrap();
+    case.import_files(&[log.to_string_lossy().into()], "Synthetic").unwrap();
+    let source = case.sources().unwrap()[0].clone();
+    assert_eq!(source.status, "text viewable · over 10 MB, not indexed");
+    let first = case.read_text(&source.id, 1, 3).unwrap();
+    assert_eq!(first["raw_original"], true);
+    assert_eq!(first["total_lines"], 160_002);
+    assert!(first["text"].as_str().unwrap().starts_with("000001 synthetic"));
+    assert_eq!(first["locator"], format!("evidence:{}", source.id), "no line citation for unindexed text");
+    let middle = case.read_text(&source.id, 99_999, 2).unwrap();
+    assert!(middle["text"].as_str().unwrap().starts_with("099999 synthetic"));
+    assert!(middle["text"].as_str().unwrap().contains("\n100000 synthetic"));
+    let tail = case.read_text(&source.id, 160_001, 5).unwrap();
+    assert_eq!(tail["end"], 160_002);
+    assert!(tail["text"].as_str().unwrap().contains('\u{fffd}'), "invalid bytes are shown as replacement characters");
+    assert!(tail["text"].as_str().unwrap().ends_with("final line without newline"));
+    assert!(case.read_text(&source.id, 160_003, 1).is_err());
 }

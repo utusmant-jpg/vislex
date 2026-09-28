@@ -1,7 +1,7 @@
 export type Provider = 'openai' | 'anthropic' | 'gemini' | 'xai' | 'openrouter';
 export type AIProfile = { provider: Provider; model: string; allow_text: boolean; allow_images: boolean };
 export type AIConfig = { provider: Provider; execution: 'single' | 'parallel' | 'auto'; review: 'standard' | 'independent' | 'challenge'; pool: AIProfile[] };
-export type ModelOption = { id: string; name: string };
+export type ModelOption = { id: string; name: string; /** Published catalogue facts (OpenRouter); absent means unknown. */ input_modalities?: string[]; context_length?: number; prompt_price?: string; completion_price?: string };
 
 export type Source = { id: string; name: string; sha256: string; size: number; mime: string; kind: string; status: string; restricted: boolean; occurrences: number; created_at: string };
 
@@ -10,7 +10,7 @@ export type RecordSummary = Omit<WorkingRecord, 'content'>;
 
 export type Settings = { offline: boolean; allow_text: boolean; allow_images: boolean; model: string };
 
-export type Task = { progress?: {summary:string;citations:string[];gaps:string[];next_steps:string[];checkpoint_step:number;duplicate_reads:number}; title?: string | null; answer_truncated?: boolean; id: string; conversation_id?: string; prompt: string; mode: string; status: string; input_tokens: number; output_tokens: number; step: number; answer: string; error: string; generation: number; created_at: string };
+export type Task = { progress?: {summary:string;citations:string[];gaps:string[];next_steps:string[];checkpoint_step:number;duplicate_reads:number}; title?: string | null; answer_truncated?: boolean; id: string; conversation_id?: string; prompt: string; mode: string; status: string; input_tokens: number; output_tokens: number; /** Provider-reported USD cost; null or absent means not reported. */ cost?: number | null; /** True when some requests in the task reported no cost. */ cost_partial?: boolean; step: number; answer: string; error: string; generation: number; created_at: string };
 
 export type Job = {superseded?:boolean;parent_run_id?:string|null;id:string;source_id:string;name:string;kind:string;status:string;error:string;created_at:string};
 
@@ -20,7 +20,7 @@ export type Revision = { revision: number; title: string; content: string; actor
 
 export type Selection = { type: 'source' | 'record'; id: string; locator?: string } | null;
 
-export type TextPage = { text: string; start: number; end: number; total_lines: number; revision: number; historical?: boolean; locator: string; truncated_long_lines: boolean };
+export type TextPage = { text: string; start: number; end: number; total_lines: number; revision: number | null; historical?: boolean; locator: string; truncated_long_lines: boolean; /** Read straight from a large original that is not indexed; not citable by line. */ raw_original?: boolean; note?: string };
 
 export type Action = { id: string; name: string; input: string; output: string; status: string; created_at: string };
 

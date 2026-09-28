@@ -69,6 +69,11 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         let target=options["target"].as_f64().context("Missing frame target")?;
         ensure!(source.kind=="video" && !source.restricted && target.is_finite() && target>=0. && ["previous","next"].contains(&options["direction"].as_str().unwrap_or("")),"Invalid exact frame request");
     }
+    if options["operation"]=="media_clip" {
+        let (start,end)=(options["start"].as_f64().context("Missing clip start")?,options["end"].as_f64().context("Missing clip end")?);
+        ensure!(["audio","video"].contains(&source.kind.as_str()) && !source.restricted,"Clips need an unrestricted audio or video source");
+        ensure!(start.is_finite() && end.is_finite() && start>=0. && end>start && end-start<=crate::escalation::MAX_CLIP_SECONDS,"A clip must be a positive interval no longer than 30 seconds");
+    }
     if options["operation"]=="render_page" {
         ensure!(source.kind=="pdf" && options["page"].as_u64().is_some_and(|page|page>=1 && page<=100_000),"Invalid physical PDF page");
     }
@@ -86,7 +91,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
-    let kind = if source.kind=="video" && options["operation"]=="video_ocr" {"video_ocr"} else if source.kind=="video" && options["operation"]=="video_overview" {"video_overview"} else if options["operation"]=="diarize" && ["audio","video"].contains(&source.kind.as_str()) {"diarization"} else if options["operation"]=="redact" && ["image","pdf"].contains(&source.kind.as_str()) {"redaction"} else if ["video","audio"].contains(&source.kind.as_str()) && options["operation"]=="automatic" { "media_inventory" } else if ["video","audio"].contains(&source.kind.as_str()) && options["operation"]=="sound_events" { "sound_events" } else if source.kind == "video" && options["operation"] == "playback" { "playback" } else if source.kind == "audio"
+    let kind = if options["operation"]=="media_clip" {"media_clip"} else if source.kind=="video" && options["operation"]=="video_ocr" {"video_ocr"} else if source.kind=="video" && options["operation"]=="video_overview" {"video_overview"} else if options["operation"]=="diarize" && ["audio","video"].contains(&source.kind.as_str()) {"diarization"} else if options["operation"]=="redact" && ["image","pdf"].contains(&source.kind.as_str()) {"redaction"} else if ["video","audio"].contains(&source.kind.as_str()) && options["operation"]=="automatic" { "media_inventory" } else if ["video","audio"].contains(&source.kind.as_str()) && options["operation"]=="sound_events" { "sound_events" } else if source.kind == "video" && options["operation"] == "playback" { "playback" } else if source.kind == "audio"
         || (source.kind == "video" && options["operation"] == "transcribe")
     {
         "audio"
@@ -108,9 +113,11 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         "odt"
     } else if ext == "xlsx" {
         "xlsx"
+    } else if ext == "eml" {
+        "email"
     } else {
         anyhow::bail!(
-            "Sandboxed extraction currently supports PDF, images, video frames, DOCX, and XLSX"
+            "Sandboxed extraction currently supports PDF, images, video frames, DOCX, XLSX, PPTX, ODT and EML"
         )
     };
     ensure!(
@@ -122,13 +129,13 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     let job_id = id();
     let staging = JobDirectory(tempfile::tempdir_in(case.root.join("staging"))?.keep());
     let mut request = options;
-    if ["docx","xlsx","pptx","odt"].contains(&kind) {if let Some(object)=request.as_object_mut(){object.remove("operation");object.remove("crop");}}
+    if ["docx","xlsx","pptx","odt","email"].contains(&kind) {if let Some(object)=request.as_object_mut(){object.remove("operation");object.remove("crop");}}
     if automatic {request["scheduler_priority"]=json!("background");}
     if kind=="redaction" {request["source_kind"]=json!(source.kind);}
     request["asr_model"] = json!(case.meta("asr_profile")?.unwrap_or_else(||"tiny".into()));
     request["version"] = json!(1);
     request["kind"] = json!(kind);
-    if ["video_ocr","video_overview","pdf_probe","pdf_page"].contains(&kind) || request["operation"]=="frame_at" {
+    if ["video_ocr","video_overview","pdf_probe","pdf_page","media_clip"].contains(&kind) || request["operation"]=="frame_at" {
         let epoch=case.meta(&format!("source_policy_epoch:{}",source.id))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
         request["source_lease_epoch"]=json!(epoch);
         request["source_lease"]=json!(case.root.join("staging/source-leases").join(&source.id).join(&source.sha256).join(epoch.to_string()).join("input").to_string_lossy());
@@ -165,7 +172,7 @@ pub fn run_prepared(job:&PreparedJob)->Result<Value> {
         let result:Value=serde_json::from_slice(&fs::read(path)?)?;
         if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash_strong(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
     }
-    let lease=if ["video_ocr","video_overview","pdf_probe","pdf_page"].contains(&job.kind.as_str()) || job.request["operation"]=="frame_at" {
+    let lease=if ["video_ocr","video_overview","pdf_probe","pdf_page","media_clip"].contains(&job.kind.as_str()) || job.request["operation"]=="frame_at" {
         Some(acquire_source_lease(job)?)
     } else {copy_input(&job.source_path,job.staging.path(),&job.source.sha256)?;None};
     if let Some(lease)=lease.as_ref() {
@@ -442,7 +449,7 @@ pub fn stage_prepared(job:&PreparedJob,output:Result<Value>)->Result<StagedPubli
         ensure!(!fs::symlink_metadata(&preview)?.file_type().is_symlink(),"Worker returned a link");
         let preview_lease=read_lease(&preview)?;
         let hash=leased_hash(&preview_lease)?;
-        let mime=if job.kind=="playback" {"video/mp4"} else if job.kind=="redaction" && entry["mime"]=="application/pdf" {"application/pdf"} else {"image/jpeg"};
+        let mime=if job.kind=="playback" {"video/mp4"} else if job.kind=="media_clip" {"audio/wav"} else if job.kind=="redaction" && entry["mime"]=="application/pdf" {"application/pdf"} else {"image/jpeg"};
         let ext=crate::artifact_registry::extension_for_mime(mime).context("Unregistered artifact format")?;
         let relative=format!("artifacts/{hash}.{ext}");
         let destination=job.case_root.join(&relative);
@@ -478,8 +485,8 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
     if staged.is_some() {
         let current=case.source(source_id)?;
         ensure!(current.sha256==source.sha256,"Source changed before publication");
-        if request["operation"]=="automatic" || ["video_ocr","video_overview"].contains(&kind) || request["operation"]=="frame_at" {ensure!(!current.restricted,"Source was restricted before publication");}
-        if ["video_ocr","video_overview","pdf_probe","pdf_page"].contains(&kind) || request["operation"]=="frame_at" {
+        if request["operation"]=="automatic" || ["video_ocr","video_overview","media_clip"].contains(&kind) || request["operation"]=="frame_at" {ensure!(!current.restricted,"Source was restricted before publication");}
+        if ["video_ocr","video_overview","pdf_probe","pdf_page","media_clip"].contains(&kind) || request["operation"]=="frame_at" {
             let epoch=case.meta(&format!("source_policy_epoch:{source_id}"))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
             ensure!(request["source_lease_epoch"].as_u64()==Some(epoch),"Source policy changed before discovery publication");
         }
@@ -533,7 +540,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
                 ensure!(preview.is_file() && preview.metadata()?.len()<=if kind=="playback"{16*1024*1024*1024}else{30*1024*1024},"Invalid preview artifact");
                 ensure!(!fs::symlink_metadata(&preview)?.file_type().is_symlink(),"Worker returned a link");
                 let hash=file_hash(&preview)?;
-                let mime=if kind=="playback" {"video/mp4"}else if kind=="redaction" && entry["mime"]=="application/pdf" {"application/pdf"}else{"image/jpeg"};
+                let mime=if kind=="playback" {"video/mp4"}else if kind=="media_clip" {"audio/wav"}else if kind=="redaction" && entry["mime"]=="application/pdf" {"application/pdf"}else{"image/jpeg"};
                 let ext=crate::artifact_registry::extension_for_mime(mime).context("Unregistered artifact format")?;
                 let relative=format!("artifacts/{hash}.{ext}");
                 publish_file(&preview,&case.root.join(&relative),&hash)?;
@@ -576,7 +583,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
         result["extraction_locator"] = json!(format!(
             "evidence:{source_id}#artifact:{extraction_artifact}"
         ));
-        if !combined.is_empty() && !["sound_events","redaction","diarization","video_ocr","video_overview","pdf_probe","pdf_page"].contains(&kind) {
+        if !combined.is_empty() && !["sound_events","redaction","diarization","video_ocr","video_overview","pdf_probe","pdf_page","media_clip"].contains(&kind) {
             // Every extraction appends an immutable revision; it becomes the
             // active searchable text only when no extraction is active yet
             // (full-recording transcription supersedes partials separately).
@@ -592,7 +599,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
                 !indexed,
             )?;
         }
-        if !["pdf_probe","pdf_page"].contains(&kind) {case.db.execute(
+        if !["pdf_probe","pdf_page","media_clip"].contains(&kind) {case.db.execute(
             "UPDATE sources SET status=? WHERE id=?",
             params![
                 if ["video_ocr","video_overview"].contains(&kind) {"video discovery indexed · sampled only"} else if kind=="diarization" {"selected speaker turns proposed · not identity"} else if kind=="redaction" {"redaction derivative prepared · review required"} else if kind == "sound_events" {
@@ -786,6 +793,19 @@ mod publication_tests {
         assert_eq!(job.request["scheduler_priority"],"background");
         assert!(job.request.get("operation").is_none());
     }
+    #[test]
+    fn email_originals_get_a_pending_status_and_a_sandboxed_email_request() {
+        let dir=tempfile::tempdir().unwrap();
+        let source=dir.path().join("Door alarm (SYNTHETIC).eml");
+        fs::write(&source,b"From: facilities@synthetic.invalid\r\nTo: review@synthetic.invalid\r\nSubject: Alarm log (SYNTHETIC)\r\n\r\nTwo openings.\r\n").unwrap();
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic email").unwrap();
+        case.import_files(&[source.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let imported=case.sources().unwrap().remove(0);
+        assert_eq!(imported.status,"viewer available · extraction pending");
+        let job=prepare_request(&mut case,&imported.id,json!({"operation":"automatic"})).unwrap();
+        assert_eq!(job.request["kind"],"email");
+        assert!(job.request.get("operation").is_none());
+    }
     fn staged_fixture()->(tempfile::TempDir,Case,PreparedJob,StagedPublication) {
         let dir=tempfile::tempdir().unwrap();
         let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
@@ -823,6 +843,34 @@ mod publication_tests {
         assert!(publish_staged(&mut case,&job,Ok(staged)).is_err());
         let count:i64=case.db.query_row("SELECT count(*) FROM artifacts WHERE source_id=?",[&job.source.id],|r|r.get(0)).unwrap();
         assert_eq!(count,2);
+    }
+    #[test]
+    fn second_opinion_clips_are_bounded_leased_and_published_as_wav() {
+        let dir=tempfile::tempdir().unwrap();
+        let fixture=Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic clip").unwrap();
+        case.import_files(&[fixture.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source=case.sources().unwrap().into_iter().find(|item|item.kind=="video").unwrap();
+        for (start,end) in [(0.0,31.0),(2.0,1.0),(-1.0,1.0)] {
+            assert!(prepare_request(&mut case,&source.id,json!({"operation":"media_clip","start":start,"end":end})).is_err(),"{start}-{end}");
+        }
+        let job=prepare_request(&mut case,&source.id,json!({"operation":"media_clip","start":0.5,"end":2.0,"track":1})).unwrap();
+        assert_eq!(job.kind,"media_clip");
+        assert!(job.request["source_lease"].is_string(),"clips read the verified read-only lease, never a full copy");
+        fs::write(job.staging.path().join("clip.wav"),b"RIFF synthetic pcm").unwrap();
+        let output=json!({"pages":[],"metadata":{"kind":"second_opinion_clip"},"previews":[{"path":"clip.wav","mime":"audio/wav","requested_interval":[0.5,2.0],"origin_seconds":0.0}]});
+        let staged=stage_prepared(&job,Ok(output)).unwrap();
+        let before_status=case.source(&source.id).unwrap().status;
+        let result=publish_staged(&mut case,&job,Ok(staged)).unwrap();
+        let clip=result["artifact_id"].as_str().unwrap();
+        let (_,mime,path,_)=artifact(&case,clip).unwrap();
+        assert_eq!(mime,"audio/wav");
+        assert_eq!(path.extension().unwrap(),"wav");
+        assert_eq!(case.source(&source.id).unwrap().status,before_status,"a clip does not change the source status");
+        let extracts:i64=case.db.query_row("SELECT count(*) FROM extract_revisions WHERE source_id=?",[&source.id],|r|r.get(0)).unwrap();
+        assert_eq!(extracts,0,"a clip never becomes searchable source text");
+        case.set_restricted(&source.id,true).unwrap();
+        assert!(prepare_request(&mut case,&source.id,json!({"operation":"media_clip","start":0.5,"end":2.0})).is_err(),"restricted sources are never clipped");
     }
     #[test]
     fn playback_staging_registers_once_and_keeps_original_bytes() {

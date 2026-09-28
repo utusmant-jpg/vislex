@@ -6,12 +6,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 use uuid::Uuid;
 
+/// The case database schema version this build migrates to. Cases with a
+/// higher `user_version` were written by a newer app and are refused.
+pub const CASE_SCHEMA: i64 = 9;
+/// Marks working records stale after a source's text changes (a new active
+/// extraction or transcript). Only records that depend on that source, or
+/// whose dependencies are empty or unreadable, are marked: an unrelated note
+/// no longer needs re-saving before review. Imports, restriction changes and
+/// record saves stay case-wide until record-to-record dependencies exist.
+/// Parameters: the changed source id, then a record id to exclude ("" for none).
+pub(crate) const STALE_DEPENDENTS_OF_SOURCE: &str = "UPDATE records SET stale=1 WHERE (actor<>'processor' OR kind<>'transcript') AND id<>?2 AND CASE WHEN json_valid(dependencies) THEN json_array_length(dependencies)=0 OR EXISTS(SELECT 1 FROM json_each(records.dependencies) WHERE json_each.value=?1) ELSE 1 END";
 pub fn id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -256,7 +268,7 @@ impl Case {
         // fail with a raw SQLITE_BUSY error.
         db.busy_timeout(std::time::Duration::from_secs(15))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 8, "This case requires a newer application");
+        ensure!(version <= CASE_SCHEMA, "This case requires a newer application");
         if create {
             db.execute_batch(SCHEMA)?;
         } else {
@@ -365,6 +377,38 @@ impl Case {
                 );
                 CREATE INDEX IF NOT EXISTS transcript_corrections_latest ON transcript_corrections(run_id,ordinal,revision DESC);
                 PRAGMA user_version=8; COMMIT;")?;
+        }
+        if version < 9 {
+            // v9: ledger for the optional second opinion on uncertain audio.
+            // Additive only; no existing table or row changes.
+            if !create && version >= 8 {db.backup(rusqlite::DatabaseName::Main,root.join("pre-migration-v8.sqlite3"),None)?;}
+            db.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS second_opinions(
+                    id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL REFERENCES sources(id),
+                    run_id TEXT NOT NULL,
+                    ordinals TEXT NOT NULL,
+                    track INTEGER NOT NULL CHECK(track>=0),
+                    start_seconds REAL NOT NULL CHECK(start_seconds>=0),
+                    end_seconds REAL NOT NULL CHECK(end_seconds>start_seconds),
+                    vendor TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    grant_revision INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('clipping','previewed','sending','received','failed','cancelled','uncertain')),
+                    clip_artifact_id TEXT,
+                    clip_sha256 TEXT,
+                    task_id TEXT REFERENCES tasks(id),
+                    transmission_id TEXT,
+                    reasons TEXT NOT NULL,
+                    result TEXT,
+                    usage TEXT,
+                    error TEXT NOT NULL DEFAULT '',
+                    decision TEXT CHECK(decision IS NULL OR decision IN ('accepted_remote','kept_local','edited','unresolved')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS second_opinions_source ON second_opinions(source_id,created_at);
+                PRAGMA user_version=9; COMMIT;")?;
         }
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;",
@@ -587,7 +631,7 @@ impl Case {
             tx.execute("DELETE FROM source_fts WHERE source_id=?", [source_id])?;
             tx.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)", params![source_id, name, text])?;
             tx.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'", [])?;
-            tx.execute("UPDATE records SET stale=1 WHERE actor<>'processor' OR kind<>'transcript'", [])?;
+            tx.execute(STALE_DEPENDENTS_OF_SOURCE, params![source_id, ""])?;
             tx.commit()?;
         }
         Ok(revision)
@@ -620,7 +664,11 @@ impl Case {
         // Same long-line bound and truncation reporting as the active-text read
         // path, so a pathological single-line revision cannot balloon payloads.
         let window = &lines[start - 1..end];
-        Ok(json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":window.iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"historical":true,"truncated_long_lines":window.iter().any(|s|s.chars().count()>2000),"locator":format!("evidence:{source_id}#R{revision}L{start}-L{end}")}))
+        // A pinned revision is historical only when a different revision is
+        // now the active searchable text; a citation to the current wording
+        // must not be labelled as superseded.
+        let active: Option<i64> = self.db.query_row("SELECT revision FROM extracts WHERE source_id=?", [source_id], |r| r.get(0)).optional()?;
+        Ok(json!({"source_id":source_id,"revision":revision,"active_revision":active,"start":start,"end":end,"total_lines":lines.len(),"text":window.iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"historical":active!=Some(revision),"truncated_long_lines":window.iter().any(|s|s.chars().count()>2000),"locator":format!("evidence:{source_id}#R{revision}L{start}-L{end}")}))
     }
     pub fn import_files(&mut self, paths: &[String], production: &str) -> Result<Value> {
         ensure!(
@@ -697,7 +745,9 @@ impl Case {
             };
             let status = if text.is_some() {
                 "text indexed"
-            } else if ["image", "video", "audio", "pdf"].contains(&kind) || ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
+            } else if kind == "text" {
+                "text viewable · over 10 MB, not indexed"
+            } else if ["image", "video", "audio", "pdf"].contains(&kind) || crate::case::DOCUMENT_EXTENSIONS.contains(&ext.as_str()) {
                 "viewer available · extraction pending"
             } else {
                 "unsupported · preserved"
@@ -776,16 +826,23 @@ impl Case {
         )
     }
     pub fn read_text(&self, source_id: &str, start: usize, count: usize) -> Result<Value> {
-        self.verify_source(source_id)?;
-        let (text, revision): (String, i64) = self
+        let path = self.verify_source(source_id)?;
+        let extract: Option<(String, i64)> = self
             .db
             .query_row(
                 "SELECT text,revision FROM extracts WHERE source_id=?",
                 [source_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?
-            .context("No text extraction exists. Source is preserved; processing is pending.")?;
+            .optional()?;
+        let Some((text, revision)) = extract else {
+            // Plain-text files over the 10 MB indexing limit are still
+            // readable page by page straight from the verified original.
+            if self.source(source_id)?.kind == "text" {
+                return read_original_lines(&path, source_id, start, count);
+            }
+            anyhow::bail!("No text extraction exists. Source is preserved; processing is pending.");
+        };
         ensure!(
             start >= 1 && count > 0 && count <= 200,
             "Request 1–200 lines starting at line 1 or later"
@@ -1148,16 +1205,16 @@ impl Case {
         Ok(receipt)
     }
     pub fn task_page(&self,before:Option<(&str,&str)>)->Result<Value> {
-        let mut stmt=self.db.prepare("SELECT t.id,substr(t.prompt,1,500),t.mode,t.status,t.step,substr(t.answer,1,200),substr(t.error,1,300),t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),COALESCE(ct.conversation_id,t.id),length(t.answer)>200,m.value FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id LEFT JOIN meta m ON m.key='chat_title:'||COALESCE(ct.conversation_id,t.id) WHERE t.id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE(ct.conversation_id,t.id) NOT IN (SELECT id FROM hidden_conversations) AND (?1 IS NULL OR t.created_at<?1 OR (t.created_at=?1 AND t.id<?2)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
-        let mut tasks=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"conversation_id":r.get::<_,String>(11)?,"answer_truncated":r.get::<_,bool>(12)?,"title":r.get::<_,Option<String>>(13)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut stmt=self.db.prepare("SELECT t.id,substr(t.prompt,1,500),t.mode,t.status,t.step,substr(t.answer,1,200),substr(t.error,1,300),t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),COALESCE(ct.conversation_id,t.id),length(t.answer)>200,m.value,(SELECT SUM(actual) FROM transmissions WHERE task_id=t.id),(SELECT EXISTS(SELECT 1 FROM transmissions WHERE task_id=t.id AND actual IS NULL)) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id LEFT JOIN meta m ON m.key='chat_title:'||COALESCE(ct.conversation_id,t.id) WHERE t.id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE(ct.conversation_id,t.id) NOT IN (SELECT id FROM hidden_conversations) AND t.mode<>'second_opinion' AND (?1 IS NULL OR t.created_at<?1 OR (t.created_at=?1 AND t.id<?2)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
+        let mut tasks=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"conversation_id":r.get::<_,String>(11)?,"answer_truncated":r.get::<_,bool>(12)?,"title":r.get::<_,Option<String>>(13)?,"cost":r.get::<_,Option<f64>>(14)?,"cost_partial":r.get::<_,bool>(15)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let more=tasks.len()>50;tasks.truncate(50);
         let next_cursor=if more {tasks.last().map(|task|json!({"created_at":task["created_at"],"id":task["id"]}))}else{None};
         Ok(json!({"tasks":tasks,"next_cursor":next_cursor}))
     }
     pub fn conversation_detail(&self,conversation:&str,before:Option<(&str,&str)>)->Result<Value> {
         ensure!(!self.db.query_row("SELECT EXISTS(SELECT 1 FROM hidden_conversations WHERE id=?)",[conversation],|r|r.get::<_,bool>(0))?,"Conversation is hidden");
-        let mut stmt=self.db.prepare("SELECT t.id,t.prompt,t.mode,t.status,t.step,t.answer,t.error,t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id WHERE COALESCE(ct.conversation_id,t.id)=?1 AND t.id NOT IN (SELECT task_id FROM agent_assignments) AND (?2 IS NULL OR t.created_at<?2 OR (t.created_at=?2 AND t.id<?3)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
-        let mut tasks=stmt.query_map(params![conversation,before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"conversation_id":conversation})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut stmt=self.db.prepare("SELECT t.id,t.prompt,t.mode,t.status,t.step,t.answer,t.error,t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT SUM(actual) FROM transmissions WHERE task_id=t.id),(SELECT EXISTS(SELECT 1 FROM transmissions WHERE task_id=t.id AND actual IS NULL)) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id WHERE COALESCE(ct.conversation_id,t.id)=?1 AND t.id NOT IN (SELECT task_id FROM agent_assignments) AND t.mode<>'second_opinion' AND (?2 IS NULL OR t.created_at<?2 OR (t.created_at=?2 AND t.id<?3)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
+        let mut tasks=stmt.query_map(params![conversation,before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"cost":r.get::<_,Option<f64>>(11)?,"cost_partial":r.get::<_,bool>(12)?,"conversation_id":conversation})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let has_older=tasks.len()>50;tasks.truncate(50);
         for task in &mut tasks {task["progress"]=serde_json::to_value(crate::review_progress::load(self,task["id"].as_str().unwrap_or_default())?)?;task["title"]=json!(self.meta(&format!("chat_title:{conversation}"))?);}
         let next_cursor=if has_older {tasks.last().map(|task|json!({"created_at":task["created_at"],"id":task["id"]}))}else{None};
@@ -1367,7 +1424,7 @@ pub fn delete_case(root: &Path, confirm: &str) -> Result<Value> {
     )?;
     let db = Connection::open(root.join("case.sqlite3"))?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    ensure!(version <= 8, "This case requires a newer application");
+    ensure!(version <= CASE_SCHEMA, "This case requires a newer application");
     let name: String = db
         .query_row("SELECT value FROM meta WHERE key='name'", [], |r| r.get(0))
         .optional()
@@ -1528,7 +1585,73 @@ pub fn folder_paths(case_root:&Path,folder:&Path)->Result<(Vec<String>,Vec<Value
 
 fn normalize_document_status(source:&mut Source) {
     let ext=Path::new(&source.name).extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
-    if source.status=="unsupported · preserved" && ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
+    if source.status=="unsupported · preserved" && crate::case::DOCUMENT_EXTENSIONS.contains(&ext.as_str()) {
         source.status="document preview available · extraction pending".into();
     }
+}
+
+/// Originals that get a sandboxed document extraction when opened.
+pub const DOCUMENT_EXTENSIONS: [&str; 5] = ["docx", "xlsx", "pptx", "odt", "eml"];
+
+/// Sparse line index for large plain-text originals: the byte offset of every
+/// LINE_INDEX_STEP-th line, cached per (path, length, mtime). Reading a page
+/// seeks to the nearest checkpoint instead of loading the whole file.
+const LINE_INDEX_STEP: usize = 1024;
+type LineIndex = (u64, std::time::SystemTime, Vec<u64>, usize);
+fn line_index_cache() -> &'static Mutex<HashMap<PathBuf, LineIndex>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, LineIndex>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn line_index(path: &Path) -> Result<(Vec<u64>, usize)> {
+    use std::io::BufRead;
+    let metadata = fs::metadata(path)?;
+    let (len, modified) = (metadata.len(), metadata.modified()?);
+    if let Ok(cache) = line_index_cache().lock() {
+        if let Some((l, m, offsets, total)) = cache.get(path) {
+            if *l == len && *m == modified { return Ok((offsets.clone(), *total)); }
+        }
+    }
+    let mut reader = std::io::BufReader::with_capacity(1 << 20, fs::File::open(path)?);
+    let (mut offsets, mut total, mut position, mut buffer) = (vec![0u64], 0usize, 0u64, Vec::new());
+    loop {
+        buffer.clear();
+        let read = reader.read_until(b'\n', &mut buffer)?;
+        if read == 0 { break; }
+        total += 1;
+        position += read as u64;
+        if total % LINE_INDEX_STEP == 0 { offsets.push(position); }
+    }
+    if let Ok(mut cache) = line_index_cache().lock() {
+        if cache.len() >= 16 { cache.clear(); }
+        cache.insert(path.to_path_buf(), (len, modified, offsets.clone(), total));
+    }
+    Ok((offsets, total))
+}
+/// A page of lines read directly from a large plain-text original. It is not
+/// indexed for search and carries no line citation, because line citations
+/// must resolve against a recorded extraction revision.
+fn read_original_lines(path: &Path, source_id: &str, start: usize, count: usize) -> Result<Value> {
+    use std::io::{BufRead, Seek, SeekFrom};
+    ensure!(start >= 1 && count > 0 && count <= 200, "Request 1–200 lines starting at line 1 or later");
+    let (offsets, total) = line_index(path)?;
+    ensure!(start <= total.max(1), "Line outside source");
+    let checkpoint = (start - 1) / LINE_INDEX_STEP;
+    let mut reader = std::io::BufReader::new(fs::File::open(path)?);
+    reader.seek(SeekFrom::Start(offsets[checkpoint]))?;
+    let mut line_number = checkpoint * LINE_INDEX_STEP;
+    let (mut lines, mut long, mut buffer) = (Vec::new(), false, Vec::new());
+    while lines.len() < count {
+        buffer.clear();
+        if reader.read_until(b'\n', &mut buffer)? == 0 { break; }
+        line_number += 1;
+        if line_number < start { continue; }
+        let text = String::from_utf8_lossy(&buffer);
+        let text = text.trim_end_matches(['\n', '\r']);
+        long |= text.chars().count() > 2000;
+        lines.push(text.chars().take(2000).collect::<String>());
+    }
+    let end = start - 1 + lines.len();
+    Ok(json!({"source_id":source_id,"revision":null,"start":start,"end":end,"total_lines":total,"text":lines.join("\n"),
+        "locator":format!("evidence:{source_id}"),"truncated_long_lines":long,"raw_original":true,
+        "note":"Read directly from the original file, which is over the 10 MB indexing limit: not searchable and not citable by line."}))
 }

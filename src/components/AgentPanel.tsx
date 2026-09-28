@@ -8,7 +8,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { springs } from '../lib/motion';
 import { useVisLexRuntime } from '../chat/vislex-runtime';
-import { composerBlock, failureReason, needsAttention, settingsPath, settledAnnouncement, turnOutcome, usageOf, type SettingsScope, type SettingsSection } from '../chat/turn-state';
+import { composerBlock, costLabel, failureReason, needsAttention, settingsPath, settledAnnouncement, turnOutcome, usageOf, type SettingsScope, type SettingsSection } from '../chat/turn-state';
 import { listen } from '@tauri-apps/api/event';
 import { api, native } from '../bridge';
 import { caseSessionArgs } from '../caseSession';
@@ -464,7 +464,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
       <div className="chat-bar-title">
         <h2 className="chat-heading" title={turns[0]?.title ?? turns[0]?.prompt}>{title}</h2>
         {turns.length ? <span className="chat-bar-meta" title={usage.total ? `Input ${usage.input.toLocaleString()} · Output ${usage.output.toLocaleString()} tokens, as reported by the provider` : undefined}>
-          {turns.length} {turns.length === 1 ? 'turn' : 'turns'}{hasOlderTurns ? ' loaded' : ''} · {usage.total ? `${usage.total.toLocaleString()} tokens reported` : 'No token usage reported'}
+          {turns.length} {turns.length === 1 ? 'turn' : 'turns'}{hasOlderTurns ? ' loaded' : ''} · {usage.total ? `${usage.total.toLocaleString()} tokens reported` : 'No token usage reported'}{costLabel(usage.cost, usage.costPartial) ? ` · ${costLabel(usage.cost, usage.costPartial)}` : ''}
         </span> : null}
       </div>
       <div className="spacer" />
@@ -624,6 +624,7 @@ function ConversationTurn({ turn, fresh, reducedMotion, latest, live, snapshot, 
         <div className="message-meta">
           <CopyButton text={turn.answer} label="Copy answer" small />
           <span className="meta-item" title={tokens ? `Input ${turn.input_tokens.toLocaleString()} · Output ${turn.output_tokens.toLocaleString()} tokens, as reported by the provider` : undefined}>{tokens ? `${tokens.toLocaleString()} tokens` : 'Token usage not reported'}</span>
+          {costLabel(turn.cost, turn.cost_partial) ? <span className="meta-item" title="Cost as reported by the provider; VisLex sets no spending limit">{costLabel(turn.cost, turn.cost_partial)}</span> : null}
         </div>
       </> : null}
       <TurnNotice turn={turn} />

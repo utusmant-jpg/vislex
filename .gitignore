@@ -19,3 +19,5 @@ artifacts/
 tmp/
 output/
 .claude/worktrees/
+.codex/
+src-tauri/gen/schemas/linux-schema.json

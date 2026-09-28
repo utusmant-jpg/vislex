@@ -139,9 +139,10 @@ test.describe('chat through the mocked IPC harness', () => {
   });
 
   test('a citation pinned to the current revision is not labelled as superseded wording', async ({ page }) => {
-    // case.rs read_text_revision returns historical: true for every revision; the
-    // viewer compares the pinned revision with extract_history's active revision.
-    // R2 is the active revision of W-01, so it is current wording.
+    // case.rs read_text_revision reports historical only when another revision
+    // is active, and the viewer also compares the pinned revision with
+    // extract_history's active revision. R2 is the active revision of W-01, so
+    // a citation pinned to it is shown as current wording.
     const fx = await openHarness(page);
     const viewer = page.getByRole('main', { name: 'Evidence viewer' });
     await page.getByRole('button', { name: 'Open cited evidence, rev 2 · 5–5' }).first().click();

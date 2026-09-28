@@ -429,6 +429,75 @@
       "local_test_checkpoint": "On merged code commit f99167114fcc94fbd29e68ee6456dc73bbac4b93, cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored exited 0: 233 Rust tests across 11 suites, including native sandbox/AppContainer and worker video e2e. .venv-worker Python worker discovery exited 0 (28 tests); npm test -- --run exited 0 (121 tests across 21 files); npm run build exited 0; benchmark suite 10/10 and package manifest suite 3/3 passed. These local tests do not satisfy the complete release gate.",
       "release_package_checkpoint": "On 2026-09-26, npm exec tauri build -- --target x86_64-pc-windows-msvc --features desktop exited 0 on merged code commit f99167114fcc94fbd29e68ee6456dc73bbac4b93. NSIS produced VisLex_0.3.0_x64-setup.exe: 703,335,276 bytes, SHA-256 56A5C407C24A8A1C222F06CABD2E6B6FA488BAC16EA27FBBA63BE11EE99481E9. A portable release folder with the release EXE and bundled worker had 439 files; scripts/package_manifest.py write/verify passed and verify passed again after native execution. The release EXE SHA-256 is 5EA28E8AC12AA013FD35B47F73DCA65F827FEF8611C566C6ABE8D2043ACD288B. A no-test-mode native bridge run of this portable release exited 0 in about 29 seconds: six synthetic sources, strong Verify, saved extraction reuse for PDF/DOCX/XLSX, both video discovery passes, timestamped samples, PDF locator read, draft record, PDF and DOCX exports, unreviewed redaction denied, playback origin, encrypted backup/restore/reopen, and zero provider calls with offline grants. The NSIS installation path itself, WE full processing, human-reviewed citation/dossier export, real provider, and realistic large tiers are not yet verified.",
       "candidate_status": "Code commit 041e13a5969fd9985def1dfbd4d4ba3ecb051a21 is the latest tested package checkpoint. npm exec tauri build -- --target x86_64-pc-windows-msvc --features desktop exited 0 and produced VisLex_0.3.0_x64-setup.exe (703,438,412 bytes; SHA-256 AF25BB32B5777FE319A7A7E379AEF9DA266E1444FDEB60F12F6BEDDA7CD0846F). The NSIS-patched release EXE is 20,612,608 bytes, SHA-256 A88264C97704457A7569E49ECE4FBC6A3CCD3A82E482C6059E0D0A774F4251A9. A separate 439-file portable folder staged that exact patched EXE and worker resources; scripts/package_manifest.py write/verify passed and verify passed again after execution. Its no-test-mode offline native journey exited 0: six synthetic sources, strong Verify, saved PDF/DOCX/XLSX extraction reuse, both video discovery passes, PDF locator, draft record, PDF/DOCX export, unreviewed redaction denial, encrypted backup/restore/reopen, zero provider calls. The WE copy was also reopened on the same code before the NSIS patch; 83/83 originals were previously verified and all current discovery parents were complete/queued/running with no current discovery failures. NSIS installed-copy runtime, full WE processing, reviewed dossier/disclosure journey, real provider, target-scale tiers, and independent sign-off remain unverified. Worker metadata fix 774fd23 and a rebuilt worker now supersede this checkpoint; the exact patched x64 package must be rebuilt before release sign-off."
+    },
+    "R26": {
+      "state": "implemented",
+      "commit": "51309a6",
+      "environment": "Linux cloud container (x86_64-unknown-linux-gnu, rustc stable); not Windows, not the packaged worker",
+      "evidence": "c018007 error chunks, search-model refusal in check_permission, cost/generation id persistence; 51309a6 capability-based catalogue filter and badges; 3e145f8 reasoning effort for vendor/model ids.",
+      "commands": [
+        "npx tsc --noEmit -> exit 0",
+        "npx vitest run -> 263 passed",
+        "playwright harness -> 47 passed, 1 expected failure (known combobox issue)",
+        "cargo test --target x86_64-unknown-linux-gnu --tests -> 238 passed, 0 failed",
+        "python -m unittest discover -s workers -> 34 passed"
+      ],
+      "unrun_checks": "No live OpenRouter call was made; field names follow public docs and need a synthetic live probe. Routing policy UI, credits view and generation backfill are not implemented.",
+      "reviewer": "Single-session self review; no independent reviewer."
+    },
+    "R27": {
+      "state": "pending"
+    },
+    "R28": {
+      "state": "implemented",
+      "commit": "6576ce3",
+      "environment": "Linux cloud container (x86_64-unknown-linux-gnu, rustc stable); not Windows, not the packaged worker",
+      "evidence": "8a93ccc local triage; e8fbf87 grant, media_clip worker, v9 second_opinions ledger, confirmed send and decision; 6576ce3 transcript and Settings panels. tests/second_opinion.rs 4 passed; worker media_clip tests passed; harness journey passed.",
+      "commands": [
+        "npx tsc --noEmit -> exit 0",
+        "npx vitest run -> 263 passed",
+        "playwright harness -> 47 passed, 1 expected failure (known combobox issue)",
+        "cargo test --target x86_64-unknown-linux-gnu --tests -> 238 passed, 0 failed",
+        "python -m unittest discover -s workers -> 34 passed"
+      ],
+      "unrun_checks": "No real vendor request was sent; AppContainer clip job and packaged worker not run on Windows; OpenAI direct transcription endpoint untested live; R24 security pass not done.",
+      "reviewer": "Single-session self review; no independent reviewer."
+    },
+    "R29": {
+      "state": "implemented",
+      "commit": "9fcbd50",
+      "environment": "Linux cloud container (x86_64-unknown-linux-gnu, rustc stable); not Windows, not the packaged worker",
+      "evidence": "1225158 large-text originals paged via sparse line index, not citable by line (core test with 160,000 lines; harness journey). 0476d80 sandboxed .eml extraction (4 worker tests, Rust routing test). 56f6a3d DOCX read from WordprocessingML: tracked insertions no longer vanish from paragraph text (python-docx 1.2 dropped them), each change listed with declared author/date, comments, headers, footers and notes as units. 6f3eb60 PPTX in presentation.xml order with hidden flags and speaker notes. 9fcbd50 XLSX sheet units state hidden sheets, rows and columns. Worker suite 41 passed.",
+      "commands": [
+        "npx tsc --noEmit -> exit 0",
+        "npx vitest run -> 263 passed",
+        "playwright harness -> 47 passed, 1 expected failure (known combobox issue)",
+        "cargo test --target x86_64-unknown-linux-gnu --tests -> 238 passed, 0 failed",
+        "python -m unittest discover -s workers -> 41 passed"
+      ],
+      "unrun_checks": "MSG, attachment child sources with transitive restriction, HEIC/RAW and the PDF text layer remain. A structured grid/slide renderer in the viewer is not built; units are shown as text. New extractors were not run inside the packaged AppContainer worker.",
+      "reviewer": "Single-session self review; no independent reviewer."
+    },
+    "R30": {
+      "state": "implemented",
+      "commit": "2cc0002",
+      "environment": "Linux cloud container (x86_64-unknown-linux-gnu, rustc stable); not Windows, not the packaged worker",
+      "evidence": "Decoder signals kept in segment metadata; segment_page returns uncertain_words; FullTranscript marks and navigation; vitest and harness journey pass.",
+      "commands": [
+        "npx tsc --noEmit -> exit 0",
+        "npx vitest run -> 263 passed",
+        "playwright harness -> 47 passed, 1 expected failure (known combobox issue)",
+        "cargo test --target x86_64-unknown-linux-gnu --tests -> 238 passed, 0 failed",
+        "python -m unittest discover -s workers -> 34 passed"
+      ],
+      "unrun_checks": "No real faster-whisper run on Windows produced the words; renderer heap budget on a 10 h transcript not measured.",
+      "reviewer": "Single-session self review; no independent reviewer."
+    },
+    "R31": {
+      "state": "pending"
+    },
+    "R32": {
+      "state": "pending"
     }
   },
   "packaged_worker_and_acceptance_evidence": {
@@ -793,6 +862,21 @@
       "commit": "020d9d6",
       "evidence": "Read-only live case metadata at 2026-09-27 15:52 America/Toronto showed two subscription investigation tasks still marked running with no new task action since 15:32:49. One video processing job had a staged result but remained running; three transmissions remained pending. The displayed 29-step task had real source/text/video/artifact actions. Its two failed save_dossier actions were receipt ownership and evidence-locator validation failures, not proof of missing case tools. A separate immediate SQLite writer probe succeeded, so the reported database-is-locked error was transient rather than a persistent lock. Code adds a twelve-minute no-activity watchdog for subscription turns, pauses the task, requests cancellation of its active media jobs, and marks pending transmissions uncertain. The case SQLite connection now tolerates up to fifteen seconds of writer contention. The running UI labels zero usage as pending rather than implying zero model tokens. Synthetic writer contention longer than the old five-second limit passed; cargo test --locked --manifest-path src-tauri/Cargo.toml --test core passed 82/82; cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop --lib passed 22/22 non-ignored with 5 ignored; AgentPanel interaction tests passed 15/15. npm exec tauri build -- --debug --features desktop --no-bundle exited 0. Debug EXE SHA-256 438D9C4E3E4CF4C84125F924C8D4770246403AC5ED841F81574C19C49E34DB01, with matching verified sidecar SHA-256 D44A2857F07087304F5A5409413F0297893EBF8B51DF5AC6BA1C2F86AA823897. scripts/native-codex-account-test.ps1 on the exact debug EXE exited 0 with subscription_ready, account_protocol and connected true.",
       "unrun_checks": "The user's installed app remains on the preceding build and the current stalled live tasks were not altered. The watchdog and database wait have not been exercised in a fresh live case journey; the exact cause of the stalled callback and the transient SQLite contention remains unproven. No full evidence analysis, human support review, legal accuracy, or product certification is claimed. Self-review only."
+    },
+    "CLAUDE-FUNCTIONAL-SESSION-2026-09-28": {
+      "state": "implemented",
+      "branch": "claude/stoic-ride-1c8hns",
+      "environment": "Linux cloud container (x86_64-unknown-linux-gnu, rustc stable); not Windows, not the packaged worker",
+      "evidence": "Settings section links (b9ccf2e); backup restore across artifact-format versions and CASE_SCHEMA const (c804ac6); Linux CI tier added (8a24e52) but GitHub Actions runs never start (runner_id 0, account billing); ChatGPT-subscription route compiled off unless the 'subscription' Cargo feature is set (11fb451), relates to R20 without changing its ACP scope; dependent-only staleness (ca1eb3f); protocol no longer re-hashes display artifacts while exports and agent reads stay strong (cb0798d, tamper test); legacy key commands removed (ae351e5); historical label only for superseded revisions (89c0d30).",
+      "commands": [
+        "npx tsc --noEmit -> exit 0",
+        "npx vitest run -> 263 passed",
+        "playwright harness -> 47 passed, 1 expected failure (known combobox issue)",
+        "cargo test --target x86_64-unknown-linux-gnu --tests -> 238 passed, 0 failed",
+        "python -m unittest discover -s workers -> 34 passed"
+      ],
+      "unrun_checks": "No Windows cargo test --locked, clippy, desktop feature build on Windows, packaged worker, sandbox include-ignored or native CDP journeys were run for these commits.",
+      "note": "Plan: docs/implementation/FUNCTIONAL-PLAN.md. No case data was used; all fixtures are synthetic."
     }
   },
   "redesign_worktree_progress": {

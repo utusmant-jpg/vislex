@@ -51,7 +51,9 @@ it('selects the highlighted model with Enter from the filter and restores focus 
 it('never presents capability guesses as badges', () => {
   expect(modelBadges('gpt-5-vision-reasoning-mini', false)).toEqual([]);
   expect(modelBadges('claude-opus', true)).toEqual(['Default']);
-  expect(modelBadges('vendor/model:free', false)).toEqual(['Free variant']);
+  expect(modelBadges('vendor/model:free', false)).toEqual(['Free · may fail privacy routing']);
+  expect(modelBadges('google/gemini-2.5-flash', false, { input_modalities: ['text', 'audio'], context_length: 1_048_576 })).toEqual(['Audio input', '1M context']);
+  expect(modelBadges('vendor/model', false, {})).toEqual([]);
 });
 
 it('renders overlays opened from inside an open modal dialog within that dialog', () => {

@@ -8,6 +8,7 @@ import { caseSessionArgs } from '../caseSession';
 import { configuredProfiles, defaultConfig, providerNames } from '../aiProfiles';
 import { springs } from '../lib/motion';
 import { StatusPill } from '../ui';
+import SecondOpinionGrantCard from '../features/escalation/SecondOpinionGrantCard';
 import AppearanceSettings from './AppearanceSettings';
 import KeyboardSettings from './KeyboardSettings';
 import ModelSelect from './ModelSelect';
@@ -86,7 +87,7 @@ export function providerChangeNotice(savedProvider: Provider | null, nextProvide
 export default function SettingsDialog({ snapshot, onClose, refresh, initialSection, initialScope }: { snapshot: Snapshot | null; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; initialSection?: SettingsSection; initialScope?: 'app' | 'case' }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const mounted = useRef(true);
-  const [section, setSection] = useState<SettingsSection>(initialSection ?? 'Accounts & models');
+  const [section, setSection] = useState<SettingsSection>(initialSection && settingsSections.includes(initialSection) ? initialSection : 'Accounts & models');
   // A link that names "This case" opens on the case's own settings; without a
   // case there is only the app scope.
   const openingScope: 'app' | 'case' = initialScope === 'case' && snapshot ? 'case' : 'app';
@@ -405,6 +406,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                   <button type="button" className={settings.offline ? 'selected' : ''} aria-pressed={settings.offline} disabled={!native} onClick={() => setSettings(current => ({ ...current, offline: true }))}>Offline — stop new requests</button>
                 </div>
               </section>
+              {native && snapshot ? <SecondOpinionGrantCard caseId={snapshot.id} sessionEpoch={snapshot.session_epoch} /> : null}
               <section className="settings-card" aria-labelledby="settings-data-title">
                 <div className="settings-card-header"><div className="settings-card-heading"><h3 id="settings-data-title">Where case data lives</h3></div></div>
                 <ul className="settings-facts">

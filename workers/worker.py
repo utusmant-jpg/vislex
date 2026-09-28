@@ -40,6 +40,12 @@ def process(job: Path, request: dict) -> dict:
     if kind in ('video_ocr', 'video_overview'):
         from video_discovery import discover
         return discover(job, request)
+    if kind == 'email':
+        from email_extract import extract
+        return extract(job, request)
+    if kind == 'media_clip':
+        from media_clip import clip
+        return clip(job, request)
     if kind == 'diarization':
         from diarization import diarize
         return diarize(job, request)
@@ -189,7 +195,7 @@ def process(job: Path, request: dict) -> dict:
         metadata['language'] = info.language
         metadata['language_probability'] = info.language_probability
         for segment in segments:
-            pages.append({'locator': f'track:{metadata["track_index"]}:seconds:{start+segment.start:.3f}-{start+segment.end:.3f}', 'text': segment.text, 'method': f'faster-whisper-{model_name} int8; unverified machine transcript', 'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob, 'words': [{'start': start+w.start, 'end': start+w.end, 'word': w.word, 'probability': w.probability} for w in segment.words or []]})
+            pages.append({'locator': f'track:{metadata["track_index"]}:seconds:{start+segment.start:.3f}-{start+segment.end:.3f}', 'text': segment.text, 'method': f'faster-whisper-{model_name} int8; unverified machine transcript', 'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob, 'compression_ratio': segment.compression_ratio, 'temperature': segment.temperature, 'words': [{'start': start+w.start, 'end': start+w.end, 'word': w.word, 'probability': w.probability} for w in segment.words or []]})
         notes = ['Unverified machine transcription using the selected local multilingual model; check names, numbers, and faint speech against original audio.', 'Only the selected audio track and interval were decoded. Other tracks remain unprocessed.', 'VAD is disabled. Decoder gaps are accounted separately and zero-filled for timing; silence does not establish absence of events.', 'Transcription is not direct audio understanding, speaker identity, or legal interpretation.']
     elif kind == 'video':
         import av
@@ -345,26 +351,21 @@ def process(job: Path, request: dict) -> dict:
         else:
             notes = ['Preview uses EXIF orientation. Original bytes and metadata are preserved.', 'No OCR, identity attribution, or visual understanding is implied. Multipage images require page-by-page review.']
     elif kind == 'docx':
-        from docx import Document
-        document = Document(source)
-        from docx.text.paragraph import Paragraph
-        from docx.table import Table
-        # Preserve paragraph/table order in the source document.
-        for n, element in enumerate(document.element.body, 1):
-            if element.tag.endswith('}p'):
-                paragraph = Paragraph(element, document)
-                pages.append({'locator': f'block:{n}:paragraph', 'text': paragraph.text, 'method': 'python-docx'})
-            elif element.tag.endswith('}tbl'):
-                for row, cells in enumerate(Table(element, document).rows, 1):
-                    pages.append({'locator': f'block:{n}:table:row:{row}', 'text': '\t'.join(c.text for c in cells.cells), 'method': 'python-docx table'})
-        notes = ['Tracked revisions, comments, headers, footnotes, and embedded attachments are not extracted by this adapter. No page layout is implied.']
-    elif kind in ('pptx', 'odt'):
+        from docx_extract import extract as extract_docx
+        extracted = extract_docx(source)
+        pages, notes = extracted['pages'], extracted['notes']
+        metadata.update(extracted['metadata'])
+    elif kind == 'pptx':
+        from pptx_extract import extract as extract_pptx
+        extracted = extract_pptx(source)
+        pages, notes = extracted['pages'], extracted['notes']
+        metadata.update(extracted['metadata'])
+    elif kind == 'odt':
         import zipfile
         import xml.etree.ElementTree as ET
         import re
         with zipfile.ZipFile(source) as package:
-            names = ([n for n in package.namelist() if re.fullmatch(r'ppt/slides/slide[0-9]+\.xml', n)] if kind == 'pptx' else ['content.xml'])
-            names.sort(key=lambda n: int(re.search(r'slide([0-9]+)', n).group(1)) if kind == 'pptx' else 0)
+            names = ['content.xml']
             if sum(package.getinfo(n).file_size for n in names) > 32 * 1024 * 1024:
                 raise ValueError('Document XML exceeds extraction limit')
             for name in names:
@@ -372,15 +373,20 @@ def process(job: Path, request: dict) -> dict:
                 units = [node for node in root.iter() if node.tag in ('{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p', '{urn:oasis:names:tc:opendocument:xmlns:text:1.0}h', '{http://schemas.openxmlformats.org/drawingml/2006/main}p')]
                 for index, node in enumerate(units, 1):
                     pages.append({'locator': f'{name}:paragraph:{index}', 'text': ''.join(node.itertext()), 'method': 'document-xml'})
-        notes = ['Text preview only; slide layout, images, comments, embedded files and animations are not rendered. Original file is preserved.']
+        notes = ['Text preview only; layout, images, comments, embedded files and tracked changes are not rendered. Original file is preserved.']
     elif kind == 'xlsx':
         from openpyxl import load_workbook
         # Context managers keep both handles closed even when a corrupt workbook raises mid-read.
         with source.open('rb') as formulas_file, source.open('rb') as cached_file:
             formulas = load_workbook(formulas_file, read_only=True, data_only=False, keep_links=False)
             cached = load_workbook(cached_file, read_only=True, data_only=True, keep_links=False)
+            from xlsx_hidden import hidden_structure, summary
+            structure = {entry['name']: entry for entry in hidden_structure(source)}
             count = 0
-            for sheet in formulas:
+            total = len(formulas.sheetnames)
+            for position, sheet in enumerate(formulas, 1):
+                visibility = structure.get(sheet.title, {'name': sheet.title, 'state': sheet.sheet_state, 'hidden_rows': [], 'hidden_columns': [], 'hidden_rows_truncated': False})
+                pages.append({'locator': f'sheet:{sheet.title}', 'text': summary(visibility, position, total), 'method': 'xlsx workbook structure'})
                 cached_rows = iter(cached[sheet.title].iter_rows())
                 for row in sheet.iter_rows():
                     values = next(cached_rows, ())
@@ -397,7 +403,8 @@ def process(job: Path, request: dict) -> dict:
                         pages.append({'locator': f'sheet:{sheet.title}!{cell.coordinate}', 'text': text, 'method': 'openpyxl read-only', 'sheet_state': sheet.sheet_state})
             formulas.close()
             cached.close()
-        notes = ['Formulas are not executed. Cached values may be stale or absent. Row/column visibility and styles require original-workbook review.']
+            metadata['sheets'] = list(structure.values())
+        notes = ['Formulas are not executed. Cached values may be stale or absent.', 'Each sheet unit states hidden or very hidden sheets and hidden rows and columns as declared in the file; cells in them are still listed. Styles, filters and conditional formatting are not reviewed.']
     else:
         raise ValueError('Unsupported processor kind')
     if sum(len(p['text']) for p in pages) > MAX_TEXT:
