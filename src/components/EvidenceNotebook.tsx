@@ -61,7 +61,16 @@ function structuredContent(object: EvidenceObject) {
 export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snapshot: Snapshot; onClose: () => void; onSource: (id: string, locator?: string) => void }) {
   const sourcePages=usePagedSources(snapshot);
   const [page, setPage] = useState<Page>({ objects: [], next_offset: null });
+  // `loaded` becomes true after the first response and stays true: refetches after a review,
+  // save, Refresh or page turn keep the current list (and any open card or focused button)
+  // mounted and mark it busy instead of swapping it for skeletons. The component is keyed by
+  // case and session epoch, so a case switch remounts it and never shows another case's rows.
   const [loaded, setLoaded] = useState(!native);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showRefreshing, setShowRefreshing] = useState(false);
+  const [pageVersion, setPageVersion] = useState(0);
+  const [restoreFocus, setRestoreFocus] = useState<{ key: string; version: number } | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const [offset, setOffset] = useState(0);
   const [kind, setKind] = useState('');
   const [error, setError] = useState('');
@@ -80,10 +89,27 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
   useEffect(() => {
     let active = true;
     if (!native) { setError(''); return; }
-    setError(''); setLoaded(false);
-    api<Page>('evidence_list', { ...caseSessionArgs(snapshot.id,snapshot.session_epoch), kind: kind || null, offset }).then(v => { if (active) { setPage(v); setLoaded(true); } }).catch(e => { if (active) { setError(String(e)); setLoaded(true); } });
+    setError(''); setRefreshing(true);
+    api<Page>('evidence_list', { ...caseSessionArgs(snapshot.id,snapshot.session_epoch), kind: kind || null, offset }).then(v => { if (active) { setPage(v); setPageVersion(n => n + 1); setLoaded(true); setRefreshing(false); } }).catch(e => { if (active) { setError(String(e)); setLoaded(true); setRefreshing(false); } });
     return () => { active = false; };
   }, [snapshot.id, snapshot.session_epoch, offset, kind, refresh]);
+  // Review buttons are disabled while a decision is saved, which drops keyboard focus to the
+  // document. Once the refreshed page lands (or the save fails), return focus to that card's
+  // review group: a neutral target, so a repeated Enter cannot record a different decision.
+  useEffect(() => {
+    if (!restoreFocus || busy || pageVersion < restoreFocus.version) return;
+    setRestoreFocus(null);
+    const focused = document.activeElement;
+    if (focused && focused !== document.body) return;
+    const card = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-object-key]') ?? [])].find(el => el.dataset.objectKey === restoreFocus.key);
+    card?.querySelector<HTMLElement>('.object-card-review')?.focus();
+  }, [restoreFocus, busy, pageVersion]);
+  // A quiet status line appears only if a refetch takes longer than 150 ms, so fast refreshes never flash.
+  useEffect(() => {
+    if (!refreshing || !loaded) { setShowRefreshing(false); return; }
+    const timer = window.setTimeout(() => setShowRefreshing(true), 150);
+    return () => window.clearTimeout(timer);
+  }, [refreshing, loaded]);
   // Opening the editor from a card far down the list brings it into view.
   useEffect(() => { if (editingKey !== null) { editorHeading.current?.focus(); editorHeading.current?.scrollIntoView?.({ block: 'nearest' }); } }, [editingKey]);
   async function action(fn: () => Promise<void>) { setBusy(true); setError(''); try { await fn(); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
@@ -159,11 +185,12 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
     <div className="findings-toolbar">
       <label className="findings-kind">Kind<select value={kind} onChange={e => { setKind(e.target.value); setOffset(0); }}><option value="">All kinds</option>{kinds.map(k => <option key={k} value={k}>{humanize(k)}</option>)}</select></label>
       {native && loaded && page.objects.length ? <span className="findings-summary" aria-live="polite">{page.objects.length} on this page · {counts.unreviewed} unreviewed · {counts.accepted} accepted{counts.stale ? ` · ${counts.stale} need recheck` : ''}</span> : <span className="findings-summary" />}
+      <span className="findings-refreshing" role="status">{showRefreshing ? 'Updating findings…' : ''}</span>
       <button className="quiet" disabled={busy || !native} onClick={() => setRefresh(v => v + 1)}><RefreshCw size={14} />Refresh</button>
     </div>
 
     {native && !loaded ? <div className="object-list" aria-busy="true" aria-label="Loading findings">{[0, 1, 2].map(i => <div className="object-card skeleton-card" key={i}><Skeleton height={14} className="skeleton-title" /><Skeleton height={10} className="skeleton-short" /></div>)}</div> : null}
-    {loaded && page.objects.length ? <div className="object-list">{page.objects.map(o => <details key={`${o.id}:${o.revision}`} className={`object-card ${o.stale ? 'is-stale' : ''}`}>
+    {loaded && page.objects.length ? <div className="object-list" ref={listRef} aria-busy={refreshing || undefined}>{page.objects.map(o => <details key={`${o.id}:${o.revision}`} data-object-key={`${o.id}:${o.revision}`} className={`object-card ${o.stale ? 'is-stale' : ''}`}>
       <summary>
         <ChevronRight size={15} className="object-card-chevron" aria-hidden="true" />
         <span className="object-card-title" title={o.title}>{o.title}</span>
@@ -176,8 +203,8 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
         {o.stale ? <p className="notice warning"><TriangleAlert size={16} aria-hidden="true" /><span>A dependency changed. Review is disabled until a new revision rechecks the latest dependencies.</span></p> : null}
         <div className="object-card-actions">
           <button className="secondary" data-size="sm" disabled={busy} onClick={() => { setDependencyPreviews([]); setEditing(o); }}>Revise</button>
-          <span className="object-card-review" role="group" aria-label={`Review revision ${o.revision} of ${o.title}`}>
-            {['accepted', 'rejected', 'unreviewed'].map(review => <button key={review} className={`quiet review-${review}`} disabled={busy || o.stale || o.review === review} onClick={() => void action(async () => { await api('evidence_review', { ...caseSessionArgs(snapshot.id,snapshot.session_epoch), id: o.id, revision: o.revision, review }); setRefresh(v => v + 1); })}>{review === 'accepted' ? <Check size={14} /> : review === 'rejected' ? <X size={14} /> : <RotateCcw size={14} />}{review === 'accepted' ? 'Accept revision' : review === 'rejected' ? 'Reject revision' : 'Clear review'}</button>)}
+          <span className="object-card-review" role="group" tabIndex={-1} aria-label={`Review revision ${o.revision} of ${o.title}`}>
+            {['accepted', 'rejected', 'unreviewed'].map(review => <button key={review} className={`quiet review-${review}`} disabled={busy || o.stale || o.review === review} onClick={() => void action(async () => { const key = `${o.id}:${o.revision}`; setRestoreFocus({ key, version: pageVersion }); await api('evidence_review', { ...caseSessionArgs(snapshot.id,snapshot.session_epoch), id: o.id, revision: o.revision, review }); setRestoreFocus({ key, version: pageVersion + 1 }); setRefresh(v => v + 1); })}>{review === 'accepted' ? <Check size={14} /> : review === 'rejected' ? <X size={14} /> : <RotateCcw size={14} />}{review === 'accepted' ? 'Accept revision' : review === 'rejected' ? 'Reject revision' : 'Clear review'}</button>)}
           </span>
         </div>
       </div>

@@ -39,6 +39,8 @@
 .findings-kind { display: inline-flex; align-items: center; gap: 8px; font-size: var(--text-sm); color: var(--text-2); font-weight: var(--weight-medium); }
 .findings-kind select { min-width: 180px; text-transform: none; }
 .findings-summary { flex: 1; min-width: 0; font-size: var(--text-caption); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.findings-refreshing { font-size: var(--text-caption); color: var(--text-3); }
+.findings-refreshing:empty { margin-left: -12px; }
 .evidence-notebook .object-list { display: flex; flex-direction: column; gap: 8px; margin: 0 auto; }
 .evidence-notebook .object-card {
   margin: 0; padding: 0; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -84,6 +86,7 @@ details[open] > summary > .object-card-chevron, details[open] > summary > .dossi
 .object-card-label { font-size: var(--text-caption); font-weight: var(--weight-semibold); color: var(--text-3); letter-spacing: var(--tracking-caps); text-transform: uppercase; margin-right: 4px; }
 .object-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
 .object-card-review { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; flex-wrap: wrap; }
+.object-card-review:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 .review-accepted:hover:not(:disabled) { color: var(--success); background: var(--success-bg); }
 .review-rejected:hover:not(:disabled) { color: var(--danger); background: var(--danger-bg); }
 .skeleton-card { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
