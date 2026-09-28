@@ -307,8 +307,8 @@ export class SyntheticBackend {
 
   /* -------------------------------- text reads -------------------------------- */
   /** read_text (revision === null) reads the active extract; read_extract_revision
-   *  reads an immutable revision. Like case.rs read_text_revision, the revision
-   *  read always reports `historical: true`, even for the current revision. */
+   *  reads an immutable revision. Like case.rs read_text_revision, a revision
+   *  read is `historical` only when another revision is now active. */
   private readLines(c: HarnessCase, sourceId: unknown, revision: number | null, start: number, count: number) {
     const source = this.source(c, sourceId);
     if (revision === null && !source.revisions) throw new Error('No text extraction exists. Source is preserved; processing is pending.');
@@ -318,7 +318,7 @@ export class SyntheticBackend {
     if (!(start >= 1 && count > 0 && count <= 200)) throw new Error('Request 1–200 lines starting at line 1 or later');
     if (start > Math.max(lines.length, 1)) throw new Error(revision === null ? 'Line outside source' : 'Line outside revision');
     const end = Math.min(start - 1 + count, lines.length);
-    return { source_id: source.id, revision: rev, start, end, total_lines: lines.length, text: lines.slice(start - 1, end).join('\n'), ...(revision !== null ? { historical: true } : {}), truncated_long_lines: false, locator: `evidence:${source.id}#R${rev}L${start}-L${end}` };
+    return { source_id: source.id, revision: rev, start, end, total_lines: lines.length, text: lines.slice(start - 1, end).join('\n'), ...(revision !== null ? { historical: rev !== source.currentRevision, active_revision: source.currentRevision } : {}), truncated_long_lines: false, locator: `evidence:${source.id}#R${rev}L${start}-L${end}` };
   }
 
   /* -------------------------------- dispatcher -------------------------------- */

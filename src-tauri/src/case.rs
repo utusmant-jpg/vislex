@@ -662,7 +662,11 @@ impl Case {
         // Same long-line bound and truncation reporting as the active-text read
         // path, so a pathological single-line revision cannot balloon payloads.
         let window = &lines[start - 1..end];
-        Ok(json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":window.iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"historical":true,"truncated_long_lines":window.iter().any(|s|s.chars().count()>2000),"locator":format!("evidence:{source_id}#R{revision}L{start}-L{end}")}))
+        // A pinned revision is historical only when a different revision is
+        // now the active searchable text; a citation to the current wording
+        // must not be labelled as superseded.
+        let active: Option<i64> = self.db.query_row("SELECT revision FROM extracts WHERE source_id=?", [source_id], |r| r.get(0)).optional()?;
+        Ok(json!({"source_id":source_id,"revision":revision,"active_revision":active,"start":start,"end":end,"total_lines":lines.len(),"text":window.iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"historical":active!=Some(revision),"truncated_long_lines":window.iter().any(|s|s.chars().count()>2000),"locator":format!("evidence:{source_id}#R{revision}L{start}-L{end}")}))
     }
     pub fn import_files(&mut self, paths: &[String], production: &str) -> Result<Value> {
         ensure!(

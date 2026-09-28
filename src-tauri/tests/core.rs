@@ -1919,3 +1919,16 @@ fn saved_provider_keys_keep_their_credential_names() {
     assert_eq!(Provider::Openai.credential(), "openai-api-key");
     assert_eq!(Provider::Openrouter.credential(), "openrouter-api-key");
 }
+
+#[test]
+fn only_superseded_revisions_are_labelled_historical() {
+    let (_dir, mut c, sid) = setup();
+    let active = c.read_text_revision(&sid, 1, 1, 10).unwrap();
+    assert_eq!(active["historical"], false, "the active revision is current wording");
+    c.publish_extract(&sid, "Corrected synthetic wording.\n", "Synthetic re-extraction", true).unwrap();
+    let old = c.read_text_revision(&sid, 1, 1, 10).unwrap();
+    let new = c.read_text_revision(&sid, 2, 1, 10).unwrap();
+    assert_eq!(old["historical"], true);
+    assert_eq!(new["historical"], false);
+    assert_eq!(new["active_revision"], 2);
+}

@@ -139,12 +139,9 @@ test.describe('chat through the mocked IPC harness', () => {
   });
 
   test('a citation pinned to the current revision is not labelled as superseded wording', async ({ page }) => {
-    // Known issue: case.rs read_text_revision returns historical: true for every
-    // revision, and EvidenceViewer shows "superseded wording preserved; this is
-    // not the current active text" whenever page.historical is set. A citation
-    // pinned to R2 — the active revision of W-01 — is therefore mislabelled.
-    // Remove test.fail once the viewer (or backend) distinguishes the active revision.
-    test.fail(true, 'Current-revision citations are labelled as historical');
+    // case.rs read_text_revision reports historical only when another revision
+    // is active, so a citation pinned to R2 (the active revision of W-01) is
+    // shown as current wording.
     await openHarness(page);
     const viewer = page.getByRole('main', { name: 'Evidence viewer' });
     await page.getByRole('button', { name: 'Open cited evidence, rev 2 · 5–5' }).first().click();
