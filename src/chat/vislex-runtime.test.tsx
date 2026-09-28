@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { AssistantRuntimeProvider } from '@assistant-ui/react';
-import { taskToMessages, turnStatus, useVisLexRuntime } from './vislex-runtime';
+import { AssistantRuntimeProvider, type AssistantRuntime } from '@assistant-ui/react';
+import { contentFingerprint, taskToMessages, turnSignature, turnStatus, useVisLexRuntime } from './vislex-runtime';
 import type { Task } from '../types';
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -39,11 +39,35 @@ describe('taskToMessages', () => {
   });
 });
 
-function Harness({ turns, onNew, onCancel }: { turns: Task[]; onNew: (text: string) => void; onCancel: () => void }) {
+describe('turnSignature', () => {
+  it('changes when an answer is rewritten to the same length', () => {
+    const before = task({ answer: 'Two people near the entrance.' });
+    const after = task({ answer: 'Two people near the entrance!' });
+    expect(before.answer.length).toBe(after.answer.length);
+    expect(turnSignature(before)).not.toBe(turnSignature(after));
+  });
+
+  it('changes when only the error changes', () => {
+    expect(turnSignature(task({ status: 'paused', error: 'Stopped by user' })))
+      .not.toBe(turnSignature(task({ status: 'paused', error: 'Provider response incomplete' })));
+  });
+
+  it('is stable for identical content', () => {
+    expect(turnSignature(task())).toBe(turnSignature(task()));
+    expect(contentFingerprint('')).toBe(contentFingerprint(''));
+  });
+});
+
+function Harness({ turns, onNew, onCancel, expose }: { turns: Task[]; onNew: (text: string) => void; onCancel: () => void; expose?: (runtime: AssistantRuntime) => void }) {
   const runtime = useVisLexRuntime({ turns, isRunning: turns.some(t => t.status === 'running'), onNew, onCancel });
+  expose?.(runtime);
   return <AssistantRuntimeProvider runtime={runtime}>
     <button onClick={() => void runtime.thread.append({ role: 'user', content: [{ type: 'text', text: 'Runtime question' }] })}>append</button>
   </AssistantRuntimeProvider>;
+}
+
+function mirroredText(runtime: AssistantRuntime): string[] {
+  return runtime.thread.getState().messages.map(message => message.content.map(part => part.type === 'text' ? part.text : '').join(''));
 }
 
 describe('useVisLexRuntime', () => {
@@ -65,5 +89,22 @@ describe('useVisLexRuntime', () => {
     render(<Cancel />);
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'cancel' }).at(-1)!); });
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-mirrors a same-length answer rewrite and an error-only change', async () => {
+    let runtime: AssistantRuntime | null = null;
+    const expose = (value: AssistantRuntime) => { runtime = value; };
+    const view = render(<Harness turns={[task({ answer: 'AAAA' })]} onNew={vi.fn()} onCancel={vi.fn()} expose={expose} />);
+    await act(async () => {});
+    expect(mirroredText(runtime!)).toContain('AAAA');
+    view.rerender(<Harness turns={[task({ answer: 'BBBB' })]} onNew={vi.fn()} onCancel={vi.fn()} expose={expose} />);
+    await act(async () => {});
+    expect(mirroredText(runtime!)).toContain('BBBB');
+    expect(mirroredText(runtime!)).not.toContain('AAAA');
+    view.rerender(<Harness turns={[task({ status: 'failed', answer: '', error: 'First failure' })]} onNew={vi.fn()} onCancel={vi.fn()} expose={expose} />);
+    await act(async () => {});
+    view.rerender(<Harness turns={[task({ status: 'failed', answer: '', error: 'Other failure' })]} onNew={vi.fn()} onCancel={vi.fn()} expose={expose} />);
+    await act(async () => {});
+    expect(mirroredText(runtime!).join('\n')).toContain('Other failure');
   });
 });
