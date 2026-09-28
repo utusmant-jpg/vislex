@@ -72,6 +72,18 @@ fn export_revision(v:&Value)->anyhow::Result<Option<i64>> {
     Ok(Some(v["expected_revision"].as_i64().context("Invalid expected_revision")?))
 }
 
+/// Keys live in Windows Credential Manager and are app-wide. With a case open,
+/// the request must name that case (its session epoch is checked separately);
+/// with no case open, only an app-level request without a case ID is accepted.
+fn provider_key_case_fence(open_case: Option<&str>, args: &Value) -> anyhow::Result<()> {
+    let requested = args.get("case_id").filter(|value| !value.is_null());
+    match (open_case, requested) {
+        (Some(open), Some(requested)) if requested.as_str() == Some(open) => Ok(()),
+        (None, None) => Ok(()),
+        _ => anyhow::bail!("Case changed before provider key update"),
+    }
+}
+
 fn provider_key_entry(provider: crate::providers::Provider) -> anyhow::Result<keyring::Entry> {
 
     Ok(keyring::Entry::new(
@@ -141,7 +153,15 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     }
     if action == "save_app_ai_settings" {
         let config: crate::providers::Config = serde_json::from_value(args["config"].clone())?;
-        let settings: Settings = serde_json::from_value(args["settings"].clone())?;
+        let mut settings: Settings = serde_json::from_value(args["settings"].clone())?;
+        // App grants were consented for the previous default vendor; a vendor
+        // change keeps them only with explicit consent naming the new provider.
+        if let Ok(Some((previous, _))) = read_ai_defaults(app) {
+            if previous.provider != config.provider && args["grants_for_provider"] != serde_json::to_value(config.provider)? {
+                settings.allow_text = false;
+                settings.allow_images = false;
+            }
+        }
         write_ai_defaults(app, &config, &settings)?;
         let state = app.state::<AppState>();
         let mut guard = state.case.lock().unwrap_or_else(|e|e.into_inner());
@@ -150,7 +170,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             if case.meta("ai_scope")?.as_deref() == Some("app") {
                 if case_has_running_ai(case)? {
                     current_case_updated = false;
-                } else if crate::providers::apply_app_settings(case, &json!({"config":config,"settings":settings})).is_err() {
+                } else if crate::providers::apply_app_settings(case, &app_policy(&config, &settings)?).is_err() {
                     current_case_updated = false;
                 }
             }
@@ -262,9 +282,12 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         if action == "provider_key_status" {return Ok(json!({"configured":provider_key_entry(provider)?.get_password().is_ok()}));}
         let state=app.state::<AppState>();
         let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
-        let case=guard.as_ref().context("Open a case first")?;
-        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before provider key update");
-        require_session_epoch(&state,&args)?;
+        // Keys are app-wide. While a case is open, a key change must come from
+        // that case's current session; with no case open, only an app-level
+        // request (no case_id) may change a key.
+        let open_case=match guard.as_ref() {Some(case)=>Some(case.meta("id")?.unwrap_or_default()),None=>None};
+        provider_key_case_fence(open_case.as_deref(),&args)?;
+        if open_case.is_some() {require_session_epoch(&state,&args)?;}
         let entry=provider_key_entry(provider)?;
         return match action {
             "save_provider_key"=>{let key=text(&args,"key")?;anyhow::ensure!(!key.trim().is_empty(),"Enter a key");entry.set_password(key.trim())?;Ok(json!({"saved":true}))},
@@ -966,7 +989,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             if scope=="app" {
                 anyhow::ensure!(!case_has_running_ai(c)?,"Stop the current AI task before applying app settings");
                 let (config,settings)=read_ai_defaults(app)?.context("Set up app AI first")?;
-                crate::providers::apply_app_settings(c,&json!({"config":config,"settings":settings}))?;
+                crate::providers::apply_app_settings(c,&app_policy(&config,&settings)?)?;
             }
             c.set_meta("ai_scope",scope)?;
             c.audit("ai_scope_changed",json!({"scope":scope}))?;
@@ -1590,6 +1613,23 @@ mod subscription_path_tests {
     }
 }
 
+#[cfg(test)]
+mod provider_key_fence_tests {
+    use super::provider_key_case_fence;
+    use serde_json::json;
+    #[test]
+    fn app_level_key_changes_only_when_no_case_is_open() {
+        // No case open: app-level requests are allowed; a stale case request is not.
+        assert!(provider_key_case_fence(None, &json!({"provider":"openai"})).is_ok());
+        assert!(provider_key_case_fence(None, &json!({"provider":"openai","case_id":null})).is_ok());
+        assert!(provider_key_case_fence(None, &json!({"provider":"openai","case_id":"old-case"})).is_err());
+        // A case is open: the request must name exactly that case.
+        assert!(provider_key_case_fence(Some("case-a"), &json!({"provider":"openai","case_id":"case-a"})).is_ok());
+        assert!(provider_key_case_fence(Some("case-a"), &json!({"provider":"openai","case_id":"case-b"})).is_err());
+        assert!(provider_key_case_fence(Some("case-a"), &json!({"provider":"openai"})).is_err());
+    }
+}
+
 
 pub fn run() {
 
@@ -1828,11 +1868,16 @@ fn sync_inherited_ai(app:&tauri::AppHandle,case:&mut Case)->anyhow::Result<()> {
         if let Ok(Some((config,settings)))=read_ai_defaults(app) {
             if serde_json::to_value(crate::providers::load(case)?)?!=serde_json::to_value(&config)?
                 || serde_json::to_value(case.settings()?)?!=serde_json::to_value(&settings)? {
-                crate::providers::apply_app_settings(case,&json!({"config":config,"settings":settings}))?;
+                crate::providers::apply_app_settings(case,&app_policy(&config,&settings)?)?;
             }
         }
     }
     Ok(())
+}
+/// App defaults are a policy whose grants were consented for its own default
+/// provider, so cases that follow app settings adopt them for that provider.
+fn app_policy(config:&crate::providers::Config,settings:&Settings)->anyhow::Result<Value> {
+    Ok(json!({"config":config,"settings":settings,"grants_for_provider":config.provider}))
 }
 fn kick_discovery(app:tauri::AppHandle,case_id:String) {
     let epoch=app.state::<AppState>().session_epoch.load(std::sync::atomic::Ordering::SeqCst);

@@ -278,7 +278,9 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
         }
         let defs = body["tools"].as_array().cloned().unwrap_or_default();
         let tools: Vec<Value> = defs.iter().map(|t| json!({"type":"function","function":{"name":t["name"],"description":t["description"],"parameters":t["parameters"]}})).collect();
-        let mut request = json!({"model":model,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true},"max_tokens":body["max_output_tokens"]});
+        // "deny" restricts routing to upstreams that do not store or train on
+        // requests; OpenRouter's documented default is "allow".
+        let mut request = json!({"model":model,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true},"max_tokens":body["max_output_tokens"],"provider":{"data_collection":"deny"}});
         request["tool_choice"] = match body["tool_choice"]["name"].as_str() {
             Some(name) => json!({"type":"function","function":{"name":name}}),
             None => json!("auto"),
@@ -973,12 +975,22 @@ pub fn parse_ai_defaults(value:&Value)->Result<Option<(Config,crate::case::Setti
 /// grants nor downgrade a stricter review mode.
 pub fn apply_app_settings(case:&mut crate::case::Case,value:&Value)->Result<()> {
     let config:Config=serde_json::from_value(value["config"].clone())?;
-    let settings:crate::case::Settings=serde_json::from_value(value["settings"].clone())?;
+    let mut settings:crate::case::Settings=serde_json::from_value(value["settings"].clone())?;
     config.validate()?;
     if settings.allow_images && !settings.allow_text {
         bail!("Image analysis always sends accompanying text; grant text before images");
     }
     if !settings.model.is_empty(){validate_model(&settings.model)?;}
+    // A grant is consent to send case material to one vendor. Changing the
+    // default vendor keeps the grant only when the caller explicitly names the
+    // new provider as the recipient of that consent; otherwise it resets, as
+    // `save` already does for bare configuration changes.
+    if load(case)?.provider != config.provider
+        && value["grants_for_provider"] != serde_json::to_value(config.provider)?
+    {
+        settings.allow_text = false;
+        settings.allow_images = false;
+    }
     case.db.execute_batch("SAVEPOINT app_preferences")?;
     // Direct media (original audio/video transmission) stays a separate explicit
     // per-case opt-in; applying provider preferences never silently enables it.
@@ -1061,6 +1073,9 @@ mod stream_transport_tests {
         assert_eq!(wire.body["tools"][0]["type"], "function");
         assert_eq!(wire.body["stream"], true);
         assert_eq!(wire.body["stream_options"]["include_usage"], true);
+        // Case material may only reach OpenRouter upstreams that do not store
+        // or train on it (OpenRouter's own default is "allow").
+        assert_eq!(wire.body["provider"]["data_collection"], "deny");
     }
 
     fn sse_data(event: Value) -> String {

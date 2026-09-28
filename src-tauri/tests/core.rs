@@ -1494,7 +1494,9 @@ fn case_grants_and_consents_survive_backup_and_restore_exactly() {
         pool: vec![],
     };
     let chosen = c.settings().unwrap();
-    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({"config":config,"settings":chosen})).unwrap();
+    // Moving the default to Gemini needs consent that names Gemini; without it
+    // the text grant would (correctly) reset before backup.
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({"config":config,"settings":chosen,"grants_for_provider":"gemini"})).unwrap();
 
     let archive = dir.path().join("policy.age");
     evidence_desk::backup::backup(&mut c, &archive, "policy-pass-123").unwrap();
@@ -1522,6 +1524,50 @@ fn image_grant_without_text_grant_is_refused_by_apply_app_settings() {
     })).unwrap_err();
     assert!(error.to_string().contains("grant text before images"), "{error}");
     assert!(!c.settings().unwrap().allow_images, "refused policy must not be partially applied");
+}
+
+/// R04 follow-up — a text/image grant given for one vendor must not follow the
+/// case to a different default vendor. Only an explicit consent naming the new
+/// provider (`grants_for_provider`) may carry the grant across the change.
+#[test]
+fn default_provider_change_requires_consent_naming_the_new_provider() {
+    let (_dir, mut c, _s) = setup();
+    let granted = serde_json::json!({"offline":false,"allow_text":true,"allow_images":true,"model":"gpt-test"});
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"openai","execution":"auto","review":"standard","pool":[]},
+        "settings": granted,
+    })).unwrap();
+    let before = c.settings().unwrap();
+    assert!(before.allow_text && before.allow_images, "same-provider save keeps the chosen grants");
+
+    // The renderer still shows the old checkboxes ticked; switching vendor alone
+    // must not re-grant them.
+    let switched = serde_json::json!({"offline":false,"allow_text":true,"allow_images":true,"model":"claude-test"});
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"anthropic","execution":"auto","review":"standard","pool":[]},
+        "settings": switched,
+    })).unwrap();
+    let after = c.settings().unwrap();
+    assert_eq!(after.model, "claude-test");
+    assert!(!after.allow_text && !after.allow_images, "grants must not carry to a new default vendor");
+
+    // Consent naming a different provider is not consent for this one.
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"gemini","execution":"auto","review":"standard","pool":[]},
+        "settings": {"offline":false,"allow_text":true,"allow_images":false,"model":"gemini-test"},
+        "grants_for_provider": "anthropic",
+    })).unwrap();
+    assert!(!c.settings().unwrap().allow_text, "mismatched consent must not grant");
+
+    // Explicit consent for the new default vendor is honoured exactly.
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"anthropic","execution":"auto","review":"standard","pool":[]},
+        "settings": {"offline":false,"allow_text":true,"allow_images":false,"model":"claude-test"},
+        "grants_for_provider": "anthropic",
+    })).unwrap();
+    let consented = c.settings().unwrap();
+    assert!(consented.allow_text && !consented.allow_images, "explicit consent applies exactly as chosen");
+    c.verify_audit().unwrap();
 }
 
 /// R07 — an in-place edit that preserves length AND mtime evades the
