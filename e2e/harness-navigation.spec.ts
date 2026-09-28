@@ -114,7 +114,46 @@ test('the viewer opens each source kind and degrades honestly without media byte
   await expect(viewer.getByText('Prepare a reviewed redaction')).toHaveCount(0);
 
   // Every open source got a tab; tabs are real tabs with accessible names.
-  await expect(page.getByRole('tablist', { name: 'Open files' }).getByRole('tab')).toHaveCount(5);
+  const fileTabs = page.getByRole('tablist', { name: 'Open files' });
+  await expect(fileTabs.getByRole('tab')).toHaveCount(5);
+  // The tablist owns only tabs; closing stays keyboard reachable.
+  await expect(fileTabs.getByRole('button')).toHaveCount(0);
+  const selectedTab = fileTabs.getByRole('tab', { selected: true });
+  await expect(selectedTab).toHaveAttribute('title', /Medical summary/);
+  await selectedTab.focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(fileTabs.getByRole('tab', { selected: true })).toHaveAttribute('title', /Email from facilities/);
+  await expect(fileTabs.getByRole('tab', { selected: true })).toBeFocused();
+  await page.keyboard.press('Delete');
+  await expect(fileTabs.getByRole('tab')).toHaveCount(4);
+  await expect(fileTabs.getByRole('tab', { name: /Email from facilities/ })).toHaveCount(0);
+  await expect(fileTabs.getByRole('tab', { selected: true })).toBeFocused();
+  const current = await fileTabs.getByRole('tab', { selected: true }).getAttribute('title');
+  await page.getByRole('main', { name: 'Evidence viewer' }).getByRole('button', { name: `Close ${current}` }).click();
+  await expect(fileTabs.getByRole('tab')).toHaveCount(3);
+  await page.keyboard.press('Control+w');
+  await expect(fileTabs.getByRole('tab')).toHaveCount(2);
+});
+
+test('the command palette results are keyboard reachable on their own', async ({ page }) => {
+  await openHarness(page);
+  await page.keyboard.press('Control+k');
+  const input = page.getByRole('combobox', { name: /Search case/ });
+  await input.fill('north');
+  await page.keyboard.press('Control+Enter');
+  const results = page.getByRole('listbox', { name: 'Search results and commands' });
+  await expect(results.getByRole('group', { name: 'Text & meaning' })).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(results).toBeFocused();
+  const first = await results.getAttribute('aria-activedescendant');
+  await page.keyboard.press('ArrowDown');
+  await expect(results).not.toHaveAttribute('aria-activedescendant', first!);
+  await expect(input).toHaveAttribute('aria-activedescendant', (await results.getAttribute('aria-activedescendant'))!);
+  await page.keyboard.press('End');
+  const last = await results.getAttribute('aria-activedescendant');
+  await expect(page.locator(`#${last}`)).toBeInViewport();
+  await page.keyboard.press('Home');
+  await expect(results).toHaveAttribute('aria-activedescendant', 'case-command-item-0');
 });
 
 test('working files, findings and investigation surfaces run their native paths', async ({ page }) => {

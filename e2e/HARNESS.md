@@ -73,21 +73,22 @@ for a completed call), `axeViolations`.
 - `harness-settings.spec.ts` — appearance changes issue no IPC; saving never widens grants; model availability is not chat authorization; case override guard; save failure.
 - `harness-case-switch.spec.ts` — held responses from the previous case are discarded; stale-epoch events and deltas are ignored; switch refusal is surfaced.
 - `harness-jobs.spec.ts` — determinate progress only with reported totals; verbatim units; indeterminate fallback; recovery receipts and error routing.
-- `harness-navigation.spec.ts` — every workspace; large-case paging; every source kind in the viewer; records, findings and investigation surfaces.
+- `harness-navigation.spec.ts` — every workspace; large-case paging; every source kind in the viewer; open-file tabs by keyboard; palette results by keyboard; records, findings and investigation surfaces.
 - `harness-a11y.spec.ts` — axe WCAG 2.x A/AA over native-only states in dark and light, with a named baseline of known violations in shared code.
 
 Known app issues are encoded as `test.fail` (the test passes while the issue
 exists and fails once it is fixed, prompting removal) or as named entries in
-the axe baseline. Current entries: the open-file tab strip nests buttons in
-`role="tablist"`; the palette results region is not keyboard-scrollable.
-Resolved by the assistant redesign and removed: a user Stop rendered as an
+the axe baseline. Current entries: none. Resolved by the assistant redesign and removed: a user Stop rendered as an
 error alert; the chat token count missed 4.5:1 contrast in light theme.
 Resolved in integration and removed: a citation pinned to the current
 extraction revision was labelled as superseded wording (the viewer now
 compares the pinned revision with `extract_history`'s `active_revision`,
 because case.rs `read_text_revision` always returns `historical: true`); the
 Settings model combobox options were inert under the modal dialog (overlays
-now render inside the open dialog).
+now render inside the open dialog); the open-file tab strip nested close
+buttons in `role="tablist"` (the list now owns only tabs; Delete, Ctrl+W, the
+context menu and a close button after the list close a file); the palette
+results region was not keyboard-scrollable (its listbox is now a tab stop).
 
 ## Limits
 

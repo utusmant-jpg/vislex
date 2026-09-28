@@ -7,10 +7,10 @@ import { axeViolations, openHarness } from './harness-support';
 // Violations found by this harness in shared app code this surface may not
 // edit. Each is reported upstream (see the harness handoff). Anything else
 // fails the test; entries are matched by rule id and target selector.
-const KNOWN: { id: string; target: RegExp; reason: string }[] = [
-  { id: 'aria-required-children', target: /^\.tab-list$/, reason: 'App.tsx open-file tab strip puts close buttons inside role="tablist"' },
-  { id: 'scrollable-region-focusable', target: /^\.palette-results$/, reason: 'App.tsx command palette result region scrolls but its options are tabIndex=-1' },
-];
+// Resolved and removed: the open-file tablist owned close buttons
+// (aria-required-children); the palette results region was not keyboard
+// scrollable (scrollable-region-focusable).
+const KNOWN: { id: string; target: RegExp; reason: string }[] = [];
 
 async function scan(page: Page, name: string, testInfo: TestInfo) {
   const violations = await axeViolations(page);

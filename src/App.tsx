@@ -19,6 +19,7 @@ import AgentPanel from './components/AgentPanel';
 import FolderImport from './components/FolderImport';
 import PaneDivider from './components/PaneDivider';
 import SidebarDivider from './components/SidebarDivider';
+import { nextTabIndex } from './components/ViewerTabs';
 import { ContextMenu, MenuPanel, StatusPill, ThemeProvider, ThemeToggle, ToastStack, Tooltip, matchesModelFilter, notify, relativeTime, type MenuItem, type PillState } from './ui';
 
 const RecordEditor = lazy(() => import('./components/RecordEditor'));
@@ -743,6 +744,7 @@ export default function App() {
   const visibleSnapshot: Snapshot | null = snapshot ? {...snapshot,sources:[...snapshot.sources,...extraSources.filter(item=>!snapshot.sources.some(current=>current.id===item.id))],records:[...snapshot.records,...extraRecords.filter(item=>!snapshot.records.some(current=>current.id===item.id))]} : null;
   const source = selection?.type === 'source' ? visibleSnapshot?.sources.find(item => item.id === selection.id) : undefined;
   const record = selection?.type === 'record' ? visibleSnapshot?.records.find(item => item.id === selection.id) : undefined;
+  const selectionTitle = source?.name ?? record?.title;
   const suggestedName = suggestedMatterName(snapshot?.sources.map(item => item.name) ?? []);
   const pending = snapshot?.jobs?.filter(job => ['queued', 'running'].includes(job.status)) ?? [];
   const pendingCount = snapshot?.counts ? snapshot.counts.jobs_queued + snapshot.counts.jobs_running : pending.length;
@@ -813,6 +815,14 @@ export default function App() {
   ], [paletteMatches, results, paletteCommands, query, snapshot]);
   useEffect(() => { setPaletteIndex(0); }, [query, results]);
   useEffect(() => { document.getElementById(`case-command-item-${paletteIndex}`)?.scrollIntoView?.({ block: 'nearest' }); }, [paletteIndex]);
+  function paletteKeyDown(event: React.KeyboardEvent) {
+    if (event.key === 'ArrowDown') { event.preventDefault(); setPaletteIndex(index => Math.min(index + 1, paletteItems.length - 1)); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); setPaletteIndex(index => Math.max(0, index - 1)); }
+    else if (event.key === 'Home' && event.currentTarget.getAttribute('role') === 'listbox') { event.preventDefault(); setPaletteIndex(0); }
+    else if (event.key === 'End' && event.currentTarget.getAttribute('role') === 'listbox') { event.preventDefault(); setPaletteIndex(Math.max(0, paletteItems.length - 1)); }
+    else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); searchPalette(); }
+    else if (event.key === 'Enter') { event.preventDefault(); paletteEnter(); }
+  }
   function activatePaletteItem(item: (typeof paletteItems)[number]) {
     if (item?.kind === 'source') { selectSource(item.id); setPalette(false); return; }
     if (item?.kind === 'result') { selectSource(item.sourceId, item.locator.split('#')[1]); setPalette(false); return; }
@@ -997,24 +1007,47 @@ export default function App() {
               <Tooltip text="Previous location" shortcut="Alt+←"><button className="icon-button" aria-label="Previous location" disabled={navigationHistory.index <= 0} onClick={() => moveInHistory(-1)}><ArrowLeft size={15} /></button></Tooltip>
               <Tooltip text="Next location" shortcut="Alt+→"><button className="icon-button" aria-label="Next location" disabled={navigationHistory.index >= navigationHistory.entries.length - 1} onClick={() => moveInHistory(1)}><ArrowRight size={15} /></button></Tooltip>
             </div>
-            <div className="tab-list" role="tablist" aria-label="Open files">
-              {openTabs.map(tab => {
+            {/* The tablist owns only tabs. Closing is keyboard reachable through
+                Delete on a focused tab, Ctrl+W, the tab context menu (Shift+F10)
+                and the close button after the list; the per-tab × is a pointer
+                shortcut hidden from assistive technology. */}
+            <div className="tab-list" role="tablist" aria-label="Open files" onKeyDown={event => {
+              const list = event.currentTarget;
+              const tabs = [...list.querySelectorAll<HTMLElement>('[role="tab"]')];
+              const index = tabs.indexOf(document.activeElement as HTMLElement);
+              if (index < 0) return;
+              if (event.key === 'Delete') {
+                // Close the focused tab and keep focus in the strip (on the newly selected tab).
+                event.preventDefault(); closeTab(openTabs[index].id);
+                window.requestAnimationFrame(() => (list.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? list.querySelector<HTMLElement>('[role="tab"]'))?.focus());
+                return;
+              }
+              const next = nextTabIndex(event.key, index, tabs.length);
+              if (next < 0) return;
+              event.preventDefault();
+              setSelection(openTabs[next]);
+              tabs[next].focus();
+            }}>
+              {openTabs.map((tab, index) => {
                 const tabTitle = tab.type === 'source' ? visibleSnapshot?.sources.find(item => item.id === tab.id)?.name : visibleSnapshot?.records.find(item => item.id === tab.id)?.title;
+                const selected = selection?.id === tab.id;
+                const focusable = selected || (!openTabs.some(item => item.id === selection?.id) && index === 0);
                 return <ContextMenu key={tab.id} items={[
                   { label: 'Close', shortcut: 'Ctrl+W', onSelect: () => closeTab(tab.id) },
                   { label: 'Close others', onSelect: () => { setOpenTabs([tab]); if (!(selection?.id === tab.id)) setSelection(tab); } },
                   { label: 'Close tabs to the right', onSelect: () => setOpenTabs(tabs => tabs.slice(0, tabs.findIndex(item => item.id === tab.id) + 1)) },
                 ]}>
-                  <div className={`file-tab ${selection?.id === tab.id ? 'active' : ''}`}>
-                    <button role="tab" aria-selected={selection?.id === tab.id} title={tabTitle} onClick={() => setSelection(tab)} onAuxClick={event => { if (event.button === 1) closeTab(tab.id); }}>
+                  <div className={`file-tab ${selected ? 'active' : ''}`}>
+                    <button role="tab" aria-selected={selected} tabIndex={focusable ? 0 : -1} aria-keyshortcuts="Delete" title={tabTitle} onClick={() => setSelection(tab)} onAuxClick={event => { if (event.button === 1) closeTab(tab.id); }}>
                       {tab.type === 'source' ? <SourceIcon kind={visibleSnapshot?.sources.find(item => item.id === tab.id)?.kind ?? 'other'} size={14} /> : <NotebookPen size={14} aria-hidden="true" />}
                       <span>{tabTitle}</span>
                     </button>
-                    <button className="icon-button icon-button-sm" aria-label={`Close ${tabTitle}`} onClick={() => closeTab(tab.id)}><X size={12} /></button>
+                    <span className="file-tab-close" aria-hidden="true" title="Close (Ctrl+W)" onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); closeTab(tab.id); }}><X size={12} /></span>
                   </div>
                 </ContextMenu>;
               })}
             </div>
+            {selection && openTabs.some(tab => tab.id === selection.id) ? <Tooltip text="Close file" shortcut="Ctrl+W"><button className="icon-button tab-close-current" aria-label={`Close ${selectionTitle ?? 'file'}`} onClick={() => closeTab(selection.id)}><X size={14} /></button></Tooltip> : null}
           </div>
           {source ? <EvidenceViewer key={`${snapshot?.id}:${snapshot?.session_epoch}:${source.id}`} caseId={snapshot?.id} sessionEpoch={snapshot?.session_epoch} locator={selection?.locator} source={source} run={run} refresh={refresh} onLocatorSelect={locator => setSelection(current => current ? { ...current, locator } : current)} onAsk={() => { setView('chat'); setFocusComposerRequest(value => value + 1); }} /> : null}
           {record && snapshot ? <RecordDetailPanel key={`${snapshot.id}:${snapshot.session_epoch}:${record.id}`} caseId={snapshot.id} sessionEpoch={snapshot.session_epoch} summary={record} run={run} refresh={refresh} onSource={selectSource}/> : null}
@@ -1047,17 +1080,15 @@ export default function App() {
       <dialog ref={paletteDialog} className="modal command-palette" aria-label="Search and commands" onCancel={() => setPalette(false)} onClick={event => { if (event.target === event.currentTarget) setPalette(false); }}>
         <div className="palette-input-row">
           <Search size={17} aria-hidden="true" />
-          <input autoFocus role="combobox" aria-autocomplete="list" aria-controls="case-command-results" aria-expanded={paletteItems.length > 0} aria-activedescendant={paletteItems[paletteIndex] ? `case-command-item-${paletteIndex}` : undefined} aria-label={snapshot ? 'Search case — evidence, meaning, chats and commands' : 'Search commands'} value={query} onChange={event => { setQuery(event.target.value); setResults(null); }} onKeyDown={event => {
-            if (event.key === 'ArrowDown') { event.preventDefault(); setPaletteIndex(index => Math.min(index + 1, paletteItems.length - 1)); }
-            else if (event.key === 'ArrowUp') { event.preventDefault(); setPaletteIndex(index => Math.max(0, index - 1)); }
-            else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); searchPalette(); }
-            else if (event.key === 'Enter') { event.preventDefault(); paletteEnter(); }
-          }} placeholder={snapshot ? 'Search evidence, meaning and commands…' : 'Search commands…'} />
+          <input autoFocus role="combobox" aria-autocomplete="list" aria-controls="case-command-results" aria-expanded={paletteItems.length > 0} aria-activedescendant={paletteItems[paletteIndex] ? `case-command-item-${paletteIndex}` : undefined} aria-label={snapshot ? 'Search case — evidence, meaning, chats and commands' : 'Search commands'} value={query} onChange={event => { setQuery(event.target.value); setResults(null); }} onKeyDown={paletteKeyDown} placeholder={snapshot ? 'Search evidence, meaning and commands…' : 'Search commands…'} />
           {query.trim() && snapshot ? <span className="palette-state">{results === null ? <><kbd>Ctrl</kbd><kbd>↵</kbd> search text</> : `${results.length} result${results.length === 1 ? '' : 's'}`}</span> : null}
         </div>
         <div className="palette-results">
           {query.trim() && snapshot && results === null ? <button className="palette-search-action" onClick={searchPalette}><span className="icon-tile" aria-hidden="true"><Search size={15} /></span><span>Search text &amp; meaning for “{query.trim()}”<small>Hybrid search across indexed evidence · Ctrl+Enter</small></span></button> : null}
-          <div id="case-command-results" role="listbox" aria-label="Search results and commands">
+          {/* Focus normally stays in the combobox (aria-activedescendant). The
+              listbox is also a tab stop so the scrolling results can be reached
+              and navigated from the keyboard on their own. */}
+          <div id="case-command-results" role="listbox" aria-label="Search results and commands" tabIndex={paletteItems.length ? 0 : -1} aria-activedescendant={paletteItems[paletteIndex] ? `case-command-item-${paletteIndex}` : undefined} onKeyDown={paletteKeyDown}>
           {(['source', 'result', 'command'] as const).map(groupKind => {
             const members = paletteItems.map((item, index) => ({ item, index })).filter(entry => entry.item.kind === groupKind);
             if (!members.length) return null;
