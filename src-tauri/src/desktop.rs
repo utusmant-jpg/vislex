@@ -105,6 +105,18 @@ fn provider_key_for_case(provider: crate::providers::Provider) -> anyhow::Result
     if crate::providers::synthetic_provider_url()?.is_some() {
         return Ok("synthetic-local-transport".into());
     }
+    stored_provider_key(provider)
+}
+
+/// The key a request would send. Test mode shares Windows Credential Manager
+/// with the user's real app, so without a loopback synthetic endpoint it acts
+/// as if no key were saved: a native test journey can never reach a real
+/// provider with the user's key (automatic review included).
+fn stored_provider_key(provider: crate::providers::Provider) -> anyhow::Result<String> {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {
+        anyhow::bail!("Test mode does not use stored provider keys; set VISLEX_TEST_PROVIDER_URL to a loopback endpoint");
+    }
     Ok(provider_key_entry(provider)?.get_password()?)
 }
 
@@ -131,7 +143,7 @@ async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<V
     // Explicit account metadata lookup: no case material and no case mutex during network I/O.
     if action == "provider_models" {
         let provider:crate::providers::Provider=serde_json::from_value(args["provider"].clone()).map_err(|e|e.to_string())?;
-        let key=provider_key_entry(provider).and_then(|entry|entry.get_password().map_err(Into::into)).map_err(|_|format!("Save a {} API key first",provider.name()))?;
+        let key=stored_provider_key(provider).map_err(|_|format!("Save a {} API key first",provider.name()))?;
         let models=tokio::time::timeout(std::time::Duration::from_secs(45),crate::providers::list_models(provider,&key)).await.map_err(|_|"Model catalogue request timed out; retry when connected".to_string())?.map_err(|e|e.to_string())?;
         return serde_json::to_value(models).map_err(|e|e.to_string());
     }
