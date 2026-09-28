@@ -1,14 +1,14 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import RedactionPanel from './RedactionPanel';
+import RedactionPanel, { forgetMarkedRectangles } from './RedactionPanel';
 
 const api = vi.hoisted(() => vi.fn());
 const save = vi.hoisted(() => vi.fn());
 vi.mock('../bridge', () => ({ api, evidenceUrl: (path: string) => path }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ save }));
 vi.mock('../ui', () => ({ Tooltip: ({ children }: { children: React.ReactNode }) => children }));
-afterEach(() => { cleanup(); api.mockReset(); save.mockReset(); });
+afterEach(() => { cleanup(); api.mockReset(); save.mockReset(); forgetMarkedRectangles(); });
 
 const output = { published: [
   { artifact_id: 'review-page', metadata: { mime: 'image/jpeg', page: 1 } },
@@ -129,4 +129,23 @@ it('marks review and export done only at their real milestones', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Export derivative only' }));
   await waitFor(() => expect(steps()[2].textContent).toContain('(done)'));
   expect(steps().some(item => item.getAttribute('aria-current') === 'step')).toBe(false);
+});
+
+it('keeps marked rectangles when the viewer unmounts for a tab switch, until they are discarded', () => {
+  api.mockResolvedValue(undefined);
+  const first = render(<RedactionPanel caseId="case-a" sessionEpoch={3} sourceId="source-a" kind="image" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Add rectangle' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add rectangle' }));
+  first.unmount();
+  const second = render(<RedactionPanel caseId="case-a" sessionEpoch={3} sourceId="source-a" kind="image" />);
+  expect(screen.getByRole('spinbutton', { name: 'X of rectangle 2 in pixels' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear all rectangles' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Discard rectangles' }));
+  second.unmount();
+  render(<RedactionPanel caseId="case-a" sessionEpoch={3} sourceId="source-a" kind="image" />);
+  expect(screen.queryByRole('spinbutton', { name: 'X of rectangle 1 in pixels' })).toBeNull();
+  cleanup();
+  // Another source, or a new case session, starts empty.
+  render(<RedactionPanel caseId="case-a" sessionEpoch={4} sourceId="source-a" kind="image" />);
+  expect(screen.queryByRole('spinbutton', { name: 'X of rectangle 1 in pixels' })).toBeNull();
 });

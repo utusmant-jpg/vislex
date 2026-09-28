@@ -486,12 +486,19 @@ export class SyntheticBackend {
       // ---- AI settings for the case ----
       case 'save_ai_settings': {
         this.requireCase(args, 'AI settings update', true);
-        c.settings = { ...(args.settings as Settings) }; c.ai_config = safeClone(args.config as AIConfig); c.aiScope = 'case'; this.touch(c); return null;
+        // As providers::apply_app_settings: images need the text grant, and a
+        // grant is consent for one vendor, so changing the default vendor
+        // clears both grants unless grants_for_provider names the new vendor.
+        const settings = { ...(args.settings as Settings) }, config = safeClone(args.config as AIConfig);
+        if (settings.allow_images && !settings.allow_text) throw new Error('Image analysis always sends accompanying text; grant text before images');
+        if (c.ai_config.provider !== config.provider && args.grants_for_provider !== config.provider) { settings.allow_text = false; settings.allow_images = false; }
+        c.settings = settings; c.ai_config = config; c.aiScope = 'case'; this.touch(c); return null;
       }
       case 'case_ai_scope': return { scope: c.aiScope };
       case 'set_case_ai_scope': {
         this.requireCase(args, 'AI scope update', true);
         const scope = args.scope as 'app' | 'case';
+        if (scope === 'app' && !this.appAi.configured) throw new Error('Set up app AI first');
         if (scope === 'app') { if (c.tasks.some(task => task.status === 'running')) throw new Error('Stop the current AI task before applying app settings'); c.settings = { ...this.appAi.settings }; c.ai_config = safeClone(this.appAi.config); }
         c.aiScope = scope; this.touch(c); return { scope };
       }
@@ -536,16 +543,24 @@ export class SyntheticBackend {
       }
       case 'resume_task': {
         this.requireCase(args, 'chat resumed', true);
+        if (c.chatPause) throw new Error(c.chatPause);
         const task = c.tasks.find(item => item.id === args.task_id); if (!task) throw new Error('Task not found');
         if (c.settings.offline || !c.settings.allow_text) throw new Error('API permission is disabled');
+        if (task.status !== 'paused') throw new Error('Only paused tasks can resume');
         task.status = 'running'; task.error = ''; if (this.scenario.autoStream) this.streamTask(task.id);
         return { task_id: task.id };
       }
       case 'continue_paused_task': {
         this.requireCase(args, 'chat continued', true);
+        if (c.chatPause) throw new Error(c.chatPause);
         const old = c.tasks.find(item => item.id === args.task_id); if (!old) throw new Error('Task not found');
+        // The harness does not record per-task profiles; the default vendor stands in for task_profile.
+        if (!this.storedKeys.has(c.ai_config.provider)) throw new Error('Save an API key in Settings first');
+        if (old.status !== 'paused') throw new Error('Only paused work can continue in a new task');
         const id = syntheticId('continued-task', c.tasks.length);
-        const conversation = id;
+        // agent::continue_paused keeps the paused task's conversation unless that chat was deleted.
+        const parentConversation = old.conversation_id ?? old.id;
+        const conversation = c.hiddenConversations.has(parentConversation) ? id : parentConversation;
         c.tasks.push({ ...old, id, conversation_id: conversation, status: 'running', answer: '', error: '', step: 0, input_tokens: 0, output_tokens: 0, created_at: new Date().toISOString() });
         if (this.scenario.autoStream) this.streamTask(id);
         return { task_id: id, conversation_id: conversation };
@@ -553,14 +568,20 @@ export class SyntheticBackend {
 
       // ---- jobs ----
       case 'transcribe_all': this.requireCase(args, 'transcription queue', true); return { queued: 0 };
-      case 'cancel_processing': { this.requireCase(args, 'processing cancellation', true); this.setJob(c, args.job_id, 'cancelled'); return null; }
+      case 'cancel_processing': {
+        // processing.rs stores the cancellation error string with status 'cancelled'.
+        this.requireCase(args, 'processing cancellation', true); this.setJob(c, args.job_id, 'cancelled');
+        const job = c.jobs.find(item => item.id === args.job_id); if (job) job.error = 'Processing cancelled before publication';
+        return null;
+      }
       case 'resume_processing': { this.requireCase(args, 'processing recovery', true); this.setJob(c, args.job_id, 'queued'); return null; }
       case 'resume_transcription': { this.requireCase(args, 'transcription recovery', true); this.setJob(c, args.job_id, 'queued'); return null; }
       case 'retry_video_discovery': { this.requireCase(args, 'video discovery retry', true); this.setJob(c, args.run_id, 'queued'); return null; }
       case 'transcribe_full': case 'cancel_transcription': {
         this.requireCase(args, 'transcription', true);
         const job = c.jobs.find(item => item.source_id === args.source_id && item.kind === 'full_audio');
-        if (job) { job.status = action === 'transcribe_full' ? 'queued' : 'cancelled'; job.error = ''; job.progress = null; }
+        // transcription::cancel records "Cancelled by user" on the cancelled job.
+        if (job) { job.status = action === 'transcribe_full' ? 'queued' : 'cancelled'; job.error = action === 'transcribe_full' ? '' : 'Cancelled by user'; job.progress = null; }
         return null;
       }
       case 'set_asr_profile': this.requireCase(args, 'ASR profile', true); return null;

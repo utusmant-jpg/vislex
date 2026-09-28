@@ -155,6 +155,7 @@ function menuNode(items: MenuItem[], close: () => void, highlight: number, setHi
       key={index}
       className={`menu-item ${item.danger ? 'danger' : ''} ${highlight === index ? 'highlighted' : ''}`}
       role="menuitem"
+      data-menu-index={index}
       disabled={item.disabled}
       tabIndex={-1}
       onMouseEnter={() => setHighlight(index)}
@@ -169,7 +170,11 @@ export function MenuPanel({ items, onClose, style, className, label = 'Actions',
   const [highlight, setHighlight] = useState(-1);
   const returnFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const [host] = useState(() => overlayHost(anchor ?? returnFocus.current));
-  useEffect(() => () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }, []);
+  const panel = useRef<HTMLDivElement>(null);
+  useEffect(() => { panel.current?.focus(); return () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }; }, []);
+  // Roving focus: the highlighted item holds DOM focus, so assistive
+  // technology announces each item as the arrow keys move through the menu.
+  useEffect(() => { if (highlight >= 0) panel.current?.querySelector<HTMLElement>(`[data-menu-index="${highlight}"]`)?.focus(); }, [highlight]);
   const { body, selectable } = menuNode(items, onClose, highlight, setHighlight);
   const move = (direction: 1 | -1) => {
     if (!selectable.length) return;
@@ -198,7 +203,7 @@ export function MenuPanel({ items, onClose, style, className, label = 'Actions',
         }
       }}
       tabIndex={-1}
-      ref={node => node?.focus()}>
+      ref={panel}>
       {body}
     </div>
   </>, host);
@@ -288,16 +293,21 @@ export type ComboboxOption = {
 };
 
 /** Searchable single-select built on cmdk: one listbox, grouped options,
- *  arrow/Enter selection from the filter, Escape closes and restores focus. */
-export function Combobox({ label, value, options, onChange, trigger, placeholder = 'Select…', searchPlaceholder = 'Filter…', emptyText = 'Nothing matches.', disabled, footer, width = 340, align = 'start', className }: {
+ *  arrow/Enter selection from the filter, Escape closes and restores focus.
+ *  The trigger's accessible name carries the current value ("Label: value"),
+ *  since an aria-label replaces the visible text a custom trigger renders. */
+export function Combobox({ label, value, options, onChange, trigger, valueText, placeholder = 'Select…', searchPlaceholder = 'Filter…', emptyText = 'Nothing matches.', disabled, footer, width = 340, align = 'start', className }: {
   label: string; value: string; options: ComboboxOption[]; onChange: (value: string) => void;
   trigger?: (state: { open: boolean; selected?: ComboboxOption }) => ReactNode;
+  /** The value as the trigger shows it; defaults to the selected option's label. */
+  valueText?: string;
   placeholder?: string; searchPlaceholder?: string; emptyText?: string; disabled?: boolean;
   footer?: (close: () => void) => ReactNode; width?: number; align?: 'start' | 'end'; className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement | null>(null);
   const selected = options.find(option => option.value === value);
+  const spokenValue = valueText ?? selected?.label ?? (value || '');
   const groups = [...new Set(options.map(option => option.group ?? ''))];
   const close = () => setOpen(false);
   return <>
@@ -305,7 +315,7 @@ export function Combobox({ label, value, options, onChange, trigger, placeholder
       ref={anchor}
       type="button"
       className={className ?? 'combobox-trigger'}
-      aria-label={label}
+      aria-label={spokenValue ? `${label}: ${spokenValue}` : label}
       aria-haspopup="listbox"
       aria-expanded={open}
       disabled={disabled}
@@ -380,9 +390,29 @@ export const notify = {
 
 const toastIcon = { error: XCircle, success: CheckCircle2, info: Info } as const;
 
+/** The top open modal dialog, or <body>. A modal <dialog> makes the rest of the
+ *  document inert, so toasts shown while one is open must render inside it. */
+function toastHost(): HTMLElement {
+  const modal = [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')].filter(dialog => {
+    try { return dialog.matches(':modal'); } catch { return true; }
+  });
+  return modal.at(-1) ?? document.body;
+}
+
 export function ToastStack() {
   const [toasts, setToasts] = useState(toastState);
+  const [host, setHost] = useState<HTMLElement>(() => document.body);
   useEffect(() => { toastListeners = [...toastListeners, setToasts]; return () => { toastListeners = toastListeners.filter(listener => listener !== setToasts); }; }, []);
+  // Follow modal dialogs opening and closing only while a toast is showing.
+  const showing = toasts.length > 0;
+  useLayoutEffect(() => {
+    if (!showing) return;
+    const update = () => setHost(current => { const next = toastHost(); return next === current ? current : next; });
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['open'] });
+    return () => observer.disconnect();
+  }, [showing]);
   return createPortal(<div className="toast-stack" role="region" aria-label="Notifications" aria-live="polite">
     {toasts.map(toast => {
       const Icon = toastIcon[toast.kind];
@@ -397,7 +427,7 @@ export function ToastStack() {
         <button className="icon-button icon-button-sm" aria-label="Dismiss notification" onClick={() => dismiss(toast.id)}><X size={14} /></button>
       </div>;
     })}
-  </div>, document.body);
+  </div>, host.isConnected ? host : document.body);
 }
 
 /* --------------------------------- skeletons -------------------------------- */
@@ -508,6 +538,8 @@ export function citationLabel(locator: string): string {
 }
 
 type CitationPreview = { lines: { number: number; text: string }[]; revision?: number } | 'loading' | 'failed' | null;
+/** The most cited lines a hover card fetches; longer ranges say how much is shown. */
+const PREVIEW_LINE_LIMIT = 12;
 
 /** Amber chip that opens the exact cited source. Hovering or focusing it shows
  *  the cited lines (the pinned revision for R-form citations) without leaving
@@ -518,11 +550,15 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
   const [open, setOpen] = useState(false);
   const timer = useRef<number>(0);
   const host = useRef<HTMLButtonElement | null>(null);
+  const card = useRef<HTMLDivElement | null>(null);
   useEffect(() => () => window.clearTimeout(timer.current), []);
   if (!parts) return <span className="citation-raw">{value}</span>;
   const lineMatch = /^L(\d+)-L(\d+)$/.exec(parts.locator);
-  const pinnedMatch = /^R(\d+)L([1-9]\d*)-L[1-9]\d*$/.exec(parts.locator);
+  const pinnedMatch = /^R(\d+)L([1-9]\d*)-L([1-9]\d*)$/.exec(parts.locator);
   const startLine = lineMatch ? Number(lineMatch[1]) : pinnedMatch ? Number(pinnedMatch[2]) : null;
+  const endLine = lineMatch ? Number(lineMatch[2]) : pinnedMatch ? Number(pinnedMatch[3]) : null;
+  // Only the cited range is fetched and labelled as cited; no context lines.
+  const citedCount = startLine !== null && endLine !== null ? Math.max(1, endLine - startLine + 1) : 0;
   const pinnedRevision = pinnedMatch ? Number(pinnedMatch[1]) : null;
   const supported = previewable && startLine !== null;
   const reveal = (delay: number) => {
@@ -532,6 +568,11 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
     timer.current = window.setTimeout(() => setOpen(true), delay);
   };
   const conceal = () => { window.clearTimeout(timer.current); setOpen(false); };
+  // The card sits a few pixels from the chip: leaving either starts a short
+  // close delay that entering the other cancels, so the pointer can cross the
+  // gap to scroll the lines or press "Open in viewer".
+  const concealSoon = () => { window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setOpen(false), 200); };
+  const leavesPreview = (next: EventTarget | null) => !(next instanceof Node && (card.current?.contains(next) || host.current?.contains(next)));
   return <span className="citation-host">
     <button
       ref={host}
@@ -540,13 +581,13 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
       aria-label={`Open cited evidence, ${citationLabel(parts.locator)}`}
       onClick={() => { conceal(); onOpen(parts.sourceId, parts.locator); }}
       onMouseEnter={() => reveal(350)}
-      onMouseLeave={conceal}
+      onMouseLeave={concealSoon}
       onFocus={event => { if (event.currentTarget.matches(':focus-visible')) reveal(0); }}
-      onBlur={conceal}
+      onBlur={event => { if (leavesPreview(event.relatedTarget)) conceal(); }}
       onKeyDown={event => { if (event.key === 'Escape') conceal(); }}>
       {citationLabel(parts.locator)}
     </button>
-    {open && supported ? createPortal(<CitationPreviewCard anchor={host.current} preview={preview} pinnedRevision={pinnedRevision} onOpen={() => { conceal(); onOpen(parts.sourceId, parts.locator); }} onEnter={() => window.clearTimeout(timer.current)} onLeave={conceal} />, overlayHost(host.current)) : null}
+    {open && supported ? createPortal(<CitationPreviewCard anchor={host.current} preview={preview} pinnedRevision={pinnedRevision} range={{ start: startLine!, end: startLine! + citedCount - 1 }} cardRef={card} onOpen={() => { conceal(); onOpen(parts.sourceId, parts.locator); }} onEnter={() => window.clearTimeout(timer.current)} onLeave={concealSoon} onFocusLeave={next => { if (leavesPreview(next)) conceal(); }} />, overlayHost(host.current)) : null}
   </span>;
 
   function loadPreview() {
@@ -555,20 +596,21 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
     // Hover previews show the pinned revision's wording for R-form citations,
     // so a superseded extraction cannot silently preview as current text.
     const request = pinnedRevision !== null
-      ? api<{ text: string; start: number; revision?: number }>('read_extract_revision', { source_id: parts!.sourceId, revision: pinnedRevision, start: startLine, count: 10 })
-      : api<{ text: string; start: number; revision?: number }>('read_text', { source_id: parts!.sourceId, start: startLine, count: 10 });
+      ? api<{ text: string; start: number; revision?: number }>('read_extract_revision', { source_id: parts!.sourceId, revision: pinnedRevision, start: startLine, count: Math.min(citedCount, PREVIEW_LINE_LIMIT) })
+      : api<{ text: string; start: number; revision?: number }>('read_text', { source_id: parts!.sourceId, start: startLine, count: Math.min(citedCount, PREVIEW_LINE_LIMIT) });
+    const last = startLine + Math.min(citedCount, PREVIEW_LINE_LIMIT) - 1;
     request
       .then(page => {
-        const lines = page.text.split('\n').map((text, offset) => ({ number: page.start + offset, text })).filter(line => line.text.trim());
-        setPreview({ lines: lines.slice(0, 8), revision: page.revision });
+        const lines = page.text.split('\n').map((text, offset) => ({ number: page.start + offset, text }))
+          .filter(line => line.number >= startLine && line.number <= last && line.text.trim());
+        setPreview({ lines, revision: page.revision });
       })
       .catch(() => setPreview('failed'));
   }
 }
 
-function CitationPreviewCard({ anchor, preview, pinnedRevision, onOpen, onEnter, onLeave }: { anchor: HTMLElement | null; preview: CitationPreview; pinnedRevision: number | null; onOpen: () => void; onEnter: () => void; onLeave: () => void }) {
+function CitationPreviewCard({ anchor, preview, pinnedRevision, range, cardRef: card, onOpen, onEnter, onLeave, onFocusLeave }: { anchor: HTMLElement | null; preview: CitationPreview; pinnedRevision: number | null; range: { start: number; end: number }; cardRef: React.RefObject<HTMLDivElement | null>; onOpen: () => void; onEnter: () => void; onLeave: () => void; onFocusLeave: (next: EventTarget | null) => void }) {
   const [style, setStyle] = useState<React.CSSProperties>({ position: 'fixed', visibility: 'hidden' });
-  const card = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (!anchor) return;
     const rect = anchor.getBoundingClientRect();
@@ -578,13 +620,15 @@ function CitationPreviewCard({ anchor, preview, pinnedRevision, onOpen, onEnter,
     const top = rect.bottom + height + 12 > window.innerHeight ? Math.max(8, rect.top - height - 6) : rect.bottom + 6;
     setStyle({ position: 'fixed', left, top, width });
   }, [anchor, preview]);
-  return <div ref={card} className="popover-panel citation-preview" style={style} role="group" aria-label="Cited lines preview" onMouseEnter={onEnter} onMouseLeave={onLeave}>
-    <div className="citation-preview-head">{pinnedRevision !== null ? `Extraction revision ${pinnedRevision} · as cited` : 'Current extraction'}</div>
+  return <div ref={card} className="popover-panel citation-preview" style={style} role="group" aria-label="Cited lines preview" onMouseEnter={onEnter} onMouseLeave={onLeave} onBlur={event => onFocusLeave(event.relatedTarget)}>
+    <div className="citation-preview-head">{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} · {pinnedRevision !== null ? `extraction revision ${pinnedRevision} · as cited` : 'current extraction'}</div>
     {preview === 'loading' || preview === null ? <p className="small muted citation-preview-loading">Loading cited lines…</p> : null}
     {preview === 'failed' ? <p className="small muted citation-preview-loading">Preview unavailable. Open the source to inspect it.</p> : null}
     {preview && typeof preview === 'object' ? <div className="citation-preview-lines">
       {preview.lines.map(line => <div className="citation-preview-line" key={line.number}><span className="line-number">{line.number}</span><span>{line.text}</span></div>)}
+      {!preview.lines.length ? <p className="small muted">The cited lines are blank in this extraction.</p> : null}
     </div> : null}
+    {preview && typeof preview === 'object' && range.end - range.start + 1 > PREVIEW_LINE_LIMIT ? <p className="small muted">Showing the first {PREVIEW_LINE_LIMIT} of {range.end - range.start + 1} cited lines. Open the source for the rest.</p> : null}
     <button className="quiet citation-preview-open" onClick={onOpen}>Open in viewer</button>
   </div>;
 }
@@ -634,6 +678,7 @@ export function ModelPicker({ snapshot, selected, onSelect, onManage, disabled }
     options={options}
     disabled={disabled || !profiles.length}
     className="model-picker"
+    valueText={selected?.model ?? 'Configure AI'}
     width={360}
     searchPlaceholder="Filter permitted models…"
     emptyText="No permitted model matches."

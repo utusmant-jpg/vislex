@@ -48,7 +48,7 @@ test.describe('assistant surface', () => {
     const turn = page.locator('.conversation-turn').filter({ hasText: 'Streaming state check' });
     await expect(turn.getByText('Working', { exact: true })).toBeVisible();
     // Before any delta: a plain waiting line and the run clock, no invented progress.
-    await expect(turn.locator('.live-waiting')).toHaveText('Waiting for model output');
+    await expect(turn.locator('.live-waiting')).toHaveText('No response output received yet');
     await expect(turn.getByRole('timer')).toContainText('Token usage pending');
     await expect(turn.getByRole('progressbar')).toHaveCount(0);
 
@@ -100,16 +100,19 @@ test.describe('assistant surface', () => {
     expect((await lastCall(page, 'actions')).args).toMatchObject({ task_id: expect.any(String) });
   });
 
-  test('a failed turn hides raw detail behind a disclosure and retries only through the composer', async ({ page }) => {
+  test('a failed turn states its reason, keeps the receipt behind a disclosure and retries only through the composer', async ({ page }) => {
     await openHarness(page);
     await page.getByRole('button', { name: /^Which sources mention the grey van/ }).click();
     const turn = page.locator('.conversation-turn').filter({ hasText: 'Which sources mention the grey van?' });
     await expect(turn.getByText('This response did not complete.')).toBeVisible();
-    const raw = turn.getByText('Provider returned an error: synthetic rate limit reached. No answer was saved.');
-    await expect(raw).toBeHidden();
+    // The backend's reason is visible without opening anything (a hidden reason was a reviewed defect).
+    await expect(turn.locator('.turn-notice-reason')).toHaveText('Provider returned an error: synthetic rate limit reached. No answer was saved.');
+    const detail = turn.locator('.turn-detail');
+    const receipt = detail.getByText(/^Receipt:/);
+    await expect(receipt).toBeHidden();
     await turn.getByText('Show details').click();
-    await expect(raw).toBeVisible();
-    await expect(turn.locator('.turn-detail')).toContainText('Receipt:');
+    await expect(receipt).toBeVisible();
+    await expect(detail.locator('pre')).toHaveText('Provider returned an error: synthetic rate limit reached. No answer was saved.');
     await turn.getByRole('button', { name: 'Edit and ask again' }).click();
     await expect(page.getByRole('textbox', { name: 'Agent task' })).toHaveValue('Which sources mention the grey van?');
     await expect(page.getByRole('textbox', { name: 'Agent task' })).toBeFocused();

@@ -32,3 +32,23 @@ it('labels human review state per finding and blocks review of a stale dossier',
   for (const button of screen.getAllByRole('button', { name: 'Accept finding' })) expect((button as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getAllByText(/Recheck before recording a review/)).toHaveLength(3);
 });
+
+it('returns keyboard focus to the finding review group after a decision saves', async () => {
+  const view = (reviews: unknown[]) => ({ dossier: { revision: 1, scope: 'Synthetic account', checks: [], claims: [{ proposition: 'The account reports a call', assessment: 'supported_within_scope', supporting: [], contrary: [], uncertainty: '', next_check: '' }] }, stale: false, completion_stale: false, completion: null, human_reviews: reviews, coverage_note: 'Declared checks only.' });
+  let finish: (value: unknown) => void = () => {};
+  api.mockImplementation(async (action: string) => action === 'review_dossier_claim' ? new Promise(resolve => { finish = resolve; }) : view([null]));
+  render(<QuestionDossier caseId="case-one" sessionEpoch={9} taskId="task-one" step={1} status="complete" evidenceVersion="one" onSource={vi.fn()} />);
+  fireEvent.click(screen.getByText('Question dossier · evidence, checks and gaps'));
+  fireEvent.click(await screen.findByText('The account reports a call', { selector: 'summary .dossier-claim-text' }));
+  const accept = screen.getByRole('button', { name: 'Accept finding' });
+  accept.focus();
+  fireEvent.click(accept);
+  // A browser drops focus from a control that becomes disabled; happy-dom does
+  // not (and ignores blur() on it), so drop focus to the document here.
+  const elsewhere = document.body.appendChild(document.createElement('button'));
+  elsewhere.focus(); elsewhere.remove();
+  await waitFor(() => expect((accept as HTMLButtonElement).disabled).toBe(true));
+  expect(document.activeElement).toBe(document.body);
+  finish(view([{ decision: 'accepted', note: '', stale: false }]));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('group', { name: 'Record your review of finding 1' })));
+});

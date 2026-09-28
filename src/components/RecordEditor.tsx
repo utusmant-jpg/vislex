@@ -42,7 +42,11 @@ function RecordEditorBody({ caseId, sessionEpoch, record, refresh, run, onSource
   const changed = base !== record.revision;
   const review = reviewLabel(record);
   const openHistory = () => { setHistoryOpen(true); setRevisions(null); run(async () => { try { setRevisions(await api<Revision[]>('revisions', { record_id: record.id })); } catch (reason) { setHistoryOpen(false); throw reason; } }); };
-  const closeHistory = () => { setHistoryOpen(false); setRevisions(null); };
+  const historyToggle = useRef<HTMLButtonElement>(null);
+  const historyPanel = useRef<HTMLElement>(null);
+  // Closing from inside the panel (its close button, or a restore) removes the
+  // focused control, so focus returns to the History toggle that opened it.
+  const closeHistory = () => { if (historyPanel.current?.contains(document.activeElement)) historyToggle.current?.focus(); setHistoryOpen(false); setRevisions(null); };
   return <div className={`record-view ${historyOpen ? 'with-history' : ''}`}>
     <div className="record-toolbar viewer-tools">
       <span className="badge"><FilePenLine size={13} aria-hidden="true"/>{record.kind.toUpperCase()}</span>
@@ -52,7 +56,7 @@ function RecordEditorBody({ caseId, sessionEpoch, record, refresh, run, onSource
         <button aria-pressed={!preview} onClick={() => setPreview(false)}><PenLine size={13} aria-hidden="true"/>Edit</button>
         <button aria-pressed={preview} onClick={() => setPreview(true)}><Eye size={13} aria-hidden="true"/>Preview</button>
       </div>
-      <Tooltip text={historyOpen ? 'Close revision history' : 'Revision history'}><button className="quiet record-tool" aria-label="History" aria-pressed={historyOpen} onClick={() => historyOpen ? closeHistory() : openHistory()}><History size={14} aria-hidden="true"/><span>History</span></button></Tooltip>
+      <Tooltip text={historyOpen ? 'Close revision history' : 'Revision history'}><button ref={historyToggle} className="quiet record-tool" aria-label="History" aria-pressed={historyOpen} onClick={() => historyOpen ? closeHistory() : openHistory()}><History size={14} aria-hidden="true"/><span>History</span></button></Tooltip>
       <Tooltip text="Export the saved revision"><button className="quiet record-tool" aria-label="Export saved revision" onClick={() => run(async () => { const expected_revision = record.revision; const path = await save({ defaultPath: `${record.title.replace(/[^a-zA-Z0-9 -]/g, '')}.md`, filters: [{ name: 'Saved report', extensions: ['md', 'json', 'txt', 'docx', 'pdf'] }] }); if (path) await api(/\.(docx|pdf)$/i.test(path)?'export_word':'export_record', { case_id: caseId, session_epoch: sessionEpoch, record_id: record.id, expected_revision, path }); })}><Download size={14} aria-hidden="true"/><span>Export saved revision</span></button></Tooltip>
     </div>
     {changed ? <div className="notice warning record-notice" role="status"><AlertTriangle size={16} aria-hidden="true"/><span>A newer revision exists. Your local draft has been preserved. <button onClick={() => { setContent(record.content); setTitle(record.title); setBase(record.revision); }}>Load latest revision</button></span></div> : null}
@@ -70,7 +74,7 @@ function RecordEditorBody({ caseId, sessionEpoch, record, refresh, run, onSource
         {preview ? <div className="markdown-editor record-preview"><Markdown text={content} onSource={onSource} /></div>
           : <textarea className="markdown-editor" aria-label="Working file content" spellCheck={false} value={content} onChange={e => setContent(e.target.value)} />}
       </div>
-      {historyOpen ? <aside className="history-panel" aria-label="Revision history">
+      {historyOpen ? <aside ref={historyPanel} className="history-panel" aria-label="Revision history">
         <div className="history-head"><span className="section-title">Revision history{revisions ? <span className="count">{revisions.length}</span> : null}</span><button className="icon-button" aria-label="Close revision history" onClick={closeHistory}><X size={15}/></button></div>
         {revisions === null ? <p className="history-loading status-line" role="status"><span className="activity-dot" aria-hidden="true"/>Loading revisions…</p> : null}
         {revisions?.length === 0 ? <p className="history-empty">No saved revisions are listed for this working file.</p> : null}

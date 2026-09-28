@@ -95,9 +95,9 @@ function OnboardingHero({ recent, onCreate, onOpen, onRestore, onSample, onRecen
         </div>
       </section> : null}
       <ul className="onboarding-assurances">
-        <li><ShieldCheck size={14} aria-hidden="true" />Cases start offline</li>
+        <li><ShieldCheck size={14} aria-hidden="true" />New cases follow your app AI settings</li>
         <li><Lock size={14} aria-hidden="true" />Originals are copied and hashed</li>
-        <li><Sparkles size={14} aria-hidden="true" />AI is opt-in per case</li>
+        <li><Sparkles size={14} aria-hidden="true" />No AI requests until you allow AI in Settings</li>
       </ul>
     </div>
   </div>;
@@ -176,9 +176,11 @@ export function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRe
       <div className="search-box"><Search size={15} aria-hidden="true" /><input aria-label="Filter loaded evidence" placeholder={section === 'sources' ? 'Filter loaded file names…' : 'Filter loaded titles…'} value={query} onChange={event => setQuery(event.target.value)} />{query ? <button className="icon-button icon-button-sm" aria-label="Clear filter" onClick={() => setQuery('')}><X size={13} /></button> : null}</div>
       <span className="library-count" aria-live="polite">{filtered.toLocaleString()} shown of {(section === 'sources' ? sourceTotal : recordTotal).toLocaleString()}</span>
     </div>
-    {section === 'sources' && kinds.length > 1 ? <div className="chip-row library-kinds" role="group" aria-label="Filter by kind">
+    {/* An active kind filter keeps its chips even if a refresh drops the older
+        pages that held other kinds, so "All kinds" always clears it. */}
+    {section === 'sources' && (kinds.length > 1 || kind !== '') ? <div className="chip-row library-kinds" role="group" aria-label="Filter by kind">
       <button className={`chip ${kind === '' ? 'selected' : ''}`} aria-pressed={kind === ''} onClick={() => setKind('')}>All kinds</button>
-      {kinds.map(option => <button key={option} className={`chip ${kind === option ? 'selected' : ''}`} aria-pressed={kind === option} onClick={() => setKind(option)}><SourceIcon kind={option} size={13} />{option}</button>)}
+      {(kind && !kinds.includes(kind) ? [...kinds, kind] : kinds).map(option => <button key={option} className={`chip ${kind === option ? 'selected' : ''}`} aria-pressed={kind === option} onClick={() => setKind(option)}><SourceIcon kind={option} size={13} />{option}</button>)}
     </div> : null}
     {section === 'sources' ? (filteredSources.length ? <div className="library-table" role="list" aria-label="Sources">
       <div className="library-head" aria-hidden="true"><span>Name</span><span>Status</span><span>Size</span><span>Added</span></div>
@@ -360,7 +362,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
       {([['all', 'All'], ['working', 'Working'], ['attention', 'Needs attention'], ['completed', 'Completed & cancelled']] as const).map(([value, label]) => <button key={value} className={`chip ${jobFilter === value ? 'selected' : ''}`} aria-pressed={jobFilter === value} onClick={() => setJobFilter(value)}>{label}</button>)}
     </div> : null}
     {reviewOpen ? <article className={`card job-card ${review?.review_state === 'failed' ? 'is-attention' : ''}`}>
-      <div className="card-header"><span className="icon-tile" aria-hidden="true"><Sparkles size={16} /></span><div className="job-card-title"><strong className="card-title">Automatic case analysis</strong><span className="job-kind">AI review of prepared sources</span></div><div className="card-actions"><StatusPill state={review?.review_state === 'running' ? 'running' : review?.review_state === 'failed' ? 'failed' : 'interrupted'} label={review!.review_state} small /></div></div>
+      <div className="card-header"><span className="icon-tile" aria-hidden="true"><Sparkles size={16} /></span><div className="job-card-title"><strong className="card-title">Automatic case analysis</strong><span className="job-kind">AI review of prepared sources</span></div><div className="card-actions"><StatusPill state={review?.review_state === 'running' ? 'running' : review?.review_state === 'failed' ? 'failed' : 'paused'} label={review!.review_state} small /></div></div>
       {review?.review_state === 'failed' ? <p className="small danger-text">Saved progress is available. Continue in a new task to keep uncertain requests untouched.</p> : null}
       {review?.review_state === 'paused' ? <p className="small muted">The review is paused. Saved progress remains available.</p> : null}
       <div className="job-card-footer">
@@ -395,7 +397,8 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
           ? <div className="job-progress" role="progressbar" aria-valuenow={Math.round(percent)} aria-valuemin={0} aria-valuemax={100} aria-label={`${job.name} progress`}><div className="job-progress-fill" style={{ width: `${percent}%` }} /></div>
           : !progressByJob[job.id] ? <p className="job-activity"><span className="activity-dot" aria-hidden="true" />Running · no measurable units reported yet</p> : null
           : null}
-        {job.error ? <p role="alert" className="job-error">{job.error}</p> : null}
+        {/* A cancelled job keeps its reason ("Cancelled by user") as a neutral note, not an error alert. */}
+        {job.error ? job.status === 'cancelled' ? <p className="small muted">{job.error}</p> : <p role="alert" className="job-error">{job.error}</p> : null}
         <div className="job-card-footer">
           <code>Receipt {job.id}</code>
           <div className="job-actions">
@@ -567,7 +570,9 @@ export default function App() {
       const mod = event.ctrlKey || event.metaKey;
       if (mod && event.key.toLowerCase() === 'k') { event.preventDefault(); setPalette(value => !value); return; }
       if (mod && event.key === ',') { event.preventDefault(); setPalette(false); openSettings(); return; }
-      if (event.altKey && !mod && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !typing) { event.preventDefault(); moveInHistory(event.key === 'ArrowLeft' ? -1 : 1); return; }
+      // A focused widget that already used the arrow (tablists, playback
+      // controls) prevents default; history must not act on the same press.
+      if (event.altKey && !mod && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !typing && !event.defaultPrevented) { event.preventDefault(); moveInHistory(event.key === 'ArrowLeft' ? -1 : 1); return; }
       if (typing || !mod) return;
       const key = event.key.toLowerCase();
       if (key === 'b') { event.preventDefault(); setSidebarOpen(value => !value); return; }
@@ -695,7 +700,22 @@ export default function App() {
       else localStorage.removeItem(`vislex-conversation:${snapshot.id}`);
     }
   }
-  function closeTab(id: string) { setOpenTabs(tabs => { const rest = tabs.filter(tab => tab.id !== id); if (selection?.id === id) setSelection(rest.at(-1) ?? null); return rest; }); }
+  function closeTab(id: string) { setOpenTabs(tabs => { const rest = tabs.filter(tab => tab.id !== id); if (selection?.id === id) setSelection(rest.at(-1) ?? null); return rest; }); keepFocusAfterClose(); }
+  /** Every close path (Delete, Ctrl+W, the tab menu, the close buttons) can
+   *  remove the focused tab or hide the whole viewer pane. Once that commits,
+   *  move a dropped focus to the selected tab, or to the current workspace's
+   *  rail button when no file remains open. */
+  function keepFocusAfterClose() {
+    window.requestAnimationFrame(() => {
+      const active = document.activeElement;
+      const pane = document.querySelector<HTMLElement>('.main-panel');
+      const dropped = !active || active === document.body || !active.isConnected || (!!pane?.hidden && pane.contains(active));
+      if (!dropped) return;
+      const list = pane && !pane.hidden ? pane.querySelector('[role="tablist"]') : null;
+      const target = list?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? list?.querySelector<HTMLElement>('[role="tab"]') ?? document.querySelector<HTMLElement>('.rail .rail-button.active');
+      target?.focus();
+    });
+  }
   function removeChat(id: string) {
     run(async () => {
       const caseId = snapshot?.id;
@@ -906,7 +926,7 @@ export default function App() {
           {views.map(item => <Tooltip key={item.id} text={item.label} shortcut={item.shortcut} side="right">
             <motion.button
               className={`rail-button ${view === item.id ? 'active' : ''} ${item.id === 'jobs' && needsAttention ? 'attention' : ''}`}
-              aria-label={item.label}
+              aria-label={item.id === 'jobs' && needsAttention ? `${item.label}, ${needsAttention} need${needsAttention === 1 ? 's' : ''} attention` : item.label}
               aria-current={view === item.id}
               onClick={() => setView(item.id)}
               whileTap={{ scale: 0.94 }}
@@ -1017,9 +1037,8 @@ export default function App() {
               const index = tabs.indexOf(document.activeElement as HTMLElement);
               if (index < 0) return;
               if (event.key === 'Delete') {
-                // Close the focused tab and keep focus in the strip (on the newly selected tab).
+                // Close the focused tab; closeTab keeps focus in the strip (on the newly selected tab).
                 event.preventDefault(); closeTab(openTabs[index].id);
-                window.requestAnimationFrame(() => (list.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? list.querySelector<HTMLElement>('[role="tab"]'))?.focus());
                 return;
               }
               const next = nextTabIndex(event.key, index, tabs.length);
@@ -1129,7 +1148,7 @@ export default function App() {
           {modal === 'backup' ? <label className="field-label">Confirm passphrase<input type="password" autoComplete="off" value={passwordConfirm} onChange={event => setPasswordConfirm(event.target.value)} aria-invalid={passphraseMismatch} aria-describedby="passphrase-note" />{passphraseMismatch ? <span className="field-hint danger-text" role="alert">The passphrases do not match.</span> : null}</label> : null}
           <p className="field-hint" id="passphrase-note">Keep this passphrase separately. There is no password recovery. Backups include originals, notes, historical revisions, and restricted material.</p>
         </> : null}
-        {modal === 'create' ? <p className="field-hint">Choose a local folder on the next step. The case starts offline. Do not use a shared or cloud-synchronized working directory.</p> : null}
+        {modal === 'create' ? <p className="field-hint">Choose a local folder on the next step. The case uses your app AI settings, so it stays offline unless you have allowed AI there. Do not use a shared or cloud-synchronized working directory.</p> : null}
         <div className="modal-footer"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className={`primary ${modal === 'delete' ? 'danger-action' : ''}`} disabled={busy || (modal !== 'backup' && !name.trim()) || ((modal === 'backup' || modal === 'restore') && !password) || (modal === 'backup' && password !== passwordConfirm) || (modal === 'delete' && name.trim().toLowerCase() !== (snapshot?.name ?? '').trim().toLowerCase())} onClick={() => run(performModal)}>{busy ? 'Working…' : modal === 'note' ? 'Create file' : modal === 'delete' ? 'Delete case' : 'Continue'}{modal === 'delete' ? null : <ArrowRight size={14} />}</button></div>
       </dialog> : null}
 

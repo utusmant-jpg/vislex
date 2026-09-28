@@ -76,9 +76,13 @@ it('opens revision history as a panel, marks the current revision and closes it'
   expect(restore[0].hasAttribute('disabled')).toBe(true);
   expect(restore[1].hasAttribute('disabled')).toBe(false);
   expect(panel.textContent).toContain('Current');
-  fireEvent.click(screen.getByRole('button',{name:'Close revision history'}));
+  const close=screen.getByRole('button',{name:'Close revision history'});
+  close.focus();
+  fireEvent.click(close);
   expect(screen.queryByRole('complementary',{name:'Revision history'})).toBeNull();
   expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  // Focus returns to the toggle instead of falling to the document.
+  expect(document.activeElement).toBe(toggle);
 });
 
 it('closes the history panel when revisions cannot be read, routing the error to the caller',async()=>{

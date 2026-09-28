@@ -39,7 +39,10 @@
 .settings-nav-item.selected .settings-nav-icon { color: var(--accent-text); }
 .settings-nav-item .settings-nav-label { position: relative; z-index: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-nav .settings-nav-close { margin-top: 8px; justify-content: flex-start; width: 100%; height: 30px; }
-@media (forced-colors: active) { .settings-nav-item.selected { outline: 2px solid Highlight; outline-offset: -2px; } }
+@media (forced-colors: active) {
+  .settings-nav-item.selected { outline: 2px solid Highlight; outline-offset: -2px; }
+  .theme-option.selected { outline: 2px solid Highlight; outline-offset: -2px; }
+}
 
 /* ------------------------------------------------------------ body */
 .settings-body { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; }

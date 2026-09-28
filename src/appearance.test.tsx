@@ -101,3 +101,21 @@ it('opens a context menu from the keyboard and restores focus on Escape', () => 
   expect(screen.queryByRole('menu')).toBeNull();
   expect(document.activeElement).toBe(trigger);
 });
+
+it('moves DOM focus to each highlighted menu item so arrow keys are announced', () => {
+  const second = vi.fn();
+  render(<ContextMenu items={[{ label: 'Open evidence', onSelect: vi.fn() }, 'separator', { label: 'Rename', onSelect: second }]}><button>Evidence row</button></ContextMenu>);
+  const trigger = screen.getByRole('button', { name: 'Evidence row' });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: 'F10', shiftKey: true });
+  const menu = screen.getByRole('menu', { name: 'Actions' });
+  expect(document.activeElement).toBe(menu);
+  fireEvent.keyDown(menu, { key: 'ArrowDown' });
+  expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Open evidence' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+  expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Rename' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'Enter' });
+  expect(second).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+});

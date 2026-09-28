@@ -183,6 +183,7 @@
 .agent-panel .turn-notice { margin: 10px 0 0; max-width: 68ch; }
 .turn-notice-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .turn-notice-body > strong { font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--text-1); }
+.turn-notice-reason { font-size: var(--text-sm); color: var(--text-2); overflow-wrap: anywhere; }
 .turn-detail > summary { width: fit-content; cursor: pointer; font-size: var(--text-caption); color: var(--text-2); }
 .turn-detail > summary:hover { color: var(--text-1); }
 .turn-detail pre {

@@ -28,7 +28,7 @@ it('opens a chat citation against the historical wording after active text chang
   render(<Journey />);
   const chip=screen.getByTitle('evidence:source-one#R1L5-L5');
   fireEvent.mouseEnter(chip);
-  await waitFor(() => expect(api).toHaveBeenCalledWith('read_extract_revision', { source_id: 'source-one', revision: 1, start: 5, count: 10 }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('read_extract_revision', { source_id: 'source-one', revision: 1, start: 5, count: 1 }));
   fireEvent.click(chip);
   await waitFor(() => expect(api).toHaveBeenCalledWith('read_extract_revision', { source_id: 'source-one', revision: 1, start: 5, count: 200 }));
   expect(screen.getByText('Old exact wording')).toBeTruthy();
@@ -116,4 +116,35 @@ it('shows saved comparison and work product fields while keeping provenance avai
   fireEvent.click(screen.getByText('Proposed paragraph'));
   expect(screen.getByText('A proposed sentence')).toBeTruthy();
   expect(screen.getAllByText('Raw provenance')).toHaveLength(2);
+});
+
+it('previews only the cited lines and stays open while the pointer crosses to the card', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    api.mockImplementation(async (action: string, args: { start: number; count: number }) => action === 'read_extract_revision'
+      ? { text: Array.from({ length: args.count }, (_, index) => `Line ${args.start + index} text`).join('\n'), start: args.start, revision: 2 }
+      : undefined);
+    const onOpen = vi.fn();
+    render(<Markdown text="See evidence:source-one#R2L5-L5" onSource={onOpen} />);
+    const chip = screen.getByTitle('evidence:source-one#R2L5-L5');
+    fireEvent.mouseEnter(chip);
+    await vi.advanceTimersByTimeAsync(400);
+    const card = await screen.findByRole('group', { name: 'Cited lines preview' });
+    expect(api).toHaveBeenCalledWith('read_extract_revision', { source_id: 'source-one', revision: 2, start: 5, count: 1 });
+    await waitFor(() => expect(within(card).getByText('Line 5 text')).toBeTruthy());
+    expect(within(card).queryByText('Line 6 text')).toBeNull();
+    expect(within(card).getByText(/^Line 5 · extraction revision 2 · as cited$/)).toBeTruthy();
+    fireEvent.mouseLeave(chip);
+    fireEvent.mouseEnter(card);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(screen.getByRole('group', { name: 'Cited lines preview' })).toBe(card);
+    fireEvent.click(within(card).getByRole('button', { name: 'Open in viewer' }));
+    expect(onOpen).toHaveBeenCalledWith('source-one', 'R2L5-L5');
+    expect(screen.queryByRole('group', { name: 'Cited lines preview' })).toBeNull();
+    fireEvent.mouseEnter(chip);
+    await vi.advanceTimersByTimeAsync(400);
+    fireEvent.mouseLeave(chip);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(screen.queryByRole('group', { name: 'Cited lines preview' })).toBeNull();
+  } finally { vi.useRealTimers(); }
 });

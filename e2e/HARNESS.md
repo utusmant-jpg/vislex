@@ -28,7 +28,9 @@ Behaviour the backend models because the app depends on it:
 - Paging returns 50 rows with the native cursors; `source_page`/`record_page` refuse a stale `generation`/`audit_seq`.
 - `start_task` checks offline state, the text grant and the selected profile's grant, then streams `agent-progress` deltas. `stop_task` pauses the task with `Stopped by user` (as `agent::pause` does) and stops the stream.
 - `open_case` bumps the session epoch and is refused while a task runs.
-- `save_app_ai_settings` drops app grants when the default vendor changes without `grants_for_provider`.
+- `save_app_ai_settings` drops app grants when the default vendor changes without `grants_for_provider`; `save_ai_settings` (a case override) applies the same rule and refuses images without text, as `providers::apply_app_settings` does. `set_case_ai_scope` to `app` requires configured app AI (`Set up app AI first`).
+- `resume_task` and `continue_paused_task` refuse during chat preparation (`setChatPause`) and for a task that is not paused. `continue_paused_task` also requires the default vendor's key, and keeps the paused task's conversation unless that chat was deleted.
+- Cancelling a job records the backend's reason on it (`Cancelled by user`, `Processing cancelled before publication`), as `transcription::cancel` and `processing.rs` do.
 
 ## Running
 
@@ -74,6 +76,7 @@ for a completed call), `axeViolations`.
 - `harness-case-switch.spec.ts` — held responses from the previous case are discarded; stale-epoch events and deltas are ignored; switch refusal is surfaced.
 - `harness-jobs.spec.ts` — determinate progress only with reported totals; verbatim units; indeterminate fallback; recovery receipts and error routing.
 - `harness-navigation.spec.ts` — every workspace; large-case paging; every source kind in the viewer; open-file tabs by keyboard; palette results by keyboard; records, findings and investigation surfaces.
+- `harness-focus.spec.ts` — keyboard focus survives every tab close path, Send/Stop and modal errors (toasts render inside an open modal dialog); Alt+Arrow on a tab moves only the tab; checkbox focus rings and highlighted menu items under forced colours; a cancelled job's reason is neutral.
 - `harness-a11y.spec.ts` — axe WCAG 2.x A/AA over native-only states in dark and light, with a named baseline of known violations in shared code.
 
 Known app issues are encoded as `test.fail` (the test passes while the issue

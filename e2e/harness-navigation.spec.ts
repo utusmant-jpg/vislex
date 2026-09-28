@@ -25,6 +25,9 @@ test('every workspace is reachable by keyboard and rail with the synthetic case'
   await expect(page.getByRole('heading', { name: 'Jobs & issues' })).toBeVisible();
   // The jobs badge conveys attention with text, not colour alone.
   await expect(page.locator('.matter-status')).toHaveAccessibleName(/Case status: 4 jobs in progress/);
+  // The rail button's name carries the count its (aria-hidden) badge shows.
+  const badge = await rail.locator('.rail-badge').textContent();
+  await expect(rail.locator('.rail-button.attention')).toHaveAccessibleName(new RegExp(`^Jobs, ${badge === '9+' ? '\\d+' : badge} needs? attention$`));
 });
 
 test('evidence library pages a large case with the generation and audit guard', async ({ page }) => {

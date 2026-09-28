@@ -339,6 +339,7 @@
 @media (forced-colors: active) {
   .chat-item.selected { outline: 2px solid Highlight; outline-offset: -2px; }
   .file-tab.active { outline: 2px solid Highlight; outline-offset: -2px; }
+  .palette-item.selected { outline: 2px solid Highlight; outline-offset: -2px; }
   .pane-divider::after { opacity: 1; }
 }
 

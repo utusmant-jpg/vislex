@@ -240,3 +240,22 @@ it('opens on the section and case scope a settings link names, and falls back to
   expect(screen.getByRole('heading', { level: 2, name: 'Privacy & offline' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Save app AI settings' })).toBeTruthy();
 });
+
+it('keeps keyboard focus on Load models while the catalogue loads', async () => {
+  const prior = api.getMockImplementation()!;
+  let finish: (models: unknown[]) => void = () => {};
+  api.mockImplementation(async (action: string, args?: unknown) => action === 'provider_models' ? new Promise(resolve => { finish = resolve; }) : prior(action, args));
+  render(<SettingsDialog snapshot={snapshot} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} />);
+  const load = (await screen.findAllByRole('button', { name: 'Load models' }))[0];
+  await waitFor(() => expect(load.hasAttribute('disabled')).toBe(false));
+  load.focus();
+  fireEvent.click(load);
+  await waitFor(() => expect(load.getAttribute('aria-disabled')).toBe('true'));
+  expect(load.hasAttribute('disabled')).toBe(false);
+  expect(document.activeElement).toBe(load);
+  fireEvent.click(load);
+  expect(api.mock.calls.filter(([action]) => action === 'provider_models')).toHaveLength(1);
+  finish([{ id: 'synthetic-model', name: 'Synthetic model' }]);
+  await waitFor(() => expect(load.hasAttribute('aria-disabled')).toBe(false));
+  expect(document.activeElement).toBe(load);
+});

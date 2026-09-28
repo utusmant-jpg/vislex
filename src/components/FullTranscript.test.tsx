@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 import {afterEach,expect,it,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
-import FullTranscript, {captionParts,highlightMatches} from './FullTranscript';
+import FullTranscript, {captionParts,forgetCorrectionDrafts,highlightMatches} from './FullTranscript';
 
 const api=vi.hoisted(()=>vi.fn());
 vi.mock('../bridge',async()=>({...await vi.importActual<typeof import('../bridge')>('../bridge'),api,native:true}));
 vi.mock('./SpeakerTurns',()=>({default:()=>null}));
-afterEach(()=>{cleanup();api.mockReset();});
+afterEach(()=>{cleanup();api.mockReset();forgetCorrectionDrafts();});
 
 it('loads long transcript segments in bounded pages and seeks to a later segment',async()=>{
   api.mockImplementation((action:string,args:Record<string,unknown>)=>{
@@ -123,4 +123,43 @@ it('follows playback to a new line without undoing manual paging while the playi
   view.rerender(<FullTranscript {...props} currentTime={700.5}/>);
   await waitFor(()=>expect(screen.getByText('Showing 651–850 of 1000 transcript lines.')).toBeTruthy());
   expect(screen.getByRole('button',{name:/Seek to 700 seconds: Spoken line 700/}).getAttribute('aria-current')).toBe('true');
+});
+
+it('does not re-render rows for playback ticks while hidden, and catches up when shown',async()=>{
+  const time=(seconds:number)=>`00:00:${String(seconds).padStart(2,'0')}.000`;
+  const content=Array.from({length:5},(_,index)=>`[track 0 · ${time(index)} → ${time(index+1)}] Spoken line ${index}`).join('\n');
+  api.mockImplementation((action:string)=>action==='full_transcription_status'?Promise.resolve({job_id:'hidden-run',status:'complete',error:'',progress:{},result:{segmented:false,metadata:{container_origin_seconds:0,tracks:[{index:0,origin_seconds:0}]}},record:{content}}):Promise.resolve(null));
+  const props={caseId:'hidden-case',sourceId:'hidden-source',run:(fn:()=>Promise<void>)=>{void fn();},refresh:async()=>undefined};
+  const view=render(<FullTranscript {...props} onSeek={vi.fn()} open={false} currentTime={0.5}/>);
+  const line=(index:number)=>screen.getByRole('button',{name:new RegExp(`Spoken line ${index}$`),hidden:true});
+  await waitFor(()=>expect(line(0).getAttribute('aria-current')).toBe('true'));
+  // A new callback identity and a later playback time: the hidden rows stay as they were.
+  view.rerender(<FullTranscript {...props} onSeek={vi.fn()} open={false} currentTime={3.5}/>);
+  expect(line(0).getAttribute('aria-current')).toBe('true');
+  expect(line(3).getAttribute('aria-current')).toBeNull();
+  view.rerender(<FullTranscript {...props} onSeek={vi.fn()} open currentTime={3.5}/>);
+  expect(line(3).getAttribute('aria-current')).toBe('true');
+  expect(line(0).getAttribute('aria-current')).toBeNull();
+});
+
+it('keeps an unsaved correction proposal when the viewer unmounts for a tab switch',async()=>{
+  api.mockImplementation((action:string)=>{
+    if(action==='full_transcription_status')return Promise.resolve({job_id:'draft-run',status:'complete',error:'',progress:{},result:{segmented:true,segments:1,metadata:{container_origin_seconds:0,tracks:[{index:0,origin_seconds:0}]}},record:{content:'Saved transcript summary'}});
+    if(action==='transcript_segment_page')return Promise.resolve({segments:[{ordinal:0,track:0,start:1,end:2,text:'Opening words'}],next_cursor:null});
+    return Promise.resolve(null);
+  });
+  const props={caseId:'draft-case',sessionEpoch:2,sourceId:'draft-source',run:(fn:()=>Promise<void>)=>{void fn();},refresh:async()=>undefined,onSeek:vi.fn(),currentTime:0};
+  const first=render(<FullTranscript {...props}/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Suggest correction'}));
+  fireEvent.change(screen.getByRole('textbox',{name:'Correct segment 0'}),{target:{value:'Opening word'}});
+  fireEvent.change(screen.getByRole('textbox',{name:'Correction reason 0'}),{target:{value:'Checked against recording'}});
+  first.unmount();
+  render(<FullTranscript {...props}/>);
+  expect(((await screen.findByRole('textbox',{name:'Correct segment 0'})) as HTMLTextAreaElement).value).toBe('Opening word');
+  expect((screen.getByRole('textbox',{name:'Correction reason 0'}) as HTMLInputElement).value).toBe('Checked against recording');
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
+  cleanup();
+  render(<FullTranscript {...props}/>);
+  await screen.findByRole('button',{name:'Suggest correction'});
+  expect(screen.queryByRole('textbox',{name:'Correct segment 0'})).toBeNull();
 });

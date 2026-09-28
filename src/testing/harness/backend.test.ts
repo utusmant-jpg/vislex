@@ -162,6 +162,52 @@ describe('SyntheticBackend guards and paging', () => {
     expect(backend.appAi.settings).toMatchObject({ allow_text: false, allow_images: false });
   });
 
+  it('continues a paused task in its own conversation and refuses what desktop.rs refuses', async () => {
+    const { command, backend } = setup();
+    backend.setScenario({ autoStream: false });
+    const guard = { case_id: FIXTURE.caseA.id, session_epoch: 1 };
+    const { task_id, conversation_id } = await command<{ task_id: string; conversation_id: string }>('start_task', { ...guard, prompt: 'pause me', parent_task_id: null, viewer_context: null });
+    await expect(command('continue_paused_task', { ...guard, task_id })).rejects.toBe('Only paused work can continue in a new task');
+    await expect(command('resume_task', { ...guard, task_id })).rejects.toBe('Only paused tasks can resume');
+    await command('stop_task', { ...guard, task_id });
+    backend.setChatPause('Preparing case files before chat is available');
+    await expect(command('continue_paused_task', { ...guard, task_id })).rejects.toBe('Preparing case files before chat is available');
+    await expect(command('resume_task', { ...guard, task_id })).rejects.toBe('Preparing case files before chat is available');
+    backend.setChatPause(null);
+    const continued = await command<{ task_id: string; conversation_id: string }>('continue_paused_task', { ...guard, task_id });
+    expect(continued.task_id).not.toBe(task_id);
+    expect(continued.conversation_id).toBe(conversation_id);
+    // A deleted chat does not hide the recovery task: it gets its own conversation.
+    await command('stop_task', { ...guard, task_id: continued.task_id });
+    await command('delete_conversation', { ...guard, conversation_id });
+    const recovered = await command<{ task_id: string; conversation_id: string }>('continue_paused_task', { ...guard, task_id: continued.task_id });
+    expect(recovered.conversation_id).toBe(recovered.task_id);
+  });
+
+  it('applies the case settings rules of providers::apply_app_settings and requires app AI for the app scope', async () => {
+    const { command, backend } = setup();
+    const guard = { case_id: FIXTURE.caseA.id, session_epoch: 1 };
+    const config = { provider: 'anthropic', execution: 'auto', review: 'standard', pool: [] };
+    await expect(command('save_ai_settings', { ...guard, config, settings: { offline: false, allow_text: false, allow_images: true, model: 'harness-model-beta' } }))
+      .rejects.toBe('Image analysis always sends accompanying text; grant text before images');
+    await command('save_ai_settings', { ...guard, config, settings: { offline: false, allow_text: true, allow_images: true, model: 'harness-model-beta' } });
+    expect(backend.active!.settings).toMatchObject({ allow_text: false, allow_images: false });
+    await command('save_ai_settings', { ...guard, config, settings: { offline: false, allow_text: true, allow_images: false, model: 'harness-model-beta' } });
+    expect(backend.active!.settings).toMatchObject({ allow_text: true });
+    await command('save_ai_settings', { ...guard, config: { ...config, provider: 'openai' }, grants_for_provider: 'openai', settings: { offline: false, allow_text: true, allow_images: false, model: 'harness-model-alpha' } });
+    expect(backend.active!.settings).toMatchObject({ allow_text: true });
+    backend.appAi.configured = false;
+    await expect(command('set_case_ai_scope', { ...guard, scope: 'app' })).rejects.toBe('Set up app AI first');
+  });
+
+  it('records the backend cancellation reason on cancelled jobs', async () => {
+    const { command, backend } = setup();
+    const guard = { case_id: FIXTURE.caseA.id, session_epoch: 1 };
+    const running = backend.active!.jobs.find(job => job.status === 'running' && job.kind !== 'full_audio')!;
+    await command('cancel_processing', { ...guard, job_id: running.id });
+    expect(backend.active!.jobs.find(job => job.id === running.id)).toMatchObject({ status: 'cancelled', error: 'Processing cancelled before publication' });
+  });
+
   it('holds a response computed at request time until released, and scripts failures', async () => {
     const { command, backend } = setup();
     backend.hold('case_summary');

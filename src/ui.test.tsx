@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { Combobox, ModelPicker, Tooltip, modelBadges, overlayHost } from './ui';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { Combobox, ModelPicker, ToastStack, Tooltip, modelBadges, notify, overlayHost } from './ui';
 import type { Snapshot } from './types';
 
 beforeAll(() => {
@@ -23,7 +23,7 @@ const snapshot = {
 
 it('lists each permitted model exactly once, under its own provider', () => {
   render(<ModelPicker snapshot={snapshot} selected={undefined} onSelect={vi.fn()} onManage={vi.fn()} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Model for your next message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Model for your next message: Configure AI' }));
   const options = screen.getAllByRole('option');
   expect(options.map(option => option.textContent?.split(/Default|Free/)[0])).toEqual(['gpt-synthetic', 'claude-synthetic', 'vendor/model:free']);
   expect(screen.getAllByRole('listbox')).toHaveLength(1);
@@ -35,7 +35,7 @@ it('lists each permitted model exactly once, under its own provider', () => {
 it('selects the highlighted model with Enter from the filter and restores focus on Escape', () => {
   const onSelect = vi.fn();
   render(<ModelPicker snapshot={snapshot} selected={undefined} onSelect={onSelect} onManage={vi.fn()} />);
-  const trigger = screen.getByRole('button', { name: 'Model for your next message' });
+  const trigger = screen.getByRole('button', { name: 'Model for your next message: Configure AI' });
   trigger.focus();
   fireEvent.click(trigger);
   const filter = screen.getByRole('combobox');
@@ -78,4 +78,20 @@ it('keeps overlays outside a dialog on the document body', () => {
   render(<Tooltip text="Synthetic tip"><button>Tip target</button></Tooltip>);
   fireEvent.focus(screen.getByRole('button', { name: 'Tip target' }));
   expect(screen.getByRole('tooltip').parentElement).toBe(document.body);
+});
+
+it('shows toasts inside an open modal dialog and returns them to the body when it closes', async () => {
+  const dialog = document.createElement('dialog');
+  dialog.setAttribute('open', '');
+  // happy-dom never matches :modal; a real showModal() dialog does.
+  dialog.matches = (selector: string) => selector === ':modal' || Element.prototype.matches.call(dialog, selector);
+  document.body.append(dialog);
+  render(<ToastStack />);
+  act(() => { notify.error('Synthetic save failed', 'detail'); });
+  const alert = await screen.findByRole('alert');
+  expect(dialog.contains(alert)).toBe(true);
+  act(() => { dialog.remove(); });
+  await waitFor(() => expect(screen.getByRole('alert').closest('dialog')).toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }));
+  expect(screen.queryByRole('alert')).toBeNull();
 });

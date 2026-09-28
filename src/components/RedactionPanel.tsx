@@ -9,10 +9,18 @@ type Derivative = { artifact_id: string; metadata: { mime: string; page?: number
 
 const round1 = (value: number) => Math.round(value * 10) / 10;
 
+// Marked rectangles survive switching or closing the file tab, which unmounts
+// the viewer; only an explicit, confirmed discard drops them. Memory only, for
+// this app session, like working-file drafts; never browser storage.
+const markedRectangles = new Map<string, { drawMode: boolean; boxes: Box[]; page: number }>();
+/** Test isolation: the kept rectangles are module state. */
+export function forgetMarkedRectangles() { markedRectangles.clear(); }
+
 export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }: { caseId?: string; sessionEpoch?: number; sourceId: string; kind: string }) {
-  const [drawMode, setDrawMode] = useState(false);
-  const [boxes, setBoxes] = useState<Box[]>([]);
-  const [page, setPage] = useState(1);
+  const scopeKey = `${caseId ?? ''}:${sessionEpoch ?? ''}:${sourceId}:${kind}`;
+  const [drawMode, setDrawMode] = useState(() => markedRectangles.get(scopeKey)?.drawMode ?? false);
+  const [boxes, setBoxes] = useState<Box[]>(() => markedRectangles.get(scopeKey)?.boxes ?? []);
+  const [page, setPage] = useState(() => markedRectangles.get(scopeKey)?.page ?? 1);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [baseImage, setBaseImage] = useState<string | null>(null);
   const [baseSize, setBaseSize] = useState<{ w: number; h: number } | null>(null); // PDF points, or image pixels
@@ -33,7 +41,6 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
   const cancelRef = useRef<HTMLButtonElement>(null);
   const ids = useId();
   useEffect(() => { if (confirm) cancelRef.current?.focus(); }, [confirm]);
-  const scopeKey = `${caseId ?? ''}:${sessionEpoch ?? ''}:${sourceId}:${kind}`;
   const scopeRef = useRef(scopeKey);
   scopeRef.current = scopeKey;
 
@@ -58,9 +65,15 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
   }
 
   useEffect(() => {
-    setDrawMode(false); setBoxes([]); setPage(1); setPageCount(null); setBaseImage(null); setBaseSize(null);
+    const kept = markedRectangles.get(scopeKey);
+    setDrawMode(kept?.drawMode ?? false); setBoxes(kept?.boxes ?? []); setPage(kept?.page ?? 1); setPageCount(null); setBaseImage(null); setBaseSize(null);
     setDrag(null); setOutputs([]); setReviewed([]); setNote(''); setBusy(null); setError(''); setAccepted(false); setSaved(''); setConfirm(null);
   }, [scopeKey]);
+
+  useEffect(() => {
+    if (boxes.length) markedRectangles.set(scopeKey, { drawMode, boxes, page });
+    else markedRectangles.delete(scopeKey);
+  }, [scopeKey, drawMode, boxes, page]);
 
   // Load the page (or corrected image) that boxes are drawn on.
   useEffect(() => {

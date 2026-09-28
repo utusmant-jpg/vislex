@@ -36,8 +36,12 @@ describe('settledAnnouncement', () => {
     expect(settledAnnouncement('running', { status: 'running', error: '' })).toBeNull();
     expect(settledAnnouncement('running', { status: 'complete', error: '' })).toBe('Response saved.');
     expect(settledAnnouncement('running', { status: 'paused', error: USER_STOP_REASON })).toBe('Response stopped.');
-    expect(settledAnnouncement('running', { status: 'failed', error: 'x' })).toBe('Response did not complete.');
-    expect(settledAnnouncement('running', { status: 'paused', error: APP_STOPPED_REASON })).toBe('Response interrupted.');
+    // Problems carry the backend's reason (its first line) into the announcement.
+    expect(settledAnnouncement('running', { status: 'failed', error: 'x' })).toBe('Response did not complete: x');
+    expect(settledAnnouncement('running', { status: 'failed', error: '' })).toBe('Response did not complete.');
+    expect(settledAnnouncement('running', { status: 'paused', error: APP_STOPPED_REASON })).toBe(`Response interrupted: ${APP_STOPPED_REASON}`);
+    expect(settledAnnouncement('running', { status: 'paused', error: 'Provider stopped before completing the response: quota\nraw body' })).toBe('Response paused: Provider stopped before completing the response: quota');
+    expect(settledAnnouncement('running', { status: 'paused', error: '' })).toBe('Response paused.');
   });
 });
 
@@ -62,9 +66,9 @@ describe('composerBlock', () => {
     expect(composerBlock({ ...base, native: false })?.reason).toBe('desktop');
     expect(composerBlock({ ...base, snapshot: { settings: { ...settings, offline: true, allow_text: false } } })).toMatchObject({ reason: 'offline', section: 'Privacy & offline', scope: 'case' });
     expect(composerBlock({ ...base, snapshot: { settings: { ...settings, allow_text: false } } })).toMatchObject({ reason: 'text-grant', section: 'Case permissions', scope: 'case', message: 'This case does not permit sending case text to AI.' });
-    expect(composerBlock({ ...base, accessKnown: false })).toMatchObject({ reason: 'access-route', section: 'Accounts & models' });
-    expect(composerBlock({ ...base, modelReady: false })).toMatchObject({ reason: 'no-model', section: 'Accounts & models' });
-    expect(composerBlock({ ...base, modelReady: false, subscriptionActive: true })).toMatchObject({ reason: 'subscription-model' });
+    expect(composerBlock({ ...base, accessKnown: false })).toMatchObject({ reason: 'access-route', section: 'Accounts & models', scope: 'case' });
+    expect(composerBlock({ ...base, modelReady: false })).toMatchObject({ reason: 'no-model', section: 'Accounts & models', scope: 'case' });
+    expect(composerBlock({ ...base, modelReady: false, subscriptionActive: true })).toMatchObject({ reason: 'subscription-model', scope: 'case' });
     expect(composerBlock({ ...base, preparing: true })).toEqual({ reason: 'preparing', message: 'Preparing case files before chat is available.' });
   });
 

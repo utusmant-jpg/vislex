@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { AudioLines, Info, LocateFixed, Search } from 'lucide-react';
 import SpeakerTurns from './SpeakerTurns';
 import { api, native } from '../bridge';
@@ -29,7 +29,28 @@ export function highlightMatches(text:string,query:string){
 }
 function clock(seconds:number){const milliseconds=Math.round(Math.max(0,seconds)*1000);return `${String(Math.floor(milliseconds/3600000)).padStart(2,'0')}:${String(Math.floor(milliseconds/60000)%60).padStart(2,'0')}:${String(Math.floor(milliseconds/1000)%60).padStart(2,'0')}.${String(milliseconds%1000).padStart(3,'0')}`;}
 
-export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, refresh, onSeek, currentTime, open = true }: { open?: boolean; onSeek: (time: number) => void; currentTime: number; sourceId: string; caseId?:string; sessionEpoch?:number; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
+// An unsaved correction proposal survives switching or closing the file tab,
+// which unmounts the viewer. Memory only, for this app session, like
+// working-file drafts; never browser storage. Tied to the transcript run it
+// was drafted against.
+const correctionDrafts = new Map<string, { run: string | null; ordinal: number; text: string; reason: string }>();
+/** Test isolation: drafts are module state. */
+export function forgetCorrectionDrafts() { correctionDrafts.clear(); }
+
+type FullTranscriptProps = { open?: boolean; onSeek: (time: number) => void; currentTime: number; sourceId: string; caseId?:string; sessionEpoch?:number; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> };
+
+/** The transcript stays mounted while the dock is collapsed or shows another
+ *  tool (so searches and drafts survive), but a hidden transcript skips the
+ *  per-tick re-render of up to 200 rows and the speaker turns: playback time
+ *  and fresh callback identities are ignored until it is shown again. */
+function hiddenPropsEqual(previous: FullTranscriptProps, next: FullTranscriptProps) {
+  if (previous.open !== false || next.open !== false) return false;
+  return previous.sourceId === next.sourceId && previous.caseId === next.caseId && previous.sessionEpoch === next.sessionEpoch;
+}
+
+export default memo(FullTranscript, hiddenPropsEqual);
+
+function FullTranscript({ sourceId, caseId, sessionEpoch, run, refresh, onSeek, currentTime, open = true }: FullTranscriptProps) {
   const [state, setState] = useState<State | null>(null);
   const [version, setVersion] = useState(0);
   const [model, setModel] = useState('tiny');
@@ -44,10 +65,19 @@ export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, re
   const [segmentCursor,setSegmentCursor]=useState<number|null>(null);
   const [segmentError,setSegmentError]=useState('');
   const [loadingSegments,setLoadingSegments]=useState(false);
-  const [editingOrdinal,setEditingOrdinal]=useState<number|null>(null);
-  const [correctionText,setCorrectionText]=useState('');
-  const [correctionReason,setCorrectionReason]=useState('');
+  const draftKey=`${caseId}:${sessionEpoch}:${sourceId}`;
+  const [editingOrdinal,setEditingOrdinal]=useState<number|null>(()=>correctionDrafts.get(draftKey)?.ordinal??null);
+  const [correctionText,setCorrectionText]=useState(()=>correctionDrafts.get(draftKey)?.text??'');
+  const [correctionReason,setCorrectionReason]=useState(()=>correctionDrafts.get(draftKey)?.reason??'');
   const segmentKey=useRef('');
+  const runId=state?.job_id??null;
+  useEffect(()=>{
+    const kept=correctionDrafts.get(draftKey);
+    // A draft made against another transcript run does not carry over to this one.
+    if(runId&&kept?.run&&kept.run!==runId){correctionDrafts.delete(draftKey);setEditingOrdinal(null);return;}
+    if(editingOrdinal===null)correctionDrafts.delete(draftKey);
+    else correctionDrafts.set(draftKey,{run:runId??kept?.run??null,ordinal:editingOrdinal,text:correctionText,reason:correctionReason});
+  },[draftKey,runId,editingOrdinal,correctionText,correctionReason]);
   const transcriptRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!native) return;

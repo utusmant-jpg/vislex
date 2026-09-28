@@ -197,12 +197,15 @@ describe('chat composer interaction', () => {
     expect(screen.getByRole('button', { name: 'Resume work' })).toBeTruthy();
   });
 
-  it('keeps raw failure detail behind a disclosure and drafts a retry without sending', () => {
-    const failed = { ...task('failed-task', 'current-chat'), prompt: 'Which sources mention the van?', status: 'failed', error: 'Provider returned an error: rate limit' };
+  it('states the failure reason inline, keeps raw detail behind a disclosure and drafts a retry without sending', () => {
+    const failed = { ...task('failed-task', 'current-chat'), prompt: 'Which sources mention the van?', status: 'failed', error: 'Provider returned an error: rate limit\n{"raw":"synthetic provider body"}' };
     panel(snapshot([failed]), 'current-chat');
     expect(screen.getByText('This response did not complete.')).toBeTruthy();
-    const detail = screen.getByText('Provider returned an error: rate limit').closest('details')!;
+    const reason = screen.getByText('Provider returned an error: rate limit', { selector: '.turn-notice-reason' });
+    expect(reason.closest('details')).toBeNull();
+    const detail = screen.getByText(/synthetic provider body/).closest('details')!;
     expect(detail.open).toBe(false);
+    expect(detail.textContent).toContain('Provider returned an error: rate limit');
     expect(detail.textContent).toContain('Receipt: failed-task');
     fireEvent.click(screen.getByRole('button', { name: 'Edit and ask again' }));
     expect((screen.getByRole('textbox', { name: 'Agent task' }) as HTMLTextAreaElement).value).toBe('Which sources mention the van?');
@@ -231,6 +234,17 @@ describe('chat composer interaction', () => {
     expect(region.textContent).toBe('');
     view.rerender(<AgentPanel snapshot={snapshot([{ ...running, status: 'paused', error: 'Stopped by user' }])} selection={null} conversationId="current-chat" refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={view.onConversation} />);
     await waitFor(() => expect(region.textContent).toBe('Response stopped.'));
+  });
+
+  it('announces a provider error pause assertively with its reason', async () => {
+    const running = task('live-task', 'current-chat');
+    const view = panel(snapshot([running]), 'current-chat');
+    const urgent = document.querySelector('[aria-live="assertive"]')!;
+    const polite = document.querySelector('[aria-live="polite"]')!;
+    view.rerender(<AgentPanel snapshot={snapshot([{ ...running, status: 'paused', error: 'Save an API key in Settings first' }])} selection={null} conversationId="current-chat" refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={view.onConversation} />);
+    await waitFor(() => expect(urgent.textContent).toBe('Response paused: Save an API key in Settings first'));
+    expect(polite.textContent).toBe('');
+    expect(screen.getByText('Save an API key in Settings first', { selector: '.turn-notice-reason' })).toBeTruthy();
   });
 
   it('announces a repeated outcome again when a second turn settles the same way', async () => {

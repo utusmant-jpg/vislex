@@ -8,7 +8,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { springs } from '../lib/motion';
 import { useVisLexRuntime } from '../chat/vislex-runtime';
-import { composerBlock, settingsPath, settledAnnouncement, turnOutcome, usageOf, type SettingsScope, type SettingsSection } from '../chat/turn-state';
+import { composerBlock, failureReason, needsAttention, settingsPath, settledAnnouncement, turnOutcome, usageOf, type SettingsScope, type SettingsSection } from '../chat/turn-state';
 import { listen } from '@tauri-apps/api/event';
 import { api, native } from '../bridge';
 import { caseSessionArgs } from '../caseSession';
@@ -165,7 +165,9 @@ function LiveResponse({ caseId, sessionEpoch, taskId, onSource, scroll, followin
   }, [live.text, following, scroll]);
   return <>
     {live.characters ? <div className="activity-live"><LoaderCircle size={13} className="spin" aria-hidden="true" /><span>{live.activity} · {live.characters.toLocaleString()} characters received</span></div> : null}
-    {native && !live.text && !live.characters ? <div className="live-waiting"><LoaderCircle size={13} className="spin" aria-hidden="true" /><span>Waiting for model output</span></div> : null}
+    {/* States only what was received: the backend may be running a tool, not
+        waiting on the model, and a remount starts with nothing received. */}
+    {native && !live.text && !live.characters ? <div className="live-waiting"><LoaderCircle size={13} className="spin" aria-hidden="true" /><span>{live.transmission && live.activity !== 'Receiving response' ? `${live.activity} requested · no response text yet` : 'No response output received yet'}</span></div> : null}
     {live.text ? <div className="live-answer">
       <p className="live-answer-caption"><CircleDashed size={12} aria-hidden="true" />Live draft — not yet citation-validated</p>
       <Markdown text={live.text} onSource={onSource} caret />
@@ -206,8 +208,9 @@ function Receipt({ id }: { id: string }) {
 }
 
 /** Stopped, paused, interrupted and failed turns each say what happened. A user
- *  Stop is neutral; only a failure uses the danger tone. Raw detail sits behind
- *  a disclosure. */
+ *  Stop is neutral; only a failure uses the danger tone. The backend's reason
+ *  (its first line) is always visible; the full text and receipt sit behind a
+ *  disclosure. */
 function TurnNotice({ turn }: { turn: Task }) {
   const outcome = turnOutcome(turn);
   if (outcome.kind === 'stopped') return <p className="turn-note"><CircleStop size={14} aria-hidden="true" /><span>{turn.error}.</span><Receipt id={turn.id} /></p>;
@@ -219,6 +222,7 @@ function TurnNotice({ turn }: { turn: Task }) {
       {failed ? <XCircle size={16} aria-hidden="true" /> : <AlertTriangle size={16} aria-hidden="true" />}
       <div className="turn-notice-body">
         <strong>{title}</strong>
+        {failureReason(turn.error) ? <p className="turn-notice-reason">{failureReason(turn.error)}</p> : null}
         <details className="turn-detail">
           <summary>Show details</summary>
           <pre>{turn.error || turn.status}</pre>
@@ -331,13 +335,14 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   // Announce once, politely, when a turn that was running settles. Each settle
   // gets a fresh sequence number so the live region's node is replaced even
   // when the text repeats (two completed turns both read "Response saved.").
-  const [announcement, setAnnouncement] = useState<{ text: string; seq: number }>({ text: '', seq: 0 });
+  const [announcement, setAnnouncement] = useState<{ text: string; seq: number; urgent: boolean }>({ text: '', seq: 0, urgent: false });
   const seenStatuses = useRef(new Map<string, string>());
   const turnSignature = turns.map(turn => `${turn.id}:${turn.status}:${turn.error.length}`).join('|');
   useEffect(() => {
     for (const turn of turns) {
       const message = settledAnnouncement(seenStatuses.current.get(turn.id), turn);
-      if (message) setAnnouncement(current => ({ text: message, seq: current.seq + 1 }));
+      // A turn that ends on a problem is announced assertively with its reason.
+      if (message) setAnnouncement(current => ({ text: message, seq: current.seq + 1, urgent: needsAttention(turn) }));
       seenStatuses.current.set(turn.id, turn.status);
     }
   }, [turnSignature]);
@@ -410,6 +415,20 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
       } finally { setSending(false); }
     });
   }
+
+  // Send is disabled while sending and then replaced by Stop, and Stop is
+  // replaced by a (disabled, empty-draft) Send, so the pressed control leaves
+  // the page. When it held focus, focus returns to the composer instead of
+  // falling to the document.
+  const actionHadFocus = useRef(false);
+  const noteActionFocus = (event: React.MouseEvent<HTMLButtonElement>) => { actionHadFocus.current = document.activeElement === event.currentTarget; };
+  useEffect(() => {
+    if (!actionHadFocus.current) return;
+    actionHadFocus.current = false;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected && !active.matches(':disabled')) return;
+    composer.current?.focus();
+  }, [running?.id, sending]);
 
   function stop() {
     if (!snapshot || !running) return;
@@ -554,19 +573,20 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
                 className="secondary stop-button"
                 data-size="sm"
                 aria-label="Stop response"
-                onClick={stop}
+                onClick={event => { noteActionFocus(event); stop(); }}
               ><Square size={11} fill="currentColor" aria-hidden="true" />Stop</button></Tooltip>
             : <Tooltip text={chatBlocked ? 'Waiting for case preparation' : 'Send message (Enter)'}><button
                 type="button"
                 className="send"
                 aria-label="Send message"
                 disabled={sendDisabled}
-                onClick={() => void runtime.thread.append({ role: 'user', content: [{ type: 'text', text: prompt }] })}
+                onClick={event => { noteActionFocus(event); void runtime.thread.append({ role: 'user', content: [{ type: 'text', text: prompt }] }); }}
               ><ArrowUp size={17} aria-hidden="true" /></button></Tooltip>}
         </div>
       </div>
       <p className="composer-foot">VisLex cites evidence for what it claims · Enter to send · Shift+Enter for a new line</p>
-      <div className="visually-hidden" aria-live="polite" aria-atomic="true">{announcement.text ? <span key={announcement.seq} data-seq={announcement.seq}>{announcement.text}</span> : null}</div>
+      <div className="visually-hidden" aria-live="polite" aria-atomic="true">{announcement.text && !announcement.urgent ? <span key={announcement.seq} data-seq={announcement.seq}>{announcement.text}</span> : null}</div>
+      <div className="visually-hidden" aria-live="assertive" aria-atomic="true">{announcement.text && announcement.urgent ? <span key={announcement.seq} data-seq={announcement.seq}>{announcement.text}</span> : null}</div>
     </div>
   </section>
   </AssistantRuntimeProvider>;

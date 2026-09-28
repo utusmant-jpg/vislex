@@ -117,6 +117,8 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
   const [codexLimits, setCodexLimits] = useState('');
   const [codexBusy, setCodexBusy] = useState(false);
   const [codexError, setCodexError] = useState('');
+  // Load models and Save mark themselves aria-disabled (their handlers ignore
+  // repeat presses) rather than disabled while busy, so they keep keyboard focus.
   const busy = saving || Object.values(loading).some(Boolean);
   const sessionArgs = snapshot ? caseSessionArgs(snapshot.id, snapshot.session_epoch) : {};
   function showPreferences(next: Preferences) {
@@ -337,7 +339,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                 </legend>
                 <div className="settings-key-row">
                   <input aria-label={`${providerNames[provider]} API key`} type="password" autoComplete="off" value={keys[provider] ?? ''} disabled={loading[provider]} onChange={e => setKeys(s => ({ ...s, [provider]: e.target.value }))} placeholder={stored[provider] ? 'Key saved in Windows Credential Manager' : 'Paste API key'} />
-                  <button type="button" className="secondary" disabled={!native || loading[provider] || (!stored[provider] && !keys[provider]?.trim())} onClick={() => void loadModels(provider)}>{loading[provider] ? 'Loading…' : keys[provider]?.trim() ? 'Save key & load models' : 'Load models'}</button>
+                  <button type="button" className="secondary" disabled={!native || (!loading[provider] && !stored[provider] && !keys[provider]?.trim())} aria-disabled={loading[provider] || undefined} onClick={() => void loadModels(provider)}>{loading[provider] ? 'Loading…' : keys[provider]?.trim() ? 'Save key & load models' : 'Load models'}</button>
                   {stored[provider] ? <button type="button" className="icon-button" aria-label={`Remove saved ${providerNames[provider]} key`} title="Remove stored key" onClick={() => void removeKey(provider)}><Trash2 size={15} /></button> : null}
                 </div>
                 {catalogErrors[provider] ? <p role="alert" className="small danger-text">{catalogErrors[provider]}</p> : null}
@@ -448,7 +450,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
         {isAiSection ? <footer className="settings-footer">
           {grantNotice && section !== 'Case permissions' ? <p className="settings-footer-warning" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>Saving changes the default company and clears case grants. <button type="button" className="settings-link" onClick={() => setSection('Case permissions')}>Review case permissions</button></span></p> : null}
           {error ? <p role="alert" className="small danger-text">{error}</p> : null}
-          <div className="settings-footer-actions"><span className="settings-footer-scope">{scope === 'app' ? 'Saving updates app AI settings' : 'Saving updates this case only'}</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>Cancel</button><button type="button" className="primary" disabled={!native || busy || (scope === 'app' && !appPreferences)} onClick={() => void save()}><Save size={15} />{saving ? 'Saving…' : scope === 'app' ? 'Save app AI settings' : 'Save case AI override'}</button></div>
+          <div className="settings-footer-actions"><span className="settings-footer-scope">{scope === 'app' ? 'Saving updates app AI settings' : 'Saving updates this case only'}</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>Cancel</button><button type="button" className="primary" disabled={!native || (scope === 'app' && !appPreferences)} aria-disabled={busy || undefined} onClick={() => void save()}><Save size={15} />{saving ? 'Saving…' : scope === 'app' ? 'Save app AI settings' : 'Save case AI override'}</button></div>
         </footer> : null}
       </div>
     </div>

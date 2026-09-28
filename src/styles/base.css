@@ -27,7 +27,7 @@ button {
     border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard),
     opacity var(--dur-fast) var(--ease-standard);
 }
-button:disabled { opacity: .45; cursor: not-allowed; }
+button:disabled, button[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 input, textarea, select {
   color: var(--text-1); background: var(--field); border: 1px solid var(--border-control);
   border-radius: var(--radius-md); padding: 0 10px; min-height: var(--control-h);
@@ -35,7 +35,9 @@ input, textarea, select {
 }
 textarea { padding: 8px 10px; line-height: var(--leading-ui); }
 input:hover:not(:disabled), textarea:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--text-3); }
-input:focus-visible, textarea:focus-visible, select:focus-visible {
+/* Text fields show focus with their border and halo. Checkboxes, radios and
+   ranges draw no such border, so they keep the solid ring below. */
+input:not([type=checkbox], [type=radio], [type=range]):focus-visible, textarea:focus-visible, select:focus-visible {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
@@ -97,6 +99,7 @@ time, .tabular, .media-time, .line-number, .caption-time { font-variant-numeric:
 }
 
 @media (forced-colors: active) {
-  :focus-visible { outline: 2px solid CanvasText; }
+  /* As specific as the field rule above, so fields keep a ring here too. */
+  :focus-visible, input:not([type=checkbox], [type=radio], [type=range]):focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid CanvasText; }
   .pill, .chip.selected, .citation { border: 1px solid CanvasText; }
 }

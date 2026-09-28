@@ -308,7 +308,7 @@ it('discards a refresh from the previous case after switching projects', async (
   api.mockImplementation(async (action:string)=>action==='snapshot'?(++reads===1?old:late):action==='open_case'?next:action==='storage_usage'?{}:null);
   render(<App/>);
   await screen.findAllByText('Synthetic case');
-  fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
+  fireEvent.click(screen.getByRole('button',{name:/^Jobs(, \d+ needs? attention)?$/}));
   fireEvent.click(await screen.findByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
   // Recent cases open from the titlebar case switcher (was a sidebar project list).
@@ -330,7 +330,7 @@ it('keeps the latest same-case refresh when an earlier request returns last', as
   api.mockImplementation(async (action:string)=>action==='snapshot'?(++reads===1?initial:reads===2?earlier:newest):action==='storage_usage'?{}:null);
   render(<App/>);
   await screen.findAllByText('Synthetic case');
-  fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
+  fireEvent.click(screen.getByRole('button',{name:/^Jobs(, \d+ needs? attention)?$/}));
   fireEvent.click(await screen.findByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
   fireEvent.click(screen.getAllByRole('button',{name:'Retry index from saved progress'})[0]);

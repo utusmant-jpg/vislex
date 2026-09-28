@@ -33,14 +33,31 @@ export function turnOutcome(turn: Pick<Task, 'status' | 'error'>): TurnOutcome {
 /** One polite announcement when a turn that was running settles. */
 export function settledAnnouncement(previousStatus: string | undefined, turn: Pick<Task, 'status' | 'error'>): string | null {
   if (previousStatus !== 'running' || turn.status === 'running') return null;
-  switch (turnOutcome(turn).kind) {
+  const outcome = turnOutcome(turn);
+  const reason = needsAttention(turn) ? failureReason(turn.error) : '';
+  const withReason = (text: string) => reason ? `${text}: ${reason}` : `${text}.`;
+  switch (outcome.kind) {
     case 'complete': return 'Response saved.';
     case 'stopped': return 'Response stopped.';
-    case 'paused': return 'Response paused.';
-    case 'interrupted': return 'Response interrupted.';
-    case 'failed': return 'Response did not complete.';
+    case 'paused': return withReason('Response paused');
+    case 'interrupted': return withReason('Response interrupted');
+    case 'failed': return withReason('Response did not complete');
     default: return null;
   }
+}
+
+/** A turn that ended on a problem the user must act on: a failure, an
+ *  interruption, or a pause for a reason other than a stop or chat preemption. */
+export function needsAttention(turn: Pick<Task, 'status' | 'error'>): boolean {
+  const outcome = turnOutcome(turn);
+  return outcome.kind === 'failed' || outcome.kind === 'interrupted' || (outcome.kind === 'paused' && outcome.pill === 'needs-attention');
+}
+
+/** The reason as the backend wrote it, reduced to its first line so it can be
+ *  shown and announced inline; the full text stays behind a disclosure. */
+export function failureReason(error: string): string {
+  const line = error.split('\n').map(part => part.trim()).find(Boolean) ?? '';
+  return line.length > 240 ? `${line.slice(0, 239)}…` : line;
 }
 
 export type { SettingsSection };
@@ -65,10 +82,13 @@ export function composerBlock({ native, snapshot, accessKnown, subscriptionActiv
   if (!native) return { reason: 'desktop', message: 'AI chat runs in the VisLex desktop app. This preview cannot send messages.' };
   if (snapshot.settings.offline) return { reason: 'offline', message: 'Offline mode is on, so no AI requests are sent for this case.', section: 'Privacy & offline', scope: 'case' };
   if (!snapshot.settings.allow_text) return { reason: 'text-grant', message: 'This case does not permit sending case text to AI.', section: 'Case permissions', scope: 'case' };
-  if (!accessKnown) return { reason: 'access-route', message: 'The AI access route for this case could not be read.', section: 'Accounts & models' };
+  // These are read from the open case, so the link opens the case's own
+  // settings: editing app settings would not change a case with an override,
+  // and would change every case that inherits them.
+  if (!accessKnown) return { reason: 'access-route', message: 'The AI access route for this case could not be read.', section: 'Accounts & models', scope: 'case' };
   if (!modelReady) return subscriptionActive
-    ? { reason: 'subscription-model', message: 'Choose a ChatGPT subscription model and effort before sending.', section: 'Accounts & models' }
-    : { reason: 'no-model', message: 'No configured model is permitted to receive case text.', section: 'Accounts & models' };
+    ? { reason: 'subscription-model', message: 'Choose a ChatGPT subscription model and effort before sending.', section: 'Accounts & models', scope: 'case' }
+    : { reason: 'no-model', message: 'No configured model is permitted to receive case text.', section: 'Accounts & models', scope: 'case' };
   if (preparing) return { reason: 'preparing', message: 'Preparing case files before chat is available.' };
   return null;
 }

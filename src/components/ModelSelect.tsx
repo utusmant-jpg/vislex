@@ -2,6 +2,11 @@ import { ChevronDown, LoaderCircle } from 'lucide-react';
 import { Combobox, modelBadges } from '../ui';
 import type { ModelOption } from '../types';
 
+/** The clear row's value. cmdk never highlights an item whose value is '', and
+ *  the value also takes part in filtering, so it is a symbol no model id or
+ *  typed filter contains; it maps back to '' on selection. */
+const CLEAR_VALUE = '\u2205';
+
 /** Searchable single-select used for model catalogues and other long option
  *  lists. Keeps the accessible name of the native <select> it replaced; a saved
  *  value missing from the list stays visible as "(saved)" instead of being
@@ -18,7 +23,7 @@ export default function ModelSelect({ label, value, onChange, options, loading, 
   ];
   const clearLabel = placeholder ?? 'No selection';
   const items = [
-    ...(value ? [{ value: '', label: clearLabel }] : []),
+    ...(value ? [{ value: CLEAR_VALUE, label: clearLabel }] : []),
     ...rows.map(row => ({
       value: row.id,
       label: row.name === row.id ? row.id : row.name,
@@ -28,18 +33,20 @@ export default function ModelSelect({ label, value, onChange, options, loading, 
     })),
   ];
   const selected = rows.find(row => row.id === value);
+  const shown = loading ? `Loading ${noun}…` : selected ? (selected.name === selected.id || selected.saved || hideIds ? selected.name : `${selected.name} · ${selected.id}`) : (placeholder ?? 'Select a model');
   return <Combobox
     label={label}
     value={value}
     options={items}
+    valueText={shown}
     disabled={disabled}
     className="model-select"
     searchPlaceholder={`Filter ${noun}…`}
     emptyText={loading ? `Loading ${noun}…` : rows.length ? `No ${noun} match.` : (placeholder ?? `Load ${noun} to choose from.`)}
-    onChange={onChange}
+    onChange={next => onChange(next === CLEAR_VALUE ? '' : next)}
     trigger={() => <>
       <span className={`model-select-value ${value ? '' : 'placeholder'}`}>
-        {loading ? `Loading ${noun}…` : selected ? (selected.name === selected.id || selected.saved || hideIds ? selected.name : `${selected.name} · ${selected.id}`) : (placeholder ?? 'Select a model')}
+        {shown}
       </span>
       {loading ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
     </>}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronRight, CircleHelp, RefreshCw, TriangleAlert, X } from 'lucide-react';
 import { api, citationParts, native } from '../bridge';
 import { caseSessionArgs } from '../caseSession';
@@ -38,6 +38,19 @@ export default function QuestionDossier({ caseId, sessionEpoch, taskId, step, st
   const [refresh, setRefresh] = useState(0);
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [reviewing, setReviewing] = useState<number | null>(null);
+  // The review buttons are disabled while a decision saves, which drops keyboard
+  // focus to the document. Once the save settles, focus returns to that finding's
+  // review group (as EvidenceNotebook does): a neutral target, so a repeated
+  // Enter cannot record a different decision.
+  const content = useRef<HTMLDivElement>(null);
+  const [restoreFocus, setRestoreFocus] = useState<number | null>(null);
+  useEffect(() => {
+    if (restoreFocus === null || reviewing !== null) return;
+    setRestoreFocus(null);
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused.isConnected) return;
+    content.current?.querySelector<HTMLElement>(`[data-review-index="${restoreFocus}"]`)?.focus();
+  }, [restoreFocus, reviewing]);
   useEffect(() => {
     if (!open || !native) return;
     let active = true;
@@ -53,6 +66,7 @@ export default function QuestionDossier({ caseId, sessionEpoch, taskId, step, st
   }
   async function review(index: number, decision: string) {
     if (!view?.dossier || reviewing !== null) return;
+    if (content.current?.querySelector(`[data-review-index="${index}"]`)?.contains(document.activeElement)) setRestoreFocus(index);
     setReviewing(index); setError('');
     try { setView(await api<DossierView>('review_dossier_claim', { ...caseSessionArgs(caseId, sessionEpoch), task_id: taskId, revision: view.dossier.revision, claim_index: index, decision, note: notes[index] ?? '' })); }
     catch (reason) { setError(String(reason)); }
@@ -61,7 +75,7 @@ export default function QuestionDossier({ caseId, sessionEpoch, taskId, step, st
   const reviewed = view?.dossier ? view.human_reviews.filter(r => r && !r.stale).length : 0;
   return <details className="question-dossier" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary><ChevronRight size={15} className="dossier-chevron" aria-hidden="true" /><span>Question dossier · evidence, checks and gaps</span></summary>
-    {open ? <div className="dossier-content">
+    {open ? <div className="dossier-content" ref={content}>
       {!native ? <p className="field-hint">Question dossiers are available in the desktop app.</p> : null}
       {error ? <p role="alert" className="notice error"><TriangleAlert size={16} aria-hidden="true" /><span>Could not load this dossier: {error}</span></p> : null}
       {native && !view && !error ? <div className="dossier-loading"><p role="status" className="status-line"><span className="activity-dot" aria-hidden="true" />Loading evidence checks…</p><Skeleton height={12} /><Skeleton height={12} className="skeleton-short" /></div> : null}
@@ -86,7 +100,7 @@ export default function QuestionDossier({ caseId, sessionEpoch, taskId, step, st
               </dl>
               {view.human_reviews[index] ? <p className="dossier-your-review"><strong>Your review:</strong> {humanize(view.human_reviews[index]!.decision)}{view.human_reviews[index]!.stale ? ' · stale' : ''}{view.human_reviews[index]!.note ? ` — ${view.human_reviews[index]!.note}` : ''}</p> : <p className="dossier-your-review">No human review recorded.</p>}
               <label className="field-label dossier-note">Review note<textarea aria-label={`Review note for finding ${index + 1}`} value={notes[index] ?? ''} maxLength={4000} onChange={event => setNotes(previous => ({ ...previous, [index]: event.target.value }))}/></label>
-              <div className="dossier-review-actions" role="group" aria-label={`Record your review of finding ${index + 1}`}>{([['accepted', 'Accept finding', Check], ['needs_review', 'Needs review', CircleHelp], ['rejected', 'Reject finding', X]] as const).map(([decision, label, Icon]) => <button type="button" className={`secondary review-${decision}`} data-size="sm" key={decision} disabled={view.stale || reviewing !== null} onClick={() => void review(index, decision)}><Icon size={14} aria-hidden="true" />{label}</button>)}{reviewing === index ? <span className="status-line" role="status"><span className="activity-dot" aria-hidden="true" />Saving review…</span> : null}</div>
+              <div className="dossier-review-actions" role="group" tabIndex={-1} data-review-index={index} aria-label={`Record your review of finding ${index + 1}`}>{([['accepted', 'Accept finding', Check], ['needs_review', 'Needs review', CircleHelp], ['rejected', 'Reject finding', X]] as const).map(([decision, label, Icon]) => <button type="button" className={`secondary review-${decision}`} data-size="sm" key={decision} disabled={view.stale || reviewing !== null} onClick={() => void review(index, decision)}><Icon size={14} aria-hidden="true" />{label}</button>)}{reviewing === index ? <span className="status-line" role="status"><span className="activity-dot" aria-hidden="true" />Saving review…</span> : null}</div>
               {view.stale ? <p className="field-hint">Evidence changed after this dossier was saved. Recheck before recording a review.</p> : null}
             </div>
           </details>)}</div> : <p className="field-hint">No structured findings recorded yet.</p>}</section>

@@ -281,8 +281,8 @@ kbd, .kbd {
 .activity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: pulse 1.6s var(--ease-standard) infinite; }
 
 @media (forced-colors: active) {
-  .primary, .secondary, .chip, .segmented button.selected, .menu-item[data-highlighted], .combobox-item[data-selected="true"] { border: 1px solid ButtonText; }
-  .segmented button.selected, .chip.selected, .menu-item[data-highlighted], .combobox-item[data-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
+  .primary, .secondary, .chip, .segmented button.selected, .menu-item[data-highlighted], .menu-item.highlighted, .combobox-item[data-selected="true"] { border: 1px solid ButtonText; }
+  .segmented button.selected, .chip.selected, .menu-item[data-highlighted], .menu-item.highlighted, .combobox-item[data-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
   .progress-fill { background: Highlight; }
 }
 
