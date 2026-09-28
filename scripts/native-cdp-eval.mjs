@@ -3,8 +3,14 @@ import fs from 'node:fs';
 
 const [port, scriptPath, workspace, screenshotPath, mockPort] = process.argv.slice(2);
 if (!port || !scriptPath || !workspace || !screenshotPath) throw new Error('Native CDP arguments missing');
-const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json());
-const target = targets.find(item => item.type === 'page' && item.title === 'VisLex') ?? targets.find(item => item.type === 'page');
+// Only the application webview: never fall back to another page, such as the research pane.
+// The title appears once the document is parsed, so poll briefly for it.
+let target;
+for (let attempt = 0; attempt < 50 && !target; attempt++) {
+  const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json());
+  target = targets.find(item => item.type === 'page' && item.title === 'VisLex');
+  if (!target) await new Promise(resolve => setTimeout(resolve, 200));
+}
 if (!target?.webSocketDebuggerUrl) throw new Error('VisLex WebView target unavailable');
 const socket = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => {

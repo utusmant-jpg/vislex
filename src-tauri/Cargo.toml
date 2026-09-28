@@ -19,6 +19,9 @@ default = []
 desktop = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:keyring"]
 # Optional ChatGPT-subscription route through the pinned Codex sidecar. Off by default.
 subscription = ["desktop"]
+# Optional in-app research browser: an embedded child webview driven through WebView2's
+# in-process DevTools protocol. Off by default. `tauri/unstable` provides Window::add_child.
+research = ["desktop", "tauri/unstable", "dep:webview2-com", "dep:windows"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -41,12 +44,18 @@ tar = "0.4"
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio = { version = "1", features = ["time", "sync", "macros", "rt-multi-thread"] }
-tauri = { version = "2", optional = true , features = [] }
+# Pinned to a minor: Webview::with_webview exposes webview2-com types that Tauri may bump
+# in a minor release, and the app's own webview2-com/windows must match tauri-runtime-wry's.
+tauri = { version = "~2.12", optional = true , features = [] }
 tauri-plugin-dialog = { version = "2", optional = true }
 keyring = { version = "3", features = ["windows-native"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Isolation", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_SystemInformation"] }
+# Research browser only. Majors must equal those pinned by tauri-runtime-wry (checked by
+# scripts/verify-v4.ps1) so COM interface types from with_webview unify with ours.
+webview2-com = { version = "0.39", optional = true }
+windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Registry"] }
 
 [dev-dependencies]
 tempfile = "3"

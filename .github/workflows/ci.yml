@@ -63,6 +63,8 @@ jobs:
           mkdir -p src-tauri/resources/worker/placeholder
           echo placeholder > src-tauri/resources/worker/placeholder/README
           cargo check --manifest-path src-tauri/Cargo.toml --target "$CARGO_TARGET" --features desktop
+          # The research browser feature (tauri/unstable child webviews) must also compile off Windows.
+          cargo check --manifest-path src-tauri/Cargo.toml --target "$CARGO_TARGET" --features research
 
       - uses: actions/setup-python@v5
         with:

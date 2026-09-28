@@ -26,6 +26,7 @@ pub mod codex_sandbox {
     }
 }
 pub mod processing;
+pub mod research;
 pub mod review_progress;
 #[cfg(windows)]
 pub mod sandbox;

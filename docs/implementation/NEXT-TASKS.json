@@ -266,6 +266,166 @@
       "changes": ["Run import -> processing -> exact search -> historical original navigation -> cited finding -> review -> pinned export -> encrypted backup -> restore -> reopen, on the packaged build.", "Use 25-file/1-GB, 250-file/10-GB and 1000-plus-file/40-60-GB synthetic case tiers; name hardware, commit, model/runtime versions and peak disk/RAM. These are test targets, not existing measurements.", "Include abrupt exit, power/sleep interruption, disk full, cancelled jobs, revoked permission, late results, malformed evidence and old-schema cases. Consolidate docs so preview limitations and accepted release capabilities cannot conflict.", "Review every uninspected tracked source/config/test path in the generated inventory; generated/binary paths require provenance/content-specific checks. Optional ACP R20 is not a core-release prerequisite."],
       "acceptance": ["All mandatory gates have evidence; blocked/not-run remains blocked/not-run. Independent review signs off actual tested scope, not claims of perfection.", "No data loss, silent citation retargeting, unauthorized transmission or false human approval in the protected journey. Performance/quality outcomes meet predeclared measured thresholds."],
       "tests": ["Full frontend, Rust, Python, packaged sandbox/native, migration, export, backup/restore, accessibility and held-out evaluation suites", "Final diff, documentation, coverage-register and secret/license review on the exact candidate commit."]
+    },
+    {
+      "id": "R33", "title": "Research browser: Tauri 2.12 lockstep bump and webview hardening", "depends_on": [],
+      "files": ["src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "package.json", "package-lock.json", "src-tauri/capabilities/default.json", "src-tauri/src/desktop.rs", "scripts/check-webview-lockstep.mjs", "scripts/verify-v4.ps1"],
+      "problem": "Driving an embedded child webview needs tauri unstable and webview2-com/windows types matching tauri-runtime-wry; a window-scoped capability would grant IPC to every webview in the main window, and the evidence protocol serves any webview.",
+      "changes": ["Pin tauri ~2.12 (npm api/cli 2.12); add optional research feature (tauri/unstable, webview2-com 0.39, windows 0.62); keep windows-sys 0.61 for AppContainer code.", "Scope capabilities by webviews [\"main\"] only; serve evidence:// only to the main webview.", "Lockstep and capability checker wired into verify-v4.ps1. Design: Claude plan reactive-finding-dolphin (research browser), decisions D1-D5, 2026-09-28."],
+      "acceptance": ["Existing Rust and npm suites and native acceptance pass after the bump; desktop and research features compile; Cargo.lock holds one webview2-com and one non-sys windows version."],
+      "tests": ["cargo test --locked", "cargo check --features desktop", "cargo check --features research", "npm test", "node scripts/check-webview-lockstep.mjs", "scripts/native-acceptance.ps1"]
+    },
+    {
+      "id": "R34", "title": "Research browser spike: child webview and in-process CDP on WebView2", "depends_on": ["R33"],
+      "files": ["src-tauri/src/research/", "docs/implementation/RESEARCH-SPIKE-2026-10.md"],
+      "problem": "Isolated worlds, DOM/Input/Page CDP domains and add_child stability through WebView2 in-process CDP are unverified.",
+      "changes": ["Debug-only spike action records works or E_INVALIDARG and p50/p95 per CDP method, layout following, UI responsiveness, and IPC/evidence refusal inside the child."],
+      "acceptance": ["Spike report with measured results on named Windows 11 hardware and WebView2 runtime version."],
+      "tests": ["Native spike run recorded"]
+    },
+    {
+      "id": "R35", "title": "Research browser: vendored Playwright ariaSnapshot and token sizing", "depends_on": ["R33"],
+      "files": ["vendor/playwright-aria/", "scripts/build-research-injected.mjs", "src-tauri/resources/research/aria-snapshot.js", "THIRD_PARTY_NOTICES.md"],
+      "problem": "Page observation must be text-only, compact and independent of the experimental Accessibility domain.",
+      "changes": ["Reproducible Apache-2.0 attributed bundle from a pinned Playwright commit; hash pinned in Rust."],
+      "acceptance": ["Snapshot sizes recorded for results, document and KeyCite pages; ref reuse measured."],
+      "tests": ["Bundle reproducibility check"]
+    },
+    {
+      "id": "R36", "title": "Research browser: Westlaw DOM survey and selector map", "depends_on": ["R34"],
+      "files": ["src-tauri/resources/research/westlaw-playbook/"],
+      "problem": "Westlaw frame structure, virtualization and editorial containers are unknown.",
+      "changes": ["Frame tree; selectors for search, results, KeyCite labels, opinion body, editorial regions, document id, sign-on hosts and credential fields."],
+      "acceptance": ["Three documents validate against the map using a developer account and no case data."],
+      "tests": ["Selector map validation"]
+    },
+    {
+      "id": "R37", "title": "Research browser: Codex dynamic-tool and no-persistence probes", "depends_on": ["R33"],
+      "files": ["src-tauri/src/codex_case.rs", "docs/implementation/CODEX-SUBSCRIPTION-GATE.md"],
+      "problem": "The subscription route must not persist Westlaw tool text in CODEX_HOME before research tools are advertised to it.",
+      "changes": ["Extend the ignored dynamic-tool probe with research tool names; add a no-persistence probe."],
+      "acceptance": ["Gate document records probe results; subscription research stays disabled until it passes."],
+      "tests": ["Ignored codex_case tests with VISLEX_CODEX_BINARY"]
+    },
+    {
+      "id": "R38", "title": "Research module, Driver trait, CDP bridge and pane state", "depends_on": ["R34"],
+      "files": ["src-tauri/src/research/mod.rs", "src-tauri/src/research/driver.rs", "src-tauri/src/research/cdp.rs", "src-tauri/src/research/pane.rs", "src-tauri/src/lib.rs"],
+      "problem": "No isolated component drives the research webview.",
+      "changes": ["Grant, caps, allowlist and path boundary; FakeDriver; CdpBridge over CallDevToolsProtocolMethod with oneshot completion; PaneState with child webview lifecycle and debug-port refusal."],
+      "acceptance": ["Allowlist, path-boundary, debug-port and mock-substitution unit tests; ignored native bridge test."],
+      "tests": ["cargo test --features research"]
+    },
+    {
+      "id": "R39", "title": "Research pane commands, toggle grant and close triggers", "depends_on": ["R38"],
+      "files": ["src-tauri/src/desktop.rs", "src-tauri/tests/research.rs", "src-tauri/tests/core.rs"],
+      "problem": "The UI cannot open, lay out or clear the research pane, and the case toggle does not exist.",
+      "changes": ["Async open, close, layout and clear actions without the case lock; audited revisioned toggle refused offline; pane closes on case switch, offline and toggle off."],
+      "acceptance": ["Toggle survives backup/restore and is untouched by apply_app_settings; no case lock during add_child."],
+      "tests": ["cargo test core research"]
+    },
+    {
+      "id": "R40", "title": "Browser rail view: chat left, browser right", "depends_on": ["R39"],
+      "files": ["src/App.tsx", "src/features/research/", "src/components/SettingsDialog.tsx", "src/testing/harness/backend.ts", "e2e/harness-research.spec.ts", "e2e/accessibility.spec.ts"],
+      "problem": "There is no way to open the browser from the workspace.",
+      "changes": ["Rail Browser icon (Ctrl+6) renders BrowserView with AgentPanel on the left and a BrowserPane toolbar plus slot on the right; Settings toggle row; no warning or consent text (D4)."],
+      "acceptance": ["Interaction tests for the rail, layout messages, hiding and chat in the view; axe clean."],
+      "tests": ["npm test", "playwright harness-research"]
+    },
+    {
+      "id": "R41", "title": "Research browser: SECURITY.md network policy", "depends_on": ["R33"],
+      "files": ["docs/SECURITY.md"],
+      "problem": "The network policy omits the research pane and the Codex sidecar egress.",
+      "changes": ["Document research pane egress, profile folder as a secret store, no debugging port, editorial rule, provider relay and Codex internetClient."],
+      "acceptance": ["Security document matches enforced behaviour."],
+      "tests": ["Review"]
+    },
+    {
+      "id": "R42", "title": "Research snapshot, actions, Westlaw playbook and capture modules", "depends_on": ["R35", "R36", "R38"],
+      "files": ["src-tauri/src/research/snapshot.rs", "src-tauri/src/research/actions.rs", "src-tauri/src/research/westlaw.rs", "src-tauri/src/research/capture.rs"],
+      "problem": "Agent actions need scoped snapshots, safe typing and clicking, and sanitised capture.",
+      "changes": ["Versioned ref map, scoped snapshots, typing limited to search inputs, credential refusal, deny-list, pacing, playbook macros, sanitised opinion capture."],
+      "acceptance": ["FakeDriver unit tests including injection strings passed as data and editorial stripping."],
+      "tests": ["cargo test --features research"]
+    },
+    {
+      "id": "R43", "title": "Agent research tool family and guards", "depends_on": ["R42"],
+      "files": ["src-tauri/src/agent.rs", "src-tauri/tests/master_v4.rs", "src-tauri/tests/research.rs"],
+      "problem": "The agent has no browser tools; model-written authority objects lack retrieval provenance.",
+      "changes": ["research_tools and task_tools, prepare_research, seven arms with stash binding and caps; write_evidence_object refuses authority; reporter-citation guard."],
+      "acceptance": ["Strict schema guard; tools only when enabled; scripted FakeDriver round records receipts."],
+      "tests": ["cargo test master_v4 core research"]
+    },
+    {
+      "id": "R44", "title": "Research hook wiring, Stop and activity events", "depends_on": ["R43"],
+      "files": ["src-tauri/src/desktop.rs"],
+      "problem": "Browser jobs must run outside the case mutex and stop promptly.",
+      "changes": ["prepare_research in run_session raced with cancelled(); stash results; Stop sets the cancel flag and stops loading; activity events."],
+      "acceptance": ["Stop aborts within 250 ms with FakeDriver; offline and toggle-off abort."],
+      "tests": ["cargo test research"]
+    },
+    {
+      "id": "R45", "title": "Inline research steps and Stop in the chat", "depends_on": ["R40", "R44"],
+      "files": ["src/components/AgentPanel.tsx", "src/features/research/"],
+      "problem": "Users must see agent browser steps in the chat turn.",
+      "changes": ["TurnActivity labels for research tools with query text; toolbar and chat Stop."],
+      "acceptance": ["Steps appear within 1 s; keyboard-only pass; axe clean."],
+      "tests": ["npm test", "playwright harness-research"]
+    },
+    {
+      "id": "R46", "title": "Capture to citable evidence and task-created sources", "depends_on": ["R43"],
+      "files": ["src-tauri/src/case.rs", "src-tauri/src/research/mod.rs", "src-tauri/src/agent.rs", "src-tauri/tests/dossier.rs"],
+      "problem": "Captured authorities must become immutable, provenance-rich, citable sources for the capturing task only.",
+      "changes": ["Savepoint-safe publish_import and publish_extract; research::publish through the authority pipeline; tasks.scope append with the task_created_sources ledger and audit."],
+      "acceptance": ["Hash-preserving import, activated extract, authority provenance, scope grows only for the capturing task, failure rolls back."],
+      "tests": ["cargo test core dossier research"]
+    },
+    {
+      "id": "R47", "title": "Research export projection and editorial-free stores", "depends_on": ["R46"],
+      "files": ["src-tauri/src/work_products.rs", "src-tauri/tests/dossier.rs", "src-tauri/tests/backup_artifacts.rs"],
+      "problem": "Exports and work products must not carry Thomson Reuters editorial content or session data.",
+      "changes": ["Whitelisted authority projection in work products; export and backup tests over a synthetic capture."],
+      "acceptance": ["Dossier bundle is opinion-only; backup manifest has no browser profile path."],
+      "tests": ["cargo test dossier backup_artifacts"]
+    },
+    {
+      "id": "R48", "title": "Cite-check review gate for research authorities", "depends_on": ["R46", "R40"],
+      "files": ["src/features/research/ResearchCiteCheck.tsx"],
+      "problem": "Research authorities need an explicit reviewer checklist before acceptance.",
+      "changes": ["Four-item checklist and citation mismatch flag gate Accept."],
+      "acceptance": ["Interaction test; axe clean."],
+      "tests": ["npm test"]
+    },
+    {
+      "id": "R49", "title": "Research tools on the ChatGPT-subscription route", "depends_on": ["R37", "R44", "R46"],
+      "files": ["src-tauri/src/desktop.rs", "src-tauri/src/agent.rs"],
+      "problem": "The subscription route must reach the same tools without holding the case lock.",
+      "changes": ["task_tools in subscription_context; block_on execute outside the lock; routes enforced; closed-pane result text."],
+      "acceptance": ["Subscription tool test with FakeDriver; ignored signed-in probe."],
+      "tests": ["cargo test research", "ignored codex_case tests"]
+    },
+    {
+      "id": "R50", "title": "Research browser cross-origin frame sessions (conditional)", "depends_on": ["R42"],
+      "files": ["src-tauri/src/research/cdp.rs", "src-tauri/src/research/snapshot.rs"],
+      "problem": "Needed only if the DOM survey finds documents in cross-origin frames.",
+      "changes": ["Target.setAutoAttach flatten plus CallDevToolsProtocolMethodForSession."],
+      "acceptance": ["Two-frame fixture test."],
+      "tests": ["Ignored native test"]
+    },
+    {
+      "id": "R51", "title": "Research browser native mock journey and evidence", "depends_on": ["R45", "R47", "R48"],
+      "files": ["scripts/westlaw-mock/", "scripts/native-research-acceptance.ps1", "scripts/native-cdp-eval.mjs"],
+      "problem": "The integrated journey must run natively without a real Thomson Reuters host.",
+      "changes": ["Mock journey from pane to dossier export; CDP eval never selects the research target."],
+      "acceptance": ["Native acceptance JSON and screenshot recorded; manual Westlaw journey recorded separately."],
+      "tests": ["scripts/native-research-acceptance.ps1"]
+    },
+    {
+      "id": "R52", "title": "Citation extraction and optional existence check", "depends_on": ["R46"],
+      "files": ["workers/", "src-tauri/src/research/mod.rs"],
+      "problem": "The reporter-citation regex is approximate.",
+      "changes": ["eyecite worker operation; optional CourtListener existence check under its own grant."],
+      "acceptance": ["Fabricated-citation fixtures detected; lookup refused without grant; never marks support."],
+      "tests": ["Worker tests"]
     }
   ]
 }

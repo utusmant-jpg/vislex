@@ -1,0 +1,257 @@
+//! In-app research browser: an embedded child webview the user signs into, driven by the
+//! case agent through WebView2's in-process DevTools protocol (no debugging port).
+//!
+//! This module holds the policy that does not need a webview, so the ordinary test suite
+//! covers it: which navigations the pane and the agent may make, where the browser profile
+//! may live, and the per-task limits. The webview itself lives in `pane` and `cdp`.
+
+use std::path::Path;
+
+use anyhow::{ensure, Result};
+
+#[cfg(all(feature = "research", windows))]
+pub mod cdp;
+pub mod driver;
+#[cfg(feature = "research")]
+pub mod pane;
+#[cfg(all(feature = "research", windows, debug_assertions))]
+pub mod spike;
+
+/// Label of the research child webview. No capability may name it.
+pub const WEBVIEW_LABEL: &str = "research";
+pub const WESTLAW_HOME: &str = "https://1.next.westlaw.com/";
+
+/// Research hosts the agent may navigate to.
+pub const RESEARCH_HOSTS: &[&str] = &["1.next.westlaw.com", "next.westlaw.com", "www.westlaw.com"];
+/// Sign-in hosts the user may pass through; the agent never acts on them.
+pub const SIGN_ON_HOSTS: &[&str] = &["signon.thomsonreuters.com"];
+
+/// Where a navigation starts. The agent is held to a narrower list than the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Initiator {
+    User,
+    Agent,
+}
+
+/// Navigation policy for the pane. Constructed only by [`NavigationPolicy::resolve`], which
+/// refuses unsafe WebView2 configurations; `mock_origin` replaces every real host in debug
+/// test mode.
+#[derive(Clone, Debug)]
+pub struct NavigationPolicy {
+    sso_hosts: Vec<String>,
+    mock_origin: Option<String>,
+}
+
+impl NavigationPolicy {
+    /// Resolves the policy for this process. A DevTools switch or a profile override in the
+    /// WebView2 environment is refused, except in debug test mode against a loopback mock.
+    pub fn resolve(sso_hosts: Vec<String>) -> Result<Self> {
+        let arguments = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
+        #[cfg(debug_assertions)]
+        if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
+            if let Ok(mock) = std::env::var("VISLEX_RESEARCH_MOCK_URL") {
+                return Ok(Self { sso_hosts: Vec::new(), mock_origin: Some(mock_origin(&mock)?) });
+            }
+            ensure!(!debugging_port_requested(arguments.as_deref()), "Test mode opens the research pane only against VISLEX_RESEARCH_MOCK_URL");
+        }
+        ensure!(!debugging_port_requested(arguments.as_deref()), "The research browser does not open while a WebView2 debugging switch is configured");
+        // Measured in the R34 spike: this variable overrides the pane's own data directory,
+        // which would put the research session in the application webview's profile.
+        ensure!(std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none(), "The research browser does not open while WEBVIEW2_USER_DATA_FOLDER is set");
+        Ok(Self { sso_hosts, mock_origin: None })
+    }
+
+    pub fn is_mock(&self) -> bool {
+        self.mock_origin.is_some()
+    }
+
+    /// Whether a top-level navigation may proceed. Exact hosts only, https only, default port,
+    /// no credentials in the URL. With a mock origin, only that loopback origin is allowed.
+    pub fn allows(&self, url: &str, initiator: Initiator) -> bool {
+        let Ok(parsed) = url.parse::<reqwest::Url>() else { return false };
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return false;
+        }
+        if let Some(origin) = &self.mock_origin {
+            return parsed.origin().ascii_serialization() == *origin;
+        }
+        if parsed.scheme() != "https" || parsed.port().is_some() {
+            return false;
+        }
+        let Some(host) = parsed.host_str() else { return false };
+        let host = host.to_ascii_lowercase();
+        if RESEARCH_HOSTS.contains(&host.as_str()) {
+            return true;
+        }
+        initiator == Initiator::User
+            && (SIGN_ON_HOSTS.contains(&host.as_str()) || self.sso_hosts.iter().any(|allowed| allowed.eq_ignore_ascii_case(&host)))
+    }
+}
+
+/// A mock origin is accepted only for plain-http loopback addresses, so test mode can never
+/// point the pane at a real Thomson Reuters host.
+pub fn mock_origin(value: &str) -> Result<String> {
+    let parsed: reqwest::Url = value.parse()?;
+    ensure!(parsed.scheme() == "http", "The research mock must be an http loopback origin");
+    ensure!(
+        matches!(parsed.host_str(), Some("127.0.0.1") | Some("localhost") | Some("[::1]")),
+        "The research mock must be a loopback origin"
+    );
+    Ok(parsed.origin().ascii_serialization())
+}
+
+/// Whether WebView2 browser arguments ask for a DevTools listener. Any process could then
+/// drive the signed-in session. Chromium accepts `--`, `-` and `/` switch prefixes on
+/// Windows, so any mention of the switch name counts.
+pub fn debugging_port_requested(additional_browser_arguments: Option<&str>) -> bool {
+    additional_browser_arguments.is_some_and(|arguments| arguments.to_ascii_lowercase().contains("remote-debugging"))
+}
+
+/// Comparable form of a path: canonical when it exists (resolving `..`, junctions and short
+/// names), without the verbatim prefix, lower-cased, split into components.
+pub fn path_components(path: &Path) -> Vec<String> {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = resolved.to_string_lossy().replace('/', r"\");
+    let text = match text.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => text.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(text),
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for part in text.to_ascii_lowercase().split('\\').filter(|part| !part.is_empty() && *part != ".") {
+        if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part.to_string());
+        }
+    }
+    parts
+}
+
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    path_components(a) == path_components(b)
+}
+
+/// The browser profile holds the site session cookies: it must never sit inside a case
+/// folder (which backups and exports read) or contain one.
+pub fn ensure_profile_boundary(case_root: &Path, profile: &Path) -> Result<()> {
+    let (case_root, profile) = (path_components(case_root), path_components(profile));
+    ensure!(
+        !profile.starts_with(&case_root) && !case_root.starts_with(&profile),
+        "The research browser profile must be outside every case folder"
+    );
+    Ok(())
+}
+
+/// Per-task limits enforced in Rust regardless of model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Caps {
+    pub searches: u32,
+    pub documents: u32,
+    pub captures: u32,
+    pub typed_characters: u32,
+    pub min_navigation_interval_ms: u64,
+    pub navigations_per_minute: u32,
+}
+
+impl Default for Caps {
+    fn default() -> Self {
+        Self { searches: 30, documents: 60, captures: 25, typed_characters: 4_000, min_navigation_interval_ms: 1_500, navigations_per_minute: 20 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy() -> NavigationPolicy {
+        NavigationPolicy { sso_hosts: vec!["login.firm.example".into()], mock_origin: None }
+    }
+
+    #[test]
+    fn agent_reaches_only_research_hosts_over_default_https() {
+        let policy = policy();
+        assert!(policy.allows("https://1.next.westlaw.com/Search/Results.html?query=x", Initiator::Agent));
+        assert!(policy.allows("https://1.NEXT.Westlaw.COM:443/", Initiator::Agent));
+        for url in [
+            "https://1.next.westlaw.com./",
+            "https://1.next.westlaw.com%2eevil.example/",
+            "https://1.nеxt.westlaw.com/",
+            "http://1.next.westlaw.com/",
+            "https://1.next.westlaw.com:8443/",
+            "https://1.next.westlaw.com.evil.example/",
+            "https://evil.example/1.next.westlaw.com",
+            "https://user:pass@1.next.westlaw.com/",
+            "https://signon.thomsonreuters.com/",
+            "https://login.firm.example/",
+            "data:text/html,<p>x</p>",
+            "blob:https://1.next.westlaw.com/abc",
+            "javascript:alert(1)",
+            "file:///C:/Windows/win.ini",
+            "not a url",
+        ] {
+            assert!(!policy.allows(url, Initiator::Agent), "{url}");
+        }
+    }
+
+    #[test]
+    fn user_may_also_pass_sign_on_and_listed_sso_hosts() {
+        let policy = policy();
+        assert!(policy.allows("https://signon.thomsonreuters.com/?productid=CBT", Initiator::User));
+        assert!(policy.allows("https://LOGIN.firm.example/saml", Initiator::User));
+        assert!(!policy.allows("https://other.firm.example/", Initiator::User));
+        assert!(!policy.allows("http://signon.thomsonreuters.com/", Initiator::User));
+    }
+
+    #[test]
+    fn mock_origin_replaces_every_real_host() {
+        let policy = NavigationPolicy { sso_hosts: vec![], mock_origin: Some(mock_origin("http://127.0.0.1:9471/start").unwrap()) };
+        assert!(policy.allows("http://127.0.0.1:9471/results.html", Initiator::Agent));
+        assert!(!policy.allows("http://127.0.0.1:9472/", Initiator::Agent));
+        assert!(!policy.allows("https://1.next.westlaw.com/", Initiator::User));
+        assert!(mock_origin("https://1.next.westlaw.com/").is_err());
+        assert!(mock_origin("http://10.0.0.5:80/").is_err());
+        assert!(mock_origin("http://localhost:9471/").is_ok());
+        assert!(mock_origin("http://[::1]:9471/").is_ok());
+        assert!(mock_origin("http://127.0.0.1.evil.example/").is_err());
+    }
+
+    #[test]
+    fn debugging_port_detection() {
+        assert!(debugging_port_requested(Some("--remote-debugging-port=9222")));
+        assert!(debugging_port_requested(Some("-remote-debugging-port=9222")));
+        assert!(debugging_port_requested(Some("/remote-debugging-port=9222")));
+        assert!(debugging_port_requested(Some("--foo --REMOTE-DEBUGGING-PIPE")));
+        assert!(!debugging_port_requested(Some("--disable-features=msSmartScreenProtection")));
+        assert!(!debugging_port_requested(None));
+    }
+
+    #[test]
+    fn profile_must_not_overlap_a_case_folder() {
+        let case = Path::new(r"C:\Cases\Smith");
+        assert!(ensure_profile_boundary(case, Path::new(r"C:\Users\a\AppData\Local\org.localevidencedesk.app.research")).is_ok());
+        assert!(ensure_profile_boundary(case, Path::new(r"C:\Cases\Smith\profile")).is_err());
+        assert!(ensure_profile_boundary(case, Path::new(r"c:/cases/smith/")).is_err());
+        assert!(ensure_profile_boundary(case, Path::new(r"C:\Cases")).is_err());
+        assert!(ensure_profile_boundary(case, Path::new(r"C:\Cases\Smithson")).is_ok());
+        assert!(ensure_profile_boundary(case, Path::new(r"C:\Other\..\Cases\Smith\p")).is_err());
+        assert!(ensure_profile_boundary(case, Path::new(r"\\?\C:\Cases\Smith\p")).is_err());
+        assert!(same_path(Path::new(r"\\?\C:\A\B"), Path::new(r"c:/a/./b/")));
+    }
+
+    #[test]
+    fn fake_driver_records_calls_and_scripted_results() {
+        use driver::{Driver, FakeDriver};
+        let driver = FakeDriver::new(|method, params| match method {
+            "Runtime.evaluate" => Ok(serde_json::json!({"result": {"value": params["expression"].clone()}})),
+            _ => anyhow::bail!("unexpected {method}"),
+        });
+        let result = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+            let echoed = driver.call("Runtime.evaluate", serde_json::json!({"expression": "1+1"})).await.unwrap();
+            let refused = driver.call("Page.navigate", serde_json::json!({})).await;
+            (echoed, refused.is_err())
+        });
+        assert_eq!(result.0["result"]["value"], "1+1");
+        assert!(result.1);
+        assert_eq!(driver.methods(), ["Runtime.evaluate", "Page.navigate"]);
+    }
+}

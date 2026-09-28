@@ -502,6 +502,68 @@
     },
     "R32": {
       "state": "pending"
+    },
+    "R33": {
+      "state": "in_progress",
+      "branch": "claude/research-browser",
+      "base": "8b2fbee"
+    },
+    "R34": {
+      "state": "pending"
+    },
+    "R35": {
+      "state": "pending"
+    },
+    "R36": {
+      "state": "pending"
+    },
+    "R37": {
+      "state": "pending"
+    },
+    "R38": {
+      "state": "pending"
+    },
+    "R39": {
+      "state": "pending"
+    },
+    "R40": {
+      "state": "pending"
+    },
+    "R41": {
+      "state": "pending"
+    },
+    "R42": {
+      "state": "pending"
+    },
+    "R43": {
+      "state": "pending"
+    },
+    "R44": {
+      "state": "pending"
+    },
+    "R45": {
+      "state": "pending"
+    },
+    "R46": {
+      "state": "pending"
+    },
+    "R47": {
+      "state": "pending"
+    },
+    "R48": {
+      "state": "pending"
+    },
+    "R49": {
+      "state": "pending"
+    },
+    "R50": {
+      "state": "pending"
+    },
+    "R51": {
+      "state": "pending"
+    },
+    "R52": {
+      "state": "pending"
     }
   },
   "packaged_worker_and_acceptance_evidence": {

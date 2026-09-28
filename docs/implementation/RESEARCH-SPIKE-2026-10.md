@@ -1,0 +1,124 @@
+# Research browser spike (R33–R34)
+
+Branch `claude/research-browser`, base `8b2fbee`. Run 2026-09-28.
+
+## Environment
+
+| Item | Value |
+|---|---|
+| OS | Windows 11 Home, build 26200 |
+| Hardware | Snapdragon X X1E80100 (ARM64), 15.6 GB RAM. The x64 build runs under emulation, so latencies include emulation overhead. |
+| WebView2 runtime | 153.0.4234.48 (user agent reports Edg/153) |
+| Tauri stack | tauri 2.12.0, tauri-runtime-wry 2.12.0, wry 0.57.0, webview2-com 0.39.1, windows 0.62.2; `tauri/unstable` is enabled by the `research` feature |
+| Build | `npm exec tauri build -- --debug --features research --no-bundle` |
+
+## How it was run
+
+Both runs use only the synthetic loopback fixture `scripts/research-fixture-server.mjs`. No case data is involved and no real site is contacted.
+
+- **Port mode** (`scripts/native-research-spike.ps1`): uses the existing native-test setup, with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port` and `WEBVIEW2_USER_DATA_FOLDER` set. The main webview invokes the debug-only `research_spike` action. The run fails if the report says `ok: false`.
+- **Startup mode** (`scripts/native-research-spike-startup.ps1`): neither variable is set. The debug test-mode app runs the spike itself at startup, writes `artifacts/research-spike-startup.json`, and exits non-zero on failure. This is the configuration a user build has.
+
+The spike code is `src-tauri/src/research/spike.rs`. It is compiled only with `research` + Windows + `debug_assertions`; `cargo check --release --features research` passes without it. It runs only when `VISLEX_TEST_MODE=1` and a loopback `VISLEX_RESEARCH_MOCK_URL` are set.
+
+## Results (startup mode unless noted)
+
+**In-process DevTools protocol, no port.** Calls go through `Webview::with_webview` → `ICoreWebView2::CallDevToolsProtocolMethod`, 50 calls each:
+
+| Method | Works | p50 ms | p95 ms |
+|---|---|---|---|
+| `Runtime.evaluate` | yes | 0.29 | 0.61 |
+| `DOM.getDocument` | yes | 0.31 | 0.53 |
+| `DOM.describeNode` | yes | 0.30 | 0.49 |
+| `DOM.getBoxModel` | yes | 0.25 | 0.52 |
+| `DOM.getOuterHTML` | yes | 0.31 | 0.43 |
+
+These worked when called once:
+
+| Method | Time |
+|---|---|
+| `Page.enable` | – |
+| `Page.getFrameTree` | – |
+| `Page.captureSnapshot` (MHTML) | 6.5 ms; 75 ms in port mode |
+| `Accessibility.getFullAXTree` | 3.1 ms |
+| `DOMSnapshot.captureSnapshot` | 1.4 ms |
+| `Target.setAutoAttach` (flatten) | – |
+
+`Browser.getBrowserCommandLine` is refused ("--enable-automation not set"), so the effective switches cannot be read back.
+
+**UI thread.** 100 sequential calls: median 0.26 ms, p95 0.42 ms. `set_position`, `set_size`, `show` and `hide` all work, and a hidden webview still evaluates.
+
+**Isolated world.**
+- `Page.createIsolatedWorld` works.
+- `Runtime.callFunctionOn` in that world reads the DOM (it returned `document.title`).
+- A global set in the world is invisible to page script (`typeof` returns `undefined`).
+
+**Input.**
+- `DOM.focus` followed by `Input.insertText` types the query.
+- A trusted click works only if `Input.dispatchMouseEvent` sends `mouseMoved` before `mousePressed` and `mouseReleased`; without `mouseMoved` it did not register.
+- The `DOM.getBoxModel` centre hit-tests to the target button.
+- An element click through the isolated world also works, but the event is untrusted.
+
+**Isolation of the child webview.**
+- `window.__TAURI_INTERNALS__` exists in the research page, because Tauri injects it, so sites can detect the embedding.
+- `invoke('command', …)` from the research page is refused ("command not allowed"). The refusal comes from Tauri's rule for remote origins: the app has no command ACL manifest, so capability scoping alone does not gate app commands. The command handler now also rejects any webview label other than `main`. Native acceptance passed with that check in place, which confirms the app webview is labelled `main`.
+- **Framed-app probe.** The fixture page `/frame.html` embeds a same-origin control iframe and an iframe of `http://tauri.localhost/`, the VisLex UI.
+  - The control frame appears in `Page.getFrameTree`.
+  - The VisLex frame never does, so no VisLex execution context exists inside the research pane.
+  - The probe does not isolate which layer blocks the frame: `frame-ancestors 'none'`, now in the app CSP, or protocol handling in the child webview. The label check remains as a further layer.
+- A `fetch` of `http://evidence.localhost/…` from the research page fails. The evidence handler also refuses any webview label other than `main`.
+- `window.open` is denied, and no second research webview is created.
+
+**Navigation.**
+- `on_navigation` governs top-level navigations, including CDP `Page.navigate`: a navigation to a host outside the allowlist returned `net::ERR_ABORTED` and the URL did not change.
+- wry registers only `NavigationStarting`, so iframe navigations are **not** filtered by this allowlist.
+- An allowed navigation raised `Page.frameNavigated` through `GetDevToolsProtocolEventReceiver`.
+- `Page.stopLoading` works.
+- An allowed `Page.navigate` took about 1.7 s end-to-end on the fixture.
+
+**Profile isolation.**
+- In startup mode, WebView2's effective user data folder, read through `ICoreWebView2Environment7::UserDataFolder`, is the pane's own profile, which holds a separate `EBWebView`.
+- In port mode, `WEBVIEW2_USER_DATA_FOLDER` overrides the pane's `data_directory`.
+- In port mode, no `DevToolsActivePort` file appears in the profile even though a port is active, so an active listener cannot be detected from the profile.
+
+The pane therefore enforces the following:
+- **Before creation:** it refuses to open while the environment contains a debugging switch (any `-`, `--` or `/` prefix) or `WEBVIEW2_USER_DATA_FOLDER`, or while the WebView2 `AdditionalBrowserArguments` or `UserDataFolder` registry policies exist.
+- **After creation:** it confirms the effective folder equals its own profile and closes the pane otherwise.
+
+Both checks are skipped only in debug test mode against a loopback fixture.
+
+## R33 regression evidence on the same build
+
+| Check | Result |
+|---|---|
+| `cargo test --locked` (default features) | 245 passed, 0 failed (native/packaged suites ignored as usual); research unit tests: 6 passed |
+| `cargo check --locked --features desktop` | passed |
+| `cargo check --locked --features research` | passed |
+| `cargo check --release --features research` | passed |
+| `npm run build` | passed |
+| `npm test` | 294 passed (30 files) |
+| `node scripts/check-webview-lockstep.mjs` | the app and tauri-runtime-wry both use webview2-com 0.39.1 and windows 0.62.2; capabilities are scoped to the main webview |
+| `scripts/native-acceptance.ps1` on the research build | passed |
+
+The lockstep checker was also negative-tested. It fails when:
+- the app's `windows` version differs from tauri-runtime-wry's;
+- a capability is window-scoped;
+- a capability names another webview;
+- a capability allows remote URLs.
+
+Native acceptance used `VISLEX_WORKER_PATH` pointing at the main checkout's built worker. The journey covered import, extraction, chat, lexical search, DOCX/PDF export, and the cross-case and unreviewed-redaction denials. `semantic_results: 0` matches the previous 2.11 run from the same day.
+
+## Decisions taken from the spike
+
+- **Page observation:** an injected script in an isolated world, with refs keyed by `backendNodeId`, as planned. `Accessibility.getFullAXTree` also works and can serve as a cross-check, but the plan does not depend on it.
+- **Clicks:** send `mouseMoved`, then `mousePressed`, then `mouseReleased` at the box-model centre, after a hit-test confirms the element at that point.
+- **Configuration refusals:** the pane refuses unsafe configurations before creation and verifies its effective profile after creation. It does not rely on a `DevToolsActivePort` marker.
+- **Iframe navigations:** subframes are not covered by the navigation allowlist. Captures and agent actions must therefore operate on the main frame, or on frames whose origin the agent tools check explicitly (R42/R50).
+
+## Not run / open
+
+- The Linux `cargo check` for `desktop` and `research` has been added to CI but was not run locally.
+- R35 (ariaSnapshot sizing) and R36 (the real Westlaw DOM survey) are not started.
+- Cross-origin iframe sessions (`CallDevToolsProtocolMethodForSession`) were not exercised.
+- Which layer blocks the framed-app probe is not isolated.
+- Only one machine was measured, an ARM64 host running x64 under emulation.

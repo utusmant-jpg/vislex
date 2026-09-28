@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://evidence.localhost evidence:; media-src 'self' blob: http://evidence.localhost evidence:; frame-src 'self' blob: http://evidence.localhost evidence:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://evidence.localhost evidence:; media-src 'self' blob: http://evidence.localhost evidence:; frame-src 'self' blob: http://evidence.localhost evidence:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {

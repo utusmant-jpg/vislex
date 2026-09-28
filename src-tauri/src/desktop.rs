@@ -125,7 +125,19 @@ fn stored_provider_key(provider: crate::providers::Provider) -> anyhow::Result<S
 
 #[tauri::command]
 
-async fn command(app: tauri::AppHandle, action: String, args: Value) -> Result<Value, String> {
+async fn command(app: tauri::AppHandle, webview: tauri::Webview, action: String, args: Value) -> Result<Value, String> {
+    // The app has no command ACL manifest, so Tauri checks app commands only by origin. A
+    // local-origin frame inside another webview (the research pane) must not reach them.
+    if webview.label() != "main" {
+        return Err("Commands are limited to the application webview".into());
+    }
+    // R34 spike: debug test builds only, against a loopback fixture; never in a release build.
+    #[cfg(all(feature = "research", windows, debug_assertions))]
+    if action=="research_spike" && std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {
+        let start=text(&args,"url").map_err(|e|e.to_string())?.to_string();
+        let profile=PathBuf::from(text(&args,"profile").map_err(|e|e.to_string())?);
+        return crate::research::spike::run(app, start, profile).await.map_err(|e|format!("{e:#}"));
+    }
     if action=="fetch_public_authority" {
         let prepared=(||->anyhow::Result<_>{let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_ref().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before authority retrieval");require_session_epoch(&state,&args)?;anyhow::ensure!(!case.settings()?.offline,"Offline mode enabled");let url=text(&args,"url")?.to_string();crate::authority::validate_url(&url)?;Ok((case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),url))})();
         let (case_id,epoch,url)=prepared.map_err(|e|e.to_string())?;
@@ -1756,7 +1768,7 @@ mod provider_key_fence_tests {
 
 pub fn run() {
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
 
         .plugin(tauri_plugin_dialog::init())
 
@@ -1770,13 +1782,39 @@ pub fn run() {
             pending_app_ai: std::sync::atomic::AtomicBool::new(false),
             semantic_indexing: Mutex::new(std::collections::HashMap::new()),
 
-        })
+        });
+    #[cfg(feature = "research")]
+    let builder = builder.manage(crate::research::pane::PaneState::default());
+    // R34 spike without a debugging port or profile override: debug test builds only.
+    #[cfg(all(feature = "research", windows, debug_assertions))]
+    let builder = builder.setup(|app| {
+        if std::env::var("VISLEX_TEST_MODE").as_deref()!=Ok("1") { return Ok(()); }
+        let (Some(output), Ok(mock)) = (std::env::var_os("VISLEX_RESEARCH_SPIKE_OUTPUT"), std::env::var("VISLEX_RESEARCH_MOCK_URL")) else { return Ok(()); };
+        let handle = app.handle().clone();
+        let profile = PathBuf::from(&output).with_extension("profile");
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let start = format!("{}/index.html", mock.trim_end_matches('/'));
+            let (code, report) = match crate::research::spike::run(handle.clone(), start, profile).await {
+                Ok(report) => (0, json!({"ok": true, "mode": "startup", "report": report})),
+                Err(error) => (1, json!({"ok": false, "mode": "startup", "error": format!("{error:#}")})),
+            };
+            let _ = std::fs::write(&output, report.to_string());
+            handle.exit(code);
+        });
+        Ok(())
+    });
+    builder
 
         .invoke_handler(tauri::generate_handler![command])
 
         .register_uri_scheme_protocol("evidence", |ctx, request| {
 
             let build = || -> anyhow::Result<tauri::http::Response<Vec<u8>>> {
+
+                // Evidence bytes are served only to the application UI webview, never to
+                // other webviews in the same window (such as the research browser).
+                anyhow::ensure!(ctx.webview_label() == "main", "Evidence protocol is limited to the application webview");
 
                 let decoded =
 
