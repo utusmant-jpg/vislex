@@ -8,6 +8,7 @@ $casePath = Join-Path $repo "artifacts\app-ai-$runId.ledcase"
 $profile = Join-Path $repo "artifacts\app-ai-webview-$runId"
 $defaultsPath = Join-Path $repo "artifacts\app-ai-defaults-$runId.json"
 $env:VISLEX_TEST_MODE = '1'
+$env:VISLEX_TEST_CASE_ROOT = Join-Path $repo 'artifacts'
 $env:VISLEX_TEST_AI_DEFAULTS_PATH = $defaultsPath
 $env:WEBVIEW2_USER_DATA_FOLDER = $profile
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$Port"
@@ -22,5 +23,5 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Native app AI acceptance failed.' }
 } finally {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id }
-    Remove-Item Env:VISLEX_TEST_MODE, Env:VISLEX_TEST_AI_DEFAULTS_PATH, Env:WEBVIEW2_USER_DATA_FOLDER, Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
+    Remove-Item Env:VISLEX_TEST_MODE, Env:VISLEX_TEST_CASE_ROOT, Env:VISLEX_TEST_AI_DEFAULTS_PATH, Env:WEBVIEW2_USER_DATA_FOLDER, Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
 }

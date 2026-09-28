@@ -19,6 +19,8 @@ const pages = {
       });
     </script>`),
   '/second.html': page('second', '<main><h1>Second page</h1><p>Synthetic opinion text.</p></main>'),
+  // A page showing a sign-in field: the agent must refuse to type anywhere on it.
+  '/signin.html': page('signin', '<main><label for="q">Search</label><input id="q" type="search"><label for="pw">Password</label><input id="pw" type="password"></main>'),
   // Attack probe: a research page framing the VisLex UI to reach its commands from a local origin.
   '/frame.html': page('frame', '<iframe id="control" src="/second.html"></iframe><iframe id="app" src="http://tauri.localhost/" width="600" height="400"></iframe>'),
 };

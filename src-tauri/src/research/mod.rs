@@ -11,7 +11,9 @@ use anyhow::{ensure, Result};
 
 #[cfg(all(feature = "research", windows))]
 pub mod cdp;
+pub mod actions;
 pub mod driver;
+pub mod snapshot;
 #[cfg(feature = "research")]
 pub mod pane;
 #[cfg(all(feature = "research", windows, debug_assertions))]
@@ -49,10 +51,10 @@ impl NavigationPolicy {
         let arguments = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
         #[cfg(debug_assertions)]
         if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
-            if let Ok(mock) = std::env::var("VISLEX_RESEARCH_MOCK_URL") {
-                return Ok(Self { sso_hosts: Vec::new(), mock_origin: Some(mock_origin(&mock)?) });
-            }
-            ensure!(!debugging_port_requested(arguments.as_deref()), "Test mode opens the research pane only against VISLEX_RESEARCH_MOCK_URL");
+            // Test mode fails closed: only the loopback mock, never the real service.
+            let mock = std::env::var("VISLEX_RESEARCH_MOCK_URL").map_err(|_| anyhow::anyhow!("Test mode opens the research pane only against VISLEX_RESEARCH_MOCK_URL"))?;
+            let _ = &arguments;
+            return Ok(Self { sso_hosts: Vec::new(), mock_origin: Some(mock_origin(&mock)?) });
         }
         ensure!(!debugging_port_requested(arguments.as_deref()), "The research browser does not open while a WebView2 debugging switch is configured");
         ensure!(
@@ -196,11 +198,22 @@ pub fn enabled(case: &crate::case::Case) -> bool {
     grant(case).ok().flatten().is_some_and(|grant| grant.enabled)
 }
 
-/// A single hostname a firm uses for sign-in: lower-case DNS name, no scheme, port or path.
+/// A single hostname a firm uses for sign-in: a DNS name of letters, digits and hyphens per
+/// label (internationalized names are converted to their ASCII form), no wildcard, scheme,
+/// port or path.
 fn normalize_sso_host(host: &str) -> Result<String> {
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    let parsed: reqwest::Url = format!("https://{host}/").parse().map_err(|_| anyhow::anyhow!("Invalid sign-in host {host}"))?;
-    ensure!(parsed.host_str() == Some(host.as_str()) && host.contains('.') && parsed.domain().is_some(), "Invalid sign-in host {host}");
+    let input = host.trim().trim_end_matches('.');
+    let invalid = || anyhow::anyhow!("Invalid sign-in host {input:?}; enter a host name such as login.firm.example");
+    ensure!(!input.is_empty() && !input.contains(['/', ':', '@', '*', '?', '#', ' ']), invalid());
+    let parsed: reqwest::Url = format!("https://{input}/").parse().map_err(|_| invalid())?;
+    let host = parsed.domain().ok_or_else(invalid)?.to_string();
+    let label_ok = |label: &str| {
+        (1..=63).contains(&label.len())
+            && label.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    };
+    ensure!(host.len() <= 253 && host.split('.').count() >= 2 && host.split('.').all(label_ok), invalid());
     ensure!(!RESEARCH_HOSTS.contains(&host.as_str()) && !SIGN_ON_HOSTS.contains(&host.as_str()), "{host} is already allowed");
     Ok(host)
 }
@@ -212,7 +225,12 @@ pub fn set_grant(case: &mut crate::case::Case, enabled: bool, sso_hosts: &[Strin
     let mut hosts = sso_hosts.iter().map(|host| normalize_sso_host(host)).collect::<Result<Vec<_>>>()?;
     hosts.sort();
     hosts.dedup();
-    let previous = grant(case)?;
+    // An unreadable stored grant never prevents switching the research browser off.
+    let previous = match grant(case) {
+        Ok(previous) => previous,
+        Err(_) if !enabled => None,
+        Err(error) => return Err(error),
+    };
     let grant = Grant {
         enabled,
         revision: previous.as_ref().map_or(1, |grant| grant.revision + 1),
@@ -223,8 +241,19 @@ pub fn set_grant(case: &mut crate::case::Case, enabled: bool, sso_hosts: &[Strin
         routes: vec!["api_keys".into()],
         approval_mode: "autonomous".into(),
     };
-    case.set_meta(GRANT_KEY, &serde_json::to_string(&grant)?)?;
-    case.audit("research_grant_changed", serde_json::json!({"enabled": grant.enabled, "revision": grant.revision, "sso_hosts": grant.sso_hosts}))?;
+    // The setting and its audit entry are written together or not at all.
+    case.db.execute_batch("SAVEPOINT research_grant")?;
+    let written = (|| -> Result<()> {
+        case.set_meta(GRANT_KEY, &serde_json::to_string(&grant)?)?;
+        case.audit("research_grant_changed", serde_json::json!({"enabled": grant.enabled, "revision": grant.revision, "sso_hosts": grant.sso_hosts}))
+    })();
+    match written {
+        Ok(()) => case.db.execute_batch("RELEASE research_grant")?,
+        Err(error) => {
+            case.db.execute_batch("ROLLBACK TO research_grant; RELEASE research_grant")?;
+            return Err(error);
+        }
+    }
     Ok(grant)
 }
 

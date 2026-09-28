@@ -101,19 +101,16 @@ fn require_session_epoch(state: &AppState, args: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Native test journeys may run the debug app on the user's real WebView profile, whose UI
-/// reopens the last real case at startup. With `VISLEX_TEST_CASE_ROOT` set, debug test mode
-/// creates, opens and restores cases only inside that folder, so a test run can never open,
-/// migrate or write a real case.
+/// A native test journey must never open, migrate or write a real case (the UI reopens the
+/// last case at startup). Debug test mode creates, opens and restores cases only inside
+/// `VISLEX_TEST_CASE_ROOT`, and refuses all of them when it is unset.
 fn ensure_test_case_path(path: &Path) -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
-        if let Some(root) = std::env::var_os("VISLEX_TEST_CASE_ROOT") {
-            anyhow::ensure!(
-                crate::research::path_components(path).starts_with(&crate::research::path_components(Path::new(&root))),
-                "Test mode opens cases only under VISLEX_TEST_CASE_ROOT"
-            );
-        }
+        // Fails closed: without a non-empty root, test mode opens no case at all.
+        let root = std::env::var_os("VISLEX_TEST_CASE_ROOT").filter(|root| !root.is_empty()).context("Test mode needs VISLEX_TEST_CASE_ROOT")?;
+        let root = crate::research::path_components(Path::new(&root));
+        anyhow::ensure!(!root.is_empty() && crate::research::path_components(path).starts_with(&root), "Test mode opens cases only under VISLEX_TEST_CASE_ROOT");
     }
     let _ = path;
     Ok(())
@@ -185,16 +182,12 @@ async fn command(app: tauri::AppHandle, webview: tauri::Webview, action: String,
 
     #[cfg(feature = "research")]
     let enforce_app = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || dispatch(&app, &action, args))
-
-        .await
-
-        .map_err(|e| e.to_string())?;
-
-    // Any command may switch or close the case, go offline or turn research off.
+    let joined = tauri::async_runtime::spawn_blocking(move || dispatch(&app, &action, args)).await;
+    // Any command may switch or close the case, go offline or turn research off; check even
+    // if the command failed or panicked.
     #[cfg(feature = "research")]
     enforce_research_pane(&enforce_app);
-    result.map_err(|e| e.to_string())
+    joined.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 
 }
 
@@ -206,7 +199,7 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
     let result = match action {
         "open_research_pane" => async {
             let rect: pane::Rect = serde_json::from_value(args["rect"].clone()).context("Missing research pane position")?;
-            let (case_id, root, sso_hosts) = {
+            let (owner, root, sso_hosts) = {
                 let state = app.state::<AppState>();
                 let guard = state.case.lock().unwrap_or_else(|e| e.into_inner());
                 let case = guard.as_ref().context("Open a case first")?;
@@ -215,19 +208,27 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
                 anyhow::ensure!(id == text(args, "case_id")?, "Case changed before opening the research browser");
                 anyhow::ensure!(!case.settings()?.offline, "Offline mode enabled");
                 let grant = crate::research::grant(case)?.filter(|grant| grant.enabled).context("Turn on the research browser for this case in Settings")?;
-                (id, case.root.clone(), grant.sso_hosts)
+                let owner = pane::Owner { case_id: id, session_epoch: state.session_epoch.load(std::sync::atomic::Ordering::SeqCst), grant_revision: grant.revision };
+                (owner, case.root.clone(), grant.sso_hosts)
             };
             let state = app.state::<pane::PaneState>();
-            if let Some(owner) = state.owner() {
-                anyhow::ensure!(owner == case_id, "The research browser is open for another case");
+            if let Some(current) = state.owner() {
+                anyhow::ensure!(current == owner, "The research browser is open for another case session");
             }
-            let (handle, profile) = (app.clone(), pane::profile_dir(app)?);
-            tauri::async_runtime::spawn_blocking(move || pane::open(&handle, &pane::start_url(), profile, Some(&root), sso_hosts, rect).map(|_| ()))
+            let generation = state.generation();
+            let (handle, profile, start) = (app.clone(), pane::profile_dir(app)?, pane::start_url()?);
+            tauri::async_runtime::spawn_blocking(move || pane::open(&handle, &start, profile, Some(&root), sso_hosts, rect).map(|_| ()))
                 .await
                 .context("Research pane task failed")??;
+            // Opening takes a while: if the pane was closed meanwhile, or the case session no
+            // longer allows it (switched, offline, switched off, hosts changed), discard it.
+            if generation != state.generation() || !research_allowed_for(app, &owner) {
+                let _ = pane::close(app);
+                anyhow::bail!("The case changed while the research browser was opening");
+            }
             if state.owner().is_none() {
-                state.set_owner(Some(case_id.clone()));
-                with_case_expected(app, &case_id, None, |case| case.audit("research_pane_opened", json!({})))?;
+                state.set_owner(Some(owner.clone()));
+                with_case_expected(app, &owner.case_id, Some(owner.session_epoch), |case| case.audit("research_pane_opened", json!({"grant_revision": owner.grant_revision})))?;
             }
             Ok(json!({"open": true}))
         }
@@ -242,18 +243,19 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
             let url = pane.as_ref().and_then(|pane| pane.url().ok());
             Ok(json!({
                 "open": pane.is_some(),
-                "case_id": app.state::<pane::PaneState>().owner(),
+                "case_id": app.state::<pane::PaneState>().owner().map(|owner| owner.case_id),
                 "host": url.as_ref().and_then(|url| url.host_str().map(str::to_string)),
                 "secure": url.as_ref().map(|url| url.scheme() == "https"),
             }))
         })(),
         "close_research_pane" => close_research_pane(app, "user"),
         "clear_research_session" => async {
-            let owner = app.state::<pane::PaneState>().owner();
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || pane::clear_session(&handle)).await.context("Research session task failed")??;
-            if let Some(case_id) = owner {
-                let _ = with_case_expected(app, &case_id, None, |case| case.audit("research_session_cleared", json!({})));
+            let state = app.state::<AppState>();
+            let mut guard = state.case.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(case) = guard.as_mut() {
+                case.audit("research_session_cleared", json!({}))?;
             }
             Ok(Value::Null)
         }
@@ -263,37 +265,60 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
     Some(result)
 }
 
+/// Whether the open case session still allows the pane `owner` opened.
+#[cfg(feature = "research")]
+fn research_allowed_for(app: &tauri::AppHandle, owner: &crate::research::pane::Owner) -> bool {
+    let state = app.state::<AppState>();
+    let guard = state.case.lock().unwrap_or_else(|e| e.into_inner());
+    state.session_epoch.load(std::sync::atomic::Ordering::SeqCst) == owner.session_epoch
+        && guard.as_ref().is_some_and(|case| {
+            case.meta("id").ok().flatten().as_deref() == Some(owner.case_id.as_str())
+                && case.settings().is_ok_and(|settings| !settings.offline)
+                && crate::research::grant(case).ok().flatten().is_some_and(|grant| grant.enabled && grant.revision == owner.grant_revision)
+        })
+}
+
 #[cfg(feature = "research")]
 fn close_research_pane(app: &tauri::AppHandle, reason: &str) -> anyhow::Result<Value> {
     use crate::research::pane;
     let owner = app.state::<pane::PaneState>().owner();
     let was_open = pane::webview(app).is_some();
     pane::close(app)?;
-    if let (Some(case_id), true) = (owner, was_open) {
-        let _ = with_case_expected(app, &case_id, None, |case| case.audit("research_pane_closed", json!({"reason": reason})));
+    if let (Some(owner), true) = (owner, was_open) {
+        let _ = with_case_expected(app, &owner.case_id, None, |case| case.audit("research_pane_closed", json!({"reason": reason})));
     }
     Ok(Value::Null)
 }
 
-/// Closes the research pane when its case is no longer the open case, the case went offline,
-/// or the research browser was switched off for it.
+/// Before the open case is switched, closed or deleted: close its research pane and record
+/// that in the outgoing case's audit log (afterwards that case is no longer reachable).
+#[cfg(feature = "research")]
+fn close_research_for_case_change(app: &tauri::AppHandle, case: &mut Case, reason: &str) {
+    use crate::research::pane;
+    let owned = app.state::<pane::PaneState>().owner().is_some_and(|owner| case.meta("id").ok().flatten().as_deref() == Some(owner.case_id.as_str()));
+    if owned || pane::webview(app).is_some() {
+        let _ = pane::close(app);
+        if owned {
+            let _ = case.audit("research_pane_closed", json!({"reason": reason}));
+        }
+    }
+}
+
+/// Closes the research pane when its case session is no longer current, the case went
+/// offline, or the research browser was switched off or reconfigured for it.
 #[cfg(feature = "research")]
 fn enforce_research_pane(app: &tauri::AppHandle) {
     use crate::research::pane;
-    let Some(owner) = app.state::<pane::PaneState>().owner() else { return };
-    let allowed = {
-        let state = app.state::<AppState>();
-        let guard = state.case.lock().unwrap_or_else(|e| e.into_inner());
-        guard.as_ref().is_some_and(|case| {
-            case.meta("id").ok().flatten().as_deref() == Some(owner.as_str())
-                && case.settings().is_ok_and(|settings| !settings.offline)
-                && crate::research::enabled(case)
-        })
-    };
-    if !allowed {
-        let reason = "case changed, offline or research switched off";
-        let _ = pane::close(app);
-        let _ = with_case_expected(app, &owner, None, |case| case.audit("research_pane_closed", json!({"reason": reason})));
+    let state = app.state::<pane::PaneState>();
+    match state.owner() {
+        Some(owner) if !research_allowed_for(app, &owner) => {
+            let _ = close_research_pane(app, "case changed, offline, or research switched off or reconfigured");
+        }
+        // A pane with no owner (for example after a failed open) never stays open.
+        None if pane::webview(app).is_some() && !state.busy() => {
+            let _ = pane::close(app);
+        }
+        _ => {}
     }
 }
 
@@ -651,6 +676,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 )?;
         anyhow::ensure!(running == 0,"Stop active tasks and processing jobs before deleting this case");
         let old_root=c.root.clone();
+        #[cfg(feature = "research")]
+        if let Some(c) = guard.as_mut() { close_research_for_case_change(app, c, "case deleted"); }
         *guard = None;
         let mut active=state.active_case_id.lock().unwrap_or_else(|e|e.into_inner());
         state.session_epoch.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
@@ -688,6 +715,8 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             );
 
         }
+        #[cfg(feature = "research")]
+        if let Some(c) = guard.as_mut() { close_research_for_case_change(app, c, if action == "close_case" { "case closed" } else { "case switched" }); }
 
         if action == "close_case" {
             let old_root=guard.as_ref().map(|case|case.root.clone());
@@ -1196,7 +1225,11 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before research browser update");
             require_session_epoch(&state,&args)?;
             let enabled=args["enabled"].as_bool().context("Missing research browser setting")?;
-            let sso_hosts:Vec<String>=serde_json::from_value(args.get("sso_hosts").cloned().unwrap_or(json!([]))).context("Invalid sign-in hosts")?;
+            // A toggle-only call keeps the case's existing sign-in hosts.
+            let sso_hosts:Vec<String>=match args.get("sso_hosts") {
+                Some(hosts) if !hosts.is_null() => serde_json::from_value(hosts.clone()).context("Invalid sign-in hosts")?,
+                _ => crate::research::grant(c).ok().flatten().map(|grant| grant.sso_hosts).unwrap_or_default(),
+            };
             serde_json::to_value(crate::research::set_grant(c,enabled,&sso_hosts)?)?
         },
         "set_direct_media_permission" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before media permission update");require_session_epoch(&state,&args)?;let enabled=args["enabled"].as_bool().context("Missing permission")?;crate::providers::set_direct_media(c,enabled)?;Value::Null},
@@ -1903,6 +1936,59 @@ mod provider_key_fence_tests {
 }
 
 
+/// The generated Tauri context. In debug test mode with `VISLEX_TEST_WEBVIEW_DIR`, windows are
+/// not created from the configuration; `debug_test_setup` creates them with their own WebView
+/// profile, so a native test never reads or writes the user's real application profile (recent
+/// cases, last case). Unlike `WEBVIEW2_USER_DATA_FOLDER`, this does not override the research
+/// pane's separate profile. (A configured `data_directory` must be relative, so it cannot point
+/// into the test artifacts folder.)
+fn app_context() -> tauri::Context<tauri::Wry> {
+    #[allow(unused_mut)]
+    let mut context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    if test_webview_dir().is_some() {
+        for window in context.config_mut().app.windows.iter_mut() {
+            window.create = false;
+        }
+    }
+    context
+}
+
+#[cfg(debug_assertions)]
+fn test_webview_dir() -> Option<PathBuf> {
+    (std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1"))
+        .then(|| std::env::var_os("VISLEX_TEST_WEBVIEW_DIR").filter(|folder| !folder.is_empty()).map(PathBuf::from))
+        .flatten()
+}
+
+#[cfg(debug_assertions)]
+fn debug_test_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(folder) = test_webview_dir() {
+        for window in app.config().app.windows.clone() {
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.data_directory(folder.join(&window.label)).build()?;
+        }
+    }
+    // R34 spike without a debugging port or profile override.
+    #[cfg(all(feature = "research", windows))]
+    if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
+        if let (Some(output), Ok(mock)) = (std::env::var_os("VISLEX_RESEARCH_SPIKE_OUTPUT"), std::env::var("VISLEX_RESEARCH_MOCK_URL")) {
+            let handle = app.handle().clone();
+            let profile = PathBuf::from(&output).with_extension("profile");
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let start = format!("{}/index.html", mock.trim_end_matches('/'));
+                let (code, report) = match crate::research::spike::run(handle.clone(), start, profile).await {
+                    Ok(report) => (0, json!({"ok": true, "mode": "startup", "report": report})),
+                    Err(error) => (1, json!({"ok": false, "mode": "startup", "error": format!("{error:#}")})),
+                };
+                let _ = std::fs::write(&output, report.to_string());
+                handle.exit(code);
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn run() {
 
     let builder = tauri::Builder::default()
@@ -1922,25 +2008,9 @@ pub fn run() {
         });
     #[cfg(feature = "research")]
     let builder = builder.manage(crate::research::pane::PaneState::default());
-    // R34 spike without a debugging port or profile override: debug test builds only.
-    #[cfg(all(feature = "research", windows, debug_assertions))]
-    let builder = builder.setup(|app| {
-        if std::env::var("VISLEX_TEST_MODE").as_deref()!=Ok("1") { return Ok(()); }
-        let (Some(output), Ok(mock)) = (std::env::var_os("VISLEX_RESEARCH_SPIKE_OUTPUT"), std::env::var("VISLEX_RESEARCH_MOCK_URL")) else { return Ok(()); };
-        let handle = app.handle().clone();
-        let profile = PathBuf::from(&output).with_extension("profile");
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let start = format!("{}/index.html", mock.trim_end_matches('/'));
-            let (code, report) = match crate::research::spike::run(handle.clone(), start, profile).await {
-                Ok(report) => (0, json!({"ok": true, "mode": "startup", "report": report})),
-                Err(error) => (1, json!({"ok": false, "mode": "startup", "error": format!("{error:#}")})),
-            };
-            let _ = std::fs::write(&output, report.to_string());
-            handle.exit(code);
-        });
-        Ok(())
-    });
+    // Debug test builds only: isolated test windows and the startup research spike.
+    #[cfg(debug_assertions)]
+    let builder = builder.setup(|app| debug_test_setup(app));
     builder
 
         .invoke_handler(tauri::generate_handler![command])
@@ -2123,7 +2193,7 @@ pub fn run() {
 
         })
 
-        .run(tauri::generate_context!())
+        .run(app_context())
 
         .expect("Could not start Local Evidence Desk");
 

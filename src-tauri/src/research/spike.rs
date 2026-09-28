@@ -74,6 +74,10 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, start: String, profile: std::pat
     ensure!(profile.is_absolute(), "Spike profile must be an absolute path");
     let rect = pane::Rect { x: 700.0, y: 60.0, width: 760.0, height: 820.0 };
     let (open_app, open_start, open_profile) = (app.clone(), start.clone(), profile.clone());
+    {
+        use tauri::Manager;
+        app.state::<pane::PaneState>().spike.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     let opened_at = Instant::now();
     let webview = tauri::async_runtime::spawn_blocking(move || pane::open(&open_app, &open_start, open_profile, None, Vec::new(), rect))
         .await
@@ -252,6 +256,43 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, start: String, profile: std::pat
     });
     drop(contexts);
 
+    // The real observation/action layer over the in-process bridge (R42).
+    report["session"] = {
+        use super::snapshot::{Scope, Session};
+        let origin = start.trim_end_matches('/').rsplit_once('/').map(|(base, _)| base.to_string()).unwrap_or_else(|| start.clone());
+        let policy = super::NavigationPolicy::resolve(Vec::new())?;
+        let mut session = Session::new(CdpBridge::new(bridge.webview().clone()));
+        let ref_of = |text: &str, prefix: &str| {
+            text.lines().find(|line| line.trim_start().starts_with(prefix)).and_then(|line| line.split("[ref=").nth(1)).and_then(|rest| rest.split(']').next()).map(str::to_string)
+        };
+        let mut outcome = serde_json::Map::new();
+        let landed = session.navigate(&format!("{origin}/index.html"), &policy, Duration::ZERO, Duration::from_secs(20)).await;
+        outcome.insert("navigate".into(), json!(landed.as_ref().map_err(|error| error.to_string())));
+        let started = Instant::now();
+        let snapshot = session.snapshot(Scope::Interactive, None, false, None).await?;
+        outcome.insert("snapshot_ms".into(), json!(started.elapsed().as_secs_f64() * 1000.0));
+        outcome.insert("snapshot".into(), json!(snapshot.text));
+        let (search, button) = (ref_of(&snapshot.text, "- searchbox"), ref_of(&snapshot.text, "- button"));
+        let typed = match &search { Some(search) => session.type_text(search, snapshot.version, "negligence /s duty").await.map_err(|error| error.to_string()), None => Err("no searchbox ref".into()) };
+        outcome.insert("typed".into(), json!(typed));
+        let clicked = match &button { Some(button) => session.click(button, snapshot.version, Duration::ZERO).await.map(|_| ()).map_err(|error| error.to_string()), None => Err("no button ref".into()) };
+        outcome.insert("clicked".into(), json!(clicked));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        outcome.insert("page_saw_trusted_click".into(), json!(evaluate(&bridge, "window.__clicked === true && window.__clickTrusted === true").await.ok()));
+        outcome.insert("page_value".into(), json!(evaluate(&bridge, "document.getElementById('search').value").await.ok()));
+        session.navigate(&format!("{origin}/signin.html"), &policy, Duration::ZERO, Duration::from_secs(20)).await?;
+        let stale = session.resolve(button.as_deref().unwrap_or("e1"), snapshot.version).await;
+        outcome.insert("old_ref_after_navigation".into(), json!(stale.map_err(|error| error.to_string())));
+        let signin = session.snapshot(Scope::Interactive, None, false, None).await?;
+        let refused = match ref_of(&signin.text, "- searchbox") {
+            Some(search) => session.type_text(&search, signin.version, "anything").await.map_err(|error| error.to_string()),
+            None => Err("no searchbox ref".into()),
+        };
+        outcome.insert("typing_with_password_on_page".into(), json!(refused));
+        outcome.insert("offsite_navigation".into(), json!(session.navigate("https://example.com/", &policy, Duration::ZERO, Duration::from_secs(5)).await.map_err(|error| error.to_string())));
+        Value::Object(outcome)
+    };
+
     // UI responsiveness under sequential calls, and layout operations.
     let mut latencies = Vec::new();
     for _ in 0..100 {
@@ -277,6 +318,12 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, start: String, profile: std::pat
     if !refused(&report["framed_app_attack"]["invoke_from_frame"]) { violations.push("framed VisLex UI could invoke commands"); }
     if report["navigation"]["url_after_blocked"].as_str().is_some_and(|url| url.contains("example.com")) { violations.push("blocked navigation proceeded"); }
     if report["navigation"]["webview_count"].as_u64() != Some(2) { violations.push("a pop-up created another webview"); }
+    let session = &report["session"];
+    if session["typed"].get("Ok").is_none() { violations.push("session could not type into the search box"); }
+    if session["clicked"].get("Ok").is_none() || session["page_saw_trusted_click"] != Value::Bool(true) { violations.push("session click did not reach the page as a trusted click"); }
+    if session["old_ref_after_navigation"].get("Ok").is_some() { violations.push("a ref survived navigation"); }
+    if session["typing_with_password_on_page"].get("Ok").is_some() { violations.push("session typed while a password field was on the page"); }
+    if session["offsite_navigation"].get("Ok").is_some() { violations.push("session navigated off the research origin"); }
     if !report["environment"]["webview2_user_data_folder_env"].as_bool().unwrap_or(true) && report["environment"]["effective_user_data_folder_is_profile"] != Value::Bool(true) {
         violations.push("research pane did not use its own profile");
     }

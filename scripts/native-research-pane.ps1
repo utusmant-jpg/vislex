@@ -6,8 +6,12 @@ $repo=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $binary=if ($BinaryPath) { (Resolve-Path -LiteralPath $BinaryPath).Path } else { Join-Path $repo 'src-tauri\target\x86_64-pc-windows-msvc\debug\local-evidence-desk.exe' }
 if (-not (Test-Path -LiteralPath $binary)) {throw 'Build the debug desktop app with --features research first.'}
 $profile=Join-Path $repo ('artifacts\research-pane-profile-'+[Guid]::NewGuid().ToString())
-$names='VISLEX_TEST_MODE','VISLEX_TEST_CASE_ROOT','VISLEX_RESEARCH_MOCK_URL','VISLEX_RESEARCH_PROFILE_DIR','WEBVIEW2_USER_DATA_FOLDER','WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'
+$names='VISLEX_TEST_MODE','VISLEX_TEST_CASE_ROOT','VISLEX_TEST_WEBVIEW_DIR','VISLEX_RESEARCH_MOCK_URL','VISLEX_RESEARCH_PROFILE_DIR','WEBVIEW2_USER_DATA_FOLDER','WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'
 $saved=@{}; foreach($name in $names){ $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
+# The user's real application WebView profile must be untouched by the run.
+$realStorage=Join-Path $env:LOCALAPPDATA 'org.localevidencedesk.app\EBWebView\Default\Local Storage'
+$realStamp={ if(Test-Path -LiteralPath $realStorage){ (Get-ChildItem -LiteralPath $realStorage -Recurse -File | Measure-Object -Property LastWriteTimeUtc -Maximum).Maximum } }
+$realBefore=& $realStamp
 $fixture=$null; $process=$null
 try {
     $fixture=Start-Process -FilePath 'node' -ArgumentList @(('"'+(Join-Path $PSScriptRoot 'research-fixture-server.mjs')+'"'),$FixturePort) -WindowStyle Hidden -PassThru
@@ -18,10 +22,12 @@ try {
     if(-not $served){throw 'Research fixture server did not start.'}
     $env:VISLEX_TEST_MODE='1'
     $env:VISLEX_TEST_CASE_ROOT=Join-Path $repo 'artifacts'
+    # The main window gets its own WebView profile; the user's real app profile is never used.
+    $env:VISLEX_TEST_WEBVIEW_DIR=Join-Path $repo ('artifacts\test-webview-'+[Guid]::NewGuid().ToString())
     $env:VISLEX_RESEARCH_MOCK_URL="http://127.0.0.1:$FixturePort/index.html"
     $env:VISLEX_RESEARCH_PROFILE_DIR=$profile
     # No WEBVIEW2_USER_DATA_FOLDER: it would override the pane profile (R34), and sign-out must
-    # delete a real profile. The main webview therefore uses the app's normal profile here.
+    # delete a real profile. VISLEX_TEST_WEBVIEW_DIR isolates the main window instead.
     Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER -ErrorAction SilentlyContinue
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$Port"
     $process=Start-Process -FilePath $binary -PassThru
@@ -43,6 +49,7 @@ try {
     if(-not ($signout | ConvertFrom-Json).ok){throw 'Sign-out reported ok=false.'}
     if(Test-Path -LiteralPath $profile){throw "Sign-out left the research profile at $profile"}
     'research pane journey and sign-out passed'
+    if((& $realStamp) -ne $realBefore){throw 'The run modified the real application WebView profile'}
 } finally {
     if($process -and -not $process.HasExited){Stop-Process -Id $process.Id}
     if($fixture -and -not $fixture.HasExited){Stop-Process -Id $fixture.Id}

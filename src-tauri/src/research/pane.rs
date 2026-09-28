@@ -34,8 +34,21 @@ pub struct PaneState {
     pub cancel: Arc<AtomicBool>,
     /// The policy the open pane was created with; navigation and pop-up handlers read it.
     policy: Arc<Mutex<Option<NavigationPolicy>>>,
-    /// Case the open pane belongs to; the pane closes when that case is no longer active.
-    owner: Mutex<Option<String>>,
+    /// Case session the open pane belongs to; the pane closes when it is no longer current.
+    owner: Mutex<Option<Owner>>,
+    /// Bumped by every close; an open that finishes after a close discards its pane.
+    generation: std::sync::atomic::AtomicU64,
+    /// Debug spike panes have no case owner and are exempt from automatic closing.
+    #[cfg(debug_assertions)]
+    pub spike: AtomicBool,
+}
+
+/// The case session a research pane was opened for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Owner {
+    pub case_id: String,
+    pub session_epoch: u64,
+    pub grant_revision: u64,
 }
 
 impl PaneState {
@@ -43,34 +56,49 @@ impl PaneState {
         self.policy.lock().unwrap_or_else(|error| error.into_inner()).clone()
     }
 
-    pub fn owner(&self) -> Option<String> {
+    pub fn owner(&self) -> Option<Owner> {
         self.owner.lock().unwrap_or_else(|error| error.into_inner()).clone()
     }
 
-    pub fn set_owner(&self, case_id: Option<String>) {
-        *self.owner.lock().unwrap_or_else(|error| error.into_inner()) = case_id;
+    pub fn set_owner(&self, owner: Option<Owner>) {
+        *self.owner.lock().unwrap_or_else(|error| error.into_inner()) = owner;
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    /// Whether an open or close is in progress (sign-out must not run concurrently).
+    pub fn busy(&self) -> bool {
+        self.opening.load(Ordering::SeqCst) || self.is_spike()
+    }
+
+    pub fn is_spike(&self) -> bool {
+        #[cfg(debug_assertions)]
+        return self.spike.load(Ordering::SeqCst);
+        #[cfg(not(debug_assertions))]
+        false
     }
 }
 
 /// Where the pane opens: the research service home, or the loopback mock in debug test mode.
-pub fn start_url() -> String {
+/// Test mode fails closed: it never falls back to the real service.
+pub fn start_url() -> Result<String> {
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
-        if let Ok(mock) = std::env::var("VISLEX_RESEARCH_MOCK_URL") {
-            return mock;
-        }
+        return std::env::var("VISLEX_RESEARCH_MOCK_URL").context("Test mode opens the research pane only against VISLEX_RESEARCH_MOCK_URL");
     }
-    super::WESTLAW_HOME.to_string()
+    Ok(super::WESTLAW_HOME.to_string())
 }
 
 /// The research browser profile: a sibling of the application's own WebView2 folder, never
 /// inside it or inside a case. Debug test mode may redirect it to a throwaway folder.
 pub fn profile_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
+    // Test mode fails closed: it never uses (or deletes) the user's real research profile.
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {
-        if let Some(folder) = std::env::var_os("VISLEX_RESEARCH_PROFILE_DIR") {
-            return Ok(PathBuf::from(folder));
-        }
+        let folder = std::env::var_os("VISLEX_RESEARCH_PROFILE_DIR").filter(|folder| !folder.is_empty()).context("Test mode needs VISLEX_RESEARCH_PROFILE_DIR")?;
+        return Ok(PathBuf::from(folder));
     }
     Ok(app.path().local_data_dir()?.join(format!("{}.research", app.config().identifier)))
 }
@@ -222,6 +250,9 @@ pub fn layout<R: Runtime>(app: &AppHandle<R>, rect: Rect, visible: bool) -> Resu
 /// on the UI thread.
 pub fn clear_session<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let profile = profile_dir(app)?;
+    let state = app.state::<PaneState>();
+    ensure!(!state.opening.swap(true, Ordering::SeqCst), "The research pane is opening; try again");
+    let _busy = Opening(&state.opening);
     close(app)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
@@ -240,6 +271,9 @@ pub fn clear_session<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
 
 pub fn close<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let state = app.state::<PaneState>();
+    state.generation.fetch_add(1, Ordering::SeqCst);
+    #[cfg(debug_assertions)]
+    state.spike.store(false, Ordering::SeqCst);
     state.verified.store(false, Ordering::SeqCst);
     state.set_owner(None);
     *state.policy.lock().unwrap_or_else(|error| error.into_inner()) = None;

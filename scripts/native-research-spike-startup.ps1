@@ -9,8 +9,12 @@ $binary=if ($BinaryPath) { (Resolve-Path -LiteralPath $BinaryPath).Path } else {
 if (-not (Test-Path -LiteralPath $binary)) {throw 'Build the debug desktop app with --features research first.'}
 $output=Join-Path $repo 'artifacts\research-spike-startup.json'
 Remove-Item -LiteralPath $output -ErrorAction SilentlyContinue
-$names='VISLEX_TEST_MODE','VISLEX_TEST_CASE_ROOT','VISLEX_RESEARCH_MOCK_URL','VISLEX_RESEARCH_SPIKE_OUTPUT','WEBVIEW2_USER_DATA_FOLDER','WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'
+$names='VISLEX_TEST_MODE','VISLEX_TEST_CASE_ROOT','VISLEX_TEST_WEBVIEW_DIR','VISLEX_RESEARCH_MOCK_URL','VISLEX_RESEARCH_SPIKE_OUTPUT','WEBVIEW2_USER_DATA_FOLDER','WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'
 $saved=@{}; foreach($name in $names){ $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
+# The user's real application WebView profile must be untouched by the run.
+$realStorage=Join-Path $env:LOCALAPPDATA 'org.localevidencedesk.app\EBWebView\Default\Local Storage'
+$realStamp={ if(Test-Path -LiteralPath $realStorage){ (Get-ChildItem -LiteralPath $realStorage -Recurse -File | Measure-Object -Property LastWriteTimeUtc -Maximum).Maximum } }
+$realBefore=& $realStamp
 $fixture=$null; $process=$null
 try {
     $fixture=Start-Process -FilePath 'node' -ArgumentList @(('"'+(Join-Path $PSScriptRoot 'research-fixture-server.mjs')+'"'),$FixturePort) -WindowStyle Hidden -PassThru
@@ -22,6 +26,8 @@ try {
     Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER,Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
     $env:VISLEX_TEST_MODE='1'
     $env:VISLEX_TEST_CASE_ROOT=Join-Path $repo 'artifacts'
+    # The main window gets its own WebView profile; the user's real app profile is never used.
+    $env:VISLEX_TEST_WEBVIEW_DIR=Join-Path $repo ('artifacts\test-webview-'+[Guid]::NewGuid().ToString())
     $env:VISLEX_RESEARCH_MOCK_URL="http://127.0.0.1:$FixturePort/"
     $env:VISLEX_RESEARCH_SPIKE_OUTPUT=$output
     $process=Start-Process -FilePath $binary -PassThru
@@ -30,6 +36,7 @@ try {
     $report=Get-Content -Raw -LiteralPath $output
     $report
     if($process.ExitCode -ne 0 -or -not ($report | ConvertFrom-Json).ok){throw "Startup spike failed (exit $($process.ExitCode))."}
+    if((& $realStamp) -ne $realBefore){throw 'The run modified the real application WebView profile'}
 } finally {
     if($process -and -not $process.HasExited){Stop-Process -Id $process.Id}
     if($fixture -and -not $fixture.HasExited){Stop-Process -Id $fixture.Id}

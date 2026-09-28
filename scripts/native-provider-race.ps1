@@ -14,6 +14,7 @@ try {
     }
     if(-not $ready){throw 'Synthetic provider server did not start.'}
     $env:VISLEX_TEST_MODE='1'
+    $env:VISLEX_TEST_CASE_ROOT = Join-Path $repo 'artifacts'
     $env:VISLEX_TEST_PROVIDER_URL="http://127.0.0.1:$MockPort/v1/responses"
     $env:WEBVIEW2_USER_DATA_FOLDER=Join-Path $repo ('artifacts\provider-race-webview-'+[Guid]::NewGuid().ToString())
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$Port"
@@ -34,7 +35,7 @@ try {
         $output
     } finally {
         if(-not $app.HasExited){Stop-Process -Id $app.Id}
-        Remove-Item Env:VISLEX_TEST_MODE,Env:VISLEX_TEST_PROVIDER_URL,Env:WEBVIEW2_USER_DATA_FOLDER,Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
+        Remove-Item Env:VISLEX_TEST_MODE, Env:VISLEX_TEST_CASE_ROOT,Env:VISLEX_TEST_PROVIDER_URL,Env:WEBVIEW2_USER_DATA_FOLDER,Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
     }
 } finally {
     if(-not $mock.HasExited){Stop-Process -Id $mock.Id}

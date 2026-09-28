@@ -41,11 +41,14 @@ fn research_toggle_is_revisioned_audited_and_validates_sign_in_hosts() {
     let second = research::set_grant(&mut case, false, &[]).unwrap();
     assert_eq!(second.revision, 2);
     assert!(!research::enabled(&case));
-    for bad in ["https://login.firm.example", "login.firm.example/path", "localhost", "1.next.westlaw.com", "bad host", "user@firm.example"] {
+    let idn = research::set_grant(&mut case, true, &["login.fïrm.example".into()]).unwrap();
+    let stored = &idn.sso_hosts[0];
+    assert!(stored.is_ascii() && stored.starts_with("login.xn--") && stored.ends_with(".example"), "internationalized names are stored in ASCII form: {stored}");
+    for bad in ["https://login.firm.example", "login.firm.example/path", "localhost", "1.next.westlaw.com", "bad host", "user@firm.example", "*.firm.example", "login_.firm.example", "-login.firm.example", "login.firm.example:443", "10.0.0.1"] {
         assert!(research::set_grant(&mut case, true, &[bad.into()]).is_err(), "{bad}");
     }
     assert!(research::set_grant(&mut case, true, &vec!["a.example".to_string(); 11]).is_err());
-    assert_eq!(research::grant(&case).unwrap().unwrap().revision, 2, "refused changes leave the grant unchanged");
+    assert_eq!(research::grant(&case).unwrap().unwrap().revision, 3, "refused changes leave the grant unchanged");
     case.verify_audit().unwrap();
 }
 
@@ -79,4 +82,14 @@ fn research_profile_must_stay_outside_the_case_folder() {
     assert!(research::ensure_profile_boundary(&case.root, &case.root.join("research-profile")).is_err());
     assert!(research::ensure_profile_boundary(&case.root, &dir.path().join("elsewhere")).is_ok());
     assert!(research::ensure_profile_boundary(&case.root, dir.path()).is_err(), "a profile containing the case is refused");
+}
+
+#[test]
+fn a_corrupt_research_grant_can_still_be_switched_off() {
+    let (_dir, mut case) = setup();
+    go_online(&mut case);
+    case.set_meta("research_browser_grant", "{not json").unwrap();
+    assert!(research::set_grant(&mut case, true, &[]).is_err());
+    let off = research::set_grant(&mut case, false, &[]).unwrap();
+    assert!(!off.enabled && !research::enabled(&case));
 }

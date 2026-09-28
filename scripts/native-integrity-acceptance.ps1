@@ -11,6 +11,7 @@ if (-not (Test-Path -LiteralPath $fixture)) {
 }
 if ((Get-Item -LiteralPath $fixture).Length -ne 256MB) {throw 'Synthetic integrity fixture has an unexpected size.'}
 $env:VISLEX_TEST_MODE='1'
+$env:VISLEX_TEST_CASE_ROOT = Join-Path $repo 'artifacts'
 $env:WEBVIEW2_USER_DATA_FOLDER=Join-Path $repo ('artifacts\integrity-webview-'+[Guid]::NewGuid().ToString())
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$Port"
 $process=Start-Process -FilePath $binary -WindowStyle Hidden -PassThru
@@ -28,5 +29,5 @@ try {
     $output
 } finally {
     if(-not $process.HasExited){Stop-Process -Id $process.Id}
-    Remove-Item Env:VISLEX_TEST_MODE,Env:WEBVIEW2_USER_DATA_FOLDER,Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
+    Remove-Item Env:VISLEX_TEST_MODE, Env:VISLEX_TEST_CASE_ROOT,Env:WEBVIEW2_USER_DATA_FOLDER,Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
 }
