@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import SettingsDialog from './SettingsDialog';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import SettingsDialog, { providerChangeNotice } from './SettingsDialog';
 import type { Snapshot } from '../types';
 
 const api = vi.hoisted(() => vi.fn());
@@ -105,7 +105,7 @@ it('saves app AI permissions independently of a case', async () => {
   const refresh = vi.fn(async () => undefined);
   const onClose = vi.fn();
   render(<SettingsDialog snapshot={null} refresh={refresh} onClose={onClose} run={fn => { void fn(); }} />);
-  fireEvent.click(screen.getByRole('button', { name: 'AI permissions' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Case permissions' }));
   await screen.findByRole('checkbox', { name: 'Inherited case text may be sent to permitted models' });
   fireEvent.click(screen.getByRole('checkbox', { name: 'Inherited case images may be sent to permitted models' }));
   fireEvent.click(screen.getByRole('button', { name: 'Save app AI settings' }));
@@ -121,12 +121,14 @@ it('saves case-specific permissions without changing app settings', async () => 
   const onClose = vi.fn();
   render(<SettingsDialog snapshot={snapshot} refresh={refresh} onClose={onClose} run={fn => { void fn(); }} />);
   fireEvent.click(await screen.findByRole('button', { name: 'This case · customized' }));
-  fireEvent.click(screen.getByRole('button', { name: 'AI permissions' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Case permissions' }));
   await screen.findByText('Permitted — original audio/video may be sent');
   expect(screen.queryByText(/Case budget|tokens|\$\/M/i)).toBeNull();
-  fireEvent.click(screen.getByText('Offline — stop new requests'));
   fireEvent.click(screen.getByRole('checkbox', { name: 'Case text may be sent to permitted models' }));
   fireEvent.click(screen.getByText('Permitted — original audio/video may be sent'));
+  // AI dispatch moved from the permissions section to Privacy & offline; the draft is shared.
+  fireEvent.click(screen.getByRole('button', { name: 'Privacy & offline' }));
+  fireEvent.click(screen.getByText('Offline — stop new requests'));
   fireEvent.click(screen.getByRole('button', { name: 'Save case AI override' }));
   await waitFor(() => expect(onClose).toHaveBeenCalled());
   expect(api).toHaveBeenCalledWith('save_ai_settings', {
@@ -144,7 +146,7 @@ it('keeps case settings visible when app defaults finish loading after scope sel
   api.mockImplementation(async (action: string) => action === 'app_ai_settings' ? appLoad : action === 'case_ai_scope' ? { scope: 'case' } : action === 'direct_media_permission' ? { enabled: false } : action === 'provider_key_status' ? { configured: true } : undefined);
   render(<SettingsDialog snapshot={snapshot} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} />);
   fireEvent.click(await screen.findByRole('button', { name: 'This case · customized' }));
-  fireEvent.click(screen.getByRole('button', { name: 'AI permissions' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Case permissions' }));
   finishAppLoad({ configured: true, config: { provider: 'openai', execution: 'auto', review: 'standard', pool: [] }, settings: { offline: true, allow_text: false, allow_images: false, model: '' } });
   await waitFor(() => expect((screen.getByRole('checkbox', { name: 'Case text may be sent to permitted models' }) as HTMLInputElement).checked).toBe(true));
   expect((screen.getByRole('checkbox', { name: 'Case images may be sent to permitted models' }) as HTMLInputElement).checked).toBe(true);
@@ -166,4 +168,58 @@ it('can save offline app defaults before connecting a provider', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Save app AI settings' }));
   await waitFor(() => expect(onClose).toHaveBeenCalled());
   expect(api).toHaveBeenCalledWith('save_app_ai_settings', { config: { provider: 'openai', execution: 'auto', review: 'standard', pool: [] }, settings: { offline: true, allow_text: false, allow_images: false, model: '' } });
+});
+
+it('warns before a default-company change clears grants and never sends consent for the new vendor', async () => {
+  const pooled: Snapshot = { ...snapshot, ai_config: { ...snapshot.ai_config!, pool: [{ provider: 'anthropic', model: 'claude-synthetic', allow_text: false, allow_images: false }] } };
+  api.mockImplementation(async (action: string) => action === 'app_ai_settings' ? { configured: true, config: pooled.ai_config, settings: pooled.settings } : action === 'case_ai_scope' ? { scope: 'case' } : action === 'direct_media_permission' ? { enabled: false } : action === 'provider_key_status' ? { configured: true } : undefined);
+  const onClose = vi.fn();
+  render(<SettingsDialog snapshot={pooled} refresh={async () => undefined} onClose={onClose} run={fn => { void fn(); }} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'This case · customized' }));
+  expect(screen.queryByText(/saving clears them/)).toBeNull();
+  const anthropic = screen.getByRole('group', { name: /Claude \/ Anthropic/ });
+  fireEvent.click(within(anthropic).getByRole('radio', { name: 'Default chat model' }));
+  expect(screen.getByText(/Saving changes the default company and clears case grants/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Case permissions' }));
+  expect(screen.getByText(/Saving makes Claude \/ Anthropic the default company instead of OpenAI/)).toBeTruthy();
+  expect(screen.getByText('Model availability is not case authorization.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Save case AI override' }));
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  const call = api.mock.calls.find(([action]) => action === 'save_ai_settings')!;
+  expect(call[1]).toEqual({
+    case_id: 'synthetic-case', session_epoch: 8,
+    config: { provider: 'anthropic', execution: 'single', review: 'challenge', pool: [{ provider: 'openai', model: 'saved-model', allow_text: true, allow_images: true }] },
+    settings: { offline: false, allow_text: true, allow_images: true, model: 'claude-synthetic' },
+  });
+  expect(call[1]).not.toHaveProperty('grants_for_provider');
+});
+
+it('names the notice only when grants exist and the company actually changes', () => {
+  const granted = { offline: false, allow_text: true, allow_images: false, model: 'm' };
+  expect(providerChangeNotice('openai', 'openai', granted)).toBeNull();
+  expect(providerChangeNotice(null, 'gemini', granted)).toBeNull();
+  expect(providerChangeNotice('openai', 'gemini', { ...granted, allow_text: false })).toBeNull();
+  expect(providerChangeNotice('openai', 'gemini', granted)).toMatch(/Gemini \/ Google the default company instead of OpenAI/);
+});
+
+it('shows review and execution read-only and saves them unchanged', async () => {
+  const onClose = vi.fn();
+  render(<SettingsDialog snapshot={null} refresh={async () => undefined} onClose={onClose} run={fn => { void fn(); }} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Review & processing' }));
+  expect(await screen.findByText('Challenge')).toBeTruthy();
+  expect(screen.getByText('Single agent')).toBeTruthy();
+  expect(screen.getByText(/Separate working contexts — not independent corroboration or human approval/)).toBeTruthy();
+  expect(screen.queryByRole('combobox', { name: /Review/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Save app AI settings' }));
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  expect(api).toHaveBeenCalledWith('save_app_ai_settings', expect.objectContaining({ config: expect.objectContaining({ execution: 'single', review: 'challenge' }) }));
+});
+
+it('opens a requested section and lists real keyboard shortcuts', () => {
+  render(<SettingsDialog snapshot={null} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} initialSection="Keyboard & accessibility" />);
+  expect(screen.getByRole('heading', { name: 'Keyboard & accessibility', level: 2 })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Keyboard & accessibility' }).getAttribute('aria-current')).toBe('page');
+  expect(screen.getByRole('rowheader', { name: 'Open settings' })).toBeTruthy();
+  expect(screen.getByText(/Reduced motion is (on|off)/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Save app AI settings' })).toBeNull();
 });
