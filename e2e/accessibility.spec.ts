@@ -55,7 +55,7 @@ test('dark and light startup, settings, and case navigation have no WCAG A/AA vi
   await page.getByText('Prepare an issue, production gap, exhibit or draft').click();
   await scan('structured-findings-forms-light');
   await page.keyboard.press('Control+,');
-  for (const section of ['Providers & models', 'AI permissions', 'Appearance', 'About']) {
+  for (const section of ['Accounts & models', 'Case permissions', 'Privacy & offline', 'Review & processing', 'Appearance', 'Keyboard & accessibility', 'About']) {
     await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: section }).click();
     await scan(`settings-${section.toLowerCase().replaceAll(/[^a-z]+/g, '-')}-light`);
   }

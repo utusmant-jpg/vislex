@@ -89,13 +89,13 @@ it('builds a draft from an accepted finding with revision and source dependencie
   render(<EvidenceNotebook snapshot={{ id: 'case-one', sources: [source] } as Snapshot} onSource={vi.fn()} onClose={vi.fn()} />);
   await screen.findByText('Accepted sequence');
   fireEvent.click(screen.getByText('Prepare an issue, production gap, exhibit or draft'));
-  const form = within(screen.getByText('Prepare an issue, production gap, exhibit or draft').parentElement!.querySelector('form')!);
+  const form = within(screen.getByText('Prepare an issue, production gap, exhibit or draft').closest('details')!.querySelector('form')!);
   fireEvent.change(screen.getByLabelText('Work product type'), { target: { value: 'draft' } });
   fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Proposed chronology' } });
   fireEvent.change(screen.getByLabelText('Jurisdiction'), { target: { value: 'Ontario' } });
   fireEvent.change(screen.getByLabelText('Relevant date'), { target: { value: '2026-09-26' } });
-  fireEvent.change(screen.getByLabelText('paragraph'), { target: { value: '1' } });
-  fireEvent.change(screen.getByLabelText('text'), { target: { value: 'The record places the event near 10:00.' } });
+  fireEvent.change(screen.getByLabelText('Paragraph'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('Text'), { target: { value: 'The record places the event near 10:00.' } });
   fireEvent.change(form.getByLabelText('Source'), { target: { value: source.id } });
   fireEvent.change(form.getByLabelText('Exact citation'), { target: { value: 'evidence:source-one#R1L1-L1' } });
   fireEvent.change(form.getByLabelText('Accepted finding on this page (optional)'), { target: { value: 'accepted-one:3' } });
