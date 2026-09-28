@@ -63,18 +63,20 @@ The Codex-sidecar subscription route is off by default. Build with `--features s
 
 Follow `README.md` → Verification for the full Windows sequence. Tier 1 is `cargo test --locked`, clippy and `cargo check --features desktop`. Tier 2 adds the packaged worker (`scripts/build-worker.ps1`), the ignored sandbox tests and the native CDP journeys.
 
-## Baseline recorded 2026-09-28 (Linux cloud container)
+## Latest Linux run (cloud container, 2026-09-28)
 
-Tested commit: `b2bcd85` on `claude/redesign-v14qbo`, plus the `worker_video_e2e.rs` Windows gate.
+Tested commit: `7b01ebf` on `claude/stoic-ride-1c8hns`. Nothing below has run on Windows; see `docs/implementation/LOCAL-FINALIZE.md` for the Windows checks still owed.
 
 | Check | Result |
 |---|---|
 | `tsc --noEmit` | exit 0 |
-| Vitest | 28 files, 257 tests passed |
-| `vite build` | ok (chunk-size warning only) |
-| Playwright (Chromium 1194) | 39 passed, 5 failed; the failures reproduce serially (see `docs/implementation/SEAMS.md`) |
-| Rust, host target, `--tests` | 206 passed, 0 failed, 5 ignored across library and integration suites |
-| Python workers / scripts / benchmarks | 28 / 13 / 10 passed |
-| `vislex_plan.py check` | valid, 26 tasks |
+| Vitest | 29 files, 263 tests passed |
+| `vite build` | ok |
+| Playwright (Chromium) | 47 passed, plus one intentional expected failure for a known combobox issue |
+| Rust, host target, `--tests` | 238 passed, 0 failed, 4 ignored |
+| Python workers / scripts / benchmarks | 41 / 13 / 10 passed |
+| `vislex_plan.py check` | valid, 33 tasks |
 
 Environment: Node 22.22.2, npm 10.9.7, stable Rust (x86_64-unknown-linux-gnu), Python 3.11.15.
+
+The first baseline, on `b2bcd85` of `claude/redesign-v14qbo`, had 5 Playwright failures, all fixed on this branch.
