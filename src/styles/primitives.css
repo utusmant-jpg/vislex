@@ -285,3 +285,88 @@ kbd, .kbd {
   .segmented button.selected, .chip.selected, .menu-item[data-highlighted], .combobox-item[data-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
   .progress-fill { background: Highlight; }
 }
+
+/* ------------------------------------------------------------ layout vocabulary */
+/* Workspace header: eyebrow, title, subtitle, actions. */
+.surface-header { display: flex; align-items: flex-end; gap: 16px; padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; }
+.surface-header-text { min-width: 0; flex: 1; }
+.surface-header h1, .surface-header h2 { font-size: var(--text-xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); line-height: var(--leading-tight); color: var(--text-1); }
+.surface-header p { color: var(--text-3); font-size: var(--text-sm); margin-top: 4px; }
+.surface-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Panel header: compact 44px bar at the top of panes. */
+.panel-bar { display: flex; align-items: center; gap: 8px; min-height: var(--chrome-h); padding: 0 12px 0 16px; border-bottom: 1px solid var(--border-subtle); flex-shrink: 0; }
+.panel-bar-title { font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--text-1); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.toolbar-divider { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+
+.section-title {
+  display: flex; align-items: center; gap: 8px; margin: 22px 0 10px; font-size: var(--text-caption); font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--text-3);
+}
+.section-title .count { font-variant-numeric: tabular-nums; color: var(--text-3); font-weight: var(--weight-medium); }
+
+/* Card: raised, bordered container on a workspace surface. */
+.card {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm), var(--shadow-raised); padding: var(--pad-card);
+}
+[data-theme="light"] .card { box-shadow: var(--shadow-sm); }
+.card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.card-title { font-size: var(--text-base); font-weight: var(--weight-semibold); color: var(--text-1); min-width: 0; }
+.card-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.card.is-attention { border-color: color-mix(in oklab, var(--danger) 45%, var(--border)); }
+
+/* List: rows with a leading icon, primary text, trailing meta. */
+.list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: var(--surface-2); }
+.list-row {
+  display: flex; align-items: center; gap: 12px; min-height: calc(var(--row-h) + 6px); padding: 0 14px; width: 100%; text-align: left;
+  border-bottom: 1px solid var(--border-subtle); color: var(--text-1); font-size: var(--text-sm);
+}
+.list-row:last-child { border-bottom: 0; }
+.list-row:hover { background: var(--hover); }
+.list-row[aria-selected="true"], .list-row.selected { background: var(--accent-subtle); }
+.list-row-icon { color: var(--text-3); display: inline-flex; flex-shrink: 0; }
+.list-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.list-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: var(--weight-medium); }
+.list-row-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font-size: var(--text-caption); }
+.list-row-meta { display: flex; align-items: center; gap: 10px; color: var(--text-3); font-size: var(--text-caption); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+/* Underline tabs (role=tablist). */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-subtle); overflow-x: auto; scrollbar-width: none; }
+.tabs [role="tab"] {
+  position: relative; height: 36px; padding: 0 12px; color: var(--text-3); font-size: var(--text-sm); font-weight: var(--weight-medium); white-space: nowrap;
+}
+.tabs [role="tab"]:hover { color: var(--text-1); }
+.tabs [role="tab"][aria-selected="true"] { color: var(--text-1); }
+.tabs [role="tab"][aria-selected="true"]::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
+@media (forced-colors: active) { .tabs [role="tab"][aria-selected="true"]::after { background: Highlight; } }
+
+/* Key/value facts (provenance, identity). */
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: var(--text-sm); }
+.kv dt { color: var(--text-3); }
+.kv dd { margin: 0; color: var(--text-1); min-width: 0; overflow-wrap: anywhere; }
+
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat-value { font-size: var(--text-lg); font-weight: var(--weight-semibold); color: var(--text-1); font-variant-numeric: tabular-nums; letter-spacing: var(--tracking-tight); }
+.stat-label { font-size: var(--text-caption); color: var(--text-3); }
+
+/* Inline status line with a leading dot/spinner: "Transcribing · 120 of 600 s". */
+.status-line { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); font-size: var(--text-sm); }
+.status-line .units { color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+.icon-tile {
+  display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: var(--radius-md); flex-shrink: 0;
+  background: var(--surface-3); border: 1px solid var(--border); color: var(--text-2); box-shadow: var(--shadow-raised);
+}
+[data-theme="light"] .icon-tile { background: var(--surface-1); }
+.combobox-trigger {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; height: var(--control-h); min-width: 200px; padding: 0 10px;
+  border: 1px solid var(--border-control); border-radius: var(--radius-md); background: var(--field); color: var(--text-1); font-size: var(--text-sm);
+}
+.combobox-trigger:hover:not(:disabled) { border-color: var(--text-3); }
+.combobox-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combobox-value.placeholder { color: var(--text-3); }
+.combobox-item-description { display: block; color: var(--text-3); font-size: var(--text-caption); overflow: hidden; text-overflow: ellipsis; }
+.tooltip-keys { display: inline-flex; gap: 3px; }

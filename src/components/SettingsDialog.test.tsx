@@ -6,7 +6,7 @@ import type { Snapshot } from '../types';
 
 const api = vi.hoisted(() => vi.fn());
 vi.mock('../bridge', () => ({ api, native: true }));
-vi.mock('../ui', () => ({ useTheme: () => ({ theme: 'dark', setTheme: vi.fn(), density: 'comfortable', setDensity: vi.fn() }) }));
+vi.mock('../ui', async importOriginal => ({ ...(await importOriginal<typeof import('../ui')>()), useTheme: () => ({ theme: 'dark', setTheme: vi.fn(), density: 'comfortable', setDensity: vi.fn() }) }));
 
 const snapshot: Snapshot = {
   id: 'synthetic-case', name: 'Synthetic case', root: 'C:\\synthetic', generation: 1, session_epoch: 8,
