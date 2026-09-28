@@ -504,15 +504,57 @@
       "state": "pending"
     },
     "R33": {
-      "state": "in_progress",
+      "state": "verified",
       "branch": "claude/research-browser",
-      "base": "8b2fbee"
+      "commit": "1861118",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "evidence": "docs/implementation/RESEARCH-SPIKE-2026-10.md (R33 regression table)",
+      "commands": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 251 passed 0 failed",
+        "cargo check --locked --features desktop -> exit 0",
+        "cargo check --locked --features research -> exit 0",
+        "cargo check --release --features research -> exit 0",
+        "npm run build -> exit 0",
+        "npm test -> exit 0, 294 passed",
+        "node scripts/check-webview-lockstep.mjs -> exit 0",
+        "node --test scripts/check-webview-lockstep.test.mjs -> 3 passed",
+        "scripts/native-acceptance.ps1 (research build, VISLEX_WORKER_PATH=main checkout worker) -> exit 0"
+      ],
+      "unrun_checks": [
+        "Linux cargo check --features desktop/research (added to CI, not run locally)",
+        "verify-v4.ps1 end-to-end run"
+      ],
+      "reviewer": "Independent review (general-purpose agent): 2 major + minors, all fixed in 1861118; independent re-review of 89239b0: no blockers/majors, 7 minors, 6 fixed in 1861118, startup-spike hermeticity documented."
     },
     "R34": {
-      "state": "pending"
+      "state": "verified",
+      "branch": "claude/research-browser",
+      "commit": "1861118",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "evidence": "docs/implementation/RESEARCH-SPIKE-2026-10.md; artifacts/research-spike.json and research-spike-startup.json (local, gitignored)",
+      "commands": [
+        "powershell -File scripts/native-research-spike.ps1 -> exit 0, ok true, invariants asserted",
+        "powershell -File scripts/native-research-spike-startup.ps1 -> exit 0, ok true, invariants asserted"
+      ],
+      "unrun_checks": [
+        "Cross-origin iframe sessions (CallDevToolsProtocolMethodForSession)",
+        "Which layer blocks the framed-app probe is not isolated",
+        "Second machine / native x64 hardware"
+      ],
+      "reviewer": "Independent review (general-purpose agent): 2 major + minors, all fixed in 1861118; independent re-review of 89239b0: no blockers/majors, 7 minors, 6 fixed in 1861118, startup-spike hermeticity documented."
     },
     "R35": {
-      "state": "pending"
+      "state": "implemented",
+      "branch": "claude/research-browser",
+      "commit": "1861118",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "evidence": "docs/implementation/RESEARCH-SPIKE-2026-10.md (R35 section); node scripts/build-research-injected.mjs --check",
+      "commands": [
+        "node scripts/build-research-injected.mjs --check -> reproducible sha256 93f3fbc1a0d9b18615738fb32a2996cb982877305f21eab67d69169ae6f13de2 (also from a fresh checkout)",
+        "Edge via Playwright dev tooling: Google Scholar results and LII statute sizing; ref stability across re-render"
+      ],
+      "remaining": "Westlaw document and KeyCite page sizing needs the developer signed-in account (R36); Rust-side hash pin lands with the snapshot module (R42).",
+      "reviewer": "Not yet reviewed independently."
     },
     "R36": {
       "state": "pending"
