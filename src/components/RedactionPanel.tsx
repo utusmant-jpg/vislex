@@ -111,11 +111,15 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
     invalidatePrepared();
   }
 
-  const step = !boxes.length ? 1 : !accepted ? 2 : 3;
+  // Each step is done only at its real milestone: review is complete once every page is checked and the
+  // reviewed derivative is accepted; export is complete only once a file has actually been saved.
+  const reviewDone = accepted && pages.length > 0 && reviewed.length === pages.length;
+  const exportDone = reviewDone && !!saved;
+  const step = !boxes.length ? 1 : !reviewDone ? 2 : !exportDone ? 3 : null;
   const steps = [
     { label: 'Mark areas', done: boxes.length > 0 },
-    { label: 'Review every page', done: !!pdf },
-    { label: 'Export copy', done: accepted },
+    { label: 'Review every page', done: reviewDone },
+    { label: 'Export copy', done: exportDone },
   ];
   const confirmTitle = `Discard ${boxes.length} rectangle${boxes.length === 1 ? '' : 's'}?`;
   const confirmBody = confirm === 'toggle'
@@ -139,7 +143,7 @@ export default function RedactionPanel({ caseId, sessionEpoch, sourceId, kind }:
     <p className="redaction-units">{kind === 'pdf' ? 'Coordinates use PDF points from the physical page’s top-left corner.' : 'Coordinates use orientation-corrected image pixels.'} The copy contains flattened page images; original text, attachments, and source metadata are not copied.</p>
 
     <div className="redaction-toolbar">
-      <button ref={toggleRef} className={drawMode ? 'secondary' : 'primary'} data-size="sm" disabled={!!busy} aria-pressed={drawMode} onClick={() => { if (boxes.length || outputs.length) setConfirm('toggle'); else toggleDraw(); }}>
+      <button ref={toggleRef} className={drawMode ? 'secondary' : 'primary'} data-size="sm" disabled={!!busy} onClick={() => { if (boxes.length || outputs.length) setConfirm('toggle'); else toggleDraw(); }}>
         <MousePointer2 size={14} aria-hidden="true" />{drawMode ? 'Stop drawing' : 'Draw redactions'}
       </button>
       {kind === 'pdf' && drawMode ? <label className="redaction-page-field">Page {pageCount ? `of ${pageCount}` : ''}
