@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test e2e/workspace.spec.ts",
     "test:a11y": "playwright test e2e/accessibility.spec.ts",
+    "test:harness": "playwright test e2e/harness-",
     "test:core": "cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "npm run build && npm run test && npm run test:core"
   },
