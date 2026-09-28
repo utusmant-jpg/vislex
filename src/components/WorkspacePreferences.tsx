@@ -32,7 +32,7 @@ export default function WorkspacePreferences({ onClose }: { onClose: () => void 
       </nav>
       <div className="settings-body">
         <header className="settings-heading"><div className="settings-heading-text"><h2>{section}</h2></div><button type="button" className="icon-button" aria-label="Close settings" onClick={onClose}><X size={18} /></button></header>
-        <div className="settings-scroll">
+        <div className="settings-scroll" role="region" aria-label={`${section} settings`} tabIndex={0}>
           {section === 'Appearance' ? <AppearanceSettings /> : null}
           {section === 'Keyboard & accessibility' ? <KeyboardSettings /> : null}
           {section === 'About' ? <div className="settings-section settings-about">

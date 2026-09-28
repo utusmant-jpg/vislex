@@ -282,3 +282,5 @@
   .theme-options { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .settings-grants-inline, .settings-model .field-hint { padding-left: 0; }
 }
+.settings-scroll:focus-visible { outline-offset: -2px; }
+.settings-key-row input { font-size: var(--text-sm); }

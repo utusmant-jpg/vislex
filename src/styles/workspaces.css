@@ -191,6 +191,7 @@ details[open] > summary > .object-card-chevron, details[open] > summary > .dossi
 .investigation-workbench .section-title { margin: 24px auto 10px; }
 
 /* discrepancies */
+.investigation-workbench .workbench-start { margin-bottom: 16px; }
 .workbench-start .card-header { align-items: flex-start; margin-bottom: 14px; }
 .workbench-start-text { flex: 1; min-width: 0; }
 .workbench-start-text p { margin-top: 3px; font-size: var(--text-sm); color: var(--text-3); line-height: 1.55; max-width: 720px; }

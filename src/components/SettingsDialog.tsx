@@ -281,7 +281,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
           <div className="settings-heading-text"><h2>{section}</h2><p>{sectionSummaries[section]}</p></div>
           <button type="button" className="icon-button" disabled={busy} aria-label="Close settings" onClick={onClose}><X size={18} /></button>
         </header>
-        <div className="settings-scroll">
+        <div className="settings-scroll" role="region" aria-label={`${section} settings`} tabIndex={0}>
           {isAiSection ? scopeBar : null}
           {isAiSection && !native ? <p className="notice info"><Info size={16} aria-hidden="true" /><span>AI setup is available in the Windows desktop app. This browser is a preview.</span></p> : null}
 

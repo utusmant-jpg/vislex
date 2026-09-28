@@ -12,8 +12,8 @@ export default function ModelSelect({ label, value, onChange, options, loading, 
   /** Show only display names in the trigger and list (ids still match the filter). */
   hideIds?: boolean;
 }) {
-  const rows = [
-    ...(value && !options.some(option => option.id === value) ? [{ id: value, name: `${value} (saved)` }] : []),
+  const rows: (ModelOption & { saved?: boolean })[] = [
+    ...(value && !options.some(option => option.id === value) ? [{ id: value, name: `${value} (saved)`, saved: true }] : []),
     ...options,
   ];
   const clearLabel = placeholder ?? 'No selection';
@@ -22,7 +22,7 @@ export default function ModelSelect({ label, value, onChange, options, loading, 
     ...rows.map(row => ({
       value: row.id,
       label: row.name === row.id ? row.id : row.name,
-      description: row.name === row.id || hideIds ? undefined : row.id,
+      description: row.name === row.id || row.saved || hideIds ? undefined : row.id,
       keywords: [row.id],
       meta: modelBadges(row.id, false).map(badge => <span className="badge" key={badge}>{badge}</span>),
     })),
@@ -39,7 +39,7 @@ export default function ModelSelect({ label, value, onChange, options, loading, 
     onChange={onChange}
     trigger={() => <>
       <span className={`model-select-value ${value ? '' : 'placeholder'}`}>
-        {loading ? `Loading ${noun}…` : selected ? (selected.name === selected.id || hideIds ? selected.name : `${selected.name} · ${selected.id}`) : (placeholder ?? 'Select a model')}
+        {loading ? `Loading ${noun}…` : selected ? (selected.name === selected.id || selected.saved || hideIds ? selected.name : `${selected.name} · ${selected.id}`) : (placeholder ?? 'Select a model')}
       </span>
       {loading ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
     </>}
