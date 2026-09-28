@@ -1,9 +1,10 @@
 // Block-level markdown renderer with VisLex citation chips inline. Hand-rolled so the
 // whole app stays dependency-free and offline; covers the constructs the investigator
 // actually emits: headings, lists, tables, fenced code, quotes, emphasis, citations.
-import { Fragment } from 'react';
+import { Fragment, memo, useMemo } from 'react';
 import { citationParts } from './bridge';
-import { CitationChip } from './ui';
+import { CitationChip, CopyButton } from './ui';
+import { citationPattern } from './chat/citation-context';
 
 export type Block =
   | { kind: 'heading'; level: number; text: string }
@@ -13,8 +14,6 @@ export type Block =
   | { kind: 'list'; ordered: boolean; items: string[]; start?: number }
   | { kind: 'table'; header: string[]; rows: string[][] }
   | { kind: 'rule' };
-
-const citationPattern = /(evidence:[a-zA-Z0-9-]+#(?:R[1-9]\d*L[1-9]\d*-L[1-9]\d*|L\d+-L\d+|image|media|artifact:[a-zA-Z0-9-]+))/g;
 
 export function splitCitations(text: string): string[] {
   return text.split(citationPattern);
@@ -97,16 +96,23 @@ const emphasisPattern = /(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`\n]+`)/g;
 const closingPunctuation = /^[.,;:!?)\]}’”»…%]+/;
 const openingPunctuation = /[(\[{‘“«]+$/;
 
-function InlineText({ text }: { text: string }) {
+type SourceOpen = (id: string, locator?: string) => void;
+
+/** Plain text split into word spans; while streaming each new word mounts once and fades in. */
+function Words({ text, prefix }: { text: string; prefix: string }) {
+  return <>{text.split(/(\s+)/).map((word, index) => /^\s*$/.test(word) ? word : <span key={`${prefix}-${index}`} className="stream-word">{word}</span>)}</>;
+}
+
+function InlineText({ text, words }: { text: string; words?: boolean }) {
   return <span>{text.split(emphasisPattern).map((segment, position) => {
     if (segment.startsWith('**') && segment.endsWith('**') && segment.length > 4) return <strong key={position}>{segment.slice(2, -2)}</strong>;
     if (segment.startsWith('*') && segment.endsWith('*') && segment.length > 2 && !segment.startsWith('**')) return <em key={position}>{segment.slice(1, -1)}</em>;
     if (segment.startsWith('`') && segment.endsWith('`') && segment.length > 2) return <code key={position} className="inline-code">{segment.slice(1, -1)}</code>;
-    return segment;
+    return words ? <Words key={position} text={segment} prefix={String(position)} /> : segment;
   })}</span>;
 }
 
-export function InlineMarkdown({ text, onSource }: { text: string; onSource: (id: string, locator?: string) => void }) {
+export function InlineMarkdown({ text, onSource, words }: { text: string; onSource: SourceOpen; words?: boolean }) {
   const parts = splitCitations(text);
   const chip = (index: number) => !!parts[index] && !!citationParts(parts[index]);
   return <>
@@ -121,52 +127,75 @@ export function InlineMarkdown({ text, onSource }: { text: string; onSource: (id
       const start = chip(index - 1) ? closingPunctuation.exec(part)?.[0].length ?? 0 : 0;
       const end = chip(index + 1) ? part.length - (openingPunctuation.exec(part)?.[0].length ?? 0) : part.length;
       const rest = part.slice(start, Math.max(start, end));
-      return rest ? <InlineText key={index} text={rest} /> : null;
+      return rest ? <InlineText key={index} text={rest} words={words} /> : null;
     })}
   </>;
 }
 
-export function Markdown({ text, onSource, caret, className }: { text: string; onSource: (id: string, locator?: string) => void; caret?: boolean; className?: string }) {
-  const blocks = parseBlocks(text);
+/** Content identity of a block, so unchanged blocks skip re-rendering while a draft streams. */
+function signature(block: Block): string {
+  switch (block.kind) {
+    case 'heading': return `h${block.level}:${block.text}`;
+    case 'paragraph': return `p:${block.text}`;
+    case 'code': return `c:${block.language}:${block.lines.join('\n')}`;
+    case 'quote': return `q:${block.lines.join('\n')}`;
+    case 'list': return `l:${block.ordered}:${block.start ?? 1}:${block.items.join('\n')}`;
+    case 'table': return `t:${block.header.join('|')}:${block.rows.map(row => row.join('|')).join('\n')}`;
+    default: return 'r';
+  }
+}
+
+type BlockProps = { block: Block; signature: string; onSource: SourceOpen; caret: boolean; words: boolean };
+
+const MarkdownBlock = memo(function MarkdownBlock({ block, onSource, caret, words }: BlockProps) {
+  const tail = caret ? <span className="stream-caret" aria-hidden="true" /> : null;
+  switch (block.kind) {
+    case 'heading': {
+      const Tag = (block.level <= 1 ? 'h3' : block.level === 2 ? 'h4' : 'h5') as 'h3' | 'h4' | 'h5';
+      return <Tag><InlineMarkdown text={block.text} onSource={onSource} words={words} />{tail}</Tag>;
+    }
+    case 'paragraph': {
+      const lines = block.text.split('\n');
+      return <p>{lines.map((line, lineIndex) => <span key={lineIndex}>
+        <InlineMarkdown text={line} onSource={onSource} words={words} />{lineIndex < lines.length - 1 ? <br /> : null}
+      </span>)}{tail}</p>;
+    }
+    case 'code': {
+      const code = block.lines.join('\n');
+      return <div className="code-frame">
+        <div className="code-head">
+          <span className="code-language">{block.language || 'text'}</span>
+          <CopyButton text={code} label="Copy code" small />
+        </div>
+        <pre className="code-block" data-language={block.language || undefined}><code>{code}</code>{tail}</pre>
+      </div>;
+    }
+    case 'quote':
+      return <blockquote>{block.lines.map((line, lineIndex) => <p key={lineIndex}><InlineMarkdown text={line} onSource={onSource} words={words} /></p>)}{tail}</blockquote>;
+    case 'list': {
+      // The streaming caret sits inside the last item: a list may only contain <li> children.
+      const items = block.items.map((item, itemIndex) => <li key={itemIndex}><InlineMarkdown text={item} onSource={onSource} words={words} />{itemIndex === block.items.length - 1 ? tail : null}</li>);
+      return block.ordered ? <ol start={block.start}>{items}</ol> : <ul>{items}</ul>;
+    }
+    case 'table':
+      return <div className="table-wrap"><table>
+        <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex} scope="col"><InlineMarkdown text={cell} onSource={onSource} /></th>)}</tr></thead>
+        <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}><InlineMarkdown text={cell} onSource={onSource} /></td>)}</tr>)}</tbody>
+      </table>{tail}</div>;
+    case 'rule':
+    default:
+      return <hr />;
+  }
+}, (previous, next) => previous.signature === next.signature && previous.caret === next.caret && previous.words === next.words && previous.onSource === next.onSource);
+
+/** Renders markdown with inline citation chips. `caret` shows the streaming
+ *  caret at the end; `streaming` also fades in newly arrived words of the
+ *  block being written (a live draft only, never saved history). */
+export function Markdown({ text, onSource, caret, streaming, className }: { text: string; onSource: SourceOpen; caret?: boolean; streaming?: boolean; className?: string }) {
+  const blocks = useMemo(() => parseBlocks(text), [text]);
   const last = blocks.length - 1;
   return <div className={`markdown-body ${className ?? ''}`}>
-    {blocks.map((block, index) => {
-      const tail = caret && index === last ? <span className="stream-caret" aria-hidden="true" /> : null;
-      switch (block.kind) {
-        case 'heading': {
-          const Tag = (block.level <= 1 ? 'h3' : block.level === 2 ? 'h4' : 'h5') as 'h3' | 'h4' | 'h5';
-          return <Tag key={index}><InlineMarkdown text={block.text} onSource={onSource} />{tail}</Tag>;
-        }
-        case 'paragraph': {
-          const lines = block.text.split('\n');
-          return <p key={index}>{lines.map((line, lineIndex) => <span key={lineIndex}>
-            <InlineMarkdown text={line} onSource={onSource} />{lineIndex < lines.length - 1 ? <br /> : null}
-          </span>)}{tail}</p>;
-        }
-        case 'code':
-          return <pre className="code-block" key={index} data-language={block.language || undefined}>
-            {block.language ? <span className="code-language" aria-hidden="true">{block.language}</span> : null}
-            <code>{block.lines.join('\n')}</code>{tail}
-          </pre>;
-        case 'quote':
-          return <blockquote key={index}>{block.lines.map((line, lineIndex) => <p key={lineIndex}><InlineMarkdown text={line} onSource={onSource} /></p>)}{tail}</blockquote>;
-        case 'list': {
-          // The streaming caret sits inside the last item: a list may only contain <li> children.
-          const items = block.items.map((item, itemIndex) => <li key={itemIndex}><InlineMarkdown text={item} onSource={onSource} />{itemIndex === block.items.length - 1 ? tail : null}</li>);
-          return block.ordered
-            ? <ol key={index} start={block.start}>{items}</ol>
-            : <ul key={index}>{items}</ul>;
-        }
-        case 'table':
-          return <div className="table-wrap" key={index}><table>
-            <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex} scope="col"><InlineMarkdown text={cell} onSource={onSource} /></th>)}</tr></thead>
-            <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}><InlineMarkdown text={cell} onSource={onSource} /></td>)}</tr>)}</tbody>
-          </table>{tail}</div>;
-        case 'rule':
-        default:
-          return <hr key={index} />;
-      }
-    })}
+    {blocks.map((block, index) => <MarkdownBlock key={index} block={block} signature={signature(block)} onSource={onSource} caret={!!caret && index === last} words={!!streaming && index === last} />)}
     {caret && !blocks.length ? <p><span className="stream-caret" aria-hidden="true" /></p> : null}
   </div>;
 }

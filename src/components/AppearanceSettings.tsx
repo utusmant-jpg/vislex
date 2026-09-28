@@ -1,4 +1,5 @@
 import { Monitor, Moon, Sun } from 'lucide-react';
+import BrandMark from './BrandMark';
 import { useTheme } from '../ui';
 
 const themes = [
@@ -36,7 +37,7 @@ export default function AppearanceSettings() {
     </fieldset>
     <div className="appearance-preview-heading"><span className="eyebrow">LIVE PREVIEW</span><span className="small muted">{resolvedTheme === 'dark' ? 'Dark' : 'Light'} · {density}</span></div>
     <div className="appearance-preview" data-density={density} aria-hidden="true">
-      <div className="appearance-preview-title"><span className="brand-mark"><span/><span/><span/></span><strong>VisLex</strong><span>Case workspace</span></div>
+      <div className="appearance-preview-title"><BrandMark size={28} /><strong>VisLex</strong><span>Case workspace</span></div>
       <div className="appearance-preview-layout">
         <div className="appearance-preview-nav"><span className="selected"/><span/><span/></div>
         <div className="appearance-preview-content"><div className="appearance-preview-bar"/><div className="appearance-preview-line"/><div className="appearance-preview-card"><b/><span/><span/></div><div className="appearance-preview-line short"/></div>

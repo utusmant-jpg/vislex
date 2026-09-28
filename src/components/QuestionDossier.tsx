@@ -74,7 +74,7 @@ export default function QuestionDossier({ caseId, sessionEpoch, taskId, step, st
   }
   const reviewed = view?.dossier ? view.human_reviews.filter(r => r && !r.stale).length : 0;
   return <details className="question-dossier" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary><ChevronRight size={15} className="dossier-chevron" aria-hidden="true" /><span>Question dossier · evidence, checks and gaps</span></summary>
+    <summary><ChevronRight size={16} className="dossier-chevron" aria-hidden="true" /><span>Question dossier · evidence, checks and gaps</span></summary>
     {open ? <div className="dossier-content" ref={content}>
       {!native ? <p className="field-hint">Question dossiers are available in the desktop app.</p> : null}
       {error ? <p role="alert" className="notice error"><TriangleAlert size={16} aria-hidden="true" /><span>Could not load this dossier: {error}</span></p> : null}

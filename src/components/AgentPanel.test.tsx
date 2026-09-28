@@ -30,8 +30,8 @@ describe('chat composer interaction', () => {
     const data = snapshot();
     data.counts = { audit_seq: 1, source_count: 42, source_bytes: 0, record_count: 3, task_count: 0, job_count: 0, jobs_queued: 0, jobs_running: 0, jobs_failed: 0, jobs_attention: 0, jobs_complete: 0 };
     panel(data);
-    expect(screen.getByRole('heading', { name: 'Synthetic case' })).toBeTruthy();
-    expect(screen.getByLabelText('Case at a glance').textContent).toContain('42Evidence sources');
+    expect(screen.getByRole('heading', { name: /know about.*Synthetic/ })).toBeTruthy();
+    expect(screen.getByLabelText('Case at a glance').textContent).toContain('42 evidence sources');
     fireEvent.click(screen.getByRole('button', { name: /Build a timeline/ }));
     expect((screen.getByRole('textbox', { name: 'Agent task' }) as HTMLTextAreaElement).value).toContain('Build a timeline');
     expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
@@ -100,6 +100,25 @@ describe('chat composer interaction', () => {
     const args = api.mock.calls.find(([action]) => action === 'start_task')?.[1] as Record<string, unknown>;
     expect(args).not.toHaveProperty('provider');
     expect(args).not.toHaveProperty('model');
+  });
+
+  it('states an unavailable subscription route before sending and blocks Enter as well as Send', async () => {
+    const data=snapshot();
+    data.settings.model='';
+    const blocker = 'The pinned Codex runtime is missing or does not match this verified build';
+    api.mockImplementation(async (action: string) => action === 'ai_access_route'
+      ? { route: 'chatgpt_subscription', subscription: { model: 'codex-model', effort: 'high' }, subscription_ready: false, blocker }
+      : action === 'case_ai_access_route' ? { effective: 'chatgpt_subscription', selection: { model: 'codex-model', effort: 'high' } }
+      : { task_id: 'new-task', conversation_id: 'new-chat' });
+    panel(data);
+    expect(await screen.findByText(`The ChatGPT subscription route is unavailable: ${blocker}.`)).toBeTruthy();
+    expect(screen.getByText('Change this in Settings → Accounts & models → This case')).toBeTruthy();
+    const box = screen.getByRole('textbox', { name: 'Agent task' });
+    fireEvent.change(box, { target: { value: 'Inspect the synthetic source' } });
+    expect(screen.getByRole('button', { name: 'Send message' })).toHaveProperty('disabled', true);
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
   });
 
   it('sends the captured open-case epoch with a new task', async () => {
