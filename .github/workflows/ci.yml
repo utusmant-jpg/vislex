@@ -2,20 +2,93 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'claude/**', 'func/**', 'codex/**']
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
-    runs-on: windows-latest
+  # Tier 0: everything that runs on Linux. See docs/TESTING.md.
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # rust-toolchain.toml and .cargo/config.toml pin the Windows MSVC target.
+      RUSTUP_TOOLCHAIN: stable
+      CARGO_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json --noEmit
+      - name: Unit tests
+        run: npx vitest run
+      - name: Build
+        run: npx vite build
+      - name: Playwright harness and accessibility specs
+        run: |
+          npx playwright install --with-deps chromium
+          export PW_CHROMIUM_PATH="$(node -e "console.log(require('@playwright/test').chromium.executablePath())")"
+          CI=1 npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Rust tests (host target, no desktop feature)
+        run: |
+          printf 'linux-test-placeholder-worker\n' > "$RUNNER_TEMP/placeholder-worker"
+          VISLEX_WORKER_PATH="$RUNNER_TEMP/placeholder-worker" \
+            cargo test --manifest-path src-tauri/Cargo.toml --target "$CARGO_TARGET" --tests
+      - name: Rust desktop compile check
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          # tauri.conf.json bundles resources/worker/**; the real worker is built on Windows.
+          mkdir -p src-tauri/resources/worker/placeholder
+          echo placeholder > src-tauri/resources/worker/placeholder/README
+          cargo check --manifest-path src-tauri/Cargo.toml --target "$CARGO_TARGET" --features desktop
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Python tests
+        run: |
+          grep -iE '^(av|lxml|numpy|openpyxl|pillow|pypdf|pypdfium2|python-docx|reportlab|scenedetect|opencv-python|click|platformdirs|tqdm)==' \
+            workers/requirements.lock.txt | sed 's/ .*//;s/\\//' > "$RUNNER_TEMP/worker-test-reqs.txt"
+          pip install -r "$RUNNER_TEMP/worker-test-reqs.txt"
+          python -m unittest discover -s workers -p "test_*.py"
+          python -m unittest discover -s benchmarks -p "test_*.py"
+          python -m unittest discover -s scripts -p "test_*.py"
+          python scripts/vislex_plan.py check
+
+  # Tier 1: Windows. Needs a provisioned Windows runner (see docs/TESTING.md);
+  # runs for main and pull requests only, to spend Windows minutes deliberately.
+  windows:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -26,7 +99,7 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Frontend build
+      - name: Install npm dependencies
         run: npm ci
       - name: tsc + vite build
         run: npm run build
@@ -34,9 +107,15 @@ jobs:
         run: npm test
 
       - name: Rust desktop check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --features desktop
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        shell: pwsh
+        run: |
+          # Unit tests hash the worker for cache keys without running it; the
+          # packaged worker and sandbox suites are Tier 2 (-- --ignored).
+          Set-Content -Path "$env:RUNNER_TEMP\placeholder-worker" -Value 'placeholder'
+          $env:VISLEX_WORKER_PATH = "$env:RUNNER_TEMP\placeholder-worker"
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
 
       # Worker suites need the locked Python dependencies (OCR, diarization, media codecs).
       - uses: actions/setup-python@v5
