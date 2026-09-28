@@ -79,9 +79,10 @@ function initialProfiles(preferences: Preferences): AIProfile[] {
  *  company, the backend clears the case text/image grants on save unless the
  *  request names the new vendor (it never does from here), so say so before
  *  the user saves rather than letting ticked boxes silently not persist. */
-export function providerChangeNotice(savedProvider: Provider | null, nextProvider: Provider, settings: Settings): string | null {
+export function providerChangeNotice(savedProvider: Provider | null, nextProvider: Provider, settings: Settings, keepGrants = false): string | null {
   if (!savedProvider || savedProvider === nextProvider || (!settings.allow_text && !settings.allow_images)) return null;
-  return `Saving makes ${providerNames[nextProvider]} the default company instead of ${providerNames[savedProvider]}. The case text and image grants were given for ${providerNames[savedProvider]}, so saving clears them. Grant them again for ${providerNames[nextProvider]} afterwards only if you intend to.`;
+  if (keepGrants) return `Saving makes ${providerNames[nextProvider]} the default company instead of ${providerNames[savedProvider]}. You confirmed that the grants below also apply to ${providerNames[nextProvider]}, so saving keeps them.`;
+  return `Saving makes ${providerNames[nextProvider]} the default company instead of ${providerNames[savedProvider]}. The case text and image grants were given for ${providerNames[savedProvider]}, so saving clears them unless you keep them for ${providerNames[nextProvider]} below.`;
 }
 
 export default function SettingsDialog({ snapshot, onClose, refresh, initialSection, initialScope }: { snapshot: Snapshot | null; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; initialSection?: SettingsSection; initialScope?: 'app' | 'case' }) {
@@ -103,6 +104,10 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
   const [primary, setPrimary] = useState(() => Math.max(0, initialProfiles(snapshot ?? { settings: emptySettings }).findIndex(p => p.provider === (snapshot?.ai_config ?? defaultConfig).provider && p.model === snapshot?.settings.model)));
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  // Explicit consent to keep the shown grants for a new default company. It
+  // records the scope and company it was given for, so choosing another
+  // company or editing the other scope voids it. It is never pre-set.
+  const [grantConsent, setGrantConsent] = useState<{ scope: 'app' | 'case'; provider: Provider } | null>(null);
   const [keys, setKeys] = useState<Partial<Record<Provider, string>>>({});
   const [stored, setStored] = useState<Partial<Record<Provider, boolean>>>({});
   const [models, setModels] = useState<Partial<Record<Provider, ModelOption[]>>>({});
@@ -231,6 +236,8 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
         ...(scope === 'case' ? sessionArgs : {}),
         config: { ...config, provider: lead?.model ? lead.provider : config.provider, pool: profiles.filter((p, i) => i !== primary && p.model) },
         settings: { ...settings, model: lead?.model ?? '' },
+        // Without this the backend clears grants on a company change.
+        ...(keepGrants ? { grants_for_provider: nextProvider } : {}),
       });
       if (scope === 'case' && snapshot && directMedia !== null && directMedia !== initialDirectMedia) {
         await api('set_direct_media_permission', { ...sessionArgs, enabled: directMedia });
@@ -250,7 +257,9 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
   const nextProvider: Provider = lead?.model ? lead.provider : config.provider;
   // The provider the current grants were consented for, as the backend compares it.
   const savedProvider: Provider | null = scope === 'app' ? (appPreferences?.configured ? appPreferences.config.provider : null) : (snapshot?.ai_config?.provider ?? null);
-  const grantNotice = providerChangeNotice(savedProvider, nextProvider, settings);
+  const companyChange = providerChangeNotice(savedProvider, nextProvider, settings) !== null;
+  const keepGrants = companyChange && grantConsent?.scope === scope && grantConsent.provider === nextProvider;
+  const grantNotice = providerChangeNotice(savedProvider, nextProvider, settings, keepGrants);
   const routeValue = scope === 'case' ? caseAccess?.override : access?.route;
   const permittedModels = profiles.map((profile, index) => ({ profile, index })).filter(item => item.profile.model);
 
@@ -375,6 +384,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                   <p className="field-hint">Image analysis always sends accompanying text, so images require the text grant.</p>
                 </div>
                 {grantNotice ? <p className="notice warning settings-grant-notice" role="status"><AlertTriangle size={16} aria-hidden="true" /><span>{grantNotice}</span></p> : null}
+                {companyChange ? <label className="settings-check settings-grant-consent"><input type="checkbox" disabled={!native} checked={keepGrants} onChange={e => setGrantConsent(e.target.checked ? { scope, provider: nextProvider } : null)} /><span>Keep these grants for {providerNames[nextProvider]}: {scope === 'app' ? 'inherited case text' : 'case text'}{settings.allow_images ? ' and images' : ''} may be sent to {providerNames[nextProvider]}</span></label> : null}
               </section>
               {scope === 'case' && snapshot ? <section className="settings-card" aria-labelledby="settings-media-title">
                 <div className="settings-card-header"><div className="settings-card-heading"><h3 id="settings-media-title">Direct media (Gemini only)</h3><p>Direct media transmits an original recording (up to 12 MiB) to Gemini when a task needs it. It requires separate, audited case consent.</p></div></div>
@@ -450,7 +460,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
         </div>
 
         {isAiSection ? <footer className="settings-footer">
-          {grantNotice && section !== 'Case permissions' ? <p className="settings-footer-warning" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>Saving changes the default company and clears case grants. <button type="button" className="settings-link" onClick={() => setSection('Case permissions')}>Review case permissions</button></span></p> : null}
+          {grantNotice && section !== 'Case permissions' ? <p className="settings-footer-warning" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>{keepGrants ? `Saving changes the default company to ${providerNames[nextProvider]} and keeps the grants you confirmed for it.` : 'Saving changes the default company and clears case grants.'} <button type="button" className="settings-link" onClick={() => setSection('Case permissions')}>Review case permissions</button></span></p> : null}
           {error ? <p role="alert" className="small danger-text">{error}</p> : null}
           <div className="settings-footer-actions"><span className="settings-footer-scope">{scope === 'app' ? 'Saving updates app AI settings' : 'Saving updates this case only'}</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>Cancel</button><button type="button" className="primary" disabled={!native || (scope === 'app' && !appPreferences)} aria-disabled={busy || undefined} onClick={() => void save()}><Save size={15} />{saving ? 'Saving…' : scope === 'app' ? 'Save app AI settings' : 'Save case AI override'}</button></div>
         </footer> : null}

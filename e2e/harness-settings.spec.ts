@@ -107,6 +107,47 @@ test('a case override saves exactly the grants shown and carries the case guard'
   expect(await calls(page, 'set_direct_media_permission')).toEqual([]);
 });
 
+test('changing the default company keeps grants only with consent that names it', async ({ page }) => {
+  const fx = await openHarness(page);
+  const openCaseSettings = async () => {
+    await page.keyboard.press('Control+,');
+    const dialog = page.getByRole('dialog', { name: 'Workspace settings' });
+    await dialog.getByRole('button', { name: /^This case/ }).click();
+    return dialog;
+  };
+  const chooseAnthropic = async (dialog: ReturnType<typeof page.getByRole>) => {
+    await dialog.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'Accounts & models' }).click();
+    await dialog.getByRole('group', { name: /Claude \/ Anthropic/ }).getByRole('radio', { name: 'Default chat model' }).click();
+    await expect(dialog.getByText('Saving changes the default company and clears case grants.')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Review case permissions' }).click();
+    return dialog.getByRole('checkbox', { name: 'Keep these grants for Claude / Anthropic: case text may be sent to Claude / Anthropic' });
+  };
+
+  // With consent: the request names the new company and the grant survives.
+  let dialog = await openCaseSettings();
+  const consent = await chooseAnthropic(dialog);
+  await expect(consent).not.toBeChecked();
+  await consent.check();
+  await expect(dialog.getByText(/You confirmed that the grants below also apply to Claude \/ Anthropic/)).toBeVisible();
+  await dialog.getByRole('button', { name: 'Save case AI override' }).click();
+  await expect(dialog).toBeHidden();
+  expect((await lastCall(page, 'save_ai_settings')).args).toMatchObject({ case_id: fx.caseA.id, config: { provider: 'anthropic' }, settings: { allow_text: true, allow_images: false }, grants_for_provider: 'anthropic' });
+  await expect(page.getByRole('button', { name: 'Case text permitted' })).toBeVisible();
+
+  // Without consent: switching back to OpenAI sends no consent and clears the grant.
+  dialog = await openCaseSettings();
+  await dialog.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'Accounts & models' }).click();
+  await dialog.getByRole('group', { name: /OpenAI/ }).getByRole('radio', { name: 'Default chat model' }).click();
+  await dialog.getByRole('button', { name: 'Review case permissions' }).click();
+  await expect(dialog.getByRole('checkbox', { name: /^Keep these grants for OpenAI/ })).not.toBeChecked();
+  await dialog.getByRole('button', { name: 'Save case AI override' }).click();
+  await expect(dialog).toBeHidden();
+  const cleared = (await lastCall(page, 'save_ai_settings')).args as Record<string, unknown>;
+  expect(cleared).toMatchObject({ config: { provider: 'openai' } });
+  expect(cleared).not.toHaveProperty('grants_for_provider');
+  await expect(page.getByRole('button', { name: 'Case text not permitted' })).toBeVisible();
+});
+
 test('a failed save keeps the dialog open with the backend error', async ({ page }) => {
   await openHarness(page);
   await page.evaluate(() => window.__vislexHarness!.fail('save_app_ai_settings', 'Synthetic failure: settings store is read-only'));

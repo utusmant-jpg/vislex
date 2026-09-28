@@ -194,6 +194,37 @@ it('warns before a default-company change clears grants and never sends consent 
   expect(call[1]).not.toHaveProperty('grants_for_provider');
 });
 
+it('keeps grants across a company change only with consent that names the new company', async () => {
+  const pooled: Snapshot = { ...snapshot, ai_config: { ...snapshot.ai_config!, pool: [{ provider: 'anthropic', model: 'claude-synthetic', allow_text: false, allow_images: false }, { provider: 'gemini', model: 'gemini-synthetic', allow_text: false, allow_images: false }] } };
+  api.mockImplementation(async (action: string) => action === 'app_ai_settings' ? { configured: true, config: pooled.ai_config, settings: pooled.settings } : action === 'case_ai_scope' ? { scope: 'case' } : action === 'direct_media_permission' ? { enabled: false } : action === 'provider_key_status' ? { configured: true } : undefined);
+  const onClose = vi.fn();
+  render(<SettingsDialog snapshot={pooled} refresh={async () => undefined} onClose={onClose} run={fn => { void fn(); }} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'This case · customized' }));
+  fireEvent.click(within(screen.getByRole('group', { name: /Claude \/ Anthropic/ })).getByRole('radio', { name: 'Default chat model' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Case permissions' }));
+  const consent = screen.getByRole('checkbox', { name: 'Keep these grants for Claude / Anthropic: case text and images may be sent to Claude / Anthropic' }) as HTMLInputElement;
+  expect(consent.checked).toBe(false);
+  fireEvent.click(consent);
+  expect(consent.checked).toBe(true);
+  expect(screen.getByText(/You confirmed that the grants below also apply to Claude \/ Anthropic, so saving keeps them/)).toBeTruthy();
+
+  // Consent for one company is not consent for another: choosing Gemini voids it.
+  fireEvent.click(screen.getByRole('button', { name: 'Accounts & models' }));
+  fireEvent.click(within(screen.getByRole('group', { name: /Gemini \/ Google/ })).getByRole('radio', { name: 'Default chat model' }));
+  expect(screen.getByText(/Saving changes the default company and clears case grants/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Case permissions' }));
+  expect((screen.getByRole('checkbox', { name: /^Keep these grants for Gemini \/ Google/ }) as HTMLInputElement).checked).toBe(false);
+
+  // Back to Anthropic: the earlier consent still names it and applies again.
+  fireEvent.click(screen.getByRole('button', { name: 'Accounts & models' }));
+  fireEvent.click(within(screen.getByRole('group', { name: /Claude \/ Anthropic/ })).getByRole('radio', { name: 'Default chat model' }));
+  expect(screen.getByText(/keeps the grants you confirmed for it/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Save case AI override' }));
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  const call = api.mock.calls.find(([action]) => action === 'save_ai_settings')!;
+  expect(call[1]).toMatchObject({ config: { provider: 'anthropic' }, settings: { allow_text: true, allow_images: true, model: 'claude-synthetic' }, grants_for_provider: 'anthropic' });
+});
+
 it('names the notice only when grants exist and the company actually changes', () => {
   const granted = { offline: false, allow_text: true, allow_images: false, model: 'm' };
   expect(providerChangeNotice('openai', 'openai', granted)).toBeNull();
