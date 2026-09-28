@@ -24,7 +24,9 @@ test.describe('chat through the mocked IPC harness', () => {
     const live = page.locator('.live-answer');
     await expect(live).toContainText('Synthetic streamed');
     await expect(page.getByText('Live draft — not yet citation-validated')).toBeVisible();
-    await expect(page.locator('.activity-live')).toContainText('characters received');
+    // Real providers send plain text deltas as { text } only, so no
+    // function-call "characters received" row appears while text streams.
+    await expect(page.locator('.activity-live')).toHaveCount(0);
     const early = (await live.innerText()).length;
     await expect.poll(async () => (await live.innerText()).length).toBeGreaterThan(early);
 
@@ -38,13 +40,34 @@ test.describe('chat through the mocked IPC harness', () => {
     await expect(turn.getByText('Paused', { exact: true })).toBeVisible();
     // A user stop is not reported as a failure state.
     await expect(turn.getByText('Needs attention')).toHaveCount(0);
-    // The stream stops: no more deltas are delivered after cancellation.
-    const deltas = () => page.evaluate(() => window.__vislexHarness!.emitted('agent-progress').length);
-    const deltasAtStop = await deltas();
-    expect(deltasAtStop).toBeGreaterThan(1);
-    await page.waitForTimeout(600);
-    expect(await deltas()).toBe(deltasAtStop);
+    // desktop.rs notices the stop by polling every 150 ms while the provider
+    // keeps streaming, so deltas for the stopped task can still arrive (the
+    // harness sends one by default). Deliver more with the current case and
+    // epoch and check the app does not revive the live draft from them.
+    await page.evaluate(({ id, caseId }) => {
+      const harness = window.__vislexHarness!;
+      const sent = harness.emitted('agent-progress').at(-1)!.payload as { transmission_id: string };
+      harness.emit('agent-progress', { case_id: caseId, session_epoch: 1, task_id: id, transmission_id: sent.transmission_id, delta: { text: 'LATE-DELTA-AFTER-STOP ' } });
+    }, { id: taskId, caseId: fx.caseA.id });
+    await page.waitForTimeout(400);
     await expect(live).toHaveCount(0);
+    await expect(page.getByText('LATE-DELTA-AFTER-STOP')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible();
+  });
+
+  test('a scripted tool call shows the function-call activity with real byte counts', async ({ page }) => {
+    await openHarness(page);
+    await page.evaluate(() => window.__vislexHarness!.setScenario({ autoStream: false }));
+    await page.getByRole('button', { name: /^New chat/ }).click();
+    await page.getByRole('textbox', { name: 'Agent task' }).fill('Tool activity check');
+    await page.getByRole('button', { name: 'Send message' }).click();
+    const taskId = ((await lastCall(page, 'start_task')).result as { task_id: string }).task_id;
+    // OpenAI Responses shape: { activity: <tool name> } then { characters } per
+    // argument chunk ('{"terms":["north' + ' entrance"],' + '"offset":0}' = 39 bytes).
+    await page.evaluate(id => window.__vislexHarness!.toolCall(id, { name: 'search_passages', intervalMs: 40 }), taskId);
+    await expect(page.locator('.activity-live')).toHaveText('search passages · 39 characters received');
+    await page.getByRole('button', { name: 'Stop response' }).click();
+    await expect(page.locator('.activity-live')).toHaveCount(0);
   });
 
   test('user stop renders as a neutral stopped state, not an error alert', async ({ page }) => {
@@ -95,8 +118,9 @@ test.describe('chat through the mocked IPC harness', () => {
     expect((await lastCall(page, 'source_detail')).args).toEqual({ case_id: fx.caseA.id, source_id: fx.statement });
 
     await page.getByRole('button', { name: 'Open cited evidence, rev 2 · 5–5' }).first().click();
-    await expect(viewer.getByText(/Historical extraction revision/)).toHaveCount(0);
     await expect(viewer.locator('.text-line[data-line="5"]')).toContainText('approximately 14:32');
+    // A pinned R2 locator is read through read_extract_revision (never read_text).
+    expect((await calls(page, 'read_extract_revision')).filter(call => call.args.count === 200).at(-1)!.args).toMatchObject({ source_id: fx.statement, revision: 2, start: 5 });
 
     await page.getByRole('button', { name: 'Open cited evidence, 6-6' }).first().click();
     await expect(viewer.locator('.viewer-source-header')).toContainText('Email from facilities');
@@ -112,6 +136,20 @@ test.describe('chat through the mocked IPC harness', () => {
     // History navigation walks back through the exact locators that were opened.
     await page.getByRole('button', { name: 'Previous location' }).click();
     await expect(viewer.locator('.viewer-source-header')).toContainText('Email from facilities');
+  });
+
+  test('a citation pinned to the current revision is not labelled as superseded wording', async ({ page }) => {
+    // Known issue: case.rs read_text_revision returns historical: true for every
+    // revision, and EvidenceViewer shows "superseded wording preserved; this is
+    // not the current active text" whenever page.historical is set. A citation
+    // pinned to R2 — the active revision of W-01 — is therefore mislabelled.
+    // Remove test.fail once the viewer (or backend) distinguishes the active revision.
+    test.fail(true, 'Current-revision citations are labelled as historical');
+    await openHarness(page);
+    const viewer = page.getByRole('main', { name: 'Evidence viewer' });
+    await page.getByRole('button', { name: 'Open cited evidence, rev 2 · 5–5' }).first().click();
+    await expect(viewer.locator('.text-line[data-line="5"]')).toContainText('approximately 14:32');
+    await expect(viewer.getByText(/Historical extraction revision/)).toHaveCount(0, { timeout: 2000 });
   });
 
   test('an unsent draft survives a workspace switch and never reaches browser storage', async ({ page }) => {

@@ -25,6 +25,9 @@ export type Scenario = {
   /** The native backend refuses to switch cases while processing jobs run. The
    *  fixture keeps display-only "running" jobs, so this guard is opt-in. */
   blockSwitchWhileJobsRun: boolean;
+  /** Text deltas still delivered (within 150 ms) after stop_task for a task that
+   *  was streaming, as desktop.rs's cancellation poll allows. */
+  lateDeltasAfterStop: number;
 };
 
 // Read-only actions never emit case-event (mirrors the list in desktop.rs).
@@ -33,8 +36,21 @@ const READ_ONLY = new Set([
   'full_transcription_status', 'transcript_segment_page', 'transcript_segment_detail', 'artifact_info', 'read_text', 'extract_history', 'read_extract_revision', 'search',
   'actions', 'issue_history', 'record_detail', 'record_summary', 'source_detail', 'task_page', 'source_page', 'record_page', 'job_page', 'job_progress', 'attention_job_page', 'conversation_detail', 'case_summary',
   'revisions', 'processing_status', 'speaker_annotations', 'video_discovery_status', 'browse_video_discovery', 'storage_usage',
-  // App-level reads handled before the case dispatcher in desktop.rs.
-  'app_ai_settings', 'ai_access_route', 'codex_account_status', 'codex_account_models', 'codex_account_limits', 'provider_key_status', 'provider_models', 'case_ai_scope', 'case_ai_access_route',
+  // App-level reads handled (and returned early) before the case dispatcher in desktop.rs.
+  'app_ai_settings', 'ai_access_route', 'codex_account_status', 'codex_account_models', 'codex_account_limits', 'provider_key_status', 'provider_models',
+  // Not listed: case_ai_scope and case_ai_access_route are reads, but desktop.rs
+  // dispatches them through the generic path and they are absent from its
+  // read-only list, so the native backend emits case-event after them too.
+]);
+
+// Mutating actions whose desktop.rs branch returns early without calling
+// emit_case_changed (hybrid_search and export_word publish via
+// with_case_expected; key, access-route and Codex-selection branches return
+// directly). codex_account_logout does emit, so it is not listed.
+const NO_EMIT = new Set([
+  'hybrid_search', 'export_word', 'verify_source',
+  'save_provider_key', 'delete_provider_key', 'save_api_key', 'delete_api_key', 'key_status',
+  'set_ai_access_route', 'save_codex_selection', 'codex_account_login', 'codex_account_cancel_login',
 ]);
 
 const defaultStream = (source: string, email: string): string[] => {
@@ -46,10 +62,11 @@ const defaultStream = (source: string, email: string): string[] => {
 };
 
 export function defaultScenario(): Scenario {
-  return { delays: {}, failures: {}, autoStream: true, stream: { chunks: defaultStream(FIXTURE.statement, FIXTURE.email), intervalMs: 90, complete: true }, dialogOpen: undefined, dialogSave: 'C:\\Synthetic\\exports\\harness-export.pdf', blockSwitchWhileJobsRun: false };
+  return { delays: {}, failures: {}, autoStream: true, stream: { chunks: defaultStream(FIXTURE.statement, FIXTURE.email), intervalMs: 90, complete: true }, dialogOpen: undefined, dialogSave: 'C:\\Synthetic\\exports\\harness-export.pdf', blockSwitchWhileJobsRun: false, lateDeltasAfterStop: 1 };
 }
 
 type Deferred = { action: string; release: () => void };
+type StreamState = { timer: ReturnType<typeof setTimeout>; owner: HarnessCase; epoch: number; pendingText: string[] };
 
 export class SyntheticBackend {
   cases: Map<string, HarnessCase> = new Map();
@@ -63,7 +80,7 @@ export class SyntheticBackend {
   storedKeys = new Set<string>(['openai', 'anthropic']);
   private holds = new Set<string>();
   private waiting: Deferred[] = [];
-  private streams = new Map<string, ReturnType<typeof setTimeout>>();
+  private streams = new Map<string, StreamState>();
   private liveText = new Map<string, string>();
   private speakerRevision = 0;
 
@@ -108,7 +125,7 @@ export class SyntheticBackend {
       }
       // Compute the response now (as the real dispatcher would), deliver it later.
       const result = isCommand ? this.dispatch(action, args) : this.plugin(cmd, args);
-      if (isCommand && !READ_ONLY.has(action)) this.caseChanged();
+      if (isCommand && !READ_ONLY.has(action) && !NO_EMIT.has(action)) this.caseChanged();
       if (wait) await sleep(wait);
       if (this.holds.has(action)) await new Promise<void>(release => this.waiting.push({ action, release }));
       call.outcome = 'ok';
@@ -141,13 +158,15 @@ export class SyntheticBackend {
     setTimeout(() => { this.emit('case-event', payload); this.emit('case-changed', null); }, 0);
   }
 
-  /** Emit agent-progress deltas for a running task at a controllable pace. */
+  /** Emit agent-progress text deltas for a running task at a controllable pace.
+   *  Text deltas carry only `{ text }`, as providers.rs and the subscription
+   *  path in desktop.rs send them; tool activity is scripted with toolCall(). */
   streamTask(taskId: string, options: StreamOptions = {}) {
     const owner = this.findTaskCase(taskId);
     if (!owner) throw new Error(`Unknown task ${taskId}`);
     const { chunks, intervalMs, complete } = { ...this.scenario.stream, ...options };
     const epoch = this.sessionEpoch;
-    const transmission = syntheticId('transmission', hashTask(taskId));
+    const transmission = this.transmissionFor(taskId);
     let index = 0;
     const tick = () => {
       const task = owner.tasks.find(item => item.id === taskId);
@@ -157,21 +176,50 @@ export class SyntheticBackend {
         this.liveText.set(taskId, (this.liveText.get(taskId) ?? '') + text);
         task.step = Math.max(task.step, Math.ceil(index / 4));
         task.output_tokens += Math.ceil(text.length / 4);
-        this.emit('agent-progress', { case_id: owner.id, session_epoch: epoch, task_id: taskId, transmission_id: transmission, delta: { text, characters: text.length, activity: index === 1 ? 'reading_sources' : 'drafting_answer' } });
-        this.streams.set(taskId, setTimeout(tick, intervalMs));
+        this.emit('agent-progress', { case_id: owner.id, session_epoch: epoch, task_id: taskId, transmission_id: transmission, delta: { text } });
+        this.streams.set(taskId, { timer: setTimeout(tick, intervalMs), owner, epoch, pendingText: chunks.slice(index) });
         return;
       }
       this.streams.delete(taskId);
       if (complete) this.completeTask(taskId);
     };
-    this.streams.set(taskId, setTimeout(tick, intervalMs));
+    this.streams.set(taskId, { timer: setTimeout(tick, intervalMs), owner, epoch, pendingText: chunks.slice() });
+  }
+
+  /** Script a provider function call the way the OpenAI Responses stream reports
+   *  it: one `{ activity: <tool name> }` delta, then `{ characters }` deltas for
+   *  the argument chunks. Tool names should be real agent tools (agent.rs). */
+  toolCall(taskId: string, options: { name?: string; argumentChunks?: string[]; intervalMs?: number } = {}) {
+    const owner = this.findTaskCase(taskId);
+    if (!owner) throw new Error(`Unknown task ${taskId}`);
+    const { name = 'search_passages', argumentChunks = ['{"terms":["north', ' entrance"],', '"offset":0}'], intervalMs = 60 } = options;
+    const epoch = this.sessionEpoch;
+    const transmission = this.transmissionFor(taskId);
+    const deltas: Record<string, unknown>[] = [{ activity: name }, ...argumentChunks.map(chunk => ({ characters: new TextEncoder().encode(chunk).length }))];
+    deltas.forEach((delta, index) => setTimeout(() => {
+      if (owner.tasks.find(item => item.id === taskId)?.status !== 'running') return;
+      this.emit('agent-progress', { case_id: owner.id, session_epoch: epoch, task_id: taskId, transmission_id: transmission, delta });
+    }, intervalMs * (index + 1)));
+  }
+
+  private transmissionFor(taskId: string) { return syntheticId('transmission', hashTask(taskId)); }
+
+  /** desktop.rs detects a stop by polling task status every 150 ms while the
+   *  provider stream keeps emitting, so deltas can still arrive after Stop. */
+  private emitLateDeltas(taskId: string, stream: StreamState) {
+    const count = this.scenario.lateDeltasAfterStop;
+    const chunks = stream.pendingText.length ? stream.pendingText : ['late ', 'delta '];
+    for (let index = 0; index < count; index += 1) {
+      const text = chunks[index % chunks.length];
+      setTimeout(() => this.emit('agent-progress', { case_id: stream.owner.id, session_epoch: stream.epoch, task_id: taskId, transmission_id: this.transmissionFor(taskId), delta: { text } }), Math.round((150 / (count + 1)) * (index + 1)));
+    }
   }
 
   completeTask(taskId: string, answer?: string) {
     const owner = this.findTaskCase(taskId);
     const task = owner?.tasks.find(item => item.id === taskId);
     if (!owner || !task) throw new Error(`Unknown task ${taskId}`);
-    const timer = this.streams.get(taskId); if (timer) clearTimeout(timer); this.streams.delete(taskId);
+    const stream = this.streams.get(taskId); if (stream) clearTimeout(stream.timer); this.streams.delete(taskId);
     task.status = 'complete'; task.answer = answer ?? this.liveText.get(taskId) ?? this.scenario.stream.chunks.join(''); task.input_tokens += 9_000;
     task.progress = { summary: 'Synthetic run complete', citations: [], gaps: ['Synthetic harness answer; no evidence was read'], next_steps: ['Open the cited statement lines', 'Check the door alarm clock'], checkpoint_step: task.step, duplicate_reads: 0 };
     (owner.actions[taskId] ??= []).push({ id: syntheticId('action', hashTask(taskId) + 7), name: 'finish_task', input: '{}', output: 'Synthetic completion receipt.', status: 'complete', created_at: new Date().toISOString() });
@@ -185,6 +233,20 @@ export class SyntheticBackend {
   private current(): HarnessCase { if (!this.active) throw new Error('Open a case first'); return this.active; }
   private checkEpoch(args: Record<string, unknown>) {
     if (args.session_epoch !== undefined && args.session_epoch !== null && args.session_epoch !== this.sessionEpoch) throw new Error('Case session changed; refresh before continuing');
+  }
+  /** require_session_epoch in desktop.rs. */
+  private requireEpoch(args: Record<string, unknown>) {
+    if (typeof args.session_epoch !== 'number') throw new Error('Missing session_epoch');
+    if (args.session_epoch !== this.sessionEpoch) throw new Error('Case session changed; refresh before continuing');
+  }
+  /** provider_key_case_fence + require_session_epoch in desktop.rs: with a case
+   *  open the request must name it and carry its epoch; with no case open, only
+   *  an app-level request without a case_id is accepted. */
+  private providerKeyFence(args: Record<string, unknown>) {
+    const requested = args.case_id ?? null;
+    const open = this.active?.id ?? null;
+    if (!((open !== null && requested === open) || (open === null && requested === null))) throw new Error('Case changed before provider key update');
+    if (open !== null) this.requireEpoch(args);
   }
   private requireCase(args: Record<string, unknown>, label: string, requireEpoch = false) {
     const c = this.current();
@@ -244,14 +306,19 @@ export class SyntheticBackend {
   }
 
   /* -------------------------------- text reads -------------------------------- */
+  /** read_text (revision === null) reads the active extract; read_extract_revision
+   *  reads an immutable revision. Like case.rs read_text_revision, the revision
+   *  read always reports `historical: true`, even for the current revision. */
   private readLines(c: HarnessCase, sourceId: unknown, revision: number | null, start: number, count: number) {
     const source = this.source(c, sourceId);
-    if (!source.revisions) throw new Error('No extracted text is available for this source yet');
+    if (revision === null && !source.revisions) throw new Error('No text extraction exists. Source is preserved; processing is pending.');
     const rev = revision ?? source.currentRevision;
-    const lines = source.revisions[rev];
+    const lines = source.revisions?.[rev];
     if (!lines) throw new Error('Unknown extraction revision');
-    const first = Math.max(1, start), end = Math.min(first - 1 + count, lines.length);
-    return { text: lines.slice(first - 1, end).join('\n'), start: first, end, total_lines: lines.length, revision: rev, ...(revision !== null && rev !== source.currentRevision ? { historical: true } : {}), locator: `evidence:${source.id}#R${rev}L${first}-L${end}`, truncated_long_lines: false };
+    if (!(start >= 1 && count > 0 && count <= 200)) throw new Error('Request 1–200 lines starting at line 1 or later');
+    if (start > Math.max(lines.length, 1)) throw new Error(revision === null ? 'Line outside source' : 'Line outside revision');
+    const end = Math.min(start - 1 + count, lines.length);
+    return { source_id: source.id, revision: rev, start, end, total_lines: lines.length, text: lines.slice(start - 1, end).join('\n'), ...(revision !== null ? { historical: true } : {}), truncated_long_lines: false, locator: `evidence:${source.id}#R${rev}L${start}-L${end}` };
   }
 
   /* -------------------------------- dispatcher -------------------------------- */
@@ -276,8 +343,13 @@ export class SyntheticBackend {
       case 'codex_account_login': case 'codex_account_models': case 'codex_account_limits': case 'save_codex_selection': throw new Error('Verified Codex sidecar is unavailable');
       case 'codex_account_cancel_login': case 'codex_account_logout': return null;
       case 'provider_key_status': return { configured: this.storedKeys.has(String(args.provider)) };
-      case 'save_provider_key': this.checkEpoch(args); this.storedKeys.add(String(args.provider)); return null;
-      case 'delete_provider_key': this.checkEpoch(args); this.storedKeys.delete(String(args.provider)); return null;
+      case 'save_provider_key': case 'delete_provider_key': {
+        this.providerKeyFence(args);
+        if (action === 'delete_provider_key') { this.storedKeys.delete(String(args.provider)); return { deleted: true }; }
+        if (typeof args.key !== 'string') throw new Error('Missing key');
+        if (!args.key.trim()) throw new Error('Enter a key');
+        this.storedKeys.add(String(args.provider)); return { saved: true };
+      }
       case 'provider_models': {
         if (!this.storedKeys.has(String(args.provider))) throw new Error('Save an API key first');
         const provider = String(args.provider);
@@ -289,8 +361,11 @@ export class SyntheticBackend {
     // ---- case lifecycle ----
     if (['create_case', 'open_case', 'restore_case', 'close_case'].includes(action)) {
       if (this.active) {
-        if (args.case_id !== undefined && args.case_id !== this.active.id) throw new Error('Case changed before switching');
-        if (args.case_id !== undefined) { if (typeof args.session_epoch !== 'number') throw new Error('Missing session_epoch'); this.checkEpoch(args); }
+        // desktop.rs: with a case open, case_id (text(&args,"case_id")) and
+        // session_epoch (require_session_epoch) are both mandatory.
+        if (typeof args.case_id !== 'string') throw new Error('Missing case_id');
+        if (args.case_id !== this.active.id) throw new Error('Case changed before switching');
+        this.requireEpoch(args);
         if (this.active.tasks.some(task => task.status === 'running') || (this.scenario.blockSwitchWhileJobsRun && this.active.jobs.some(job => job.status === 'running'))) throw new Error('Stop active tasks and processing jobs before switching cases');
       }
       if (action === 'close_case') { this.active = null; this.sessionEpoch += 1; return null; }
@@ -443,14 +518,14 @@ export class SyntheticBackend {
         const conversation = parent ? parent.conversation_id ?? parent.id : id;
         const task: Task = { id, conversation_id: conversation, prompt: String(args.prompt), mode: 'investigate', status: 'running', input_tokens: 0, output_tokens: 0, step: 0, answer: '', error: '', generation: c.generation, created_at: new Date().toISOString(), title: null };
         c.tasks.push(task);
-        c.actions[id] = [{ id: syntheticId('action', hashTask(id)), name: 'search', input: '{"query":"synthetic"}', output: 'Synthetic search receipt from the harness.', status: 'complete', created_at: task.created_at }];
+        c.actions[id] = [{ id: syntheticId('action', hashTask(id)), name: 'search_passages', input: '{"terms":["synthetic"],"offset":0}', output: 'Synthetic search receipt from the harness.', status: 'complete', created_at: task.created_at }];
         if (this.scenario.autoStream) this.streamTask(id);
         return { task_id: id, conversation_id: conversation };
       }
       case 'stop_task': {
         this.requireCase(args, 'chat stopped', true);
         const task = c.tasks.find(item => item.id === args.task_id);
-        if (task && task.status === 'running') { task.status = 'paused'; task.error = 'Stopped by user'; const timer = this.streams.get(task.id); if (timer) clearTimeout(timer); this.streams.delete(task.id); this.liveText.delete(task.id); }
+        if (task && task.status === 'running') { task.status = 'paused'; task.error = 'Stopped by user'; const stream = this.streams.get(task.id); if (stream) { clearTimeout(stream.timer); this.emitLateDeltas(task.id, stream); } this.streams.delete(task.id); this.liveText.delete(task.id); }
         return null;
       }
       case 'resume_task': {

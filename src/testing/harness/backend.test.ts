@@ -90,10 +90,68 @@ describe('SyntheticBackend guards and paging', () => {
     await vi.advanceTimersByTimeAsync(15);
     await command('stop_task', { case_id: FIXTURE.caseA.id, session_epoch: 1, task_id: second.task_id });
     const count = events.filter(item => item.event === 'agent-progress').length;
-    await vi.advanceTimersByTimeAsync(100);
-    expect(events.filter(item => item.event === 'agent-progress')).toHaveLength(count);
+    await vi.advanceTimersByTimeAsync(500);
+    // desktop.rs polls for cancellation every 150 ms, so (by default) one
+    // already-in-flight delta still arrives after Stop, and then nothing more.
+    const late = events.filter(item => item.event === 'agent-progress').slice(count);
+    expect(late).toHaveLength(1);
+    expect(late[0].payload).toMatchObject({ case_id: FIXTURE.caseA.id, session_epoch: 1, task_id: second.task_id, delta: { text: 'y' } });
     expect(backend.task(second.task_id)).toMatchObject({ status: 'paused', error: 'Stopped by user', answer: '' });
     expect(backend.task(second.task_id)).toHaveProperty('conversation_id', backend.task(task_id)!.conversation_id);
+  });
+
+  it('sends text deltas as { text } only and scripts tool activity separately, like providers.rs', async () => {
+    const { command, backend, events } = setup();
+    backend.setScenario({ autoStream: false, lateDeltasAfterStop: 0 });
+    const { task_id } = await command<{ task_id: string }>('start_task', { case_id: FIXTURE.caseA.id, session_epoch: 1, prompt: 'go', parent_task_id: null, viewer_context: null });
+    backend.streamTask(task_id, { chunks: ['one ', 'two'], intervalMs: 10, complete: false });
+    await vi.advanceTimersByTimeAsync(50);
+    backend.toolCall(task_id, { name: 'search_passages', argumentChunks: ['{"terms":', '["door"],"offset":0}'], intervalMs: 10 });
+    await vi.advanceTimersByTimeAsync(50);
+    const deltas = events.filter(item => item.event === 'agent-progress').map(item => (item.payload as { delta: unknown }).delta);
+    expect(deltas).toEqual([{ text: 'one ' }, { text: 'two' }, { activity: 'search_passages' }, { characters: 9 }, { characters: 20 }]);
+    await command('stop_task', { case_id: FIXTURE.caseA.id, session_epoch: 1, task_id });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(events.filter(item => item.event === 'agent-progress')).toHaveLength(5);
+  });
+
+  it('requires case_id and session_epoch for case lifecycle actions while a case is open', async () => {
+    const { command, backend } = setup();
+    await expect(command('open_case', { path: FIXTURE.caseB.root })).rejects.toBe('Missing case_id');
+    await expect(command('close_case', { case_id: 'other', session_epoch: 1 })).rejects.toBe('Case changed before switching');
+    await expect(command('create_case', { case_id: FIXTURE.caseA.id, path: 'C:\\Synthetic\\new.ledcase', name: 'n' })).rejects.toBe('Missing session_epoch');
+    await expect(command('restore_case', { case_id: FIXTURE.caseA.id, session_epoch: 9, path: 'C:\\Synthetic\\r.ledcase' })).rejects.toBe('Case session changed; refresh before continuing');
+    await command('close_case', { case_id: FIXTURE.caseA.id, session_epoch: 1 });
+    expect(backend.active).toBeNull();
+    // With no case open, no guard applies.
+    await expect(command('open_case', { path: FIXTURE.caseB.root })).resolves.toMatchObject({ id: FIXTURE.caseB.id, session_epoch: 3 });
+  });
+
+  it('fences provider key changes like provider_key_case_fence and returns the native receipts', async () => {
+    const { command, backend, events } = setup();
+    await expect(command('save_provider_key', { provider: 'gemini', key: 'k' })).rejects.toBe('Case changed before provider key update');
+    await expect(command('save_provider_key', { case_id: 'other', session_epoch: 1, provider: 'gemini', key: 'k' })).rejects.toBe('Case changed before provider key update');
+    await expect(command('save_provider_key', { case_id: FIXTURE.caseA.id, provider: 'gemini', key: 'k' })).rejects.toBe('Missing session_epoch');
+    await expect(command('save_provider_key', { case_id: FIXTURE.caseA.id, session_epoch: 1, provider: 'gemini', key: '  ' })).rejects.toBe('Enter a key');
+    await expect(command('save_provider_key', { case_id: FIXTURE.caseA.id, session_epoch: 1, provider: 'gemini', key: 'k' })).resolves.toEqual({ saved: true });
+    await expect(command('delete_provider_key', { case_id: FIXTURE.caseA.id, session_epoch: 1, provider: 'gemini' })).resolves.toEqual({ deleted: true });
+    await vi.runAllTimersAsync();
+    // Early-return branches in desktop.rs never emit case-event.
+    expect(events).toEqual([]);
+    await command('close_case', { case_id: FIXTURE.caseA.id, session_epoch: 1 });
+    await expect(command('delete_provider_key', { case_id: FIXTURE.caseA.id, session_epoch: 1, provider: 'gemini' })).rejects.toBe('Case changed before provider key update');
+    await expect(command('delete_provider_key', { case_id: null, provider: 'gemini' })).resolves.toEqual({ deleted: true });
+    expect(backend.storedKeys.has('gemini')).toBe(false);
+  });
+
+  it('does not emit case-event for hybrid_search, which desktop.rs publishes without emitting', async () => {
+    const { command, events } = setup();
+    await command('hybrid_search', { case_id: FIXTURE.caseA.id, session_epoch: 1, query: 'door' });
+    await command('case_ai_scope', { case_id: FIXTURE.caseA.id, session_epoch: 1 });
+    await vi.runAllTimersAsync();
+    // case_ai_scope goes through the generic dispatcher and is not in its
+    // read-only list, so the native backend emits after it; hybrid_search does not.
+    expect(events.map(item => item.event)).toEqual(['case-event', 'case-changed']);
   });
 
   it('refuses chat without a text grant and keeps new pool models ungranted on vendor change', async () => {
@@ -128,6 +186,12 @@ describe('SyntheticBackend guards and paging', () => {
     const current = await command<{ text: string; historical?: boolean }>('read_text', { source_id: FIXTURE.statement, start: 5, count: 1 });
     expect(current.historical).toBeUndefined();
     expect(current.text).toContain('approximately 14:32');
+    // case.rs read_text_revision reports historical: true for every revision,
+    // including the one that is currently active.
+    const pinnedCurrent = await command<{ text: string; historical?: boolean; revision: number }>('read_extract_revision', { source_id: FIXTURE.statement, revision: 2, start: 5, count: 1 });
+    expect(pinnedCurrent).toMatchObject({ historical: true, revision: 2, source_id: FIXTURE.statement });
+    expect(pinnedCurrent.text).toContain('approximately 14:32');
+    await expect(command('read_text', { source_id: FIXTURE.statement, start: 1, count: 201 })).rejects.toBe('Request 1–200 lines starting at line 1 or later');
   });
 });
 

@@ -26,6 +26,7 @@ export type HarnessApi = {
   emitted: (event?: string) => { event: string; payload: unknown; at: number }[];
   emitCaseEvent: () => void;
   streamTask: (taskId: string, options?: StreamOptions) => void;
+  toolCall: SyntheticBackend['toolCall'];
   completeTask: (taskId: string, answer?: string) => void;
   setJobProgress: SyntheticBackend['setJobProgress'];
   setChatPause: (reason: string | null) => void;
@@ -61,6 +62,7 @@ export function installHarness(options: { startWith?: 'A' | 'none'; sourceCount?
     emitted: event => backend.emitted.filter(item => !event || item.event === event),
     emitCaseEvent: () => backend.caseChanged(),
     streamTask: (taskId, streamOptions) => backend.streamTask(taskId, streamOptions),
+    toolCall: (taskId, toolOptions) => backend.toolCall(taskId, toolOptions),
     completeTask: (taskId, answer) => backend.completeTask(taskId, answer),
     setJobProgress: (jobId, progress, status) => backend.setJobProgress(jobId, progress, status),
     setChatPause: reason => backend.setChatPause(reason),
