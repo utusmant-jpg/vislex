@@ -772,7 +772,8 @@ export default function App() {
   const pendingCount = snapshot?.counts ? snapshot.counts.jobs_queued + snapshot.counts.jobs_running : pending.length;
   const needsAttention = (snapshot?.counts?.jobs_attention ?? snapshot?.jobs?.filter(job => !job.superseded && !job.parent_run_id && ['failed', 'interrupted'].includes(job.status)).length ?? 0)
     + (snapshot?.automatic_analysis?.review_state === 'failed' ? 1 : 0);
-  const selectSource = (id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); setActivePane('source'); };
+  // Stable identity: answer blocks are memoised on it and should not re-render on every case poll.
+  const selectSource = useCallback((id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); setActivePane('source'); }, []);
 
   async function importFiles() {
     if (!snapshot) throw new Error('Create or open a case first.');

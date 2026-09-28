@@ -23,6 +23,9 @@ export function useLiveProgress(caseId: string | undefined, sessionEpoch: number
   const liveRef = useRef(live);
   useEffect(() => {
     if (!native || !active || !caseId) return;
+    // Each run starts empty, so a resumed turn never shows the stopped draft as live.
+    liveRef.current = EMPTY;
+    setLive(EMPTY);
     let alive = true;
     let frame = 0;
     let pending: LiveProgress | null = null;

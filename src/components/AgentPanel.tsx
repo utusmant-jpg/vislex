@@ -343,6 +343,8 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   }
 
   function submit(text: string = prompt) {
+    // The same gate as the Send button: any stated composer block stops a send.
+    if (block) return;
     if (sending || chatBlocked || !text.trim() || !native || !snapshot || snapshot.settings.offline || !snapshot.settings.allow_text || !modelReady) return;
     setSending(true);
     const sentFrom = currentDraftKey.current;

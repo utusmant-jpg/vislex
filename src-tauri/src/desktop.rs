@@ -1607,6 +1607,8 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
         Ok(transmission)
     })?;
     let handle=app.clone();let cid=case_id.to_owned();let tid=task.to_owned();
+    // One stream id per run: a resumed task starts a new live draft instead of appending to the stopped one.
+    let stream_id=format!("subscription:{tid}:{transmission}");
     let last_activity=std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let worker_activity=last_activity.clone();
     let active_jobs=std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
@@ -1619,7 +1621,7 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
                 *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
                 // Live step name, as the API-key route streams it, then a case
                 // event once the receipt is saved so the chat refreshes steps.
-                let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":format!("subscription:{tid}"),"delta":{"activity":name}}));
+                let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":stream_id,"delta":{"activity":name}}));
                 let result=run_subscription_tool(&handle,&cid,epoch,&tid,call_id,name,args,&worker_jobs);
                 emit_case_changed(&handle);
                 *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
@@ -1627,7 +1629,7 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
             },
             |delta| {
                 *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
-                let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":format!("subscription:{tid}"),"delta":{"text":delta}}));
+                let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":stream_id,"delta":{"text":delta}}));
             },
             || worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) || with_case_expected(&handle,&cid,Some(epoch),|c|Ok(c.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[&tid],|r|r.get(0))?))
                 .map(|status| status=="paused" || status=="cancelled").unwrap_or(true),

@@ -538,6 +538,15 @@ export function citationLabel(locator: string): string {
   return locator;
 }
 
+/** Move focus to the first focusable element after `element` in document order. */
+function focusAfter(element: HTMLElement | null) {
+  if (!element) return;
+  const focusable = [...document.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(item => !item.hasAttribute('disabled') && item.getClientRects().length > 0 && !item.closest('.citation-preview'));
+  const next = focusable[focusable.indexOf(element) + 1];
+  (next ?? element).focus();
+}
+
 type CitationPreview = { lines: { number: number; text: string }[]; revision?: number; historical?: boolean; activeRevision?: number } | 'loading' | 'failed' | null;
 /** The most cited lines a hover card fetches; longer ranges say how much is shown. */
 const PREVIEW_LINE_LIMIT = 12;
@@ -554,6 +563,7 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
   const timer = useRef<number>(0);
   const host = useRef<HTMLButtonElement | null>(null);
   const card = useRef<HTMLDivElement | null>(null);
+  const returning = useRef(false);
   useEffect(() => () => window.clearTimeout(timer.current), []);
   if (!parts) return <span className="citation-raw">{value}</span>;
   const number = scope?.numberOf(value);
@@ -591,7 +601,7 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
       onClick={() => { conceal(); onOpen(parts.sourceId, parts.locator); }}
       onMouseEnter={() => reveal(300)}
       onMouseLeave={concealSoon}
-      onFocus={event => { if (event.currentTarget.matches(':focus-visible')) reveal(0); }}
+      onFocus={event => { if (returning.current) { returning.current = false; return; } if (event.currentTarget.matches(':focus-visible')) reveal(0); }}
       onBlur={event => { if (leavesPreview(event.relatedTarget)) conceal(); }}
       onKeyDown={event => {
         if (event.key === 'Escape') conceal();
@@ -607,7 +617,8 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
       anchor={host.current} preview={preview} hasLines={hasLines} pinnedRevision={pinnedRevision} locator={parts.locator} info={info}
       range={hasLines ? { start: startLine!, end: startLine! + citedCount - 1 } : null} cardRef={card}
       onOpen={() => { conceal(); onOpen(parts.sourceId, parts.locator); }}
-      onReturn={() => { conceal(); host.current?.focus(); }}
+      onReturn={() => { conceal(); returning.current = true; host.current?.focus(); }}
+      onExit={() => { conceal(); focusAfter(host.current); }}
       onEnter={() => window.clearTimeout(timer.current)} onLeave={concealSoon}
       onFocusLeave={next => { if (leavesPreview(next)) conceal(); }} />, overlayHost(host.current)) : null}
   </span>;
@@ -632,10 +643,10 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
   }
 }
 
-function CitationPreviewCard({ anchor, preview, hasLines, pinnedRevision, locator, info, range, cardRef: card, onOpen, onReturn, onEnter, onLeave, onFocusLeave }: {
+function CitationPreviewCard({ anchor, preview, hasLines, pinnedRevision, locator, info, range, cardRef: card, onOpen, onReturn, onExit, onEnter, onLeave, onFocusLeave }: {
   anchor: HTMLElement | null; preview: CitationPreview; hasLines: boolean; pinnedRevision: number | null; locator: string; info: SourceInfo | undefined;
   range: { start: number; end: number } | null; cardRef: React.RefObject<HTMLDivElement | null>;
-  onOpen: () => void; onReturn: () => void; onEnter: () => void; onLeave: () => void; onFocusLeave: (next: EventTarget | null) => void;
+  onOpen: () => void; onReturn: () => void; onExit: () => void; onEnter: () => void; onLeave: () => void; onFocusLeave: (next: EventTarget | null) => void;
 }) {
   const [style, setStyle] = useState<React.CSSProperties>({ position: 'fixed', visibility: 'hidden' });
   useLayoutEffect(() => {
@@ -653,6 +664,9 @@ function CitationPreviewCard({ anchor, preview, hasLines, pinnedRevision, locato
     onKeyDown={event => {
       if (event.key === 'Escape') { event.preventDefault(); onReturn(); }
       if (event.key === 'Tab' && event.shiftKey && event.target === card.current?.querySelector('button')) { event.preventDefault(); onReturn(); }
+      // The card is portalled: Tab past its last control continues after the chip, not at the top of the page.
+      const controls = card.current ? [...card.current.querySelectorAll<HTMLElement>('button, [href], [tabindex]:not([tabindex="-1"])')] : [];
+      if (event.key === 'Tab' && !event.shiftKey && event.target === controls.at(-1)) { event.preventDefault(); onExit(); }
     }}>
     {info ? <div className="citation-preview-source">
       <span className="citation-preview-icon"><SourceKindIcon kind={info.kind} size={14} /></span>

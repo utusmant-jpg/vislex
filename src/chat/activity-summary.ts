@@ -160,7 +160,7 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       return base;
     case 'inspect_video_interval': {
       const startS = num(args.start), endS = num(args.end);
-      withSource('watch', 'Watched', startS !== undefined && endS !== undefined ? `${clock(startS)}–${clock(endS)}` : undefined);
+      withSource('watch', 'Sampled frames from', startS !== undefined && endS !== undefined ? `${clock(startS)}–${clock(endS)}` : undefined);
       const frames = arr(out?.frames);
       if (frames) base.result = plural(frames.length, 'frame');
       if (out && out.next_start != null) base.result = [base.result, 'partly covered'].filter(Boolean).join(' · ');
@@ -175,7 +175,9 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
     case 'browse_video_overview':
       return withSource('watch', 'Browsed the overview of');
     case 'inspect_direct_media':
-      return withSource('listen', 'Played');
+      // The receipt only queues the original for the next Gemini request.
+      withSource('listen', 'Queued the original of', 'for the model to review');
+      return base;
     case 'transcribe_audio_interval':
     case 'diarize_audio_interval': {
       const startS = num(args.start), endS = num(args.end);
@@ -287,8 +289,9 @@ export function liveLabel(toolName: string | undefined): string {
   if (/^(read_text|read_extract)/.test(name)) return 'Reading';
   if (/^read|^list/.test(name)) return 'Looking things up';
   if (/document_page|image/.test(name)) return 'Looking at the document';
-  if (/video|frame/.test(name)) return 'Watching the video';
-  if (/transcribe|diariz|sound|audio|media/.test(name)) return 'Listening to the recording';
+  if (/video|frame/.test(name)) return 'Sampling video frames';
+  if (/transcribe/.test(name)) return 'Transcribing audio';
+  if (/diariz|sound|audio|media/.test(name)) return 'Working with the recording';
   if (/validate|coverage|check|review_candidate/.test(name)) return 'Checking citations';
   if (/^(write|save|record)/.test(name) || name === 'checkpoint_review') return 'Saving notes';
   if (/delegate|team|research/.test(name)) return 'Briefing the team';
@@ -301,7 +304,7 @@ export function progressLabel(step: StepSummary | undefined): string {
   if (!step) return 'Considering the evidence';
   const map: Record<StepKind, string> = {
     search: 'Searching the evidence', read: step.object ? `Reading ${step.object}` : 'Reading', look: step.object ? `Looking at ${step.object}` : 'Looking at the document',
-    watch: 'Watching the video', listen: 'Listening to the recording', save: 'Saving notes', check: 'Checking the work', team: 'Working with the team',
+    watch: 'Sampling video frames', listen: 'Working with the recording', save: 'Saving notes', check: 'Checking the work', team: 'Working with the team',
     finish: 'Preparing the answer', browse: 'Looking things up', other: 'Working',
   };
   return map[step.kind];
@@ -335,8 +338,8 @@ export function groupLabel(group: StepGroup): string {
     case 'search': return `Ran ${plural(count, 'search', 'searches')}`;
     case 'read': return sources > 1 ? `Read ${plural(sources, 'source')}` : `Read ${plural(count, 'passage')}`;
     case 'look': return sources > 1 ? `Looked at ${plural(sources, 'document')}` : `Looked at ${plural(count, 'page view')}`;
-    case 'watch': return `Watched ${plural(count, 'video segment')}`;
-    case 'listen': return `Listened to ${plural(count, 'audio segment')}`;
+    case 'watch': return `Sampled frames from ${plural(count, 'video segment')}`;
+    case 'listen': return group.steps.every(step => step.name === 'transcribe_audio_interval') ? `Transcribed ${plural(count, 'audio segment')}` : `${plural(count, 'audio step')}`;
     case 'save': return `Saved ${plural(count, 'note')}`;
     case 'check': return `Ran ${plural(count, 'check')}`;
     default: return `${plural(count, 'step')}`;

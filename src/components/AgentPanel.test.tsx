@@ -102,6 +102,25 @@ describe('chat composer interaction', () => {
     expect(args).not.toHaveProperty('model');
   });
 
+  it('states an unavailable subscription route before sending and blocks Enter as well as Send', async () => {
+    const data=snapshot();
+    data.settings.model='';
+    const blocker = 'The pinned Codex runtime is missing or does not match this verified build';
+    api.mockImplementation(async (action: string) => action === 'ai_access_route'
+      ? { route: 'chatgpt_subscription', subscription: { model: 'codex-model', effort: 'high' }, subscription_ready: false, blocker }
+      : action === 'case_ai_access_route' ? { effective: 'chatgpt_subscription', selection: { model: 'codex-model', effort: 'high' } }
+      : { task_id: 'new-task', conversation_id: 'new-chat' });
+    panel(data);
+    expect(await screen.findByText(`The ChatGPT subscription route is unavailable: ${blocker}.`)).toBeTruthy();
+    expect(screen.getByText('Change this in Settings → Accounts & models → This case')).toBeTruthy();
+    const box = screen.getByRole('textbox', { name: 'Agent task' });
+    fireEvent.change(box, { target: { value: 'Inspect the synthetic source' } });
+    expect(screen.getByRole('button', { name: 'Send message' })).toHaveProperty('disabled', true);
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
+  });
+
   it('sends the captured open-case epoch with a new task', async () => {
     const data = snapshot(); data.session_epoch = 12;
     panel(data);

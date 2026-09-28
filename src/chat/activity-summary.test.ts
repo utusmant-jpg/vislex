@@ -30,7 +30,10 @@ describe('summarizeAction', () => {
   it('describes page ranges, video intervals and partial coverage', () => {
     expect(summarizeAction(action('inspect_document_pages', { source_id: 's1', pages: [4, 3] }, { frames: [] }), nameOf).detail).toBe('pages 3–4');
     const video = summarizeAction(action('inspect_video_interval', { source_id: 'v1', start: 130, end: 160, interval: 5 }, { frames: [{}, {}], next_start: 150 }), nameOf);
-    expect(video).toMatchObject({ verb: 'Watched', object: 'Cam04.mp4', detail: '2:10–2:40', result: '2 frames · partly covered' });
+    expect(video).toMatchObject({ verb: 'Sampled frames from', object: 'Cam04.mp4', detail: '2:10–2:40', result: '2 frames · partly covered' });
+    // Direct media is only queued for the next request; the sentence must not claim playback.
+    expect(summarizeAction(action('inspect_direct_media', { source_id: 'a1' }, { status: 'Original media queued for next Gemini request' }), nameOf))
+      .toMatchObject({ verb: 'Queued the original of', object: 'Interview.wav', detail: 'for the model to review' });
   });
 
   it('uses the source name from the result when the case page does not hold it', () => {
@@ -83,7 +86,8 @@ describe('trace helpers', () => {
 
   it('labels live and in-progress work', () => {
     expect(liveLabel('search_passages')).toBe('Searching the evidence');
-    expect(liveLabel('inspect video interval')).toBe('Watching the video');
+    expect(liveLabel('inspect video interval')).toBe('Sampling video frames');
+    expect(liveLabel('transcribe_audio_interval')).toBe('Transcribing audio');
     expect(progressLabel(undefined)).toBe('Considering the evidence');
     expect(progressLabel(steps[1])).toBe('Reading Statement.pdf');
   });

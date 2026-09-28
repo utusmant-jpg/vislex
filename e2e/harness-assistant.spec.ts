@@ -169,6 +169,31 @@ test.describe('assistant surface', () => {
     expect((await calls(page, 'read_text')).at(-1)!.args).toMatchObject({ source_id: fx.email, start: 6 });
   });
 
+  test('the citation card is reachable with Tab, Escape returns to the marker, and Tab leaves it in reading order', async ({ page }) => {
+    await openHarness(page);
+    await expect(page.locator('.conversation-turn').first()).toContainText('Displayed clocks remain unverified');
+    const chip = page.getByRole('button', { name: 'Open cited evidence, rev 1 · 5–5' }).first();
+    const card = page.getByRole('group', { name: 'Cited lines preview' });
+    const openButton = card.getByRole('button', { name: 'Open in viewer' });
+    // Keyboard focus opens the card; Tab moves into it.
+    await chip.focus();
+    await expect(card).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(openButton).toBeFocused();
+    // Escape returns to the marker and the card stays closed.
+    await page.keyboard.press('Escape');
+    await expect(chip).toBeFocused();
+    await page.waitForTimeout(400);
+    await expect(card).toHaveCount(0);
+    // Tab past the card continues with the next marker, not the top of the page.
+    await chip.blur(); await chip.focus();
+    await expect(card).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(openButton).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Open cited evidence, 6-6' }).first()).toBeFocused();
+  });
+
   test('only the newly sent turn animates in; history and switches render in place', async ({ page }) => {
     await openHarness(page);
     // openHarness emulates reduced motion; load again with motion allowed.
