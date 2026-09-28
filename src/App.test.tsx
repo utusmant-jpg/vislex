@@ -311,8 +311,9 @@ it('discards a refresh from the previous case after switching projects', async (
   fireEvent.click(screen.getByRole('button',{name:'Jobs'}));
   fireEvent.click(await screen.findByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
-  fireEvent.click(screen.getByText('New case',{selector:'summary span'}));
-  fireEvent.click(screen.getByRole('button',{name:'Open project'}));
+  // Recent cases open from the titlebar case switcher (was a sidebar project list).
+  fireEvent.click(screen.getByRole('button',{name:/Switch or manage case/}));
+  fireEvent.click(screen.getByRole('menuitem',{name:'New case'}));
   await waitFor(()=>expect(api).toHaveBeenCalledWith('open_case',{case_id:old.id,session_epoch:3,path:next.root}));
   await screen.findAllByText('New case');
   resolveOld(old);
