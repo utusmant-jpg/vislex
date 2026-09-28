@@ -8,6 +8,7 @@ import { caseSessionArgs } from '../caseSession';
 import { configuredProfiles, defaultConfig, providerNames } from '../aiProfiles';
 import { springs } from '../lib/motion';
 import { StatusPill } from '../ui';
+import SecondOpinionGrantCard from '../features/escalation/SecondOpinionGrantCard';
 import AppearanceSettings from './AppearanceSettings';
 import KeyboardSettings from './KeyboardSettings';
 import ModelSelect from './ModelSelect';
@@ -400,6 +401,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                   <button type="button" className={settings.offline ? 'selected' : ''} aria-pressed={settings.offline} disabled={!native} onClick={() => setSettings(current => ({ ...current, offline: true }))}>Offline — stop new requests</button>
                 </div>
               </section>
+              {native && snapshot ? <SecondOpinionGrantCard caseId={snapshot.id} sessionEpoch={snapshot.session_epoch} /> : null}
               <section className="settings-card" aria-labelledby="settings-data-title">
                 <div className="settings-card-header"><div className="settings-card-heading"><h3 id="settings-data-title">Where case data lives</h3></div></div>
                 <ul className="settings-facts">

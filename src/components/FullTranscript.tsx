@@ -6,6 +6,7 @@ import { transcriptPlaybackLine, type TranscriptTiming } from '../review';
 import type { WorkingRecord } from '../types';
 import { StatusPill, Tooltip } from '../ui';
 import { markUncertain, stepUncertain, uncertainOrdinals, uncertainTitle, type UncertainWord } from '../features/transcript-confidence/uncertain';
+import SecondOpinionPanel from '../features/escalation/SecondOpinionPanel';
 
 type State = { job_id:string;status: string; error: string; progress: { state?: string; track_number?: number; track_count?: number; processed_seconds?: number; estimated_seconds?: number; segments?: number }; result: { saved_files?: string[]; segments?: number; segmented?:boolean; metadata?: TranscriptTiming & { no_audio_tracks?: boolean } }; record: WorkingRecord | null };
 type Segment={ordinal:number;track:number;start:number;end:number;text:string;word_count?:number;uncertain_words?:UncertainWord[];correction?:{id:string;revision:number;text:string;review:'pending'|'accepted'|'rejected'}};
@@ -55,6 +56,7 @@ export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, re
   const [correctionReason,setCorrectionReason]=useState('');
   const [showUncertain,setShowUncertain]=useState(true);
   const [uncertainCursor,setUncertainCursor]=useState<number|null>(null);
+  const [segmentsReload,setSegmentsReload]=useState(0);
   const segmentKey=useRef('');
   const transcriptRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -72,7 +74,7 @@ export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, re
       .then(page=>{if(active){setSegments(page.segments);setSegmentCursor(page.next_cursor);}})
       .catch(error=>{if(active)setSegmentError(String(error));});
     return()=>{active=false;};
-  },[caseId,sourceId,state?.job_id,state?.status,state?.result.segmented]);
+  },[caseId,sourceId,state?.job_id,state?.status,state?.result.segmented,segmentsReload]);
   async function loadMoreSegments(){
     if(!caseId||!state?.job_id||segmentCursor===null||loadingSegments)return;
     const key=segmentKey.current;setLoadingSegments(true);setSegmentError('');
@@ -159,6 +161,7 @@ export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, re
         <button className="quiet" data-size="sm" onClick={()=>jumpUncertain(-1)}>Previous uncertain</button>
         <button className="quiet" data-size="sm" onClick={()=>jumpUncertain(1)}>Next uncertain</button>
       </div>:null}
+      {native?<SecondOpinionPanel caseId={caseId} sessionEpoch={sessionEpoch} sourceId={sourceId} runId={state.job_id} localText={ordinal=>segments.find(segment=>segment.ordinal===ordinal)?.text} onSeek={onSeek} onDecided={()=>setSegmentsReload(value=>value+1)}/>:null}
       <p className="transcript-window">{state.result.segments ?? 0} saved segments · {segments.length} loaded. Showing {matchingSegments.length?segmentWindowStart+1:0}–{Math.min(matchingSegments.length,segmentWindowStart+VISIBLE_SEGMENTS)} of {matchingSegments.length} matching loaded segments. Search covers loaded segments.</p>
       {segmentWindowStart>0?<button className="quiet transcript-page" onClick={()=>setSegmentWindowStart(Math.max(0,segmentWindowStart-VISIBLE_SEGMENTS))}>Show previous 200 loaded segments</button>:null}
       {visibleSegments.map(segment=>{

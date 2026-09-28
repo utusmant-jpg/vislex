@@ -36,6 +36,7 @@ const READ_ONLY = new Set([
   'full_transcription_status', 'transcript_segment_page', 'transcript_segment_detail', 'artifact_info', 'read_text', 'extract_history', 'read_extract_revision', 'search',
   'actions', 'issue_history', 'record_detail', 'record_summary', 'source_detail', 'task_page', 'source_page', 'record_page', 'job_page', 'job_progress', 'attention_job_page', 'conversation_detail', 'case_summary',
   'revisions', 'processing_status', 'speaker_annotations', 'video_discovery_status', 'browse_video_discovery', 'storage_usage',
+  'second_opinion_candidates', 'second_opinion_grant', 'list_second_opinions', 'second_opinion_preview',
   // App-level reads handled (and returned early) before the case dispatcher in desktop.rs.
   'app_ai_settings', 'ai_access_route', 'codex_account_status', 'codex_account_models', 'codex_account_limits', 'provider_key_status', 'provider_models',
   // Not listed: case_ai_scope and case_ai_access_route are reads, but desktop.rs
@@ -83,6 +84,10 @@ export class SyntheticBackend {
   private streams = new Map<string, StreamState>();
   private liveText = new Map<string, string>();
   private speakerRevision = 0;
+  // SYNTHETIC second-opinion state; mirrors src-tauri/src/escalation.rs rules
+  // (grant required, single-use preview, no transcript change until decided).
+  private secondOpinionGrant: { vendor: string; model: string; revision: number; granted_at: string } | null = null;
+  private secondOpinions: Record<string, unknown>[] = [];
 
   /** Every event the backend emitted, for asserting delivery (or its absence). */
   emitted: { event: string; payload: unknown; at: number }[] = [];
@@ -577,6 +582,53 @@ export class SyntheticBackend {
         return [{ kind: 'diarization', status: 'complete', result: JSON.stringify({ metadata: { turns: Array.from({ length: 24 }, (_, index) => ({ start: index * 8, end: index * 8 + 7, speaker: `SPEAKER_0${index % 3 === 2 ? 2 : index % 2}` })), track_index: 0, origin_seconds: 0, container_origin_seconds: 0, gap_seconds: 0.4 }, extraction_locator: `evidence:${FIXTURE.call}#artifact:${syntheticId('artifact', 77)}`, limitations: ['Synthetic speaker clusters. Labels never establish identity.'] }) }];
       }
       case 'diarize_source': this.requireCase(args, 'speaker analysis'); return { metadata: { turns: [{ start: 0, end: 5, speaker: 'SPEAKER_00' }, { start: 5, end: 11, speaker: 'SPEAKER_01' }], track_index: Number(args.track ?? 0), origin_seconds: 0, container_origin_seconds: 0, gap_seconds: 0 }, extraction_locator: `evidence:${args.source_id}#artifact:${syntheticId('artifact', 78)}`, limitations: ['Synthetic diarization proposal.'] };
+      // ---- second opinion (SYNTHETIC) ----
+      case 'second_opinion_candidates': {
+        this.requireCase(args, 'uncertainty triage');
+        const t = c.transcripts[String(args.source_id)]; if (!t) throw new Error('Transcript version is not available');
+        const flagged = t.segments.filter(segment => segment.uncertain_words?.length);
+        const candidates = flagged.map(segment => ({ track: segment.track, start: Math.max(0, segment.start - 0.5), end: segment.end + 0.5, ordinals: [segment.ordinal], risk: 0.68,
+          reasons: [{ code: 'uncertain_key_word', detail: `Lowest-scored word "${segment.uncertain_words![0].word.trim()}" at ${segment.uncertain_words![0].probability.toFixed(2)}`, strength: 0.68 }] }));
+        return { source_id: args.source_id, run_id: args.run_id, segments: t.segments.length, flagged_segments: flagged.length, threshold: 0.5, candidates, note: 'SYNTHETIC heuristic flags. They are not accuracy scores, and an unflagged segment is not verified.' };
+      }
+      case 'second_opinion_grant': return { grant: this.secondOpinionGrant, vendors: ['openrouter', 'openai'], note: 'SYNTHETIC grant.' };
+      case 'set_second_opinion_grant': {
+        this.requireCase(args, 'second-opinion permission', true);
+        const revision = (this.secondOpinionGrant?.revision ?? 0) + 1;
+        this.secondOpinionGrant = args.revoke ? null : { vendor: String(args.vendor), model: String(args.model), revision, granted_at: '2026-09-28T00:00:00Z' };
+        return { grant: this.secondOpinionGrant };
+      }
+      case 'prepare_second_opinion': {
+        this.requireCase(args, 'second opinion', true);
+        if (!this.secondOpinionGrant) throw new Error('Allow a second opinion for this case in Settings first');
+        const clip = args.clip as { track: number; start: number; end: number; ordinals: number[] };
+        const row = { id: syntheticId('second-opinion', this.secondOpinions.length + 1), source_id: args.source_id, run_id: args.run_id, ordinals: clip.ordinals, track: clip.track, start: clip.start, end: clip.end,
+          vendor: this.secondOpinionGrant.vendor, model: this.secondOpinionGrant.model, grant_revision: this.secondOpinionGrant.revision, status: 'previewed', clip_artifact_id: syntheticId('artifact', 900 + this.secondOpinions.length),
+          reasons: [], result: null, usage: null, error: '', decision: null, label: 'Unreviewed remote machine interpretation' };
+        this.secondOpinions.unshift(row);
+        return { second_opinion: row, recipient: `OpenRouter → upstream provider for ${row.model}`, sends: `${(clip.end - clip.start).toFixed(1)} seconds of 16 kHz mono audio (no file name, tags or case text) and a fixed instruction with the segment times`,
+          disclosure: 'SYNTHETIC: Cancelling may not stop billing on Google, Groq, Bedrock or Mistral upstreams.', estimate: { audio_seconds: clip.end - clip.start, note: 'Cost is shown after the provider reports it; no spending limit is applied.' }, clip_bytes: 80000 };
+      }
+      case 'send_second_opinion': {
+        this.requireCase(args, 'second opinion', true);
+        const row = this.secondOpinions.find(item => item.id === args.id) as Record<string, any> | undefined;
+        if (!row || row.status !== 'previewed') throw new Error('Only a previewed clip can be sent, once');
+        row.status = 'received';
+        row.result = { segments: row.ordinals.map((ordinal: number) => ({ ordinal, text: `SYNTHETIC second opinion for segment ${ordinal + 1}.` })), notes: 'Synthetic reply.', raw: null, label: 'Unreviewed remote machine interpretation. Model timestamps and text can be wrong; check against the original audio.' };
+        row.usage = { input_tokens: 90, output_tokens: 20, cost: 0.0012, upstream_provider: 'SyntheticUpstream' };
+        return row;
+      }
+      case 'cancel_second_opinion': this.requireCase(args, 'second opinion', true); return { cancel_requested: true };
+      case 'decide_second_opinion': {
+        this.requireCase(args, 'second opinion', true);
+        const row = this.secondOpinions.find(item => item.id === args.id) as Record<string, any> | undefined;
+        if (!row || row.decision) throw new Error('A decision was already recorded');
+        row.decision = args.decision;
+        const corrections = args.decision === 'accepted_remote' ? row.result.segments.map((segment: { ordinal: number }) => ({ ordinal: segment.ordinal, correction: syntheticId('correction', 500 + segment.ordinal) })) : [];
+        return { second_opinion: row, corrections };
+      }
+      case 'list_second_opinions': return this.secondOpinions.filter(item => item.source_id === args.source_id);
+      case 'second_opinion_preview': throw new Error('Synthetic harness returns previews from prepare_second_opinion');
       case 'speaker_annotations': return { revision: this.speakerRevision, labels: {}, turns: {} };
       case 'save_speaker_annotations': this.requireCase(args, 'speaker annotations', true); this.speakerRevision += 1; return { revision: this.speakerRevision, labels: args.labels ?? {}, turns: args.turns ?? {} };
 
