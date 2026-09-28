@@ -209,12 +209,14 @@ describe('chat composer interaction', () => {
     expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
   });
 
-  it('states why sending is unavailable and opens the exact settings section', () => {
+  it('states why sending is unavailable and where in settings to change it', () => {
     const data = snapshot(); data.settings.allow_text = false;
     const onSettings = vi.fn();
     render(<AgentPanel snapshot={data} selection={null} conversationId={null} refresh={vi.fn(async () => undefined)} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={onSettings} onConversation={vi.fn()} />);
     expect(screen.getByText('This case does not permit sending case text to AI.')).toBeTruthy();
-    expect(screen.getByText('Settings → AI permissions')).toBeTruthy();
+    // The dialog opens on its default section, so the path is stated as text
+    // and the button makes no claim to land on it.
+    expect(screen.getByText('Change this in Settings → This case → AI permissions')).toBeTruthy();
     fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Blocked question' } });
     expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
@@ -230,6 +232,24 @@ describe('chat composer interaction', () => {
     expect(region.textContent).toBe('');
     view.rerender(<AgentPanel snapshot={snapshot([{ ...running, status: 'paused', error: 'Stopped by user' }])} selection={null} conversationId="current-chat" refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={view.onConversation} />);
     await waitFor(() => expect(region.textContent).toBe('Response stopped.'));
+  });
+
+  it('announces a repeated outcome again when a second turn settles the same way', async () => {
+    const first = task('first-task', 'current-chat');
+    const view = panel(snapshot([first]), 'current-chat');
+    const region = document.querySelector('[aria-live="polite"]')!;
+    const rerender = (tasks: ReturnType<typeof task>[]) => view.rerender(<AgentPanel snapshot={snapshot(tasks)} selection={null} conversationId="current-chat" refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={view.onConversation} />);
+    const done = { ...first, status: 'complete', answer: 'First answer' };
+    rerender([done]);
+    await waitFor(() => expect(region.textContent).toBe('Response saved.'));
+    const firstNode = region.firstElementChild;
+    const second = { ...task('second-task', 'current-chat'), created_at: '2026-09-22T00:01:00Z' };
+    rerender([done, second]);
+    rerender([done, { ...second, status: 'complete', answer: 'Second answer' }]);
+    // Same text, but a new node, so assistive technology hears it again.
+    await waitFor(() => expect(region.firstElementChild).not.toBe(firstNode));
+    expect(region.textContent).toBe('Response saved.');
+    expect(region.querySelectorAll('span')).toHaveLength(1);
   });
 
   it('keeps an unsent draft per conversation in memory across conversation switches', () => {

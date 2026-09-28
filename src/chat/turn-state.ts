@@ -43,6 +43,14 @@ export function settledAnnouncement(previousStatus: string | undefined, turn: Pi
 }
 
 export type SettingsSection = 'Providers & models' | 'AI permissions';
+
+/** The clicks that reach a section, as the Settings dialog is today. The case
+ *  grant and offline switch are changed under the "This case" scope; the
+ *  dialog itself opens on Providers & models at app scope, so this path is
+ *  stated in text rather than implied by the Open settings button. */
+export function settingsPath(section: SettingsSection): string {
+  return section === 'AI permissions' ? 'Settings → This case → AI permissions' : 'Settings → Providers & models';
+}
 export type ComposerBlock = { reason: 'desktop' | 'offline' | 'text-grant' | 'access-route' | 'subscription-model' | 'no-model' | 'preparing'; message: string; section?: SettingsSection };
 
 /** Why the composer cannot send right now, stated plainly and pointing at the

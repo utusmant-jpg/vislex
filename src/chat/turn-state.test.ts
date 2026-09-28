@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   APP_STOPPED_REASON, CHAT_PREEMPTION_REASON, COORDINATOR_STOP_REASON, USER_STOP_REASON,
-  composerBlock, settledAnnouncement, turnOutcome, usageOf,
+  composerBlock, settingsPath, settledAnnouncement, turnOutcome, usageOf,
 } from './turn-state';
 
 describe('turnOutcome', () => {
@@ -38,6 +38,13 @@ describe('settledAnnouncement', () => {
     expect(settledAnnouncement('running', { status: 'paused', error: USER_STOP_REASON })).toBe('Response stopped.');
     expect(settledAnnouncement('running', { status: 'failed', error: 'x' })).toBe('Response did not complete.');
     expect(settledAnnouncement('running', { status: 'paused', error: APP_STOPPED_REASON })).toBe('Response interrupted.');
+  });
+});
+
+describe('settingsPath', () => {
+  it('names the scope and section where each block is changed', () => {
+    expect(settingsPath('AI permissions')).toBe('Settings → This case → AI permissions');
+    expect(settingsPath('Providers & models')).toBe('Settings → Providers & models');
   });
 });
 

@@ -8,7 +8,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { springs } from '../lib/motion';
 import { useVisLexRuntime } from '../chat/vislex-runtime';
-import { composerBlock, settledAnnouncement, turnOutcome, usageOf, type SettingsSection } from '../chat/turn-state';
+import { composerBlock, settingsPath, settledAnnouncement, turnOutcome, usageOf, type SettingsSection } from '../chat/turn-state';
 import { listen } from '@tauri-apps/api/event';
 import { api, native } from '../bridge';
 import { caseSessionArgs } from '../caseSession';
@@ -191,8 +191,8 @@ function GrantChip({ settings, onOpen }: { settings: Settings; onOpen: () => voi
   const state = settings.offline ? 'offline' : settings.allow_text ? 'permitted' : 'blocked';
   const label = state === 'offline' ? 'Offline mode' : state === 'permitted' ? 'Case text permitted' : 'Case text not permitted';
   const detail = state === 'offline'
-    ? 'Offline mode is on; no AI requests are sent. Open Settings → AI permissions.'
-    : `This case ${state === 'permitted' ? 'permits' : 'does not permit'} sending case text to AI; images ${settings.allow_images ? 'permitted' : 'not permitted'}. Choosing a model does not change this. Open Settings → AI permissions.`;
+    ? `Offline mode is on; no AI requests are sent. Change it in ${settingsPath('AI permissions')}.`
+    : `This case ${state === 'permitted' ? 'permits' : 'does not permit'} sending case text to AI; images ${settings.allow_images ? 'permitted' : 'not permitted'}. Choosing a model does not change this. Change it in ${settingsPath('AI permissions')}.`;
   return <Tooltip text={detail}>
     <button type="button" className="chat-grant" data-state={state} onClick={onOpen}>
       {state === 'offline' ? <CloudOff size={14} aria-hidden="true" /> : state === 'permitted' ? <ShieldCheck size={14} aria-hidden="true" /> : <ShieldOff size={14} aria-hidden="true" />}
@@ -328,14 +328,16 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   const chatBlocked = !!running || (snapshot?.counts ? !!snapshot.counts.chat_pause : !processingFailed && processingPending);
   const block = composerBlock({ native, snapshot, accessKnown: !!accessChoice, subscriptionActive, modelReady, preparing: chatBlocked && !running });
 
-  // Announce once, politely, when a turn that was running settles.
-  const [announcement, setAnnouncement] = useState('');
+  // Announce once, politely, when a turn that was running settles. Each settle
+  // gets a fresh sequence number so the live region's node is replaced even
+  // when the text repeats (two completed turns both read "Response saved.").
+  const [announcement, setAnnouncement] = useState<{ text: string; seq: number }>({ text: '', seq: 0 });
   const seenStatuses = useRef(new Map<string, string>());
   const turnSignature = turns.map(turn => `${turn.id}:${turn.status}:${turn.error.length}`).join('|');
   useEffect(() => {
     for (const turn of turns) {
       const message = settledAnnouncement(seenStatuses.current.get(turn.id), turn);
-      if (message) setAnnouncement(message);
+      if (message) setAnnouncement(current => ({ text: message, seq: current.seq + 1 }));
       seenStatuses.current.set(turn.id, turn.status);
     }
   }, [turnSignature]);
@@ -521,7 +523,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
         {block.reason === 'preparing' ? <LoaderCircle size={15} className="spin" aria-hidden="true" /> : block.reason === 'offline' ? <CloudOff size={15} aria-hidden="true" /> : block.reason === 'text-grant' ? <ShieldOff size={15} aria-hidden="true" /> : <Info size={15} aria-hidden="true" />}
         <span className="composer-block-text">{block.message}</span>
         {block.section ? <>
-          <span className="composer-block-where">Settings → {block.section}</span>
+          <span className="composer-block-where">Change this in {settingsPath(block.section)}</span>
           <button type="button" className="secondary" data-size="sm" onClick={() => onSettings(block.section)}>Open settings</button>
         </> : null}
       </div> : null}
@@ -564,7 +566,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
         </div>
       </div>
       <p className="composer-foot">VisLex cites evidence for what it claims · Enter to send · Shift+Enter for a new line</p>
-      <div className="visually-hidden" aria-live="polite" aria-atomic="true">{announcement}</div>
+      <div className="visually-hidden" aria-live="polite" aria-atomic="true">{announcement.text ? <span key={announcement.seq} data-seq={announcement.seq}>{announcement.text}</span> : null}</div>
     </div>
   </section>
   </AssistantRuntimeProvider>;

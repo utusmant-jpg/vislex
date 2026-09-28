@@ -282,7 +282,7 @@
 .composer-block.reason-offline > svg { color: var(--warning); }
 .composer-block.reason-preparing > svg { color: var(--accent-text); }
 .composer-block-text { flex: 1 1 220px; min-width: 0; line-height: 1.5; }
-.composer-block-where { color: var(--text-3); font-size: var(--text-caption); white-space: nowrap; }
+.composer-block-where { min-width: 0; color: var(--text-3); font-size: var(--text-caption); overflow-wrap: anywhere; }
 
 .agent-panel .composer {
   padding: 8px 8px 8px 12px; border: 1px solid var(--border-control); border-radius: var(--radius-xl);
