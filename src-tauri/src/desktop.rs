@@ -200,7 +200,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     }
 
     if ["ai_access_route","set_ai_access_route","save_codex_selection","codex_account_status","codex_account_login","codex_account_cancel_login","codex_account_logout","codex_account_models","codex_account_limits"].contains(&action) {
-        let directory = app.path().app_config_dir()?;
+        let directory = ai_access_dir(app)?;
         let home=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
         if !crate::ai_access::SUBSCRIPTION_ROUTE_ENABLED {
             // The saved route stays readable; everything that would use the
@@ -1542,14 +1542,14 @@ fn case_access_route(case:&Case,app:&tauri::AppHandle)->anyhow::Result<crate::ai
     match case.meta("ai_access_override")?.as_deref() {
         Some("api_keys")=>Ok(crate::ai_access::AccessRoute::ApiKeys),
         Some("chatgpt_subscription")=>Ok(crate::ai_access::AccessRoute::ChatgptSubscription),
-        _=>crate::ai_access::read(&app.path().app_config_dir()?),
+        _=>crate::ai_access::read(&ai_access_dir(app)?),
     }
 }
 fn case_subscription_selection(case:&Case,app:&tauri::AppHandle)->anyhow::Result<Option<crate::ai_access::SubscriptionSelection>> {
     if let Some(saved)=case.meta("codex_selection")? {
         if !saved.is_empty() {return Ok(Some(serde_json::from_str(&saved)?));}
     }
-    Ok(crate::ai_access::read_settings(&app.path().app_config_dir()?)?.subscription)
+    Ok(crate::ai_access::read_settings(&ai_access_dir(app)?)?.subscription)
 }
 
 fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<Option<String>> {
@@ -1955,6 +1955,20 @@ pub fn run() {
 }
 
 
+/// Where the app-wide AI access route (API keys or ChatGPT subscription) is
+/// saved. Test mode keeps it beside the isolated app AI defaults, or in a
+/// fresh per-process folder, so a native journey never reads or changes the
+/// user's route (a missing file means API keys).
+fn ai_access_dir(app:&tauri::AppHandle)->anyhow::Result<PathBuf> {
+    #[cfg(debug_assertions)]
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {
+        return Ok(match std::env::var_os("VISLEX_TEST_AI_DEFAULTS_PATH").map(PathBuf::from) {
+            Some(defaults)=>defaults.parent().context("Test AI defaults path has no parent")?.to_path_buf(),
+            None=>std::env::temp_dir().join(format!("vislex-test-access-{}",std::process::id())),
+        });
+    }
+    Ok(app.path().app_config_dir()?)
+}
 fn ai_defaults_path(app:&tauri::AppHandle)->anyhow::Result<PathBuf> {
     #[cfg(debug_assertions)]
     if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {
@@ -1978,7 +1992,7 @@ fn write_ai_defaults(app:&tauri::AppHandle,config:&crate::providers::Config,sett
     let defaults=json!({"config":config,"settings":settings,"consent_version":crate::providers::AI_DEFAULTS_CONSENT_VERSION});
     anyhow::ensure!(crate::providers::parse_ai_defaults(&defaults)?.is_some(),"Invalid app AI settings");
     anyhow::ensure!(!settings.allow_images||settings.allow_text,"Image analysis requires text permission");
-    let subscription=crate::ai_access::read(&app.path().app_config_dir()?)?==crate::ai_access::AccessRoute::ChatgptSubscription;
+    let subscription=crate::ai_access::read(&ai_access_dir(app)?)?==crate::ai_access::AccessRoute::ChatgptSubscription;
     anyhow::ensure!(settings.offline || !settings.allow_text || !settings.model.is_empty() || subscription,"Select a model before enabling AI");
     let path=ai_defaults_path(app)?;
     let directory=path.parent().context("App AI settings path has no parent")?;
