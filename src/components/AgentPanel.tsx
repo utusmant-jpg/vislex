@@ -191,8 +191,8 @@ function GrantChip({ settings, onOpen }: { settings: Settings; onOpen: () => voi
   const state = settings.offline ? 'offline' : settings.allow_text ? 'permitted' : 'blocked';
   const label = state === 'offline' ? 'Offline mode' : state === 'permitted' ? 'Case text permitted' : 'Case text not permitted';
   const detail = state === 'offline'
-    ? `Offline mode is on; no AI requests are sent. Change it in ${settingsPath('AI permissions')}.`
-    : `This case ${state === 'permitted' ? 'permits' : 'does not permit'} sending case text to AI; images ${settings.allow_images ? 'permitted' : 'not permitted'}. Choosing a model does not change this. Change it in ${settingsPath('AI permissions')}.`;
+    ? `Offline mode is on; no AI requests are sent. Change it in ${settingsPath('Privacy & offline')}.`
+    : `This case ${state === 'permitted' ? 'permits' : 'does not permit'} sending case text to AI; images ${settings.allow_images ? 'permitted' : 'not permitted'}. Choosing a model does not change this. Change it in ${settingsPath('Case permissions')}.`;
   return <Tooltip text={detail}>
     <button type="button" className="chat-grant" data-state={state} onClick={onOpen}>
       {state === 'offline' ? <CloudOff size={14} aria-hidden="true" /> : state === 'permitted' ? <ShieldCheck size={14} aria-hidden="true" /> : <ShieldOff size={14} aria-hidden="true" />}
@@ -449,7 +449,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
         </span> : null}
       </div>
       <div className="spacer" />
-      {snapshot && native ? <GrantChip settings={snapshot.settings} onOpen={() => onSettings('AI permissions')} /> : null}
+      {snapshot && native ? <GrantChip settings={snapshot.settings} onOpen={() => onSettings(snapshot.settings.offline ? 'Privacy & offline' : 'Case permissions')} /> : null}
       <Tooltip text="Agent &amp; model settings"><button className="icon-button" aria-label="Agent settings" onClick={() => onSettings()}><Settings2 size={16} /></button></Tooltip>
     </header>
     <div className="agent-scroll" ref={scroll} onScroll={() => {
@@ -539,11 +539,11 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
         {skipContext && contextName ? <p className="small muted context-off">This file will not be attached to your next message.</p> : null}
         <textarea ref={composer} aria-label="Agent task" rows={1} placeholder={task ? 'Follow up, challenge a finding, or ask something else…' : 'Ask VisLex about your case…'} value={prompt} onChange={event => draft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
         <div className="composer-bottom">
-          {subscriptionActive ? <button className="model-picker" type="button" onClick={() => onSettings('Providers & models')} aria-label="ChatGPT subscription model"><span className="provider-dot" data-provider="openai" aria-hidden="true" />ChatGPT · {accessChoice?.model ?? 'Choose model'}</button> : <ModelPicker
+          {subscriptionActive ? <button className="model-picker" type="button" onClick={() => onSettings('Accounts & models')} aria-label="ChatGPT subscription model"><span className="provider-dot" data-provider="openai" aria-hidden="true" />ChatGPT · {accessChoice?.model ?? 'Choose model'}</button> : <ModelPicker
             snapshot={snapshot}
             selected={selectedProfile}
             onSelect={profile => { setSelectedModel(profileKey(profile)); sessionStorage.setItem(modelKey(snapshot?.id, conversationId), profileKey(profile)); }}
-            onManage={() => onSettings('Providers & models')}
+            onManage={() => onSettings('Accounts & models')}
             disabled={chatBlocked || sending || !availableModels.length}
           />}
           <div className="spacer" />

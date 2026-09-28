@@ -126,7 +126,7 @@ test.describe('assistant surface', () => {
     });
     const block = page.locator('.composer-block');
     await expect(block).toContainText('This case does not permit sending case text to AI.');
-    await expect(block).toContainText('Change this in Settings → This case → AI permissions');
+    await expect(block).toContainText('Change this in Settings → Case permissions');
     await expect(page.getByRole('button', { name: 'Case text not permitted' })).toBeVisible();
     await page.getByRole('textbox', { name: 'Agent task' }).fill('Should not send');
     await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled();
@@ -135,10 +135,10 @@ test.describe('assistant surface', () => {
     await block.getByRole('button', { name: 'Open settings' }).click();
     const dialog = page.getByRole('dialog', { name: 'Workspace settings' });
     await expect(dialog).toBeVisible();
-    // The stated path is real: This case → AI permissions shows the case text grant.
+    // The stated path is real: This case → Case permissions shows the case text grant.
     await dialog.getByRole('group', { name: 'AI settings scope' }).getByRole('button', { name: /^This case/ }).click();
-    await dialog.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'AI permissions' }).click();
-    await expect(dialog.getByRole('group', { name: 'Case AI permissions' })).toBeVisible();
+    await dialog.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'Case permissions' }).click();
+    await expect(dialog.getByRole('region', { name: 'Case AI permissions' })).toBeVisible();
     await expect(dialog.getByRole('checkbox', { name: /Case text may be sent to permitted models/ })).not.toBeChecked();
     await page.keyboard.press('Escape');
 

@@ -86,7 +86,7 @@ export function providerChangeNotice(savedProvider: Provider | null, nextProvide
 export default function SettingsDialog({ snapshot, onClose, refresh, initialSection }: { snapshot: Snapshot | null; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; initialSection?: SettingsSection }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const mounted = useRef(true);
-  const [section, setSection] = useState<SettingsSection>(initialSection ?? 'Accounts & models');
+  const [section, setSection] = useState<SettingsSection>(initialSection && settingsSections.includes(initialSection) ? initialSection : 'Accounts & models');
   const [scope, setScope] = useState<'app' | 'case'>('app');
   const scopeRef = useRef<'app' | 'case'>('app');
   const [caseScope, setCaseScope] = useState<'app' | 'case' | null>(null);

@@ -15,6 +15,7 @@ import { suggestedMatterName } from './review';
 import { subscribeCaseChanges } from './caseEvents';
 import EvidenceViewer, { SourceIcon } from './components/EvidenceViewer';
 import AgentPanel from './components/AgentPanel';
+import type { SettingsSection } from './components/SettingsDialog';
 import FolderImport from './components/FolderImport';
 import PaneDivider from './components/PaneDivider';
 import SidebarDivider from './components/SidebarDivider';
@@ -507,6 +508,7 @@ export default function App() {
   const [focusComposerRequest, setFocusComposerRequest] = useState(0);
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const settingsReturnFocus = useRef<HTMLElement | null>(null);
   const [modal, setModal] = useState<'create' | 'note' | 'backup' | 'restore' | 'delete' | null>(null);
   const modalReturnFocus = useRef<HTMLElement | null>(null);
@@ -767,7 +769,13 @@ export default function App() {
     run(async () => { installSnapshot(await api<Snapshot>('open_case', { ...(snapshot ? caseGuard(snapshot) : {}), path: item.root })); setView('chat'); });
   }
   function showModal(type: typeof modal) { modalReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setName(''); setPassword(''); setPasswordConfirm(''); setModal(type); }
-  function openSettings() { settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setSettings(true); }
+  // Callers pass a section to open it directly. Button handlers pass their
+  // click event, which is ignored, so the dialog then opens on its default.
+  function openSettings(section?: unknown) {
+    settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSettingsSection(typeof section === 'string' ? section as SettingsSection : undefined);
+    setSettings(true);
+  }
   async function performModal() {
     if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { ...(snapshot ? caseGuard(snapshot) : {}), path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
     if (modal === 'note') { if (!snapshot) throw new Error('Open a case first.'); const created = await api<WorkingRecord>('write_record', { ...caseGuard(snapshot), title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
@@ -1082,7 +1090,7 @@ export default function App() {
         <div className="palette-footer"><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span>{snapshot ? <span><kbd>Ctrl</kbd><kbd>↵</kbd> search text</span> : null}<span><kbd>Esc</kbd> close</span></div>
       </dialog>
 
-      {settings ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog key={snapshot ? `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}` : 'app'} snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
+      {settings ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog key={snapshot ? `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}` : 'app'} initialSection={settingsSection} snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
 
       {modal ? <dialog ref={dialog} className="modal lifecycle-modal" aria-label={modalTitle} onCancel={() => { setModal(null); setPassword(''); setPasswordConfirm(''); }}>
         <div className="modal-heading"><div><h2>{modalTitle}</h2><p>{modalLede}</p></div><button className="icon-button" aria-label="Close dialog" onClick={() => { setModal(null); setPassword(''); setPasswordConfirm(''); }}><X size={18} /></button></div>

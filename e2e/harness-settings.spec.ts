@@ -22,8 +22,8 @@ test('theme and density changes issue no IPC and saving does not broaden grants'
   expect((await calls(page)).map(call => call.action)).toEqual([]);
 
   // Loading a catalogue is account metadata only and carries the case guard.
-  await sections.getByRole('button', { name: 'Providers & models' }).click();
-  const openai = dialog.locator('fieldset.settings-provider-card').filter({ hasText: 'OpenAI' });
+  await sections.getByRole('button', { name: 'Accounts & models' }).click();
+  const openai = dialog.locator('fieldset.settings-provider').filter({ hasText: 'OpenAI' });
   await openai.getByRole('button', { name: 'Load models' }).click();
   expect((await lastCall(page, 'provider_models')).args).toEqual({ case_id: fx.caseA.id, session_epoch: 1, provider: 'openai' });
 
@@ -52,7 +52,7 @@ test('selecting a catalogue model in Settings adds it without evidence grants', 
   await page.keyboard.press('Control+,');
   const dialog = page.getByRole('dialog', { name: 'Workspace settings' });
   await lastCall(page, 'app_ai_settings');
-  const anthropic = dialog.locator('fieldset.settings-provider-card').filter({ hasText: 'Claude / Anthropic' });
+  const anthropic = dialog.locator('fieldset.settings-provider').filter({ hasText: 'Claude / Anthropic' });
   await anthropic.getByRole('button', { name: 'Add another model' }).click();
   await anthropic.getByRole('button', { name: 'Load models' }).click();
   await lastCall(page, 'provider_models');
@@ -91,7 +91,7 @@ test('a case override saves exactly the grants shown and carries the case guard'
   await page.keyboard.press('Control+,');
   const dialog = page.getByRole('dialog', { name: 'Workspace settings' });
   await dialog.getByRole('button', { name: /^This case/ }).click();
-  await dialog.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'AI permissions' }).click();
+  await dialog.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'Case permissions' }).click();
   await expect(dialog.getByRole('checkbox', { name: /Case text may be sent/ })).toBeChecked();
   await expect(dialog.getByRole('checkbox', { name: /Case images may be sent/ })).not.toBeChecked();
   await dialog.getByRole('button', { name: 'Save case AI override' }).click();

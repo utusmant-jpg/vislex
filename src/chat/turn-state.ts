@@ -42,14 +42,15 @@ export function settledAnnouncement(previousStatus: string | undefined, turn: Pi
   }
 }
 
-export type SettingsSection = 'Providers & models' | 'AI permissions';
+// One section vocabulary, owned by the Settings dialog, so a renamed section
+// fails type-checking here instead of opening a section that no longer exists.
+import type { SettingsSection } from '../components/SettingsDialog';
+export type { SettingsSection };
 
-/** The clicks that reach a section, as the Settings dialog is today. The case
- *  grant and offline switch are changed under the "This case" scope; the
- *  dialog itself opens on Providers & models at app scope, so this path is
- *  stated in text rather than implied by the Open settings button. */
+/** The clicks that reach a section. The Open settings button opens this
+ *  section directly; the path is also stated in text. */
 export function settingsPath(section: SettingsSection): string {
-  return section === 'AI permissions' ? 'Settings → This case → AI permissions' : 'Settings → Providers & models';
+  return `Settings → ${section}`;
 }
 export type ComposerBlock = { reason: 'desktop' | 'offline' | 'text-grant' | 'access-route' | 'subscription-model' | 'no-model' | 'preparing'; message: string; section?: SettingsSection };
 
@@ -61,12 +62,12 @@ export function composerBlock({ native, snapshot, accessKnown, subscriptionActiv
 }): ComposerBlock | null {
   if (!snapshot) return null;
   if (!native) return { reason: 'desktop', message: 'AI chat runs in the VisLex desktop app. This preview cannot send messages.' };
-  if (snapshot.settings.offline) return { reason: 'offline', message: 'Offline mode is on, so no AI requests are sent for this case.', section: 'AI permissions' };
-  if (!snapshot.settings.allow_text) return { reason: 'text-grant', message: 'This case does not permit sending case text to AI.', section: 'AI permissions' };
-  if (!accessKnown) return { reason: 'access-route', message: 'The AI access route for this case could not be read.', section: 'Providers & models' };
+  if (snapshot.settings.offline) return { reason: 'offline', message: 'Offline mode is on, so no AI requests are sent for this case.', section: 'Privacy & offline' };
+  if (!snapshot.settings.allow_text) return { reason: 'text-grant', message: 'This case does not permit sending case text to AI.', section: 'Case permissions' };
+  if (!accessKnown) return { reason: 'access-route', message: 'The AI access route for this case could not be read.', section: 'Accounts & models' };
   if (!modelReady) return subscriptionActive
-    ? { reason: 'subscription-model', message: 'Choose a ChatGPT subscription model and effort before sending.', section: 'Providers & models' }
-    : { reason: 'no-model', message: 'No configured model is permitted to receive case text.', section: 'Providers & models' };
+    ? { reason: 'subscription-model', message: 'Choose a ChatGPT subscription model and effort before sending.', section: 'Accounts & models' }
+    : { reason: 'no-model', message: 'No configured model is permitted to receive case text.', section: 'Accounts & models' };
   if (preparing) return { reason: 'preparing', message: 'Preparing case files before chat is available.' };
   return null;
 }

@@ -43,8 +43,8 @@ describe('settledAnnouncement', () => {
 
 describe('settingsPath', () => {
   it('names the scope and section where each block is changed', () => {
-    expect(settingsPath('AI permissions')).toBe('Settings → This case → AI permissions');
-    expect(settingsPath('Providers & models')).toBe('Settings → Providers & models');
+    expect(settingsPath('Case permissions')).toBe('Settings → Case permissions');
+    expect(settingsPath('Accounts & models')).toBe('Settings → Accounts & models');
   });
 });
 
@@ -59,10 +59,10 @@ describe('composerBlock', () => {
 
   it('states the first blocking reason and the settings section that changes it', () => {
     expect(composerBlock({ ...base, native: false })?.reason).toBe('desktop');
-    expect(composerBlock({ ...base, snapshot: { settings: { ...settings, offline: true, allow_text: false } } })).toMatchObject({ reason: 'offline', section: 'AI permissions' });
-    expect(composerBlock({ ...base, snapshot: { settings: { ...settings, allow_text: false } } })).toMatchObject({ reason: 'text-grant', section: 'AI permissions', message: 'This case does not permit sending case text to AI.' });
-    expect(composerBlock({ ...base, accessKnown: false })).toMatchObject({ reason: 'access-route', section: 'Providers & models' });
-    expect(composerBlock({ ...base, modelReady: false })).toMatchObject({ reason: 'no-model', section: 'Providers & models' });
+    expect(composerBlock({ ...base, snapshot: { settings: { ...settings, offline: true, allow_text: false } } })).toMatchObject({ reason: 'offline', section: 'Privacy & offline' });
+    expect(composerBlock({ ...base, snapshot: { settings: { ...settings, allow_text: false } } })).toMatchObject({ reason: 'text-grant', section: 'Case permissions', message: 'This case does not permit sending case text to AI.' });
+    expect(composerBlock({ ...base, accessKnown: false })).toMatchObject({ reason: 'access-route', section: 'Accounts & models' });
+    expect(composerBlock({ ...base, modelReady: false })).toMatchObject({ reason: 'no-model', section: 'Accounts & models' });
     expect(composerBlock({ ...base, modelReady: false, subscriptionActive: true })).toMatchObject({ reason: 'subscription-model' });
     expect(composerBlock({ ...base, preparing: true })).toEqual({ reason: 'preparing', message: 'Preparing case files before chat is available.' });
   });
