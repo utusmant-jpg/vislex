@@ -34,6 +34,7 @@ pub mod transcription;
 pub mod providers;
 
 pub mod evidence;
+pub mod escalation;
 
 pub mod teams;
 pub mod dossier;

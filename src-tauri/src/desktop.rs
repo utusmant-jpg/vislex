@@ -775,6 +775,10 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript page");
             crate::transcription::segment_page(c,text(&args,"source_id")?,text(&args,"run_id")?,args["cursor"].as_i64())?
         },
+        "second_opinion_candidates" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before uncertainty triage");
+            crate::escalation::candidates(c,text(&args,"source_id")?,text(&args,"run_id")?)?
+        },
         "transcript_segment_detail" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcript detail");
             crate::transcription::segment_detail(c,text(&args,"source_id")?,text(&args,"run_id")?,args["ordinal"].as_i64().context("Missing segment ordinal")?)?
@@ -1168,6 +1172,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "full_transcription_status",
         "transcript_segment_page",
         "transcript_segment_detail",
+        "second_opinion_candidates",
 
         "artifact_info",
 

@@ -632,6 +632,34 @@ mod staging_tests {
         assert_eq!(uncertain[0]["probability"],0.31);
     }
     #[test]
+    fn second_opinion_triage_flags_only_doubtful_segments_and_respects_restriction() {
+        let dir=tempfile::tempdir().unwrap();
+        let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic triage").unwrap();
+        case.import_files(&[input.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source=case.sources().unwrap().into_iter().find(|s|s.kind=="video").unwrap();
+        let job=begin(&mut case,&source.id).unwrap();
+        let sure=json!([{"word":" Open","probability":0.98,"start":0.0,"end":0.4},{"word":" the","probability":0.99,"start":0.4,"end":0.6},{"word":" door","probability":0.97,"start":0.6,"end":1.0}]);
+        let doubtful=json!([{"word":" Paid","probability":0.9,"start":5.0,"end":5.4},{"word":" 4,500","probability":0.2,"start":5.4,"end":6.0},{"word":" today","probability":0.9,"start":6.0,"end":6.5}]);
+        let pages=json!([
+            {"start":0.0,"end":1.0,"track":0,"text":"Open the door","words":sure,"avg_logprob":-0.2,"no_speech_prob":0.01,"compression_ratio":1.2,"temperature":0.0},
+            {"start":5.0,"end":6.5,"track":0,"text":"Paid 4,500 today","words":doubtful,"avg_logprob":-0.9,"no_speech_prob":0.02,"compression_ratio":1.3,"temperature":0.0}
+        ]);
+        let staged=stage_transcript(&job,json!({"pages":pages,"metadata":{},"limitations":[]})).unwrap();
+        publish_staged_transcript(&mut case,&job,staged).unwrap();
+        let triage=crate::escalation::candidates(&case,&source.id,&job.id).unwrap();
+        assert_eq!(triage["segments"],2);
+        assert_eq!(triage["flagged_segments"],1);
+        let candidates=triage["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(),1);
+        assert_eq!(candidates[0]["ordinals"],json!([1]));
+        assert_eq!(candidates[0]["start"],4.5);
+        assert_eq!(candidates[0]["end"],7.0);
+        assert_eq!(candidates[0]["reasons"][0]["code"],"uncertain_key_word");
+        case.set_restricted(&source.id,true).unwrap();
+        assert!(crate::escalation::candidates(&case,&source.id,&job.id).is_err(),"restricted sources are never triaged for sending");
+    }
+    #[test]
     fn staged_transcript_is_recoverable_and_registers_once() {
         let dir=tempfile::tempdir().unwrap();
         let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
