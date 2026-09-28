@@ -1989,6 +1989,9 @@ fn debug_test_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
             tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.data_directory(folder.join(&window.label)).build()?;
         }
     }
+    // R36 survey of the research site's page structure (developer's own sign-in, not test mode).
+    #[cfg(all(feature = "research", windows))]
+    crate::research::survey::start(app.handle());
     // R34 spike without a debugging port or profile override.
     #[cfg(all(feature = "research", windows))]
     if std::env::var("VISLEX_TEST_MODE").as_deref() == Ok("1") {

@@ -21,6 +21,8 @@ pub mod pane;
 pub mod runtime;
 #[cfg(all(feature = "research", windows, debug_assertions))]
 pub mod spike;
+#[cfg(all(feature = "research", windows, debug_assertions))]
+pub mod survey;
 
 /// Label of the research child webview. No capability may name it.
 pub const WEBVIEW_LABEL: &str = "research";
