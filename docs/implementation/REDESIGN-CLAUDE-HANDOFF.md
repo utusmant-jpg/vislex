@@ -4,7 +4,7 @@ Durable record of the Claude-led redesign requested in `docs/CLAUDE-REDESIGN-PRO
 
 ## Branch and base
 
-- Work branch: `claude/redesign`, created from `ui/assistant-redesign` @ `c04c8c3` on 2026-09-27.
+- Work branch: `claude/redesign`, created from `ui/assistant-redesign` @ `c04c8c3` on 2026-09-27. Continued on 2026-09-28 in a cloud session as `claude/redesign-v14qbo` (pushed to origin; the desktop WIP snapshot was folded into real commits, not pushed as-is).
 - Merged read-only from `codex/vislex-redesign` @ `3042ca0` (R20 subscription route, `d8bcaba` evidence-protocol CORS fix, SQLite contention handling). Codex worktrees under `.codex/worktrees/*` were not modified.
 - Untracked user files (`CLAUDE.md`, `docs/CLAUDE-REDESIGN-PROMPT.md`, `.claude/settings.json`) are preserved and not committed by this work unless the user asks.
 
@@ -61,6 +61,17 @@ Rejected: Magic UI / Aceternity / React Bits (licence and marketing aesthetic), 
 Recorded per slice below, newest last.
 
 - 2026-09-27 merge `codex/vislex-redesign` into `claude/redesign`: conflicts in `AgentPanel.tsx` (kept redesign motion + Codex `modelReady`/subscription route), `vite.config.ts` (kept Tailwind/alias/setupFiles + Codex `artifacts` exclusion), `NEXT-STATUS.json` (took Codex side, identical content plus `protocol_origin_fix_followup`). `npx tsc -p tsconfig.json --noEmit` exit 0; `npx vitest run` 22 files / 132 tests passed.
+
+- 2026-09-27 `32cae98` design foundation (tokens.css single source, cascade layers, contrast unit test): tsc 0; vitest 23 files / 179 passed.
+- 2026-09-27 `efdb691` shared primitives + ModelPicker/ModelSelect correctness (cmdk Combobox, Escape/focus return, no guessed capability badges, `stopped` pill): tsc 0; vitest 24 / 182 passed.
+- 2026-09-28 (cloud, Linux container, Node 22.22.2, Chromium 1194 headless) `f3765ea` user instructions/brief committed; `1c71d21` shell, onboarding, evidence library and jobs redesign (desktop WIP): tsc 0; vitest 24 / 182 passed.
+- 2026-09-28 `d3dcafa` Playwright runs on bundled Chromium via `PW_CHROMIUM_PATH` and a configurable `PW_PORT`: `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium CI=1 npx playwright test` 11/11 passed (workspace + axe WCAG A/AA spec).
+- 2026-09-28 `f6eebd5` removed npm `cn` (shadcn copies now use `src/lib/utils.ts`) and unused `sonner`: tsc 0; vitest 182/182; `vite build` ok.
+- 2026-09-28 `1fb6f4e` removed dead legacy palette/onboarding rules that broke the palette row layout and onboarding cards (seen in screenshots); `asyncUtilTimeout` 5 s / `testTimeout` 15 s after App.test lazy-view lookups failed intermittently under load (no assertion changed): vitest 182/182 ×3; Playwright 11/11.
+
+## Agents that actually ran (2026-09-28 session)
+
+Workflow `vislex-surface-redesign` (run `wf_3fc12f9a-9d8`): four implementation writers, each in its own git worktree under `.claude/worktrees/`, never more than three writing at once — mocked-IPC harness + rich synthetic case; evidence viewer family; findings/investigation/settings; assistant chat (starts after the harness and merges it). Each writer is followed by an independent read-only adversarial reviewer and a fix pass in the same worktree. Results are recorded below once integrated.
 
 ## Unrun checks and open items
 
