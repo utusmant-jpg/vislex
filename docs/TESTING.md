@@ -63,6 +63,31 @@ The Codex-sidecar subscription route is off by default. Build with `--features s
 
 Follow `README.md` → Verification for the full Windows sequence. Tier 1 is `cargo test --locked`, clippy and `cargo check --features desktop`. Tier 2 adds the packaged worker (`scripts/build-worker.ps1`), the ignored sandbox tests and the native CDP journeys.
 
+## Latest Windows run (2026-09-28)
+
+Tested commit: `8b2fbee` on `integrate/redesign-final` (the cloud branch's Linux-verified `3b8bb88` plus its docs commit, merged with the local Codex/GLM worker setup). Windows 11 on an ARM64 machine running the x86_64-pc-windows-msvc toolchain; details and the unrun list are in `windows_verification_2026_09_28` in `docs/implementation/NEXT-STATUS.json`.
+
+| Check | Result |
+|---|---|
+| `tsc --noEmit`, `npx vite build`, `vislex_plan.py check` | exit 0 |
+| Vitest | 30 files, 294 passed |
+| Playwright (Chromium) | 58 passed |
+| `cargo test --locked` | 245 passed, 0 failed, 31 ignored |
+| `cargo check` with `desktop` and with `subscription` | exit 0 |
+| `cargo clippy --all-targets --features desktop` | exit 0, with warnings |
+| `cargo fmt --check` | fails repo-wide (pre-existing, also on `main`) |
+| Rebuilt packaged worker | new modules `email_extract`, `docx_extract`, `pptx_extract`, `xlsx_hidden`, `media_clip` present |
+| `sandbox.rs -- --ignored` | 26 passed |
+| `worker_video_e2e -- --ignored` | 1 passed |
+| Packaged worker on synthetic .eml, DOCX, PPTX, XLSX and audio clips, in the AppContainer | 19/19 checks passed |
+| `npm run desktop:build` | exit 0 (release exe and NSIS installer) |
+| Native journeys on the debug build: acceptance, integrity, large session, provider race, concurrent chats | exit 0 |
+| Native protocol-origin test on the release exe | exit 0, foreign read blocked |
+
+Not run: `native-consent-acceptance.ps1`, `native-app-ai-acceptance.ps1` and `native-codex-account-test.ps1` (they need the packaged app, real user settings or a `subscription` build), manual video scrubbing and PDF paging through `evidence://`, any live provider request, 125/150/200 % scaling screenshots, Edge and screen readers.
+
+The release build refuses chat while the saved AI route is `chatgpt_subscription`, because that route is compiled out by default; the journeys run on the debug build, which isolates that preference in test mode.
+
 ## Latest Linux run (cloud container, 2026-09-28)
 
 Tested commit: `3b8bb88` on `integrate/redesign-final-cora77`. Nothing below has run on Windows; see `docs/implementation/LOCAL-FINALIZE.md` for the Windows checks still owed.
