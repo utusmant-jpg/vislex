@@ -43,11 +43,8 @@ test('theme and density changes issue no IPC and saving does not broaden grants'
 });
 
 test('selecting a catalogue model in Settings adds it without evidence grants', async ({ page }) => {
-  // Known issue: Combobox/AnchoredPopover (src/ui.tsx) portals to document.body,
-  // so inside the modal Settings <dialog> the option list is rendered under the
-  // top-layer dialog and is inert: it cannot be clicked or focused. Remove
-  // test.fail once the popover renders inside the open dialog.
-  test.fail(true, 'Settings model combobox options are inert under the modal dialog');
+  // The option list renders inside the open modal <dialog> (the rest of the
+  // document is inert while it is open), so it can be clicked and dismissed.
   await openHarness(page);
   await page.keyboard.press('Control+,');
   const dialog = page.getByRole('dialog', { name: 'Workspace settings' });
@@ -56,8 +53,17 @@ test('selecting a catalogue model in Settings adds it without evidence grants', 
   await anthropic.getByRole('button', { name: 'Add another model' }).click();
   await anthropic.getByRole('button', { name: 'Load models' }).click();
   await lastCall(page, 'provider_models');
-  await anthropic.getByRole('button', { name: 'Claude / Anthropic model 6' }).click();
+  const trigger = anthropic.getByRole('button', { name: 'Claude / Anthropic model 6' });
+  // Escape closes only the list, keeps Settings open and returns focus to the trigger.
+  await trigger.click();
+  await expect(page.getByRole('option', { name: /Harness anthropic large/ })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('option', { name: /Harness anthropic large/ })).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(trigger).toBeFocused();
+  await trigger.click();
   await page.getByRole('option', { name: /Harness anthropic large/ }).click({ timeout: 3000 });
+  await expect(trigger).toContainText(/harness-model-anthropic-large|Harness anthropic large/);
   await expect(anthropic.getByRole('checkbox', { name: 'May receive case text' }).last()).not.toBeChecked();
   await dialog.getByRole('button', { name: 'Save app AI settings' }).click();
   const saved = await lastCall(page, 'save_app_ai_settings');

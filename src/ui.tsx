@@ -126,11 +126,19 @@ export function Tooltip({ text, shortcut, children, side = 'auto' }: { text: str
     {point ? createPortal(
       <div id={id} className="tooltip" role="tooltip" style={style} data-side={point.side}>
         {text}{shortcut ? <span className="tooltip-keys">{shortcut.split('+').map(key => <kbd key={key}>{key}</kbd>)}</span> : null}
-      </div>, document.body) : null}
+      </div>, overlayHost(target.current)) : null}
   </>;
 }
 
 /* ----------------------------- menus and popovers --------------------------- */
+
+/** Where an overlay is rendered. While a modal <dialog> is open it sits in the
+ *  top layer and the rest of the document is inert, so an overlay opened from
+ *  inside it must render inside that dialog to be visible and clickable.
+ *  Positions stay viewport-fixed: the dialog has no transform once open. */
+export function overlayHost(anchor: Element | null | undefined): HTMLElement {
+  return anchor?.closest<HTMLElement>('dialog[open]') ?? document.body;
+}
 
 export type MenuItem =
   | { label: string; icon?: ReactNode; shortcut?: string; danger?: boolean; disabled?: boolean; onSelect: () => void }
@@ -155,9 +163,10 @@ function menuNode(items: MenuItem[], close: () => void, highlight: number, setHi
   return { body, selectable };
 }
 
-export function MenuPanel({ items, onClose, style, className, label = 'Actions' }: { items: MenuItem[]; onClose: () => void; style?: React.CSSProperties; className?: string; label?: string }) {
+export function MenuPanel({ items, onClose, style, className, label = 'Actions', anchor }: { items: MenuItem[]; onClose: () => void; style?: React.CSSProperties; className?: string; label?: string; anchor?: Element | null }) {
   const [highlight, setHighlight] = useState(-1);
   const returnFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  const [host] = useState(() => overlayHost(anchor ?? returnFocus.current));
   useEffect(() => () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }, []);
   const { body, selectable } = menuNode(items, onClose, highlight, setHighlight);
   const move = (direction: 1 | -1) => {
@@ -190,11 +199,12 @@ export function MenuPanel({ items, onClose, style, className, label = 'Actions' 
       ref={node => node?.focus()}>
       {body}
     </div>
-  </>, document.body);
+  </>, host);
 }
 
 export function ContextMenu({ items, children }: { items: MenuItem[]; children: ReactElement }) {
   const [point, setPoint] = useState<{ x: number; y: number } | null>(null);
+  const target = useRef<Element | null>(null);
   const original = children.props as { onContextMenu?: (event: React.MouseEvent) => void; onKeyDown?: (event: React.KeyboardEvent) => void };
   const clamped = (x: number, y: number) => ({ x: Math.max(8, Math.min(x, window.innerWidth - 232)), y: Math.max(8, Math.min(y, window.innerHeight - 16 - items.length * 32)) });
   return <>
@@ -203,6 +213,7 @@ export function ContextMenu({ items, children }: { items: MenuItem[]; children: 
         original.onContextMenu?.(event);
         if (event.defaultPrevented) return;
         event.preventDefault();
+        target.current = event.currentTarget as Element;
         setPoint(clamped(event.clientX, event.clientY));
       },
       onKeyDown: (event: React.KeyboardEvent) => {
@@ -210,10 +221,11 @@ export function ContextMenu({ items, children }: { items: MenuItem[]; children: 
         if (event.defaultPrevented || !(event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) return;
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
+        target.current = event.currentTarget as Element;
         setPoint(clamped(rect.left + 12, rect.bottom));
       },
     } as Record<string, unknown>)}
-    {point ? <MenuPanel items={items} onClose={() => setPoint(null)} style={{ left: point.x, top: point.y, position: 'fixed' }} /> : null}
+    {point ? <MenuPanel items={items} anchor={target.current} onClose={() => setPoint(null)} style={{ left: point.x, top: point.y, position: 'fixed' }} /> : null}
   </>;
 }
 
@@ -250,11 +262,14 @@ export function AnchoredPopover({ anchor, onClose, children, className, align = 
       role="dialog"
       aria-label={label}
       className={`popover-panel ${className ?? ''}`}
-      style={style ?? { position: 'fixed', visibility: 'hidden', top: 0, left: 0, width }}
+      // Unmeasured, the panel is transparent rather than visibility:hidden so the
+      // filter's autoFocus lands in it: a hidden input cannot take focus, and
+      // focus left on the trigger would let Escape close an enclosing dialog.
+      style={style ?? { position: 'fixed', opacity: 0, pointerEvents: 'none', top: 0, left: 0, width }}
       onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); event.preventDefault(); onClose(); } }}>
       {children}
     </div>
-  </>, document.body);
+  </>, overlayHost(anchor));
 }
 
 /* --------------------------------- combobox --------------------------------- */
@@ -529,7 +544,7 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
       onKeyDown={event => { if (event.key === 'Escape') conceal(); }}>
       {citationLabel(parts.locator)}
     </button>
-    {open && supported ? createPortal(<CitationPreviewCard anchor={host.current} preview={preview} pinnedRevision={pinnedRevision} onOpen={() => { conceal(); onOpen(parts.sourceId, parts.locator); }} onEnter={() => window.clearTimeout(timer.current)} onLeave={conceal} />, document.body) : null}
+    {open && supported ? createPortal(<CitationPreviewCard anchor={host.current} preview={preview} pinnedRevision={pinnedRevision} onOpen={() => { conceal(); onOpen(parts.sourceId, parts.locator); }} onEnter={() => window.clearTimeout(timer.current)} onLeave={conceal} />, overlayHost(host.current)) : null}
   </span>;
 
   function loadPreview() {

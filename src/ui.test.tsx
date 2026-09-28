@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { ModelPicker, modelBadges } from './ui';
+import { Combobox, ModelPicker, Tooltip, modelBadges, overlayHost } from './ui';
 import type { Snapshot } from './types';
 
 beforeAll(() => {
@@ -52,4 +52,30 @@ it('never presents capability guesses as badges', () => {
   expect(modelBadges('gpt-5-vision-reasoning-mini', false)).toEqual([]);
   expect(modelBadges('claude-opus', true)).toEqual(['Default']);
   expect(modelBadges('vendor/model:free', false)).toEqual(['Free variant']);
+});
+
+it('renders overlays opened from inside an open modal dialog within that dialog', () => {
+  // A modal <dialog> makes the rest of the document inert, so an option list
+  // portalled to <body> could not be clicked.
+  const dialog = document.createElement('dialog');
+  dialog.setAttribute('open', '');
+  document.body.append(dialog);
+  const onChange = vi.fn();
+  render(<Combobox label="Synthetic model" value="" options={[{ value: 'alpha', label: 'Alpha' }]} onChange={onChange} />, { container: dialog.appendChild(document.createElement('div')) });
+  fireEvent.click(screen.getByRole('button', { name: 'Synthetic model' }));
+  const option = screen.getByRole('option', { name: /Alpha/ });
+  expect(dialog.contains(option)).toBe(true);
+  fireEvent.click(option);
+  expect(onChange).toHaveBeenCalledWith('alpha');
+  expect(overlayHost(dialog.firstElementChild)).toBe(dialog);
+  dialog.removeAttribute('open');
+  expect(overlayHost(dialog.firstElementChild)).toBe(document.body);
+  expect(overlayHost(null)).toBe(document.body);
+  dialog.remove();
+});
+
+it('keeps overlays outside a dialog on the document body', () => {
+  render(<Tooltip text="Synthetic tip"><button>Tip target</button></Tooltip>);
+  fireEvent.focus(screen.getByRole('button', { name: 'Tip target' }));
+  expect(screen.getByRole('tooltip').parentElement).toBe(document.body);
 });
