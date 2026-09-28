@@ -327,3 +327,53 @@ it('shows only the transcript tool for a restricted recording', () => {
   expect(screen.queryByRole('tab', { name: 'Visual discovery' })).toBeNull();
   expect(api).not.toHaveBeenCalledWith('browse_video_discovery', expect.anything());
 });
+
+it('names the source tab after what the canvas shows, not always the original', async () => {
+  observePdfPages();
+  const pdf: Source = { ...source, kind: 'pdf', mime: 'application/pdf', name: 'Labels.pdf' };
+  api.mockImplementation(async (action: string, args: { page?: number }) => action === 'probe_pdf' ? { metadata: { page_count: 1, first_page_size_points: [612, 792] } }
+    : action === 'render_page' ? { published: [{ artifact_id: 'page-one', metadata: { page: args.page, page_count: 1, page_size_points: [612, 792] } }], limitations: [] }
+    : action === 'read_text' ? { text: 'Extracted wording', start: 1, end: 1, total_lines: 1, revision: 1, historical: false, locator: 'evidence:source-one#R1L1-L1', truncated_long_lines: false }
+    : action === 'artifact_info' ? { mime: 'application/json', content: { pages: [{ locator: 'p1', text: 'Derived unit' }], limitations: [] } }
+    : {});
+  const props = { source: pdf, run: (fn: () => Promise<void>) => { void fn(); }, refresh: async () => undefined, onLocatorSelect: vi.fn() };
+  const view = render(<EvidenceViewer {...props} />);
+  expect(screen.getByRole('tab', { name: 'Original pages' })).toBeTruthy();
+  view.rerender(<EvidenceViewer {...props} locator="L1" />);
+  await waitFor(() => expect(screen.getByText('Extracted wording')).toBeTruthy());
+  expect(screen.getByRole('tab', { name: 'Extracted text' })).toBeTruthy();
+  expect(screen.queryByRole('tab', { name: 'Original pages' })).toBeNull();
+  view.rerender(<EvidenceViewer {...props} locator="artifact:derived-one" />);
+  await waitFor(() => expect(screen.getByText(/Derived unit/)).toBeTruthy());
+  expect(screen.getByRole('tab', { name: 'Derived view' })).toBeTruthy();
+});
+
+it('retries a failed derived view by re-reading that artifact rather than reloading pages', async () => {
+  observePdfPages();
+  const pdf: Source = { ...source, kind: 'pdf', mime: 'application/pdf', name: 'Derived.pdf' };
+  let infoCalls = 0;
+  api.mockImplementation(async (action: string) => {
+    if (action === 'probe_pdf') return { metadata: { page_count: 1, first_page_size_points: [612, 792] } };
+    if (action === 'artifact_info') { infoCalls++; if (infoCalls === 1) throw new Error('Artifact store busy'); return { mime: 'application/json', content: { pages: [{ locator: 'p1', text: 'Recovered derived unit' }], limitations: [] } }; }
+    return {};
+  });
+  render(<EvidenceViewer source={pdf} locator="artifact:derived-two" run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  expect(await screen.findByText('This derived view could not open')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Reload pages' })).toBeNull();
+  const probes = api.mock.calls.filter(([action]) => action === 'probe_pdf').length;
+  fireEvent.click(screen.getByRole('button', { name: 'Reload derived view' }));
+  await waitFor(() => expect(screen.getByText(/Recovered derived unit/)).toBeTruthy());
+  expect(api.mock.calls.filter(([action]) => action === 'artifact_info')).toHaveLength(2);
+  expect(api.mock.calls.filter(([action]) => action === 'probe_pdf')).toHaveLength(probes);
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('offers no retry for a requested PDF page that is outside the document', async () => {
+  observePdfPages();
+  const pdf: Source = { ...source, kind: 'pdf', mime: 'application/pdf', name: 'Range.pdf' };
+  api.mockImplementation(async (action: string, args: { page?: number }) => action === 'probe_pdf' ? { metadata: { page_count: 1, first_page_size_points: [612, 792] } } : action === 'render_page' ? { published: [{ artifact_id: 'page-one', metadata: { page: args.page, page_count: 1, page_size_points: [612, 792] } }], limitations: [] } : {});
+  render(<EvidenceViewer source={pdf} locator="page:9" run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  expect(await screen.findByText('Requested physical PDF page is outside this document.')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Reload pages' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+});

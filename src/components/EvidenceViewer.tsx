@@ -201,6 +201,7 @@ function PdfPageView({ index, ratio, artifact, ensure, onVisible, register }: {
 }
 
 type SourceView = 'original' | 'redaction';
+type ErrorOrigin = 'text' | 'pdf' | 'office' | 'artifact' | 'locator' | 'media' | 'frame' | 'image';
 type DockTool = 'transcript' | 'discovery';
 
 export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect, onAsk, caseId, sessionEpoch }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void; onAsk?: () => void; caseId?:string; sessionEpoch?:number }) {
@@ -227,6 +228,9 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const cited = citedLineRange(locator);
   const [page, setPage] = useState<TextPage | null>(null);
   const [error, setError] = useState('');
+  // Which request produced the current error, so a retry re-issues exactly that request (and only when one exists).
+  const [errorOrigin, setErrorOrigin] = useState<ErrorOrigin | null>(null);
+  const fail = (origin: ErrorOrigin, reason: unknown) => { setError(String(reason)); setErrorOrigin(origin); };
   const [start, setStart] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
@@ -249,6 +253,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const [textReload, setTextReload] = useState(0);
   const [officeReload, setOfficeReload] = useState(0);
   const [pdfReload, setPdfReload] = useState(0);
+  const [artifactReload, setArtifactReload] = useState(0);
   // Viewer sub-views: original vs. redaction for pages/images, and the tool dock under recordings.
   const redactable = ['pdf', 'image'].includes(source.kind) && !source.restricted;
   const isMedia = ['video', 'audio'].includes(source.kind);
@@ -279,8 +284,8 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       setPdfCount(count);
       const [width,height]=result.metadata.first_page_size_points ?? [];
       if(Number.isFinite(width)&&Number.isFinite(height)&&width>0&&height>0)setPdfRatios({1:width/height});
-      if(requestedPage!==null && (!Number.isSafeInteger(requestedPage)||requestedPage<1||requestedPage>count))setError('Requested physical PDF page is outside this document.');
-    }).catch(reason=>{if(epoch===pdfEpoch.current)setError(String(reason));});
+      if(requestedPage!==null && (!Number.isSafeInteger(requestedPage)||requestedPage<1||requestedPage>count))fail('locator','Requested physical PDF page is outside this document.');
+    }).catch(reason=>{if(epoch===pdfEpoch.current)fail('pdf',reason);});
     return()=>{pdfEpoch.current++;};
   },[caseId,sessionEpoch,source.id,source.kind,pdfReload]);
   const ensurePage = useCallback((target: number) => {
@@ -296,7 +301,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
         if(size&&Number.isFinite(size[0])&&Number.isFinite(size[1])&&size[0]>0&&size[1]>0)setPdfRatios(current=>({...current,[target]:size[0]/size[1]}));
         setLimitations(result.limitations);
       })
-      .catch(reason => {if(epoch===pdfEpoch.current)setError(String(reason));})
+      .catch(reason => {if(epoch===pdfEpoch.current)fail('pdf',reason);})
       .finally(() => pending.delete(target));
   }, [caseId,sessionEpoch,source.id,pdfCount,pdfArtifacts]);
 
@@ -326,7 +331,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   useEffect(() => {
     if (!needsProxy || source.kind !== 'video') return;
     let active = true; setProcessing(true); setError('');
-    api<{ artifact_id: string }>('playback_proxy', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { if (active) setPlayback(result.artifact_id); }).catch(e => { if (active) setError(String(e)); }).finally(() => { if (active) setProcessing(false); });
+    api<{ artifact_id: string }>('playback_proxy', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { if (active) setPlayback(result.artifact_id); }).catch(e => { if (active) fail('media', e); }).finally(() => { if (active) setProcessing(false); });
     return () => { active = false; };
   }, [source.id, needsProxy]);
 
@@ -334,7 +339,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     if (!officeDocument || locator) return;
     let active = true;
     setProcessing(true);
-    api<{ limitations: string[] }>('process_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { if (active) { setShowText(true); setLimitations(result.limitations); void refresh(); } }).catch(e => { if (active) setError(String(e)); }).finally(() => { if (active) setProcessing(false); });
+    api<{ limitations: string[] }>('process_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { if (active) { setShowText(true); setLimitations(result.limitations); void refresh(); } }).catch(e => { if (active) fail('office', e); }).finally(() => { if (active) setProcessing(false); });
     return () => { active = false; };
   }, [source.id, locator, officeDocument, officeReload]);
 
@@ -347,9 +352,9 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
         setArtifactText(units.slice(0, 200).map(unit => `[${unit.locator}]\n${unit.text}`).join('\n\n') + (units.length > 200 ? `\n\nShowing 200 of ${units.length} units. Use the extracted-text viewer for paginated access.` : ''));
         setLimitations(info.content?.limitations ?? []);
       }
-    }).catch(e => { if (active) setError(String(e)); });
+    }).catch(e => { if (active) fail('artifact', e); });
     return () => { active = false; };
-  }, [derived]);
+  }, [derived, artifactReload]);
 
   useEffect(() => {
     if (locator?.startsWith('L')) { setShowText(true); setDerived(null); setStart(Number(/^L(\d+)/.exec(locator ?? '')?.[1] ?? 1)); }
@@ -366,7 +371,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       const request = requestedRevision !== null
         ? api<TextPage>('read_extract_revision', { source_id: source.id, revision: requestedRevision, start, count: 200 })
         : api<TextPage>('read_text', { source_id: source.id, start, count: 200 });
-      request.then(value => { if (active) { setPage(value); setError(''); } }).catch(e => { if (active) setError(String(e)); });
+      request.then(value => { if (active) { setPage(value); setError(''); } }).catch(e => { if (active) fail('text', e); });
     }
     return () => { active = false; };
   }, [source.id, source.kind, start, showText, source.status, requestedRevision, textReload]);
@@ -405,7 +410,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       if(media.current)media.current.currentTime=item.metadata.source_relative_seconds;
       setCurrentTime(item.metadata.source_relative_seconds);
       setError('');
-    } catch(e) {if(request===exactRequest.current)setError(String(e));}
+    } catch(e) {if(request===exactRequest.current)fail('frame',e);}
     finally {if(request===exactRequest.current)setExactBusy(false);}
   }
 
@@ -436,14 +441,21 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const onOriginal = view === 'original';
   // Files without an inline preview explain themselves first; any failure detail follows below.
   const unsupported = !showText && !derived && source.kind === 'other' && !processing;
-  const problemTitle = showText ? 'Extracted text is not available' : source.kind === 'pdf' ? 'This PDF could not be displayed' : source.kind === 'video' ? 'This recording could not be played' : source.kind === 'audio' ? 'This audio could not be played' : officeDocument ? 'Document text could not be extracted' : 'This preview could not open';
-  const retry = showText ? () => { setError(''); setTextReload(value => value + 1); }
-    : source.kind === 'pdf' ? () => { setError(''); setPdfReload(value => value + 1); }
-    : officeDocument && !locator ? () => { setError(''); setOfficeReload(value => value + 1); }
-    : undefined;
-  const retryLabel = showText ? 'Read text again' : source.kind === 'pdf' ? 'Reload pages' : 'Retry extraction';
+  const problemTitle = errorOrigin === 'artifact' ? 'This derived view could not open' : showText ? 'Extracted text is not available' : source.kind === 'pdf' ? 'This PDF could not be displayed' : source.kind === 'video' ? 'This recording could not be played' : source.kind === 'audio' ? 'This audio could not be played' : officeDocument ? 'Document text could not be extracted' : 'This preview could not open';
+  // Only failures with a matching reload counter offer a retry; the retry re-issues that request alone.
+  const retries: Partial<Record<ErrorOrigin, { label: string; run: () => void }>> = {
+    text: { label: 'Read text again', run: () => setTextReload(value => value + 1) },
+    pdf: { label: 'Reload pages', run: () => setPdfReload(value => value + 1) },
+    office: { label: 'Retry extraction', run: () => setOfficeReload(value => value + 1) },
+    artifact: { label: 'Reload derived view', run: () => setArtifactReload(value => value + 1) },
+  };
+  const retryEntry = errorOrigin ? retries[errorOrigin] : undefined;
+  const retry = retryEntry ? () => { setError(''); setErrorOrigin(null); retryEntry.run(); } : undefined;
+  const retryLabel = retryEntry?.label;
+  // The source tab names what the canvas actually shows: extracted text and derivatives are not the original.
+  const sourceTabLabel = showText ? 'Extracted text' : derived ? 'Derived view' : source.kind === 'pdf' ? 'Original pages' : 'Original image';
   const sourceViews = redactable ? [
-    { id: 'original' as const, label: source.kind === 'pdf' ? 'Original pages' : 'Original image', icon: <SourceIcon kind={source.kind} size={14} /> },
+    { id: 'original' as const, label: sourceTabLabel, icon: <SourceIcon kind={source.kind} size={14} /> },
     { id: 'redaction' as const, label: 'Redaction', icon: <SquareDashedMousePointer size={14} aria-hidden="true" /> },
   ] : [];
   const dockTools = isMedia ? [
@@ -548,9 +560,9 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
           style={{ width: zoom === 1 ? '100%' : `${zoom * 100}%`, maxWidth: 'none', transform: rotation ? `rotate(${rotation}deg)` : undefined }}
           onDoubleClick={() => setZoom(value => value === 1 ? 2 : 1)}
           onError={() => {
-            if (derived) { setError('Image preview failed.'); return; }
+            if (derived) { fail('image', 'Image preview failed.'); return; }
             setProcessing(true);
-            void api<{ published: unknown[] }>('process_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { setDerived((result.published as { artifact_id?: string }[])?.[0]?.artifact_id ?? null); }).catch(e => setError(String(e))).finally(() => setProcessing(false));
+            void api<{ published: unknown[] }>('process_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { setDerived((result.published as { artifact_id?: string }[])?.[0]?.artifact_id ?? null); }).catch(e => fail('image', e)).finally(() => setProcessing(false));
           }} />
         {derived && source.kind === 'video' ? <button className="secondary back-source" data-size="sm" onClick={() => setDerived(null)}>Back to recording</button> : null}
       </div> : null}
@@ -563,14 +575,14 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
         key={playbackUrl}
         src={needsProxy && !playback ? undefined : playbackUrl}
         controls={false} playsInline preload="metadata"
-        onError={() => { if (!needsProxy) setNeedsProxy(true); else if (playback) setError('Playback derivative could not be decoded. Original frames remain available.'); }}
+        onError={() => { if (!needsProxy) setNeedsProxy(true); else if (playback) fail('media', 'Playback derivative could not be decoded. Original frames remain available.'); }}
       /> : null}
 
       {!showText && !derived && source.kind === 'audio' ? <div className="audio-stage">
         <span className="audio-stage-icon"><Volume2 size={26} aria-hidden="true" /></span>
         <h2 title={source.name}>{source.name}</h2>
         <p className="small muted">{formatBytes(source.size)} · {source.status}</p>
-        <audio ref={bindMedia} onTimeUpdate={onTimeUpdate} onLoadedMetadata={onLoadedMetadata} src={url} controls={false} preload="metadata" onError={() => setError('This audio format is not supported by the installed viewer.')} />
+        <audio ref={bindMedia} onTimeUpdate={onTimeUpdate} onLoadedMetadata={onLoadedMetadata} src={url} controls={false} preload="metadata" onError={() => fail('media', 'This audio format is not supported by the installed viewer.')} />
       </div> : null}
 
       {!showText && !derived && source.kind === 'other' && !processing ? <div className="empty-state viewer-empty">
