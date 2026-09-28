@@ -4,6 +4,10 @@ use evidence_desk::{
 };
 use serde_json::json;
 use std::fs;
+use std::sync::atomic::{AtomicUsize,Ordering};
+
+static SNAPSHOT_SQL_COUNT:AtomicUsize=AtomicUsize::new(0);
+fn count_snapshot_sql(_sql:&str){SNAPSHOT_SQL_COUNT.fetch_add(1,Ordering::Relaxed);}
 
 fn setup() -> (tempfile::TempDir, Case, String) {
     let dir = tempfile::tempdir().unwrap();
@@ -19,17 +23,117 @@ fn setup() -> (tempfile::TempDir, Case, String) {
     let sid = case.sources().unwrap()[0].id.clone();
     (dir, case, sid)
 }
+#[test]
+fn foreground_case_write_waits_for_worker_writer_to_finish() {
+    let (_dir,c,_source)=setup();
+    let path=c.root.join("case.sqlite3");
+    let (started,ready)=std::sync::mpsc::channel();
+    let worker=std::thread::spawn(move || {
+        let db=rusqlite::Connection::open(path).unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        started.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5500));
+        db.execute_batch("ROLLBACK").unwrap();
+    });
+    ready.recv().unwrap();
+    c.set_meta("synthetic_foreground_write","complete").unwrap();
+    worker.join().unwrap();
+    assert_eq!(c.meta("synthetic_foreground_write").unwrap().as_deref(),Some("complete"));
+}
+#[test]
+fn schema_seven_tracks_attempts_and_reconciles_interrupted_jobs() {
+    let (dir,c,source)=setup();let root=c.root.clone();let job="synthetic-schedule-job";
+    c.db.execute("INSERT INTO processing_jobs VALUES(?,?,'auto_prepare','queued','{}','',?)",rusqlite::params![job,source,evidence_desk::case::now()]).unwrap();
+    let (priority,attempt,revision):(String,i64,String)=c.db.query_row("SELECT priority,attempt,input_revision FROM job_schedule WHERE job_id=?",[job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(priority,"background");assert_eq!(attempt,0);assert_eq!(revision,c.source(&source).unwrap().sha256);
+    c.db.execute("UPDATE processing_jobs SET status='running' WHERE id=?",[job]).unwrap();
+    assert_eq!(c.db.query_row("SELECT attempt FROM job_schedule WHERE job_id=?",[job],|r|r.get::<_,i64>(0)).unwrap(),1);
+    drop(c);let reopened=Case::open(&root).unwrap();
+    let (status,heartbeat):(String,Option<String>)=reopened.db.query_row("SELECT j.status,s.heartbeat FROM processing_jobs j JOIN job_schedule s ON s.job_id=j.id WHERE j.id=?",[job],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(status,"interrupted");assert!(heartbeat.is_none());
+    reopened.db.execute_batch("DROP TRIGGER job_schedule_insert; DROP TRIGGER job_schedule_status; DROP TABLE job_schedule; PRAGMA user_version=6;").unwrap();
+    drop(reopened);let upgraded=Case::open(&root).unwrap();
+    assert!(root.join("pre-migration-v6.sqlite3").exists());
+    assert_eq!(upgraded.db.query_row("SELECT priority FROM job_schedule WHERE job_id=?",[job],|r|r.get::<_,String>(0)).unwrap(),"background");
+    drop(upgraded);drop(dir);
+}
+#[test]
+fn job_progress_exposes_bounded_units_and_durable_attempt() {
+    let (_dir,c,source)=setup();let job=evidence_desk::case::id();
+    c.db.execute("INSERT INTO processing_jobs VALUES(?,?,'video_ocr_index','queued',?,'',?)",rusqlite::params![job,source,json!({"next_start":120.0}).to_string(),evidence_desk::case::now()]).unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='running' WHERE id=?",[&job]).unwrap();
+    let value=c.job_progress(&job).unwrap();
+    assert_eq!(value["progress"]["unit"],"seconds indexed");
+    assert_eq!(value["progress"]["completed"],120.0);
+    assert_eq!(value["attempt"],1);
+    assert_eq!(value["priority"],"background");
+    let transcript=evidence_desk::case::id();
+    c.db.execute("INSERT INTO processing_jobs VALUES(?,?,'full_audio','running','{}','',?)",rusqlite::params![transcript,source,evidence_desk::case::now()]).unwrap();
+    let staging=c.root.join("staging").join(format!("transcript-{transcript}"));fs::create_dir(&staging).unwrap();
+    fs::write(staging.join("progress.json"),json!({"processed_seconds":37.5,"estimated_seconds":90.0,"segments":4}).to_string()).unwrap();
+    let audio=c.job_progress(&transcript).unwrap();
+    assert_eq!(audio["progress"]["completed"],37.5);
+    assert_eq!(audio["progress"]["total"],90.0);
+    assert!(c.job_progress("../outside").is_err());
+}
+#[test]
+fn schema_eight_migrates_seven_with_backup_and_empty_segment_store() {
+    let (_dir,c,_source)=setup();let root=c.root.clone();
+    c.db.execute_batch("DROP TABLE transcript_corrections; DROP TABLE transcript_segments; PRAGMA user_version=7;").unwrap();
+    drop(c);
+    let reopened=Case::open(&root).unwrap();
+    assert!(root.join("pre-migration-v7.sqlite3").exists());
+    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),evidence_desk::case::CASE_SCHEMA);
+    assert_eq!(reopened.db.query_row("SELECT count(*) FROM transcript_segments",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+}
+#[test]
+fn schema_nine_adds_the_second_opinion_ledger_without_touching_existing_rows() {
+    let (_dir,c,source)=setup();let root=c.root.clone();
+    let before=c.source(&source).unwrap().sha256;
+    let audit_rows:i64=c.db.query_row("SELECT count(*) FROM audit",[],|r|r.get(0)).unwrap();
+    c.db.execute_batch("DROP TABLE second_opinions; PRAGMA user_version=8;").unwrap();
+    drop(c);
+    let reopened=Case::open(&root).unwrap();
+    assert!(root.join("pre-migration-v8.sqlite3").exists());
+    assert_eq!(reopened.db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0)).unwrap(),9);
+    assert_eq!(reopened.db.query_row("SELECT count(*) FROM second_opinions",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(reopened.source(&source).unwrap().sha256,before);
+    assert!(reopened.db.query_row("SELECT count(*) FROM audit",[],|r|r.get::<_,i64>(0)).unwrap()>=audit_rows);
+    reopened.verify_audit().unwrap();
+}
 fn enable(case: &mut Case) {
     case.save_settings(Settings {
         offline: false,
         allow_text: true,
         allow_images: false,
         model: "test-model".into(),
-        case_budget: 10.,
-        input_per_million: 1.,
-        output_per_million: 5.,
     })
     .unwrap();
+}
+
+#[test]
+fn context_compaction_keeps_signed_provider_turn_with_tool_result() {
+    use evidence_desk::providers::{self,Config,Provider};
+    let (_dir,mut c,sid)=setup();
+    providers::save(&mut c,Config{provider:Provider::Gemini,..Default::default()}).unwrap();
+    enable(&mut c);
+    let task=agent::start(&mut c,"Inspect the source","investigate",vec![sid],vec![],0.).unwrap();
+    let history=json!([
+        {"role":"user","content":"Inspect the source"},
+        {"type":"provider_native","provider":"gemini","part":{"text":"private thought","thought":true,"thoughtSignature":"thought-sig"}},
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Inspecting"}],"native_part":{"text":"Inspecting","thoughtSignature":"text-sig"}},
+        {"type":"function_call","call_id":"signed-call","name":"read_text","arguments":"{}","native_part":{"functionCall":{"id":"signed-call","name":"read_text","args":{}},"thoughtSignature":"call-sig"}},
+        {"type":"function_call_output","call_id":"signed-call","output":"x".repeat(110_000)}
+    ]);
+    c.db.execute("UPDATE tasks SET history=? WHERE id=?",rusqlite::params![history.to_string(),task]).unwrap();
+    let prepared=agent::prepare_request(&mut c,&task).unwrap();
+    let wire=providers::encode(Provider::Gemini,&prepared.body).unwrap();
+    let parts=wire.body["contents"].as_array().unwrap().iter()
+        .flat_map(|message|message["parts"].as_array().into_iter().flatten()).collect::<Vec<_>>();
+    for signature in ["thought-sig","text-sig","call-sig"] {
+        assert!(parts.iter().any(|part|part["thoughtSignature"]==signature),"Compaction lost {signature}");
+    }
+    assert!(parts.iter().any(|part|part["functionResponse"]["id"]=="signed-call"));
 }
 
 #[test]
@@ -234,16 +338,33 @@ fn offline_blocks_network_preparation_and_revoked_permissions() {
 fn legacy_caps_and_step_count_do_not_block_enabled_agent() {
     let (_dir, mut c, s) = setup();
     enable(&mut c);
-    let mut settings = c.settings().unwrap();
-    settings.case_budget = 0.;
-    settings.input_per_million = 0.;
-    settings.output_per_million = 0.;
-    c.save_settings(settings).unwrap();
     let task = agent::start(&mut c, "question", "ask", vec![s], vec![], 0.).unwrap();
     c.db.execute("UPDATE tasks SET step=25,reserved=999999 WHERE id=?", [&task]).unwrap();
     let request = agent::prepare_request(&mut c, &task).unwrap();
     assert_eq!(request.body["store"], false);
+    assert_eq!(c.db.query_row("SELECT reserved FROM transmissions WHERE id=?",[&request.transmission],|r|r.get::<_,f64>(0)).unwrap(),0.0);
+    let view=c.snapshot().unwrap();
+    assert!(view["settings"].get("case_budget").is_none());
+    assert!(view.get("budget_committed").is_none());
+    assert!(view["tasks"][0].get("reserved").is_none());
     assert_eq!(c.db.query_row("SELECT count(*) FROM transmissions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    let metrics:String=c.db.query_row("SELECT data FROM audit WHERE event='agent_request_size'",[],|r|r.get(0)).unwrap();
+    let metrics:serde_json::Value=serde_json::from_str(&metrics).unwrap();
+    assert!(metrics["input_json_bytes"].as_u64().unwrap()>0);
+    assert!(metrics["tool_schema_bytes"].as_u64().unwrap()>0);
+    assert!(metrics["wire_json_bytes"].as_u64().unwrap()>=metrics["input_json_bytes"].as_u64().unwrap());
+    assert!(!metrics.to_string().contains("question"),"Request-size audit must not contain client text");
+}
+
+#[test]
+fn historical_price_settings_are_ignored_when_a_case_is_reopened() {
+    let (_dir,mut c,_)=setup();
+    c.set_meta("settings",&json!({"offline":false,"allow_text":true,"allow_images":false,"model":"test-model","case_budget":500.0,"input_per_million":40.0,"output_per_million":80.0}).to_string()).unwrap();
+    let settings=c.settings().unwrap();
+    assert_eq!(settings.model,"test-model");
+    assert!(serde_json::to_value(&settings).unwrap().get("case_budget").is_none());
+    c.save_settings(settings).unwrap();
+    assert!(!c.meta("settings").unwrap().unwrap().contains("per_million"));
 }
 #[test]
 fn actual_agent_tool_response_writes_once_and_checkpoints() {
@@ -265,6 +386,42 @@ fn actual_agent_tool_response_writes_once_and_checkpoints() {
     assert_eq!(c.records().unwrap().len(), 1);
     assert_eq!(c.records().unwrap()[0].actor, "agent");
     assert_eq!(c.actions(&task).unwrap()[0]["status"], "complete");
+}
+#[test]
+fn subscription_case_tool_uses_existing_receipt_and_refuses_replay() {
+    let (_dir,mut c,source)=setup();
+    c.save_settings(Settings {offline:false,allow_text:true,allow_images:false,model:String::new()}).unwrap();
+    let task=agent::start_subscription(&mut c,"List the permitted files","investigate",vec![source.clone()],vec![]).unwrap();
+    assert_eq!(c.meta(&format!("task_access_route:{task}")).unwrap().as_deref(),Some("chatgpt_subscription"));
+    let (_instructions,tools,context)=agent::subscription_context(&mut c,&task).unwrap();
+    assert!(tools.iter().any(|tool|tool["name"]=="list_sources"));
+    assert!(!tools.iter().any(|tool|tool["name"]=="exec_command"));
+    assert!(!context.contains(c.root.to_string_lossy().as_ref()));
+    let answer=agent::subscription_tool_response(&mut c,&task,"synthetic-codex-call","list_sources",json!({"offset":0,"details":false})).unwrap();
+    assert_eq!(answer["success"],true);
+    assert!(answer["contentItems"][0]["text"].to_string().contains(&source));
+    assert_eq!(c.actions(&task).unwrap().as_array().unwrap().len(),1);
+    assert!(agent::subscription_tool_response(&mut c,&task,"synthetic-codex-call","list_sources",json!({"offset":0,"details":false})).is_err());
+    assert_eq!(c.actions(&task).unwrap().as_array().unwrap().len(),1);
+    assert!(agent::subscription_tool_response(&mut c,&task,"shell-attempt","exec_command",json!({"cmd":"dir"})).is_err());
+}
+#[test]
+fn subscription_followup_can_inspect_after_uncited_automatic_report() {
+    let (_dir,mut c,source)=setup();enable(&mut c);
+    let automatic=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.db.execute("UPDATE tasks SET status='complete',answer='No inspection completed' WHERE id=?",[&automatic]).unwrap();
+    evidence_desk::automatic::start_review(&mut c).unwrap();
+    let scope=agent::case_scope(&c).unwrap().0;
+    assert!(evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().is_none());
+    let task=agent::start_subscription(&mut c,"Inspect the source","investigate",scope,vec![]).unwrap();
+    assert!(c.meta(&format!("quick_answer_phase:{task}")).unwrap().is_none());
+    c.set_meta(&format!("quick_answer_phase:{task}"),"pending").unwrap(); // Older subscription task.
+    let (_,tools,_)=agent::subscription_context(&mut c,&task).unwrap();
+    assert_eq!(c.meta(&format!("quick_answer_phase:{task}")).unwrap().as_deref(),Some("expanded"));
+    assert!(tools.iter().any(|tool|tool["name"]=="list_sources"));
+    let result=agent::subscription_tool_response(&mut c,&task,"inspect-source","list_sources",json!({"offset":0,"details":false})).unwrap();
+    assert_eq!(result["success"],true);
+    assert!(result["contentItems"][0]["text"].to_string().contains(&source));
 }
 #[test]
 fn encrypted_backup_roundtrips_and_wrong_password_fails() {
@@ -328,6 +485,19 @@ fn restricted_dependencies_block_draft_export() {
         .unwrap();
     c.set_restricted(&s, true).unwrap();
     assert!(c.export_record(&r.id, &dir.path().join("memo.md")).is_err());
+}
+
+#[test]
+fn record_export_refuses_a_revision_changed_while_choosing_destination() {
+    let (dir, mut c, _) = setup();
+    let first=c.write_record(None,0,"Memo","note","first","human","initial",None,vec![]).unwrap();
+    let next=c.write_record(Some(&first.id),first.revision,"Memo","note","second","human","edit",None,vec![]).unwrap();
+    let stale=dir.path().join("stale.md");
+    assert!(c.export_record_at_revision(&first.id,first.revision,&stale).is_err());
+    assert!(!stale.exists());
+    let current=dir.path().join("current.md");
+    c.export_record_at_revision(&first.id,next.revision,&current).unwrap();
+    assert!(std::fs::read_to_string(current).unwrap().contains("second"));
 }
 
 #[test]
@@ -418,6 +588,10 @@ fn passage_search_uses_alternatives_and_searches_saved_records() {
     let result=agent::execute_tool(&mut c,&task,"search_passages",&json!({"terms":["nonexistent","blue","Sample"],"offset":0})).unwrap();
     assert_eq!(result["total"],2);
     assert!(result["matches"].as_array().unwrap().iter().any(|m|m["type"]=="working_record"));
+    let source_hit=result["matches"].as_array().unwrap().iter().find(|m|m["type"]=="source_extraction").unwrap();
+    let locator=source_hit["locator"].as_str().unwrap();
+    assert!(locator.starts_with(&format!("evidence:{sid}#R1L")));
+    assert_eq!(c.validate_citation(locator).unwrap()["revision_binding"],"pinned");
     c.set_restricted(&sid,true).unwrap();
     assert_eq!(agent::execute_tool(&mut c,&task,"search_passages",&json!({"terms":["blue","Sample"],"offset":0})).unwrap()["total"],0);
 }
@@ -436,6 +610,124 @@ fn cited_answers_require_review_and_are_saved_for_followups() {
     let records=c.records().unwrap();assert_eq!(records.len(),1);assert_eq!(records[0].review,"unreviewed");assert_eq!(records[0].actor,"agent");
     assert!(records[0].content.contains("Not independently corroborated"));
     let snapshot=c.snapshot().unwrap();assert_eq!(snapshot["tasks"][0]["input_tokens"],200);
+    let reply=snapshot["tasks"][0]["answer"].as_str().unwrap();
+    assert!(reply.contains("The witness reports a blue bag."));
+    assert!(!reply.contains("Gaps and limitations")&&!reply.contains("AI-generated")&&!reply.contains("Not independently corroborated"),"Routine review details belong in the saved record, not every chat reply");
+}
+
+#[test]
+fn snapshot_groups_failed_tools_and_links_discovery_child_to_parent() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Synthetic review","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    for index in 0..3 {
+        let id=format!("issue-{index}");
+        c.db.execute("INSERT INTO actions VALUES(?,?,'save_dossier','{}','{\"error\":\"Invalid check tool\"}','failed',?)",rusqlite::params![id,task,evidence_desk::case::now()]).unwrap();
+    }
+    c.db.execute("INSERT INTO processing_jobs VALUES('parent',?,'video_ocr_index','failed',?,'resource error',?)",rusqlite::params![sid,json!({"active_job":"child"}).to_string(),evidence_desk::case::now()]).unwrap();
+    c.db.execute("INSERT INTO processing_jobs VALUES('child',?,'video_ocr','failed','{}','resource error',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    let snapshot=c.snapshot().unwrap();
+    assert_eq!(snapshot["issues"].as_array().unwrap().len(),1);
+    assert_eq!(snapshot["issues"][0]["count"],3);
+    let latest=snapshot["issues"][0]["latest_receipt"].as_str().unwrap();
+    assert_eq!(c.issue_history(latest,0).unwrap()["receipts"].as_array().unwrap().len(),3);
+    let child=snapshot["jobs"].as_array().unwrap().iter().find(|job|job["id"]=="child").unwrap();
+    assert_eq!(child["parent_run_id"],"parent");
+    c.db.execute("INSERT INTO processing_jobs VALUES('replacement',?,'video_ocr_index','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    let jobs=c.snapshot().unwrap()["jobs"].as_array().unwrap().clone();
+    assert_eq!(jobs.iter().find(|job|job["id"]=="parent").unwrap()["superseded"],true);
+    assert_eq!(jobs.iter().find(|job|job["id"]=="child").unwrap()["superseded"],true,"A child of the old index is historical too");
+    assert_eq!(jobs.iter().find(|job|job["id"]=="replacement").unwrap()["superseded"],false);
+}
+#[test]
+fn large_snapshot_excludes_full_working_record_bodies() {
+    let (_dir,mut c,sid)=setup();
+    let tx=c.db.transaction().unwrap();
+    for index in 0..500 {
+        tx.execute("INSERT INTO records(id,title,kind,content,revision,actor,review,updated_at,dependencies) VALUES(?,?,'note',?,1,'human','unreviewed',?,?)",rusqlite::params![format!("synthetic-record-{index}"),format!("Synthetic record {index}"),"x".repeat(2048),format!("2026-09-22T00:{:02}:{:02}Z",index/60,index%60),json!([sid]).to_string()]).unwrap();
+        tx.execute("INSERT INTO tasks(id,prompt,mode,status,scope,edit_scope,budget,history,answer,generation,created_at,updated_at) VALUES(?,?,'investigate','complete','[]','[]',0,'[]',?,0,?,?)",rusqlite::params![format!("synthetic-task-{index}"),format!("Synthetic question {index}"),"Old answer. ".repeat(90),format!("2026-09-22T01:{:02}:{:02}Z",index/60,index%60),format!("2026-09-22T01:{:02}:{:02}Z",index/60,index%60)]).unwrap();
+    }
+    for index in 0..120 {
+        tx.execute("INSERT INTO sources(id,name,sha256,size,mime,kind,status,restricted,created_at) VALUES(?,?,?,1,'text/plain','text','imported',0,?)",rusqlite::params![format!("synthetic-source-{index}"),format!("Synthetic source {index}"),format!("{index:064x}"),format!("2026-09-22T02:{:02}:{:02}Z",index/60,index%60)]).unwrap();
+    }
+    tx.execute("INSERT INTO processing_jobs(id,source_id,kind,status,result,error,created_at) VALUES('old-current-failure','synthetic-source-119','image_ocr','failed','{}','Synthetic failure','2026-09-22T03:00:00Z')",[]).unwrap();
+    for index in 0..100 {
+        tx.execute("INSERT INTO processing_jobs(id,source_id,kind,status,result,error,created_at) VALUES(?,?,'auto_prepare','complete','{}','',?)",rusqlite::params![format!("synthetic-job-{index}"),format!("synthetic-source-{}",index%120),format!("2026-09-22T03:{:02}:{:02}Z",index/60,index%60)]).unwrap();
+    }
+    tx.commit().unwrap();
+    SNAPSHOT_SQL_COUNT.store(0,Ordering::Relaxed);
+    c.db.trace(Some(count_snapshot_sql));
+    let started=std::time::Instant::now();
+    let snapshot=c.snapshot().unwrap();
+    c.db.trace(None);
+    let statements=SNAPSHOT_SQL_COUNT.load(Ordering::Relaxed);
+    let bytes=serde_json::to_vec(&snapshot).unwrap().len();
+    println!("500 synthetic 2-KiB records and 500 completed answers snapshot bytes: {bytes}; elapsed_ms: {}; sql_statements: {statements}",started.elapsed().as_millis());
+    assert!(bytes<256*1024,"Summary should stay under 256 KiB for this synthetic tier");
+    assert!(statements<=40,"A bounded snapshot must not issue one query per source, record, task, or job: {statements}");
+    assert!(snapshot["records"][0].get("content").is_none(),"Full record text requires explicit detail fetch");
+    SNAPSHOT_SQL_COUNT.store(0,Ordering::Relaxed);
+    c.db.trace(Some(count_snapshot_sql));
+    let summary_started=std::time::Instant::now();
+    let summary=c.case_summary().unwrap();
+    c.db.trace(None);
+    let summary_statements=SNAPSHOT_SQL_COUNT.load(Ordering::Relaxed);
+    println!("Routine case summary bytes: {}; elapsed_ms: {}; sql_statements: {summary_statements}",serde_json::to_vec(&summary).unwrap().len(),summary_started.elapsed().as_millis());
+    assert!(serde_json::to_vec(&summary).unwrap().len()<1024,"Routine polling must stay small");
+    assert!(summary_statements<=15,"Routine polling should use bounded queries: {summary_statements}");
+    assert_eq!(summary["record_count"],500);
+    assert_eq!(summary["source_count"],121);
+    assert_eq!(summary["job_count"],101);
+    assert_eq!(summary["jobs_attention"],1,"An older current failure must affect attention even outside the first job page");
+    assert!(snapshot["jobs"].as_array().unwrap().iter().all(|job|job["id"]!="old-current-failure"));
+    assert_eq!(snapshot["attention_jobs"][0]["id"],"old-current-failure","An older current failure must be visible without paging through completed work");
+    assert_eq!(summary["task_count"],500);
+    assert_eq!(snapshot["tasks"].as_array().unwrap().len(),50);
+    assert!(snapshot["tasks"][0]["answer"].as_str().unwrap().len()<=200);
+    let mut before=None::<(String,String)>;
+    let mut ids=std::collections::HashSet::new();
+    loop {
+        let page=c.task_page(before.as_ref().map(|(at,id)|(at.as_str(),id.as_str()))).unwrap();
+        for task in page["tasks"].as_array().unwrap() {assert!(ids.insert(task["id"].as_str().unwrap().to_string()),"Duplicate task page entry");}
+        let Some(cursor)=page["next_cursor"].as_object() else {break};
+        before=Some((cursor["created_at"].as_str().unwrap().to_string(),cursor["id"].as_str().unwrap().to_string()));
+    }
+    assert_eq!(ids.len(),500,"Keyset pages must not skip synthetic tasks");
+    let mut before=None::<(String,String)>;
+    let mut records=std::collections::HashSet::new();
+    loop {
+        let page=c.record_page(before.as_ref().map(|(at,id)|(at.as_str(),id.as_str()))).unwrap();
+        for record in page["records"].as_array().unwrap() {assert!(records.insert(record["id"].as_str().unwrap().to_string()),"Duplicate record page entry");}
+        let Some(cursor)=page["next_cursor"].as_object() else {break};
+        before=Some((cursor["updated_at"].as_str().unwrap().to_string(),cursor["id"].as_str().unwrap().to_string()));
+    }
+    assert_eq!(records.len(),500,"Keyset pages must not skip synthetic records");
+    let mut before=None::<(String,String)>;
+    let mut sources=std::collections::HashSet::new();
+    loop {
+        let page=c.source_page(before.as_ref().map(|(at,id)|(at.as_str(),id.as_str()))).unwrap();
+        for source in page["sources"].as_array().unwrap() {assert!(sources.insert(source["id"].as_str().unwrap().to_string()),"Duplicate source page entry");}
+        let Some(cursor)=page["next_cursor"].as_object() else {break};
+        before=Some((cursor["created_at"].as_str().unwrap().to_string(),cursor["id"].as_str().unwrap().to_string()));
+    }
+    assert_eq!(sources.len(),121,"Keyset pages must not skip synthetic sources");
+    let mut before=None;
+    let mut jobs=std::collections::HashSet::new();
+    loop {
+        let page=c.job_page(before).unwrap();
+        for job in page["jobs"].as_array().unwrap() {assert!(jobs.insert(job["id"].as_str().unwrap().to_string()),"Duplicate job page entry");}
+        let Some(cursor)=page["next_cursor"].as_i64() else {break};
+        before=Some(cursor);
+    }
+    assert_eq!(jobs.len(),101,"Rowid pages must not skip synthetic jobs");
+    let old=c.conversation_detail("synthetic-task-0",None).unwrap();
+    assert_eq!(old["tasks"][0]["answer"].as_str().unwrap().len(),"Old answer. ".repeat(90).len(),"Full historical answer remains retrievable on demand");
+    let plan:String=c.db.query_row("EXPLAIN QUERY PLAN SELECT id FROM tasks ORDER BY created_at DESC,id DESC LIMIT 50",[],|r|r.get(3)).unwrap();
+    assert!(plan.contains("tasks_created_id"),"Task page query should use its ordering index: {plan}");
+    for (table,index,order) in [("sources","sources_created_id","created_at"),("records","records_updated_id","updated_at")] {
+        let sql=format!("EXPLAIN QUERY PLAN SELECT id FROM {table} ORDER BY {order} DESC,id DESC LIMIT 50");
+        let plan:String=c.db.query_row(&sql,[],|r|r.get(3)).unwrap();
+        assert!(plan.contains(index),"{table} page query should use {index}: {plan}");
+    }
 }
 
 #[test]
@@ -495,6 +787,137 @@ fn conversation_followups_preserve_prior_turns_and_receipts() {
     assert!(context.contains("Remember our disputed time"));assert!(context.contains("Why did you say that?"));
     let snapshot=c.snapshot().unwrap();
     assert!(snapshot["tasks"].as_array().unwrap().iter().all(|t|t["conversation_id"]==first));
+}
+#[test]
+fn independent_chats_can_run_together_and_followups_use_bounded_continuity() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let first=agent::start(&mut c,"First independent question","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    agent::continue_conversation(&mut c,&first,None).unwrap();
+    let second=agent::start(&mut c,"Second independent question","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    agent::continue_conversation(&mut c,&second,None).unwrap();
+    assert_ne!(first,second);
+    assert_eq!(c.snapshot().unwrap()["tasks"].as_array().unwrap().iter().filter(|task|task["status"]=="running").count(),2);
+    c.db.execute("UPDATE tasks SET status='complete',answer='First cited answer' WHERE id=?",[&first]).unwrap();
+    let old_result="repeated extracted text ".repeat(10000);
+    c.db.execute("UPDATE tasks SET history=? WHERE id=?",rusqlite::params![json!([{"type":"function_call_output","call_id":"old_call","output":old_result}]).to_string(),first]).unwrap();
+    let followup=agent::start(&mut c,"Challenge the first answer","investigate",vec![sid],vec![],0.).unwrap();
+    agent::continue_conversation(&mut c,&followup,Some(&first)).unwrap();
+    let request=agent::prepare_request(&mut c,&followup).unwrap();
+    let wire=request.body["input"].to_string();
+    assert!(wire.contains("First cited answer"));
+    assert!(!wire.contains("repeated extracted text"));
+    assert!(wire.len()<30000);
+    let recovered=agent::execute_tool(&mut c,&followup,"read_tool_result",&json!({"call_id":"old_call","offset":0,"count":100})).unwrap();
+    assert!(recovered["text"].as_str().unwrap().starts_with("repeated extracted text"));
+}
+#[test]
+fn paused_uncertain_task_continues_without_replaying_old_transmission() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let old=agent::start(&mut c,"Inspect the claim","investigate",vec![sid],vec![],0.).unwrap();
+    let conversation=agent::continue_conversation(&mut c,&old,None).unwrap();
+    assert!(deliver_tool(&mut c,&old,"checkpoint_review",json!({"summary":"Saved partial finding","citations":[],"gaps":["Check the original"],"next_steps":[]})));
+    c.db.execute("UPDATE transmissions SET status='uncertain' WHERE task_id=?",[&old]).unwrap();
+    agent::pause(&mut c,&old,"Provider response incomplete").unwrap();
+    assert!(agent::resume(&mut c,&old).is_err());
+    let (new,continued)=agent::continue_paused(&mut c,&old).unwrap();
+    assert_eq!(continued,conversation);assert_ne!(new,old);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM transmissions WHERE task_id=?",[&new],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(c.db.query_row("SELECT status FROM transmissions WHERE task_id=?",[&old],|r|r.get::<_,String>(0)).unwrap(),"uncertain");
+    let prepared=agent::prepare_request(&mut c,&new).unwrap();
+    assert!(prepared.body["input"].to_string().contains("Saved partial finding"));
+}
+
+#[test]
+fn late_response_to_paused_run_cannot_publish_into_its_continuation() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let old=agent::start(&mut c,"Inspect the claim","investigate",vec![sid],vec![],0.).unwrap();
+    let request=agent::prepare_request(&mut c,&old).unwrap();
+    agent::pause(&mut c,&old,"Provider response incomplete").unwrap();
+    let (new,_)=agent::continue_paused(&mut c,&old).unwrap();
+    let response=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":4},"output":[{"type":"function_call","call_id":"late-finish","name":"finish_task","arguments":"{\"answer\":\"Late old answer\",\"citations\":[],\"gaps\":[]}"}]});
+    assert!(!agent::receive(&mut c,&old,&request.transmission,response).unwrap());
+    assert_eq!(c.db.query_row("SELECT status FROM transmissions WHERE id=?",[&request.transmission],|r|r.get::<_,String>(0)).unwrap(),"received");
+    assert_eq!(c.db.query_row("SELECT status FROM tasks WHERE id=?",[&new],|r|r.get::<_,String>(0)).unwrap(),"running");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM actions WHERE task_id IN (?,?)",[&old,&new],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(c.db.query_row("SELECT answer FROM tasks WHERE id=?",[&new],|r|r.get::<_,String>(0)).unwrap(),"");
+}
+
+#[test]
+fn continuing_a_deleted_automatic_chat_creates_a_visible_conversation() {
+    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let old=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    let conversation=agent::continue_conversation(&mut c,&old,None).unwrap();
+    agent::pause(&mut c,&old,"Provider response incomplete").unwrap();
+    c.delete_conversation(&conversation,true).unwrap();
+    assert!(c.snapshot().unwrap()["tasks"].as_array().unwrap().is_empty());
+    let (new,visible)=agent::continue_paused(&mut c,&old).unwrap();
+    assert_eq!(visible,new);
+    assert_eq!(c.snapshot().unwrap()["tasks"][0]["id"],new);
+    assert_eq!(c.meta("auto_review_task").unwrap().as_deref(),Some(new.as_str()));
+}
+#[test]
+fn automatic_continuation_tracks_current_sources_and_keeps_old_delivery_uncertain() {
+    let (dir,mut c,_sid)=setup();enable(&mut c);
+    let old=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.db.execute("INSERT INTO transmissions VALUES('auto-uncertain',?,'hash','test-model','[]',0,0,'uncertain',NULL,'2026-09-21T00:00:00Z')",rusqlite::params![old]).unwrap();
+    agent::pause(&mut c,&old,"Provider response incomplete").unwrap();
+    let extra=dir.path().join("added.txt");fs::write(&extra,"Synthetic added source").unwrap();
+    c.import_files(&[extra.to_string_lossy().into_owned()],"fixture").unwrap();
+    let (new,_)=agent::continue_paused(&mut c,&old).unwrap();
+    assert_eq!(c.meta("auto_review_task").unwrap().as_deref(),Some(new.as_str()));
+    assert_eq!(c.meta(&format!("automatic_task:{new}")).unwrap().as_deref(),Some("true"));
+    assert!(c.meta(&format!("auto_review_inventory:{new}")).unwrap().is_some());
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"running");
+    let new_scope:String=c.db.query_row("SELECT scope FROM tasks WHERE id=?",[&new],|r|r.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<Vec<String>>(&new_scope).unwrap().len(),2);
+    assert_eq!(c.db.query_row("SELECT status FROM transmissions WHERE id='auto-uncertain'",[],|r|r.get::<_,String>(0)).unwrap(),"uncertain");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM transmissions WHERE task_id=?",[&new],|r|r.get::<_,i64>(0)).unwrap(),0);
+}
+#[test]
+fn chats_wait_for_file_preparation_but_failures_release_the_gate() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    c.db.execute("INSERT INTO processing_jobs VALUES('preparing',?,'auto_prepare','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());
+    c.db.execute("UPDATE processing_jobs SET status='failed',error='Synthetic processor failure' WHERE id='preparing'",[]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
+    c.db.execute("INSERT INTO processing_jobs VALUES('recovered',?,'auto_prepare','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some(),"Historical failure must not release the gate while its replacement runs");
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE id='recovered'",[]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
+    let review=agent::start(&mut c,"Synthetic automatic review","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    c.set_meta("auto_review_task",&review).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none(),"completed extraction unlocks chat during automatic review");
+    agent::pause(&mut c,&review,"Synthetic review error").unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none());
+    c.db.execute("INSERT INTO processing_jobs VALUES('fresh',?,'full_audio','queued','{}','',?)",rusqlite::params![sid,evidence_desk::case::now()]).unwrap();
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_some());
+}
+
+#[test]
+fn active_review_checkpoint_can_seed_a_followup_until_evidence_changes() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    c.publish_extract(&sid,"A witness reported a blue car.","test",true).unwrap();
+    let review=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    let scope=evidence_desk::agent::case_scope(&c).unwrap().0;
+    assert!(evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().is_none(),"empty work cannot seed a quick answer");
+    let locator=format!("evidence:{sid}#R1L1-L1");
+    evidence_desk::review_progress::save(&c,&review,&evidence_desk::review_progress::Progress{
+        summary:"The witness report mentions a blue car.".into(),
+        citations:vec![locator.clone()],
+        gaps:vec!["Video review is pending".into()],
+        ..Default::default()
+    }).unwrap();
+    let context=evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().unwrap();
+    assert_eq!(context["state"],"running");
+    assert_eq!(context["citations"][0],locator);
+    let followup=agent::start(&mut c,"What did the witness report?","investigate",scope.clone(),vec![],0.).unwrap();
+    let request=agent::prepare_request(&mut c,&followup).unwrap();
+    assert!(request.body["input"].to_string().contains("blue car"));
+    assert!(request.body["instructions"].as_str().unwrap().contains("request_more_research"));
+    assert_eq!(request.body["tools"].as_array().unwrap().len(),1,"saved progress should use the bounded answer or research path first");
+    assert_eq!(request.body["tools"][0]["name"],"request_more_research");
+    c.publish_extract(&sid,"A later extraction changed the report.","test",true).unwrap();
+    assert!(evidence_desk::automatic::completed_review_context(&c,&scope).unwrap().is_none(),"stale checkpoint cannot seed a quick answer");
 }
 
 #[test]
@@ -684,6 +1107,11 @@ fn repeated_successful_reads_checkpoint_then_synthesize_instead_of_crashing() {
     assert!(deliver_tool(&mut c,&task,"checkpoint_review",checkpoint));
     let request=agent::prepare_request(&mut c,&task).unwrap();
     assert_eq!(request.body["tool_choice"]["name"],"finish_task");
+    assert_eq!(request.body["tools"].as_array().unwrap().len(),1);
+    let full_schema_bytes=serde_json::to_vec(&agent::tools("investigate")).unwrap().len();
+    let forced_schema_bytes=serde_json::to_vec(&request.body["tools"]).unwrap().len();
+    assert!(forced_schema_bytes<full_schema_bytes/4);
+    println!("full tool schema bytes: {full_schema_bytes}; forced tool schema bytes: {forced_schema_bytes}");
     assert!(request.body["input"].to_string().contains("blue bag"));
     assert!(request.body["input"].to_string().contains("Durable review ledger"));
     let args=json!({"answer":"The witness reports a blue bag.","citations":[format!("evidence:{sid}#L1-L1")],"gaps":["No independent corroboration"]});
@@ -693,6 +1121,49 @@ fn repeated_successful_reads_checkpoint_then_synthesize_instead_of_crashing() {
     assert_eq!(c.snapshot().unwrap()["tasks"][0]["status"],"complete");
 }
 #[test]
+fn two_identical_failed_tools_force_a_qualified_finish() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Summarize available evidence","investigate",vec![sid],vec![],0.).unwrap();
+    let invalid=json!({"source_id":"missing-source","start":1,"count":10});
+    assert!(deliver_tool(&mut c,&task,"read_text",invalid.clone()));
+    assert!(deliver_tool(&mut c,&task,"read_text",invalid));
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert_eq!(request.body["tool_choice"]["name"],"finish_task");
+}
+#[test]
+fn repeated_final_validation_failure_keeps_saved_partial_visible() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Review the source","investigate",vec![sid],vec![],0.).unwrap();
+    assert!(deliver_tool(&mut c,&task,"checkpoint_review",json!({"summary":"A saved partial observation","citations":[],"gaps":["A source remains unverified"],"next_steps":[]})));
+    let invalid=json!({"answer":"Unsupported final claim","citations":["evidence:missing#L1-L1"],"gaps":[]});
+    for attempt in 0..2 {
+        let prepared=agent::prepare_request(&mut c,&task).unwrap();
+        let response=json!({"status":"completed","usage":{},"output":[{"type":"function_call","call_id":format!("invalid-final-{attempt}"),"name":"finish_task","arguments":invalid.to_string()}]});
+        let received=agent::receive(&mut c,&task,&prepared.transmission,response);
+        if attempt==0 {assert!(received.unwrap());} else {assert!(received.is_err());}
+    }
+    let answer:String=c.db.query_row("SELECT answer FROM tasks WHERE id=?",[&task],|r|r.get(0)).unwrap();
+    assert!(answer.contains("A saved partial observation"));
+    assert!(answer.contains("A source remains unverified"));
+    assert!(!answer.contains("Unsupported final claim"));
+}
+#[test]
+fn durable_ledger_bounds_old_reads_but_keeps_counts_and_recent_receipts() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=agent::start(&mut c,"Review the source","investigate",vec![sid.clone()],vec![],0.).unwrap();
+    for index in 1..=30 {
+        c.db.execute("INSERT INTO actions VALUES(?,?,?,?,?,'complete',?)",rusqlite::params![
+            format!("read-{index}"),task,"read_text",json!({"source_id":sid,"start":index,"count":1}).to_string(),
+            json!({"start_line":index,"end_line":index}).to_string(),format!("2026-09-22T00:00:{index:02}Z")
+        ]).unwrap();
+    }
+    let ledger=evidence_desk::review_progress::ledger(&c,&task,&[sid]).unwrap();
+    assert_eq!(ledger["sources"][0]["read_count"],30);
+    assert_eq!(ledger["sources"][0]["reads"].as_array().unwrap().len(),24);
+    assert_eq!(ledger["sources"][0]["reads"][0]["receipt"],"read-7");
+    assert_eq!(ledger["sources"][0]["reads"][23]["receipt"],"read-30");
+}
+#[test]
 fn checkpoints_preserve_attribution_and_progress_across_pause_and_reopen() {
     let (_dir,mut c,sid)=setup();enable(&mut c);
     let task=agent::start(&mut c,"review","investigate",vec![sid.clone()],vec![],0.).unwrap();
@@ -700,7 +1171,7 @@ fn checkpoints_preserve_attribution_and_progress_across_pause_and_reopen() {
     deliver_tool(&mut c,&task,"checkpoint_review",json!({"summary":format!("Attributed witness claim evidence:{sid}#L1-L1"),"citations":[format!("evidence:{sid}#L1-L1")],"gaps":["Clock not reconciled"],"next_steps":["Check original recording"]}));
     agent::pause(&mut c,&task,"test interruption").unwrap();let root=c.root.clone();drop(c);
     let mut c=Case::open(&root).unwrap();
-    assert!(c.snapshot().unwrap()["tasks"][0]["progress"]["summary"].as_str().unwrap().contains("Attributed witness claim"));
+    assert!(c.conversation_detail(&task,None).unwrap()["tasks"][0]["progress"]["summary"].as_str().unwrap().contains("Attributed witness claim"));
     agent::resume(&mut c,&task).unwrap();
     let next=agent::prepare_request(&mut c,&task).unwrap();
     let context=next.body["input"].to_string();assert!(context.contains("Clock not reconciled"));assert!(context.contains("read_text"));
@@ -730,7 +1201,10 @@ fn visual_requests_are_steered_to_frames_after_text_retrieval_and_disclose_gaps(
     deliver_tool(&mut c,&task,"checkpoint_review",json!({"summary":"Text read; visual question remains unanswered.","citations":[],"gaps":["No frames inspected"],"next_steps":["Inspect relevant frames"]}));
     let next=agent::prepare_request(&mut c,&task).unwrap();assert_eq!(next.body["tool_choice"]["name"],"inspect_video_interval");
     let final_result=agent::execute_tool(&mut c,&task,"finish_task",&json!({"answer":"Only text was available in this diagnostic.","citations":[],"gaps":[]})).unwrap();assert_eq!(final_result["status"],"complete");
-    assert!(c.snapshot().unwrap()["tasks"][0]["answer"].as_str().unwrap().contains("No frames visually inspected"));
+    let reply=c.snapshot().unwrap()["tasks"][0]["answer"].as_str().unwrap().to_string();
+    assert!(!reply.contains("Gaps and limitations")&&!reply.contains("No frames visually inspected"));
+    let completion:serde_json::Value=serde_json::from_str(&c.meta(&format!("completion:{task}")).unwrap().unwrap()).unwrap();
+    assert!(completion["gaps"].as_array().unwrap().iter().any(|gap|gap.as_str().unwrap_or("").contains("No frames visually inspected")),"The detailed issue remains available on request");
 }
 
 #[test]
@@ -824,7 +1298,8 @@ fn applying_app_defaults_never_silently_enables_direct_media() {
 
 #[test]
 fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
-    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    c.publish_extract(&sid,"A witness reported a blue bag.","test",true).unwrap();
     // Dispatching the automatic task must NOT mark the inventory analyzed.
     let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
     assert!(c.meta("auto_review_fingerprint").unwrap().is_none(),"fingerprint written at start");
@@ -833,6 +1308,8 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     // nothing is resent while a transmission's delivery is uncertain.
     evidence_desk::automatic::preempt_for_chat(&mut c).unwrap();
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"paused");
+    let pause:serde_json::Value=serde_json::from_str(&c.meta(&format!("auto_review_pause_kind:{task}")).unwrap().unwrap()).unwrap();
+    assert_eq!(pause["kind"],"chat_preempted");
     // A user stop (or any other pause reason) must not silently restart either.
     c.db.execute("UPDATE tasks SET error='Stopped by user' WHERE id=?",[&task]).unwrap();
     c.db.execute("INSERT INTO transmissions VALUES('tx-uncertain',?,'hash','test-model','[]',0,0,'uncertain',NULL,'2026-09-21T00:00:00Z')",rusqlite::params![task]).unwrap();
@@ -846,15 +1323,60 @@ fn automatic_review_completion_fingerprint_written_only_on_observed_success() {
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),Some(task.clone()));
     // Observed successful completion is what finally writes the fingerprint.
     c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
+    evidence_desk::review_progress::save(&c,&task,&evidence_desk::review_progress::Progress{
+        summary:"A witness reported a blue bag.".into(),citations:vec![format!("evidence:{sid}#R1L1-L1")],..Default::default()
+    }).unwrap();
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
     assert!(c.meta("auto_review_fingerprint").unwrap().is_some());
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_completed'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    c.set_meta("auto_review_fingerprint","stale-global-marker").unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_completed'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"A repaired currentness marker must not duplicate the run event");
     assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
+    let reviewed_ids=evidence_desk::agent::case_scope(&c).unwrap().0;
+    assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_some());
+    c.write_record(None,0,"Own report","note","Saved analysis","agent","automatic output",None,vec![reviewed_ids[0].clone()]).unwrap();
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete","The review's own report must not invalidate it");
+    c.write_record(None,0,"Late machine transcript","transcript","New synthetic words","processor","late processing",None,vec![reviewed_ids[0].clone()]).unwrap();
+    assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_none(),"New transcript on the same source must invalidate reusable AI context");
+    c.publish_extract(&reviewed_ids[0],"Revised synthetic extraction", "test",true).unwrap();
+    assert!(evidence_desk::automatic::completed_review_context(&c,&reviewed_ids).unwrap().is_none(),"Changed extraction must invalidate reusable AI context");
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"planned");
     // New evidence changes the inventory: a fresh review is planned.
     let extra=std::path::PathBuf::from(c.root.parent().unwrap().join("extra.txt"));
     std::fs::write(&extra,"new material").unwrap();
     c.import_files(&[extra.to_string_lossy().into()],"Late").unwrap();
+    let changed_ids=evidence_desk::agent::case_scope(&c).unwrap().0;
+    assert!(evidence_desk::automatic::completed_review_context(&c,&changed_ids).unwrap().is_none());
     let next=evidence_desk::automatic::start_review(&mut c).unwrap();
     assert!(next.is_some()&&next!=Some(task));
+    c.verify_audit().unwrap();
+}
+
+#[test]
+fn a_new_failed_processing_attempt_invalidates_old_automatic_completion() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
+    evidence_desk::automatic::start_review(&mut c).unwrap();
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
+    c.db.execute("INSERT INTO processing_jobs VALUES(?1,?2,'auto_prepare','failed','{}','Synthetic failure',?3)",rusqlite::params![evidence_desk::case::id(),sid,evidence_desk::case::now()]).unwrap();
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"planned");
+    assert!(evidence_desk::automatic::completed_review_context(&c,&[sid]).unwrap().is_none());
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_some());
+}
+
+#[test]
+fn finished_automatic_task_with_unresolved_checks_stays_partial_and_audits_once() {
+    let (_dir,mut c,_sid)=setup();enable(&mut c);
+    let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.set_meta(&format!("completion:{task}"),&json!({"outcome":"partial","gaps":["A source remains uninspected"],"review":"AI-generated / not human reviewed"}).to_string()).unwrap();
+    c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
+    for _ in 0..3 {assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);}
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"partial");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_partial'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM audit WHERE event='automatic_case_review_completed'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     c.verify_audit().unwrap();
 }
 
@@ -868,5 +1390,588 @@ fn failed_automatic_review_is_not_treated_as_completed_analysis() {
     c.db.execute("UPDATE tasks SET status='paused',error='Provider failed' WHERE id=?",[&task]).unwrap();
     c.db.execute("INSERT INTO transmissions VALUES('tx2',?,'h','m','[]',0,0,'uncertain',NULL,'2026-09-21T00:00:00Z')",rusqlite::params![task]).unwrap();
     assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
-    assert_ne!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"complete");
+    assert_eq!(evidence_desk::automatic::status(&c).unwrap()["review_state"],"failed");
+}
+
+#[test]
+fn current_saved_analysis_uses_small_first_reply_and_expands_only_on_request() {
+    let (_dir,mut c,sid)=setup();enable(&mut c);
+    c.publish_extract(&sid,"A witness reported a blue bag.","test",true).unwrap();
+    let mut settings=c.settings().unwrap();settings.model="gpt-5.6-luna".into();c.save_settings(settings).unwrap();
+    let automatic=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
+    c.db.execute("UPDATE tasks SET status='complete',answer='A witness reported a blue bag.' WHERE id=?",[&automatic]).unwrap();
+    evidence_desk::review_progress::save(&c,&automatic,&evidence_desk::review_progress::Progress{
+        summary:"A witness reported a blue bag.".into(),citations:vec![format!("evidence:{sid}#R1L1-L1")],..Default::default()
+    }).unwrap();
+    evidence_desk::automatic::start_review(&mut c).unwrap();
+    let (sources,records)=agent::case_scope(&c).unwrap();
+    let subscription=agent::start_subscription(&mut c,"Verify the saved finding","investigate",sources.clone(),records.clone()).unwrap();
+    assert!(c.meta(&format!("quick_answer_phase:{subscription}")).unwrap().is_none(),"Subscription turns need their case tools for the whole turn");
+    let (_,subscription_tools,_)=agent::subscription_context(&mut c,&subscription).unwrap();
+    assert!(subscription_tools.iter().any(|tool|tool["name"]=="list_sources"));
+    let task=agent::start(&mut c,"What did the witness report?","investigate",sources.clone(),records.clone(),0.).unwrap();
+    let first=agent::prepare_request(&mut c,&task).unwrap();
+    assert_eq!(first.body["tools"].as_array().unwrap().len(),1);
+    assert_eq!(first.body["tools"][0]["name"],"request_more_research");
+    assert_eq!(first.body["model"],"gpt-5.6-luna");
+    assert_eq!(first.body["reasoning"]["effort"],"low");
+    assert!(!first.body["instructions"].as_str().unwrap().contains("QUESTION DOSSIER"));
+    assert!(agent::execute_tool(&mut c,&task,"search_evidence",&json!({"query":"bag","offset":0})).is_err(),"Quick phase must not permit an unadvertised research tool");
+    let response=json!({"status":"completed","usage":{"input_tokens":20,"output_tokens":10},"output":[{"type":"function_call","call_id":"research","name":"request_more_research","arguments":"{\"reason\":\"Need the exact source wording\"}"}]});
+    assert!(agent::receive(&mut c,&task,&first.transmission,response).unwrap());
+    let expanded=agent::prepare_request(&mut c,&task).unwrap();
+    assert!(expanded.body["tools"].as_array().unwrap().len()>20);
+    assert_eq!(expanded.body["model"],"gpt-5.6-luna");
+    assert_eq!(expanded.body["reasoning"]["effort"],"high");
+    assert!(expanded.body["instructions"].as_str().unwrap().contains("QUESTION DOSSIER"));
+    let quick_bytes=first.body.to_string().len();
+    let expanded_bytes=expanded.body.to_string().len();
+    eprintln!("saved-analysis first request: {quick_bytes} bytes; expanded research request: {expanded_bytes} bytes");
+    assert!(quick_bytes<expanded_bytes,"Saved analysis should not pay the full research request cost");
+    let direct=agent::start(&mut c,"Summarize the saved finding","investigate",sources,records,0.).unwrap();
+    let quick=agent::prepare_request(&mut c,&direct).unwrap();
+    let answer=json!({"status":"completed","usage":{"input_tokens":30,"output_tokens":12},"output":[{"type":"message","content":[{"type":"output_text","text":"The saved analysis says a witness reported a blue bag."}]}]});
+    assert!(!agent::receive(&mut c,&direct,&quick.transmission,answer).unwrap());
+    assert_eq!(c.db.query_row("SELECT status FROM tasks WHERE id=?",[&direct],|r|r.get::<_,String>(0)).unwrap(),"complete");
+    let (sources,records)=agent::case_scope(&c).unwrap();
+    let stale=agent::start(&mut c,"Check the wording again","investigate",sources.clone(),records,0.).unwrap();
+    c.publish_extract(&sources[0],"Revised synthetic wording", "test",true).unwrap();
+    let refreshed=agent::prepare_request(&mut c,&stale).unwrap();
+    assert!(refreshed.body["tools"].as_array().unwrap().len()>20,"A new extraction must disable the saved-answer shortcut");
+}
+
+/// R04 — only consent-marked app defaults may initialize a new case's AI
+/// policy; files written by the pre-consent flow (forced values) are ignored,
+/// so no upgrade silently grants online/text/images to new cases.
+#[test]
+fn unmarked_ai_defaults_are_ignored_and_marked_defaults_apply_exactly() {
+    let (_dir, mut c, _s) = setup();
+    // Pre-R04 shape: no consent marker (values were forced, never chosen).
+    let legacy = serde_json::json!({
+        "config": {"provider":"openai","execution":"auto","review":"standard","pool":[]},
+        "settings": {"offline":false,"allow_text":true,"allow_images":true,"model":"m","case_budget":0.,"input_per_million":0.,"output_per_million":0.}
+    });
+    assert!(evidence_desk::providers::parse_ai_defaults(&legacy).unwrap().is_none(),
+        "unmarked defaults must not initialize a case");
+    // Consent-marked defaults apply exactly as chosen, including refusal to
+    // broaden: a deliberately local policy stays local.
+    let mut chosen = legacy;
+    chosen["consent_version"] = serde_json::json!(2);
+    chosen["settings"] = serde_json::json!({"offline":true,"allow_text":false,"allow_images":false,"model":"","case_budget":0.,"input_per_million":0.,"output_per_million":0.});
+    let (config, settings) = evidence_desk::providers::parse_ai_defaults(&chosen).unwrap().unwrap();
+    assert!(settings.offline && !settings.allow_text && !settings.allow_images);
+    assert_eq!(config.review, evidence_desk::providers::Review::Standard);
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({"config":config,"settings":settings})).unwrap();
+    let applied = c.settings().unwrap();
+    assert!(applied.offline && !applied.allow_text && !applied.allow_images,
+        "the explicitly local policy must be saved, not forced online");
+    // A marked file carrying a wrong consent version is refused too.
+    let mut wrong = chosen;
+    wrong["consent_version"] = serde_json::json!(1);
+    assert!(evidence_desk::providers::parse_ai_defaults(&wrong).unwrap().is_none());
+}
+
+/// R04 — direct-media consent is a deliberate, audited, revocable per-case
+/// decision; revocation blocks future dispatch.
+#[test]
+fn direct_media_consent_round_trips_revokes_and_audits() {
+    let (_dir, mut c, _s) = setup();
+    assert!(!evidence_desk::providers::direct_media_enabled(&c));
+    evidence_desk::providers::set_direct_media(&mut c, true).unwrap();
+    assert!(evidence_desk::providers::direct_media_enabled(&c));
+    evidence_desk::providers::set_direct_media(&mut c, false).unwrap();
+    assert!(!evidence_desk::providers::direct_media_enabled(&c));
+    let audits: i64 = c.db.query_row(
+        "SELECT count(*) FROM audit WHERE event='gemini_direct_media_permission'",
+        [], |r| r.get(0),
+    ).unwrap();
+    assert_eq!(audits, 2, "every consent change is audited");
+    c.verify_audit().unwrap();
+}
+
+/// R04 — the exact case policy (grants, offline state, review mode, direct-media
+/// consent) survives encrypted backup and restore byte-for-byte.
+#[test]
+fn case_grants_and_consents_survive_backup_and_restore_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("policy.ledcase");
+    let mut c = Case::create(&root, "Policy case").unwrap();
+    let mut granted = c.settings().unwrap();
+    granted.offline = false;
+    granted.allow_text = true;
+    granted.allow_images = false;
+    c.save_settings(granted).unwrap();
+    evidence_desk::providers::set_direct_media(&mut c, true).unwrap();
+    let config = evidence_desk::providers::Config {
+        provider: evidence_desk::providers::Provider::Gemini,
+        execution: evidence_desk::providers::Execution::Single,
+        review: evidence_desk::providers::Review::Challenge,
+        pool: vec![],
+    };
+    let chosen = c.settings().unwrap();
+    // Moving the default to Gemini needs consent that names Gemini; without it
+    // the text grant would (correctly) reset before backup.
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({"config":config,"settings":chosen,"grants_for_provider":"gemini"})).unwrap();
+
+    let archive = dir.path().join("policy.age");
+    evidence_desk::backup::backup(&mut c, &archive, "policy-pass-123").unwrap();
+    drop(c);
+    let restored = evidence_desk::backup::restore(&archive, &dir.path().join("restored.ledcase"), "policy-pass-123").unwrap();
+    let settings = restored.settings().unwrap();
+    assert!(!settings.offline && settings.allow_text && !settings.allow_images, "text-only grant must survive restore exactly");
+    assert_eq!(evidence_desk::providers::load(&restored).unwrap().review, evidence_desk::providers::Review::Challenge);
+    assert!(evidence_desk::providers::direct_media_enabled(&restored), "explicit direct-media consent must survive restore");
+    restored.verify_audit().unwrap();
+}
+
+/// R04 — the images-requires-text consent invariant is enforced server-side,
+/// not only in the settings dialog.
+#[test]
+fn image_grant_without_text_grant_is_refused_by_apply_app_settings() {
+    let (_dir, mut c, _s) = setup();
+    let mut settings = c.settings().unwrap();
+    settings.offline = false;
+    settings.allow_text = false;
+    settings.allow_images = true;
+    let error = evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"openai","execution":"auto","review":"standard","pool":[]},
+        "settings": settings
+    })).unwrap_err();
+    assert!(error.to_string().contains("grant text before images"), "{error}");
+    assert!(!c.settings().unwrap().allow_images, "refused policy must not be partially applied");
+}
+
+/// R04 follow-up — a text/image grant given for one vendor must not follow the
+/// case to a different default vendor. Only an explicit consent naming the new
+/// provider (`grants_for_provider`) may carry the grant across the change.
+#[test]
+fn default_provider_change_requires_consent_naming_the_new_provider() {
+    let (_dir, mut c, _s) = setup();
+    let granted = serde_json::json!({"offline":false,"allow_text":true,"allow_images":true,"model":"gpt-test"});
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"openai","execution":"auto","review":"standard","pool":[]},
+        "settings": granted,
+    })).unwrap();
+    let before = c.settings().unwrap();
+    assert!(before.allow_text && before.allow_images, "same-provider save keeps the chosen grants");
+
+    // The renderer still shows the old checkboxes ticked; switching vendor alone
+    // must not re-grant them.
+    let switched = serde_json::json!({"offline":false,"allow_text":true,"allow_images":true,"model":"claude-test"});
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"anthropic","execution":"auto","review":"standard","pool":[]},
+        "settings": switched,
+    })).unwrap();
+    let after = c.settings().unwrap();
+    assert_eq!(after.model, "claude-test");
+    assert!(!after.allow_text && !after.allow_images, "grants must not carry to a new default vendor");
+
+    // Consent naming a different provider is not consent for this one.
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"gemini","execution":"auto","review":"standard","pool":[]},
+        "settings": {"offline":false,"allow_text":true,"allow_images":false,"model":"gemini-test"},
+        "grants_for_provider": "anthropic",
+    })).unwrap();
+    assert!(!c.settings().unwrap().allow_text, "mismatched consent must not grant");
+
+    // Explicit consent for the new default vendor is honoured exactly.
+    evidence_desk::providers::apply_app_settings(&mut c, &serde_json::json!({
+        "config": {"provider":"anthropic","execution":"auto","review":"standard","pool":[]},
+        "settings": {"offline":false,"allow_text":true,"allow_images":false,"model":"claude-test"},
+        "grants_for_provider": "anthropic",
+    })).unwrap();
+    let consented = c.settings().unwrap();
+    assert!(consented.allow_text && !consented.allow_images, "explicit consent applies exactly as chosen");
+    c.verify_audit().unwrap();
+}
+
+/// R07 — an in-place edit that preserves length AND mtime evades the
+/// interactive cache by design (browsing speed), but strong verification
+/// catches it; after a strong check the cache holds the truthful bytes.
+#[test]
+fn strong_verification_rejects_same_size_same_mtime_tampering() {
+    let (dir, mut c, s) = setup();
+    let evidence = dir.path().join("cache.txt");
+    std::fs::write(&evidence, "verified payload bytes").unwrap();
+    c.import_files(&[evidence.to_string_lossy().into()], "A").unwrap();
+    let original = c.source_path(&s).unwrap();
+    // Warm the interactive cache.
+    c.verify_source(&s).unwrap();
+    // Tamper in place: same length, mtime restored exactly.
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&original).unwrap());
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&original, permissions).unwrap();
+    let bytes = std::fs::read(&original).unwrap();
+    let mut flipped = bytes.clone();
+    flipped[0] ^= 0xFF;
+    // pad/trim to identical length, then restore mtime
+    flipped.truncate(bytes.len());
+    if flipped.len() < bytes.len() { flipped.resize(bytes.len(), b'x'); }
+    std::fs::write(&original, &flipped).unwrap();
+    filetime::set_file_mtime(&original, preserved).unwrap();
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&original, permissions).unwrap();
+
+    // Interactive browsing stays fast and — documented — does NOT catch this
+    // when its cached entry survives (parallel tests may clear the shared
+    // cache; the strong check below is the load-bearing assertion).
+    let _ = c.verify_source(&s);
+    // Strong verification must reject the same-length, same-mtime replacement.
+    let error = c.verify_source_strong(&s).unwrap_err();
+    assert!(error.to_string().contains("strong integrity check"), "{error}");
+    // The strong check refreshed the cache with the truthful bytes, so even the
+    // cached path now refuses the tampered original.
+    assert!(c.verify_source(&s).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn folder_import_skips_junctions_into_other_directories() {
+    let dir=tempfile::tempdir().unwrap();
+    let case_root=dir.path().join("case");
+    let selected=dir.path().join("selected");
+    let outside=dir.path().join("outside");
+    std::fs::create_dir_all(&case_root).unwrap();
+    std::fs::create_dir_all(&selected).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(selected.join("permitted.txt"),"permitted").unwrap();
+    std::fs::write(outside.join("private.txt"),"outside the selected folder").unwrap();
+    let link=selected.join("linked-outside");
+    let output=std::process::Command::new("cmd").args(["/C","mklink","/J"])
+        .arg(&link).arg(&outside).output().unwrap();
+    assert!(output.status.success(),"junction fixture unavailable: {}",String::from_utf8_lossy(&output.stderr));
+    let (paths,skipped)=evidence_desk::case::folder_paths(&case_root,&selected).unwrap();
+    assert_eq!(paths.len(),1);
+    assert!(paths[0].ends_with("permitted.txt"));
+    assert!(skipped.iter().any(|entry|entry["reason"]=="link or reparse point"));
+}
+
+#[cfg(windows)]
+#[test]
+fn original_storage_junction_cannot_redirect_a_registered_source() {
+    let (dir,c,s)=setup();
+    let original=c.source_path(&s).unwrap();
+    let outside=dir.path().join("outside-originals");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::copy(&original,outside.join(original.file_name().unwrap())).unwrap();
+    let originals=c.root.join("originals");
+    let saved=c.root.join("originals-saved");
+    std::fs::rename(&originals,&saved).unwrap();
+    let output=std::process::Command::new("cmd").args(["/C","mklink","/J"])
+        .arg(&originals).arg(&outside).output().unwrap();
+    assert!(output.status.success(),"junction fixture unavailable: {}",String::from_utf8_lossy(&output.stderr));
+    let result=c.source_path(&s);
+    std::fs::remove_dir(&originals).unwrap();
+    std::fs::rename(&saved,&originals).unwrap();
+    assert!(result.unwrap_err().to_string().contains("link or reparse point"));
+}
+
+/// R07 — encrypted backup is an exact-snapshot promise: a metadata-preserving
+/// tamper must abort the backup even though interactive reads still serve.
+#[test]
+fn backup_refuses_metadata_preserving_tampering_with_strong_check() {
+    let (dir, mut c, s) = setup();
+    let archive = dir.path().join("tamper.age");
+    let _ = c.verify_source(&s); // warm the interactive cache where it survives
+    let original = c.source_path(&s).unwrap();
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&original).unwrap());
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&original, permissions).unwrap();
+    let mut bytes = std::fs::read(&original).unwrap();
+    bytes[0] ^= 0xFF;
+    std::fs::write(&original, &bytes).unwrap();
+    filetime::set_file_mtime(&original, preserved).unwrap();
+    let error = evidence_desk::backup::backup(&mut c, &archive, "tamper-pass-123").unwrap_err();
+    assert!(error.to_string().contains("strong integrity check"), "{error}");
+    assert!(!archive.exists(), "no archive may be written for tampered originals");
+}
+
+/// R07 — opening a case clears the interactive cache, so stale session hashes
+/// never outlive the case they were computed in.
+#[test]
+fn opening_a_case_clears_stale_interactive_hashes() {
+    let (_dir, c, s) = setup();
+    let root = c.root.clone();
+    let _ = c.verify_source(&s);
+    let original = c.source_path(&s).unwrap();
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&original).unwrap());
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&original, permissions).unwrap();
+    let mut bytes = std::fs::read(&original).unwrap();
+    bytes[0] ^= 0xFF;
+    std::fs::write(&original, &bytes).unwrap();
+    filetime::set_file_mtime(&original, preserved).unwrap();
+    // Cache still trusts the stale entry when nothing else cleared it (other
+    // tests open cases in parallel, which clears the shared cache — the final
+    // assertion below holds either way).
+    let _ = c.verify_source(&s);
+    drop(c);
+    // ...a fresh session starts clean and catches the change.
+    let reopened = Case::open(&root).unwrap();
+    assert!(reopened.verify_source(&s).is_err(), "reopened session must not inherit stale interactive hashes");
+}
+
+/// R07 — document export preparation is a publication promise and uses strong
+/// verification; metadata-preserving tampering blocks it.
+#[test]
+fn export_preparation_refuses_metadata_preserving_tampering() {
+    let (dir, mut c, s) = setup();
+    let record = c.write_record(None, 0, "Memo", "note", "depends on source", "human", "initial", None, vec![s.clone()]).unwrap();
+    let _ = c.verify_source(&s);
+    let original = c.source_path(&s).unwrap();
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&original).unwrap());
+    let mut permissions = std::fs::metadata(&original).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&original, permissions).unwrap();
+    let mut bytes = std::fs::read(&original).unwrap();
+    bytes[0] ^= 0xFF;
+    std::fs::write(&original, &bytes).unwrap();
+    filetime::set_file_mtime(&original, preserved).unwrap();
+    let target = dir.path().join("memo.docx");
+    assert!(evidence_desk::exports::prepare_document(&c, &record.id, &target).is_err(),
+        "export preparation must strongly verify source bytes");
+}
+
+/// R07 — artifact reads are the authority gate for derivatives that leave the
+/// case (exports, provider transmission): a metadata-preserving tamper of a
+/// registered artifact must be caught by a fresh full-hash check.
+#[test]
+fn artifact_reads_reject_metadata_preserving_tampering() {
+    let (_dir, c, s) = setup();
+    let bytes = b"synthetic-artifact-payload";
+    let hash = evidence_desk::case::digest(bytes);
+    let relative = format!("artifacts/{hash}.json");
+    let target = c.root.join(&relative);
+    std::fs::write(&target, bytes).unwrap();
+    c.db.execute(
+        "INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)",
+        rusqlite::params![evidence_desk::case::id(), s, hash, "application/json", relative, "{}", evidence_desk::case::now()],
+    ).unwrap();
+    // Warm the interactive cache with a legitimate read.
+    evidence_desk::processing::artifact(&c, &evidence_desk::case::id()).ok();
+    let artifact_id: String = c.db.query_row("SELECT id FROM artifacts WHERE sha256=?", [&hash], |r| r.get(0)).unwrap();
+    let _ = evidence_desk::processing::artifact(&c, &artifact_id).unwrap();
+    // Tamper in place with preserved length and mtime.
+    let preserved = filetime::FileTime::from_last_modification_time(&std::fs::metadata(&target).unwrap());
+    let mut flipped = bytes.to_vec();
+    flipped[0] ^= 0xFF;
+    std::fs::write(&target, &flipped).unwrap();
+    filetime::set_file_mtime(&target, preserved).unwrap();
+    let error = evidence_desk::processing::artifact(&c, &artifact_id).unwrap_err();
+    assert!(error.to_string().contains("Artifact integrity check failed"), "{error}");
+}
+
+/// Case deletion is the one operation that destroys originals, so it must fail
+/// closed on every gate: live case lock, exact typed confirmation, non-case
+/// folders. Read-only preserved originals must not block the final removal.
+#[test]
+fn delete_case_requires_free_lock_exact_confirmation_and_removes_everything() {
+    let (dir, c, _sid) = setup();
+    let root = dir.path().join("test.ledcase");
+    assert!(fs::read_dir(root.join("originals")).unwrap().next().is_some());
+    let name = c.meta("name").unwrap().unwrap();
+    // Open in this instance: the exclusive lock is held, so even a correct
+    // confirmation is refused and nothing is removed.
+    let error = evidence_desk::case::delete_case(&root, &name).unwrap_err().to_string();
+    assert!(error.contains("another window"), "unexpected error: {error}");
+    assert!(root.join("case.sqlite3").is_file());
+    // Closed case, wrong confirmation: refused, still nothing removed.
+    drop(c);
+    let error = evidence_desk::case::delete_case(&root, "Synthetic Cas").unwrap_err().to_string();
+    assert!(error.contains("case name"), "unexpected error: {error}");
+    assert!(root.join("case.sqlite3").is_file());
+    let receipt = evidence_desk::case::delete_case(&root, &name).unwrap();
+    assert_eq!(receipt["deleted"], json!(true));
+    assert_eq!(receipt["name"], json!("Synthetic case"));
+    assert_eq!(receipt["sources"], json!(1));
+    assert_eq!(receipt["records"], json!(0));
+    assert!(receipt["bytes"].as_u64().unwrap() > 0);
+    assert!(!root.exists());
+}
+
+#[test]
+fn delete_case_refuses_folders_that_are_not_cases() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("not-a-case");
+    fs::create_dir_all(&plain).unwrap();
+    assert!(evidence_desk::case::delete_case(&plain, "anything").is_err());
+    assert!(plain.exists());
+    assert!(evidence_desk::case::delete_case(&dir.path().join("missing"), "anything").is_err());
+}
+
+#[test]
+fn provider_reported_cost_reaches_the_task_and_missing_cost_stays_unreported() {
+    let (_dir, mut c, sid) = setup(); enable(&mut c);
+    let task=agent::start(&mut c,"Cost visibility", "investigate",vec![sid.clone()],vec![],0.).unwrap();
+    // First request: the generation id was persisted while pending (as the
+    // desktop progress callback does) and the final usage reports a cost.
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    c.db.execute("UPDATE transmissions SET usage=json_object('generation_id','gen-synthetic-7') WHERE id=?",[&request.transmission]).unwrap();
+    let text=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":5,"cost":0.25},"output":[{"type":"function_call","call_id":"read","name":"search_passages","arguments":json!({"terms":["blue"],"offset":0}).to_string()}]});
+    assert!(agent::receive(&mut c,&task,&request.transmission,text).unwrap());
+    let (actual,generation):(Option<f64>,Option<String>)=c.db.query_row("SELECT actual,json_extract(usage,'$.generation_id') FROM transmissions WHERE id=?",[&request.transmission],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(actual,Some(0.25));
+    assert_eq!(generation.as_deref(),Some("gen-synthetic-7"),"the pending generation id survives the final usage write");
+    let row=&c.task_page(None).unwrap()["tasks"][0];
+    assert_eq!(row["cost"],0.25);
+    assert_eq!(row["cost_partial"],false);
+    // Second request reports no cost: the total is kept but marked partial,
+    // and nothing is shown as zero.
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    let answer=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":5},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic answer."}]}]});
+    agent::receive(&mut c,&task,&request.transmission,answer).unwrap();
+    let actual:Option<f64>=c.db.query_row("SELECT actual FROM transmissions WHERE id=?",[&request.transmission],|r|r.get(0)).unwrap();
+    assert_eq!(actual,None);
+    let row=&c.task_page(None).unwrap()["tasks"][0];
+    assert_eq!(row["cost"],0.25);
+    assert_eq!(row["cost_partial"],true);
+    let detail=c.conversation_detail(row["conversation_id"].as_str().unwrap(),None).unwrap();
+    assert_eq!(detail["tasks"][0]["cost_partial"],true);
+}
+
+#[test]
+fn openrouter_web_search_models_never_receive_case_text() {
+    use evidence_desk::providers::{check_permission, Profile, Provider};
+    let (_dir, c, _sid) = { let (d, mut c, s) = setup(); enable(&mut c); (d, c, s) };
+    for model in ["openai/gpt-5:online", "perplexity/sonar-pro", "openai/gpt-4o-search-preview"] {
+        let profile=Profile{provider:Provider::Openrouter,model:model.into(),allow_text:true,allow_images:false};
+        let error=check_permission(&c,&profile).unwrap_err().to_string();
+        assert!(error.contains("Web-search models are not permitted"),"{model}: {error}");
+    }
+    let ordinary=Profile{provider:Provider::Openrouter,model:"openai/gpt-5".into(),allow_text:true,allow_images:false};
+    // Other rules (pool membership) may still refuse it, but never as web search.
+    let other=check_permission(&c,&ordinary).err().map(|e|e.to_string()).unwrap_or_default();
+    assert!(!other.contains("Web-search"),"{other}");
+}
+
+#[test]
+fn a_case_from_a_newer_app_is_refused_without_changes() {
+    let dir=tempfile::tempdir().unwrap();
+    let root=dir.path().join("case");
+    drop(Case::create(&root,"Newer schema").unwrap());
+    let db=root.join("case.sqlite3");
+    let conn=rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(&format!("PRAGMA user_version={};",evidence_desk::case::CASE_SCHEMA+1)).unwrap();
+    drop(conn);
+    let before=std::fs::read(&db).unwrap();
+    let error=Case::open(&root).err().expect("newer case must be refused").to_string();
+    assert!(error.contains("requires a newer application"),"{error}");
+    assert_eq!(std::fs::read(&db).unwrap(),before,"refusal must not modify the case database");
+}
+
+#[test]
+fn new_source_text_marks_only_dependent_records_stale() {
+    let (dir, mut c, a) = setup();
+    let other = dir.path().join("other.txt");
+    fs::write(&other, "An unrelated synthetic statement.\n").unwrap();
+    c.import_files(&[other.to_string_lossy().into()], "Production B").unwrap();
+    let b = c.sources().unwrap().into_iter().find(|s| s.id != a).unwrap().id;
+    let on_a = c.write_record(None,0,"About A","note","Depends on A.","human","test",None,vec![a.clone()]).unwrap();
+    let on_b = c.write_record(None,0,"About B","note","Depends on B.","human","test",None,vec![b.clone()]).unwrap();
+    let unscoped = c.write_record(None,0,"Case-wide","note","No stated dependencies.","human","test",None,vec![]).unwrap();
+    c.db.execute("UPDATE records SET stale=0", []).unwrap();
+    c.publish_extract(&a, "A witness reported a blue bag, corrected.", "Synthetic re-extraction", true).unwrap();
+    fn stale(c: &Case, id: &str) -> bool { c.db.query_row("SELECT stale FROM records WHERE id=?", [id], |r| r.get(0)).unwrap() }
+    assert!(stale(&c, &on_a.id), "a record citing the changed source must be re-checked");
+    assert!(stale(&c, &unscoped.id), "records without dependencies stay conservative");
+    assert!(!stale(&c, &on_b.id), "an unrelated record must stay reviewable");
+    // Imports still mark every record stale until record dependencies exist.
+    let third = dir.path().join("third.txt");
+    fs::write(&third, "Another synthetic statement.\n").unwrap();
+    c.import_files(&[third.to_string_lossy().into()], "Production C").unwrap();
+    assert!(stale(&c, &on_b.id));
+}
+
+#[test]
+fn protected_artifact_reads_detect_tampering_the_display_cache_cannot() {
+    let (_dir, c, sid) = setup();
+    let bytes = b"synthetic display artifact bytes".to_vec();
+    let hash = evidence_desk::case::digest(&bytes);
+    let relative = format!("artifacts/{hash}.jpg");
+    fs::create_dir_all(c.root.join("artifacts")).unwrap();
+    let path = c.root.join(&relative);
+    fs::write(&path, &bytes).unwrap();
+    c.db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)", rusqlite::params!["artifact-tamper", sid, hash, "image/jpeg", relative, "{}", "2026-09-28T00:00:00Z"]).unwrap();
+    assert!(evidence_desk::processing::artifact(&c, "artifact-tamper").is_ok());
+    // Prime the interactive cache, then change a byte without changing the
+    // length or the modification time.
+    assert_eq!(evidence_desk::case::file_hash_cached(&path).unwrap(), hash);
+    let stamp = filetime::FileTime::from_last_modification_time(&fs::metadata(&path).unwrap());
+    let mut tampered = bytes.clone();
+    tampered[0] ^= 1;
+    fs::write(&path, &tampered).unwrap();
+    filetime::set_file_mtime(&path, stamp).unwrap();
+    // Display may still see the cached value, which is documented as a
+    // browsing optimisation; protected reads must refuse.
+    let error = evidence_desk::processing::artifact(&c, "artifact-tamper").unwrap_err().to_string();
+    assert!(error.contains("integrity"), "{error}");
+}
+
+#[test]
+fn saved_provider_keys_keep_their_credential_names() {
+    use evidence_desk::providers::Provider;
+    // Existing users' keys live under these Credential Manager names; renaming
+    // one would silently lose a saved key.
+    assert_eq!(Provider::Openai.credential(), "openai-api-key");
+    assert_eq!(Provider::Openrouter.credential(), "openrouter-api-key");
+}
+
+#[test]
+fn only_superseded_revisions_are_labelled_historical() {
+    let (_dir, mut c, sid) = setup();
+    let active = c.read_text_revision(&sid, 1, 1, 10).unwrap();
+    assert_eq!(active["historical"], false, "the active revision is current wording");
+    c.publish_extract(&sid, "Corrected synthetic wording.\n", "Synthetic re-extraction", true).unwrap();
+    let old = c.read_text_revision(&sid, 1, 1, 10).unwrap();
+    let new = c.read_text_revision(&sid, 2, 1, 10).unwrap();
+    assert_eq!(old["historical"], true);
+    assert_eq!(new["historical"], false);
+    assert_eq!(new["active_revision"], 2);
+}
+
+#[test]
+fn text_files_over_the_indexing_limit_are_readable_page_by_page_but_not_citable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut case = Case::create(&dir.path().join("big.ledcase"), "Large log").unwrap();
+    let log = dir.path().join("server.log");
+    let mut body = Vec::new();
+    for n in 1..=160_000u32 { body.extend_from_slice(format!("{n:06} synthetic log line with padding to make the file large enough\n").as_bytes()); }
+    body.extend_from_slice(b"\xff\xfe not utf-8 \xc3\x28 bytes\n");
+    body.extend_from_slice(b"final line without newline");
+    assert!(body.len() > 10 * 1024 * 1024);
+    fs::write(&log, &body).unwrap();
+    case.import_files(&[log.to_string_lossy().into()], "Synthetic").unwrap();
+    let source = case.sources().unwrap()[0].clone();
+    assert_eq!(source.status, "text viewable · over 10 MB, not indexed");
+    let first = case.read_text(&source.id, 1, 3).unwrap();
+    assert_eq!(first["raw_original"], true);
+    assert_eq!(first["total_lines"], 160_002);
+    assert!(first["text"].as_str().unwrap().starts_with("000001 synthetic"));
+    assert_eq!(first["locator"], format!("evidence:{}", source.id), "no line citation for unindexed text");
+    let middle = case.read_text(&source.id, 99_999, 2).unwrap();
+    assert!(middle["text"].as_str().unwrap().starts_with("099999 synthetic"));
+    assert!(middle["text"].as_str().unwrap().contains("\n100000 synthetic"));
+    let tail = case.read_text(&source.id, 160_001, 5).unwrap();
+    assert_eq!(tail["end"], 160_002);
+    assert!(tail["text"].as_str().unwrap().contains('\u{fffd}'), "invalid bytes are shown as replacement characters");
+    assert!(tail["text"].as_str().unwrap().ends_with("final line without newline"));
+    assert!(case.read_text(&source.id, 160_003, 1).is_err());
+
+    // Automatic preparation keeps the gap visible but states the real reason:
+    // the file is over the indexing limit, not undecodable.
+    evidence_desk::automatic::enqueue(&mut case).unwrap();
+    assert!(evidence_desk::automatic::next(&mut case).unwrap().is_none());
+    let (status, error, result): (String, String, String) = case.db.query_row(
+        "SELECT status,error,result FROM processing_jobs WHERE kind='auto_prepare' AND source_id=?",
+        [&source.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!(status, "failed", "an unindexed source stays a visible gap");
+    assert!(error.contains("over the 10 MB indexing limit"), "{error}");
+    assert!(!error.contains("could not be decoded"), "{error}");
+    let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(result["over_index_limit"], true);
+    assert_eq!(result["native_text_indexed"], false);
 }

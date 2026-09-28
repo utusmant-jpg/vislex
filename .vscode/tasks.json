@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Agent team: Open GLM web interface (Windows ARM64)",
+      "type": "process",
+      "command": "${env:APPDATA}/npm/node_modules/opencode-ai/bin/opencode.exe",
+      "args": ["web", "--hostname", "127.0.0.1", "--port", "4096", "--pure"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "presentation": {"reveal": "always", "panel": "dedicated"},
+      "problemMatcher": []
+    },
+    {
+      "label": "Agent team: Check setup",
+      "type": "process",
+      "command": "python",
+      "args": ["${workspaceFolder}/scripts/agent_team.py", "doctor"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    },
+    {
+      "label": "Agent team: Connect Z.ai Coding Plan",
+      "type": "process",
+      "command": "python",
+      "args": ["${workspaceFolder}/scripts/agent_team.py", "connect-zai"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "presentation": {"reveal": "always", "focus": true, "panel": "dedicated"},
+      "problemMatcher": []
+    }
+  ]
+}

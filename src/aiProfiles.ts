@@ -1,5 +1,5 @@
 import type { AIConfig, AIProfile, Snapshot } from './types';
-export const providerNames = { openai: 'OpenAI', anthropic: 'Claude / Anthropic', gemini: 'Gemini / Google', xai: 'Grok / xAI' } as const;
+export const providerNames = { openai: 'OpenAI', anthropic: 'Claude / Anthropic', gemini: 'Gemini / Google', xai: 'Grok / xAI', openrouter: 'OpenRouter · many models' } as const;
 export const defaultConfig: AIConfig = { provider: 'openai', execution: 'auto', review: 'standard', pool: [] };
 export const profileKey = (p: AIProfile) => `${p.provider}:${p.model}`;
 export function configuredProfiles(snapshot: Snapshot): AIProfile[] {

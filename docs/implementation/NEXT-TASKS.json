@@ -204,6 +204,62 @@
       "tests": ["Existing verification and native-acceptance scripts after reading their prerequisites", "Clean Windows 11 x64 install/build/run journey; explicit supported ARM/emulation boundary", "Package manifest/license/hash validation and offline launch test."]
     },
     {
+      "id": "R26", "title": "OpenRouter policy, capability catalogue and reported cost", "depends_on": ["R19"],
+      "files": ["src-tauri/src/providers.rs", "src-tauri/src/agent.rs", "src-tauri/src/desktop.rs", "src-tauri/src/case.rs", "src/components/ui.tsx", "src/chat/turn-state.ts"],
+      "problem": "OpenRouter models were filtered by name, mid-stream errors were not surfaced, search-native models could be chosen, and provider-reported cost was dropped.",
+      "changes": ["Surface mid-stream error chunks and finish_reason error; refuse :online and search-native model families at send time.", "Keep usage.cost, cached/reasoning tokens, generation id and upstream provider; persist the generation id while the transmission is pending and sum cost per task.", "Filter the catalogue by published modalities and tool support; show free-tier, audio-input and context facts.", "Later: user-facing routing policy (zdr, order/only) with restrictive defaults and an explicit blocker for previously saved incompatible models; credits view; generation backfill honouring offline mode."],
+      "acceptance": ["No search-capable model can be sent to; errors mid-stream fail the turn with the provider text bounded; cost is shown as reported or 'not reported', never estimated as actual.", "No spend cap and no silent model change."],
+      "tests": ["Rust providers unit tests", "Harness Playwright chat usage journey"]
+    },
+    {
+      "id": "R27", "title": "Generic OpenAI-compatible endpoint bound to its origin", "depends_on": ["R19", "R24"],
+      "files": ["src-tauri/src/providers.rs", "src-tauri/src/ai_access.rs", "src/components/SettingsDialog.tsx"],
+      "problem": "Users want local or third-party OpenAI-compatible endpoints; a key or grant must never follow a changed origin.",
+      "changes": ["Derive endpoint_id from the normalised origin; store the key as endpoint:<id>; an origin change deletes key and grants with an audit entry.", "Plain HTTP only for literal loopback; no redirects; freeze the origin in the task profile and record it per transmission."],
+      "acceptance": ["Origin change leaves no key or grant; non-loopback HTTP and redirects are refused."],
+      "tests": ["Rust endpoint binding tests"]
+    },
+    {
+      "id": "R28", "title": "Optional human-confirmed second opinion on uncertain audio", "depends_on": ["R12", "R19"],
+      "files": ["src-tauri/src/escalation.rs", "src-tauri/src/processing.rs", "src-tauri/src/case.rs", "src-tauri/src/desktop.rs", "workers/media_clip.py", "src/features/escalation/SecondOpinionPanel.tsx", "src/features/escalation/SecondOpinionGrantCard.tsx"],
+      "problem": "When the local recogniser is unsure, a reviewer may want a remote audio model's reading of that span only, without making the app depend on it.",
+      "changes": ["Local triage from decoder signals; merged bounded spans; nothing is sent by triage.", "Per-case grant (off by default); metadata-free 16 kHz WAV clip; preview naming recipient, bytes and retention; single send after a click; cancel; usage in the transmissions ledger.", "Results are unreviewed interpretations; only a human decision creates an attributed correction."],
+      "acceptance": ["With no key or grant the app behaves as before.", "Restricted sources are refused at preview and at send.", "Remote text never overwrites local text."],
+      "tests": ["Rust second_opinion tests", "Worker media_clip tests", "Harness Playwright second-opinion journey"]
+    },
+    {
+      "id": "R29", "title": "Preview v2: large text, email, Office structure, images", "depends_on": ["R15"],
+      "files": ["src-tauri/src/case.rs", "src-tauri/src/processing.rs", "workers/worker.py", "workers/email_extract.py", "src/components/EvidenceViewer.tsx"],
+      "problem": "Text over 10 MB had no preview, .eml was unsupported, Office previews lose structure, and HEIC/RAW are not viewable.",
+      "changes": ["Page large text originals from the file through a sparse line index; mark them not indexed and not citable by line.", "Sandboxed stdlib email extraction: headers, bodies, HTML reduced to text without remote fetches, attachments listed with SHA-256.", "Later: structured DOCX/XLSX/PPTX models, MSG, attachments as child sources with transitive restriction, HEIC and RAW previews, PDF text layer."],
+      "acceptance": ["Oversized text is readable page by page and offers no line citation.", "Email preview never fetches remote content."],
+      "tests": ["Rust core large-text test", "Worker email tests", "Harness Playwright large-text journey"]
+    },
+    {
+      "id": "R30", "title": "Mark low-confidence transcript words", "depends_on": ["R12"],
+      "files": ["workers/full_audio.py", "src-tauri/src/transcription.rs", "src/features/transcript-confidence/uncertain.ts", "src/components/FullTranscript.tsx"],
+      "problem": "Reviewers could not see which words the recogniser itself scored low.",
+      "changes": ["Keep decoder signals in segment metadata; return per-segment low-probability words and counts with the segment page.", "Underline flagged words with a tooltip that says it is not accuracy; keyboard next/previous navigation; hide toggle."],
+      "acceptance": ["No percentage is shown; marks are diagnostics only."],
+      "tests": ["Vitest uncertain.ts", "Harness Playwright transcript-confidence journey"]
+    },
+    {
+      "id": "R31", "title": "Chronology and chain-of-custody report", "depends_on": ["R17", "R18"],
+      "files": ["src-tauri/src/workbench.rs", "src-tauri/src/exports.rs"],
+      "problem": "Reviewers need a cited chronology and a processing/custody report compiled from the audit chain.",
+      "changes": ["Chronology rows with date precision and citations; AI proposes, a human approves.", "Custody report from audit chain, derivatives, reviews, transmissions and exports."],
+      "acceptance": ["Every chronology row cites evidence; the report matches the verified audit chain."],
+      "tests": ["Rust export tests"]
+    },
+    {
+      "id": "R32", "title": "Question grid, clip reels, near-duplicates and entity mentions", "depends_on": ["R17", "R18", "R22"],
+      "files": ["src-tauri/src/workbench.rs"],
+      "problem": "Common review workflows from comparable tools are missing.",
+      "changes": ["Grid cells pinned to revision and sha, proposed until approved.", "Clip designations exported as sanitized derivatives; near-duplicate groups are related, never merged; entity mentions human-confirmed."],
+      "acceptance": ["Nothing is auto-accepted; exports carry manifests."],
+      "tests": ["Rust workbench tests"]
+    },
+    {
       "id": "R23", "title": "Release gate: complete protected journey under realistic load", "depends_on": ["R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R10", "R11", "R12", "R13", "R14", "R15", "R16", "R17", "R18", "R19", "R21", "R22", "R24", "R25"],
       "files": ["README.md", "docs/VERIFICATION.md", "docs/SECURITY.md", "docs/implementation/NEXT-STATUS.json", "benchmarks/README.md"],
       "problem": "A count of completed coding tickets does not establish a reliable evidence application.",

@@ -34,14 +34,188 @@ fn independent_search_pagination_recovery_and_revisions() {
     assert!(discovery::search(&c,&[s.clone()],&["exit".into()]).unwrap().is_empty());
 }
 #[test]
-fn pending_discovery_does_not_block_review_or_restart_completed_review() {
+fn automatic_review_waits_for_discovery_and_restarts_when_inputs_change() {
     let (_dir,mut c,s)=setup();discovery::enqueue(&mut c,&s,5.,false).unwrap();
     c.db.execute("INSERT INTO extracts(source_id,text,method) VALUES(?,'prepared','fixture')",[&s]).unwrap();
     let mut settings=c.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.model="synthetic".into();c.save_settings(settings).unwrap();
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE kind IN ('video_ocr_index','video_overview_index')",[]).unwrap();
     let task=evidence_desk::automatic::start_review(&mut c).unwrap().unwrap();
     c.db.execute("UPDATE tasks SET status='complete' WHERE id=?",[&task]).unwrap();
     assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_none());
+    c.db.execute("INSERT INTO processing_jobs VALUES('new-discovery',?,'video_overview_index','complete','{}','','now')",[&s]).unwrap();
+    assert!(evidence_desk::automatic::start_review(&mut c).unwrap().is_some());
     let tools=agent::tools("ask");assert!(tools.iter().any(|t|t["name"]=="browse_video_overview"));
+}
+#[test]
+fn startup_replaces_only_stale_worker_discovery_run_and_keeps_old_samples() {
+    let (_dir,mut c,s)=setup();
+    assert!(evidence_desk::processing::worker_path().is_ok());
+    let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let old_ocr=queued["jobs"][0].as_str().unwrap();
+    let overview=queued["jobs"][1].as_str().unwrap();
+    chunk(&mut c,&s,old_ocr,0.,"old sample",false);
+    let raw:String=c.db.query_row("SELECT result FROM processing_jobs WHERE id=?",[old_ocr],|r|r.get(0)).unwrap();
+    let mut config:Value=serde_json::from_str(&raw).unwrap();
+    config["worker_sha256"]=json!("previous-worker-hash");
+    config["revision"]=json!("previous-revision");
+    c.db.execute("UPDATE processing_jobs SET status='queued',result=? WHERE id=?",rusqlite::params![config.to_string(),old_ocr]).unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE id=?",[overview]).unwrap();
+    discovery::enqueue_missing(&mut c).unwrap();
+    let current:Vec<(String,String,String)>=c.db.prepare("SELECT id,kind,status FROM processing_jobs WHERE source_id=? ORDER BY rowid").unwrap()
+        .query_map([&s],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(current.len(),3);
+    assert_eq!(current[0],(old_ocr.to_string(),"video_ocr_index".into(),"failed".into()));
+    assert_eq!(current[1],(overview.to_string(),"video_overview_index".into(),"complete".into()));
+    assert_eq!(current[2].1,"video_ocr_index");
+    assert_eq!(current[2].2,"queued");
+    assert_ne!(current[2].0,old_ocr);
+    let retained:i64=c.db.query_row("SELECT count(*) FROM discovery_samples WHERE run_id=?",[old_ocr],|r|r.get(0)).unwrap();
+    assert_eq!(retained,1);
+    assert_eq!(discovery::browse(&c,&s,"video_ocr",0.,60.,0,"").unwrap()["run_id"],current[2].0);
+    assert!(discovery::search(&c,&[s.clone()],&["old sample".into()]).unwrap().is_empty());
+    discovery::enqueue_missing(&mut c).unwrap();
+    assert_eq!(c.db.query_row("SELECT count(*) FROM processing_jobs WHERE source_id=?",[&s],|r|r.get::<_,i64>(0)).unwrap(),3);
+}
+#[test]
+fn startup_replaces_unstarted_old_revision_without_a_worker_hash() {
+    let (_dir,mut c,s)=setup();
+    let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let old=queued["jobs"][0].as_str().unwrap();
+    let overview=queued["jobs"][1].as_str().unwrap();
+    let raw:String=c.db.query_row("SELECT result FROM processing_jobs WHERE id=?",[old],|r|r.get(0)).unwrap();
+    let mut config:Value=serde_json::from_str(&raw).unwrap();
+    assert!(config["worker_sha256"].is_null());
+    config["revision"]=json!("previous-revision");
+    c.db.execute("UPDATE processing_jobs SET result=? WHERE id=?",rusqlite::params![config.to_string(),old]).unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE id=?",[overview]).unwrap();
+    discovery::enqueue_missing(&mut c).unwrap();
+    let rows:Vec<(String,String)>=c.db.prepare("SELECT id,status FROM processing_jobs WHERE source_id=? AND kind='video_ocr_index' ORDER BY rowid").unwrap()
+        .query_map([&s],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(rows.len(),2);
+    assert_eq!(rows[0],(old.to_string(),"failed".into()));
+    assert_eq!(rows[1].1,"queued");
+    assert_ne!(rows[1].0,old);
+    assert_eq!(c.db.query_row("SELECT count(*) FROM processing_jobs WHERE source_id=? AND kind='video_overview_index'",[&s],|r|r.get::<_,i64>(0)).unwrap(),1);
+}
+#[test]
+fn overview_navigation_advances_while_full_audio_uses_the_heavy_worker() {
+    let (_dir,mut c,s)=setup();
+    let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    c.db.execute("INSERT INTO processing_jobs VALUES('long-audio',?,'full_audio','running','{}','',?)",rusqlite::params![s,evidence_desk::case::now()]).unwrap();
+    let job=discovery::next(&mut c).unwrap().unwrap();
+    assert_eq!(job.run_id,queued["jobs"][1].as_str().unwrap());
+    assert_eq!(job.processor.kind,"video_overview");
+    let dependency:String=c.db.query_row("SELECT dependency_job FROM job_schedule WHERE job_id=?",[&job.processor.job_id],|r|r.get(0)).unwrap();
+    assert_eq!(dependency,job.run_id);
+}
+#[test]
+fn overview_and_ocr_chunks_alternate_across_a_large_case() {
+    let (dir,mut c,first)=setup();
+    let other=dir.path().join("second.mp4");std::fs::write(&other,b"different synthetic recording").unwrap();
+    c.import_files(&[other.to_string_lossy().into_owned()],"fixture").unwrap();
+    let second=c.sources().unwrap().into_iter().find(|source|source.id!=first).unwrap().id;
+    c.db.execute("UPDATE sources SET kind='video',mime='video/mp4' WHERE id=?",[&second]).unwrap();
+    discovery::enqueue(&mut c,&first,5.,false).unwrap();
+    discovery::enqueue(&mut c,&second,5.,false).unwrap();
+    for expected in ["video_overview","video_ocr","video_overview","video_ocr"] {
+        let job=discovery::next(&mut c).unwrap().unwrap();
+        assert_eq!(job.processor.kind,expected);
+        c.db.execute("UPDATE processing_jobs SET status='complete' WHERE id IN (?,?)",rusqlite::params![job.run_id,job.processor.job_id]).unwrap();
+    }
+}
+#[test]
+fn discovery_claims_one_ocr_and_one_overview_lane_without_double_claiming() {
+    let (_dir,mut c,s)=setup();
+    discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let first=discovery::next(&mut c).unwrap().unwrap();
+    let second=discovery::next(&mut c).unwrap().unwrap();
+    assert_eq!(first.processor.kind,"video_overview");
+    assert_eq!(second.processor.kind,"video_ocr");
+    assert_ne!(first.run_id,second.run_id);
+    assert!(discovery::next(&mut c).unwrap().is_none());
+}
+#[test]
+fn cancelling_discovery_releases_child_and_does_not_start_automatic_review() {
+    let (_dir,mut c,s)=setup();
+    discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let job=discovery::next(&mut c).unwrap().unwrap();
+    discovery::cancel(&c,&s).unwrap();
+    discovery::publish(&mut c,&job,Err(anyhow::anyhow!("Synthetic cancelled worker"))).unwrap();
+    let child:String=c.db.query_row("SELECT status FROM processing_jobs WHERE id=?",[&job.processor.job_id],|r|r.get(0)).unwrap();
+    assert_eq!(child,"cancelled");
+    assert_eq!(c.db.query_row("SELECT count(*) FROM processing_jobs WHERE status='running'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    c.db.execute("INSERT INTO extracts(source_id,text,method) VALUES(?,'prepared','fixture')",[&s]).unwrap();
+    let mut settings=c.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.model="synthetic".into();c.save_settings(settings).unwrap();
+    assert_eq!(evidence_desk::automatic::start_review(&mut c).unwrap(),None);
+    assert!(evidence_desk::automatic::chat_pause_reason(&c).unwrap().is_none(),"A deliberate cancellation should release chat");
+}
+#[test]
+fn automatic_video_batch_selects_each_twenty_second_bin_and_scene_change_once() {
+    let (_dir,mut c,s)=setup();
+    let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let run=queued["jobs"][1].as_str().unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",rusqlite::params![json!({"last_chunk":{"eof":true,"last_decoded_seconds":45.0},"has_gaps":false}).to_string(),run]).unwrap();
+    for (seconds,scene) in [(0.,false),(5.,false),(20.,false),(30.,true),(40.,false)] {
+        let artifact=format!("frame-{seconds:.0}");
+        let relative=format!("artifacts/{artifact}.jpg");
+        let path=c.root.join(&relative);std::fs::write(&path,b"synthetic jpeg fixture bytes").unwrap();
+        c.db.execute("INSERT INTO artifacts VALUES(?,?,?,'image/jpeg',?,?,?)",rusqlite::params![artifact,s,evidence_desk::case::file_hash(&path).unwrap(),relative,json!({"source_relative_seconds":seconds}).to_string(),"now"]).unwrap();
+        c.db.execute("INSERT INTO discovery_samples VALUES(?,?,?,?,?,?,?)",rusqlite::params![run,s,"video_overview",seconds,artifact,json!({"scene_boundary":scene}).to_string(),""]).unwrap();
+    }
+    let mut settings=c.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.allow_images=true;settings.model="synthetic".into();c.save_settings(settings).unwrap();
+    let task=agent::start(&mut c,"Automatic visual review","investigate",vec![s.clone()],vec![],0.).unwrap();
+    c.set_meta(&format!("automatic_task:{task}"),"true").unwrap();
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    assert_eq!(request.body["tool_choice"]["name"],"inspect_automatic_video_batch");
+    assert_eq!(request.body["tools"].as_array().unwrap().len(),1);
+    assert_eq!(agent::execute_tool(&mut c,&task,"inspect_automatic_video_batch",&json!({})).unwrap()["frames"].as_array().unwrap().len(),4);
+    let first=evidence_desk::automatic::next_visual_batch(&c,&task).unwrap();
+    let ids=first.iter().map(|frame|frame["artifact_id"].as_str().unwrap()).collect::<Vec<_>>();
+    assert_eq!(ids,vec!["frame-0","frame-20","frame-40","frame-30"]);
+    c.db.execute("INSERT INTO actions VALUES('observation',?,'record_visual_observations','{}',?,'complete','now')",rusqlite::params![task,json!({"observations":[{"artifact_id":"frame-0"},{"artifact_id":"frame-30"}]}).to_string()]).unwrap();
+    let remaining=evidence_desk::automatic::next_visual_batch(&c,&task).unwrap();
+    assert_eq!(remaining.iter().map(|frame|frame["artifact_id"].as_str().unwrap()).collect::<Vec<_>>(),vec!["frame-20","frame-40"]);
+    let partial=evidence_desk::automatic::visual_coverage(&c,&task).unwrap();
+    assert_eq!(partial["version"],1);assert_eq!(partial["complete"],false);
+    assert_eq!(partial["sources"][0]["missing_bins_first_100"],json!([2]));
+    c.db.execute("INSERT INTO actions VALUES('observation-2',?,'record_visual_observations','{}',?,'complete','now')",rusqlite::params![task,json!({"observations":[{"artifact_id":"frame-20"},{"artifact_id":"frame-40"}]}).to_string()]).unwrap();
+    assert_eq!(evidence_desk::automatic::visual_coverage(&c,&task).unwrap()["complete"],true);
+}
+#[test]
+fn failed_discovery_run_retries_from_published_cursor_without_replaying_chunks() {
+    let (_dir,mut c,s)=setup();let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let run=queued["jobs"][0].as_str().unwrap();
+    chunk(&mut c,&s,run,0.,"first chunk",false);
+    c.db.execute("UPDATE processing_jobs SET status='failed',error='Synthetic resource failure' WHERE id=?",[run]).unwrap();
+    let result=discovery::retry_run(&mut c,run).unwrap();
+    assert_eq!(result["next_start"],60.);
+    let status:String=c.db.query_row("SELECT status FROM processing_jobs WHERE id=?",[run],|r|r.get(0)).unwrap();
+    assert_eq!(status,"queued");
+    chunk(&mut c,&s,run,60.,"second chunk",true);
+    assert_eq!(discovery::search(&c,&[s.clone()],&["first".into()]).unwrap().len(),1);
+    assert_eq!(discovery::search(&c,&[s.clone()],&["second".into()]).unwrap().len(),1);
+    assert!(discovery::retry_run(&mut c,run).is_err());
+}
+#[test]
+fn transient_resource_failure_retries_twice_then_stays_visible() {
+    let (_dir,mut c,s)=setup();let queued=discovery::enqueue(&mut c,&s,5.,false).unwrap();
+    let run=queued["jobs"][0].as_str().unwrap();
+    c.db.execute("UPDATE processing_jobs SET status='complete' WHERE kind='video_overview_index'",[]).unwrap();
+    for attempt in 1..=3 {
+        let job=discovery::next(&mut c).unwrap().unwrap();
+        assert_eq!(job.run_id,run);
+        discovery::publish(&mut c,&job,Err(anyhow::anyhow!("Synthetic resource exhaustion (os error 1450)"))).unwrap();
+        let (status,raw):(String,String)=c.db.query_row("SELECT status,result FROM processing_jobs WHERE id=?",[run],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let state:Value=serde_json::from_str(&raw).unwrap();
+        assert_eq!(state["next_start"],0.);
+        assert!(state["resource_diagnostics"].is_object());
+        if attempt<3 {
+            assert_eq!(status,"queued");assert_eq!(state["resource_retries"],attempt);
+            let mut ready=state;ready["retry_after_epoch"]=json!(0);
+            c.db.execute("UPDATE processing_jobs SET result=? WHERE id=?",rusqlite::params![ready.to_string(),run]).unwrap();
+        } else {assert_eq!(status,"failed");}
+    }
 }
 #[test]
 fn agent_search_includes_video_text_and_keeps_scoping() {

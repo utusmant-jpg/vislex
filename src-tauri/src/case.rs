@@ -6,12 +6,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 use uuid::Uuid;
 
+/// The case database schema version this build migrates to. Cases with a
+/// higher `user_version` were written by a newer app and are refused.
+pub const CASE_SCHEMA: i64 = 9;
+/// Marks working records stale after a source's text changes (a new active
+/// extraction or transcript). Only records that depend on that source, or
+/// whose dependencies are empty or unreadable, are marked: an unrelated note
+/// no longer needs re-saving before review. Imports, restriction changes and
+/// record saves stay case-wide until record-to-record dependencies exist.
+/// Parameters: the changed source id, then a record id to exclude ("" for none).
+pub(crate) const STALE_DEPENDENTS_OF_SOURCE: &str = "UPDATE records SET stale=1 WHERE (actor<>'processor' OR kind<>'transcript') AND id<>?2 AND CASE WHEN json_valid(dependencies) THEN json_array_length(dependencies)=0 OR EXISTS(SELECT 1 FROM json_each(records.dependencies) WHERE json_each.value=?1) ELSE 1 END";
 pub fn id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -34,22 +46,26 @@ pub fn file_hash(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
-/// Cached verification hash for immutable case content.
+/// Cached INTERACTIVE hash for immutable case content (R07).
 /// Originals and published artifacts are content-addressed and set read-only, so
 /// (canonical path, length, mtime) identifies bytes already verified this session;
 /// any replacement or in-place change alters length or mtime and forces a fresh
 /// full hash. Keeps playback ranges, citation validation and cache reuse from
-/// re-hashing multi-gigabyte originals on every request.
+/// re-hashing multi-gigabyte originals on every request. This is a browsing
+/// optimization, NOT strong verification: an in-place edit that preserves both
+/// length and mtime evades it. Protected publication and explicit user
+/// verification use `file_hash_strong`/`verify_source_strong` instead.
+type InteractiveCache = std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, String)>;
+fn interactive_cache() -> &'static std::sync::Mutex<InteractiveCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<InteractiveCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(InteractiveCache::new()))
+}
+
 pub fn file_hash_cached(path: &Path) -> Result<String> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, String)>>> =
-        OnceLock::new();
     let metadata = fs::metadata(path)?;
     let modified = metadata.modified()?;
     let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(guard) = cache.lock() {
+    if let Ok(guard) = interactive_cache().lock() {
         if let Some((len, stamp, hash)) = guard.get(&key) {
             if *len == metadata.len() && *stamp == modified {
                 return Ok(hash.clone());
@@ -57,13 +73,59 @@ pub fn file_hash_cached(path: &Path) -> Result<String> {
         }
     }
     let hash = file_hash(path)?;
-    if let Ok(mut guard) = cache.lock() {
+    if let Ok(mut guard) = interactive_cache().lock() {
         if guard.len() >= 4096 {
             guard.clear();
         }
         guard.insert(key, (metadata.len(), modified, hash.clone()));
     }
     Ok(hash)
+}
+
+/// Strong verification hash: always reads and hashes the full bytes, ignoring
+/// and refreshing the shared interactive cache so later interactive reads see
+/// the verified truth. Tamper-evident against same-length, mtime-preserving
+/// in-place edits that the interactive cache cannot detect.
+pub fn file_hash_strong(path: &Path) -> Result<String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    { use std::os::windows::fs::OpenOptionsExt; options.share_mode(1); }
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    let mut hash_state = Sha256::new();
+    let mut buffer = [0u8; 1024 * 128];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { break; }
+        hash_state.update(&buffer[..count]);
+    }
+    let hash = format!("{:x}", hash_state.finalize());
+    let modified = metadata.modified()?;
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(mut guard) = interactive_cache().lock() {
+        guard.insert(key, (metadata.len(), modified, hash.clone()));
+    }
+    Ok(hash)
+}
+
+/// Clear the interactive hash cache. Called when a case is opened so cached
+/// results never outlive the case session they were computed in.
+pub fn clear_file_hash_cache() {
+    if let Ok(mut guard) = interactive_cache().lock() {
+        guard.clear();
+    }
+}
+
+fn is_link_or_reparse(path: &Path) -> Result<bool> {
+    let metadata = fs::symlink_metadata(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        Ok(metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0)
+    }
+    #[cfg(not(windows))]
+    { Ok(metadata.file_type().is_symlink()) }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -99,9 +161,6 @@ pub struct Settings {
     pub allow_text: bool,
     pub allow_images: bool,
     pub model: String,
-    pub case_budget: f64,
-    pub input_per_million: f64,
-    pub output_per_million: f64,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -110,9 +169,6 @@ impl Default for Settings {
             allow_text: false,
             allow_images: false,
             model: String::new(),
-            case_budget: 10.0,
-            input_per_million: 0.0,
-            output_per_million: 0.0,
         }
     }
 }
@@ -162,6 +218,7 @@ pub fn validate_local_root(path: &Path) -> Result<()> {
 
 impl Case {
     pub fn create(root: &Path, name: &str) -> Result<Self> {
+        clear_file_hash_cache();
         validate_local_root(root)?;
         ensure!(
             !name.trim().is_empty() && name.len() <= 200,
@@ -181,6 +238,7 @@ impl Case {
         Ok(c)
     }
     pub fn open(root: &Path) -> Result<Self> {
+        clear_file_hash_cache();
         validate_local_root(root)?;
         ensure!(
             root.join("case.sqlite3").is_file(),
@@ -205,9 +263,12 @@ impl Case {
             fs::create_dir_all(root.join(dir))?;
         }
         let db = Connection::open(root.join("case.sqlite3"))?;
-        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Worker heartbeats use a separate SQLite connection. A foreground
+        // chat write should wait through brief writer contention rather than
+        // fail with a raw SQLITE_BUSY error.
+        db.busy_timeout(std::time::Duration::from_secs(15))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 6, "This case requires a newer application");
+        ensure!(version <= CASE_SCHEMA, "This case requires a newer application");
         if create {
             db.execute_batch(SCHEMA)?;
         } else {
@@ -225,7 +286,7 @@ impl Case {
         if !create && version < 3 {
             db.backup(rusqlite::DatabaseName::Main, root.join("pre-migration-v2.sqlite3"), None)?;
         }
-        db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_tasks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),conversation_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hidden_conversations(id TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS conversation_lookup ON conversation_tasks(conversation_id);")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_tasks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),conversation_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hidden_conversations(id TEXT PRIMARY KEY); CREATE INDEX IF NOT EXISTS conversation_lookup ON conversation_tasks(conversation_id); CREATE INDEX IF NOT EXISTS tasks_created_id ON tasks(created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS sources_created_id ON sources(created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS records_updated_id ON records(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS processing_jobs_source_kind ON processing_jobs(source_id,kind);")?;
         if version < 5 {
             if !create {
                 let snapshot = if version < 4 { "pre-migration-v3.sqlite3" } else { "pre-migration-v4.sqlite3" };
@@ -248,6 +309,106 @@ impl Case {
                 PRAGMA user_version=6;
                 COMMIT;",
             )?;
+        }
+        if version < 7 {
+            if !create && version >= 6 {db.backup(rusqlite::DatabaseName::Main,root.join("pre-migration-v6.sqlite3"),None)?;}
+            db.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS job_schedule(
+                    job_id TEXT PRIMARY KEY REFERENCES processing_jobs(id),
+                    priority TEXT NOT NULL CHECK(priority IN ('interactive','background')),
+                    attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt>=0),
+                    input_revision TEXT NOT NULL,
+                    dependency_job TEXT,
+                    heartbeat TEXT,
+                    cancel_reason TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO job_schedule(job_id,priority,attempt,input_revision,dependency_job,heartbeat,cancel_reason,updated_at)
+                    SELECT j.id,CASE WHEN j.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index','video_ocr','video_overview','media_inventory') THEN 'background' ELSE 'interactive' END,
+                        CASE WHEN j.status='queued' THEN 0 ELSE 1 END,s.sha256,NULL,CASE WHEN j.status='running' THEN j.created_at ELSE NULL END,
+                        CASE WHEN j.status='cancelled' THEN substr(j.error,1,500) ELSE NULL END,j.created_at
+                    FROM processing_jobs j JOIN sources s ON s.id=j.source_id;
+                CREATE INDEX IF NOT EXISTS job_schedule_priority ON job_schedule(priority,updated_at,job_id);
+                CREATE INDEX IF NOT EXISTS job_schedule_heartbeat ON job_schedule(heartbeat) WHERE heartbeat IS NOT NULL;
+                CREATE TRIGGER IF NOT EXISTS job_schedule_insert AFTER INSERT ON processing_jobs BEGIN
+                    INSERT INTO job_schedule(job_id,priority,attempt,input_revision,dependency_job,heartbeat,cancel_reason,updated_at)
+                    VALUES(NEW.id,CASE WHEN NEW.kind IN ('auto_prepare','full_audio','video_ocr_index','video_overview_index','video_ocr','video_overview','media_inventory') THEN 'background' ELSE 'interactive' END,
+                        CASE WHEN NEW.status='running' THEN 1 ELSE 0 END,(SELECT sha256 FROM sources WHERE id=NEW.source_id),NULL,
+                        CASE WHEN NEW.status='running' THEN NEW.created_at ELSE NULL END,NULL,NEW.created_at);
+                END;
+                CREATE TRIGGER IF NOT EXISTS job_schedule_status AFTER UPDATE OF status ON processing_jobs BEGIN
+                    UPDATE job_schedule SET attempt=attempt+CASE WHEN NEW.status='running' AND OLD.status<>'running' THEN 1 ELSE 0 END,
+                        heartbeat=CASE WHEN NEW.status='running' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,
+                        cancel_reason=CASE WHEN NEW.status='cancelled' THEN substr(NEW.error,1,500) WHEN NEW.status IN ('queued','running') THEN NULL ELSE cancel_reason END,
+                        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE job_id=NEW.id;
+                END;
+                PRAGMA user_version=7; COMMIT;")?;
+        }
+        if version < 8 {
+            if !create && version >= 7 {db.backup(rusqlite::DatabaseName::Main,root.join("pre-migration-v7.sqlite3"),None)?;}
+            db.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS transcript_segments(
+                    run_id TEXT NOT NULL REFERENCES processing_jobs(id),
+                    ordinal INTEGER NOT NULL CHECK(ordinal>=0),
+                    source_id TEXT NOT NULL REFERENCES sources(id),
+                    track INTEGER NOT NULL CHECK(track>=0),
+                    start_seconds REAL NOT NULL CHECK(start_seconds>=0),
+                    end_seconds REAL NOT NULL CHECK(end_seconds>=start_seconds),
+                    text TEXT NOT NULL,
+                    words TEXT NOT NULL,
+                    metadata TEXT NOT NULL,
+                    PRIMARY KEY(run_id,ordinal)
+                );
+                CREATE INDEX IF NOT EXISTS transcript_segments_source ON transcript_segments(source_id,run_id,ordinal);
+                CREATE INDEX IF NOT EXISTS transcript_segments_time ON transcript_segments(run_id,track,start_seconds);
+                CREATE TABLE IF NOT EXISTS transcript_corrections(
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    revision INTEGER NOT NULL CHECK(revision>=1),
+                    proposed_text TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    review TEXT NOT NULL CHECK(review IN ('pending','accepted','rejected')),
+                    created_at TEXT NOT NULL,
+                    reviewed_at TEXT,
+                    FOREIGN KEY(run_id,ordinal) REFERENCES transcript_segments(run_id,ordinal),
+                    UNIQUE(run_id,ordinal,revision)
+                );
+                CREATE INDEX IF NOT EXISTS transcript_corrections_latest ON transcript_corrections(run_id,ordinal,revision DESC);
+                PRAGMA user_version=8; COMMIT;")?;
+        }
+        if version < 9 {
+            // v9: ledger for the optional second opinion on uncertain audio.
+            // Additive only; no existing table or row changes.
+            if !create && version >= 8 {db.backup(rusqlite::DatabaseName::Main,root.join("pre-migration-v8.sqlite3"),None)?;}
+            db.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS second_opinions(
+                    id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL REFERENCES sources(id),
+                    run_id TEXT NOT NULL,
+                    ordinals TEXT NOT NULL,
+                    track INTEGER NOT NULL CHECK(track>=0),
+                    start_seconds REAL NOT NULL CHECK(start_seconds>=0),
+                    end_seconds REAL NOT NULL CHECK(end_seconds>start_seconds),
+                    vendor TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    grant_revision INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('clipping','previewed','sending','received','failed','cancelled','uncertain')),
+                    clip_artifact_id TEXT,
+                    clip_sha256 TEXT,
+                    task_id TEXT REFERENCES tasks(id),
+                    transmission_id TEXT,
+                    reasons TEXT NOT NULL,
+                    result TEXT,
+                    usage TEXT,
+                    error TEXT NOT NULL DEFAULT '',
+                    decision TEXT CHECK(decision IS NULL OR decision IN ('accepted_remote','kept_local','edited','unresolved')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS second_opinions_source ON second_opinions(source_id,created_at);
+                PRAGMA user_version=9; COMMIT;")?;
         }
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;",
@@ -286,18 +447,6 @@ impl Case {
         )?)
     }
     pub fn save_settings(&mut self, settings: Settings) -> Result<()> {
-        ensure!(
-            settings.case_budget.is_finite()
-                && settings.case_budget >= 0.0
-                && settings.case_budget <= 10000.0,
-            "Invalid case budget"
-        );
-        ensure!(
-            [settings.input_per_million, settings.output_per_million]
-                .iter()
-                .all(|p| p.is_finite() && *p >= 0.0 && *p <= 10000.0),
-            "Invalid model prices"
-        );
         ensure!(settings.model.len() <= 120, "Invalid model identifier");
         self.set_meta("settings", &serde_json::to_string(&settings)?)?;
         self.audit("policy_changed", serde_json::to_value(settings)?)?;
@@ -392,15 +541,34 @@ impl Case {
         normalize_document_status(&mut source);
         Ok(source)
     }
+    pub fn source_page(&self,before:Option<(&str,&str)>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT s.id,s.name,s.sha256,s.size,s.mime,s.kind,s.status,s.restricted,(SELECT count(*) FROM occurrences o WHERE o.source_id=s.id),s.created_at,j.result,EXISTS(SELECT 1 FROM records r WHERE r.id=json_extract(j.result,'$.record_id')) FROM sources s LEFT JOIN processing_jobs j ON j.rowid=(SELECT rowid FROM processing_jobs WHERE source_id=s.id AND kind='full_audio' AND status='complete' ORDER BY rowid DESC LIMIT 1) WHERE (?1 IS NULL OR s.created_at<?1 OR (s.created_at=?1 AND s.id<?2)) ORDER BY s.created_at DESC,s.id DESC LIMIT 51")?;
+        let mut sources=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r| {
+            let mut source=Source{id:r.get(0)?,name:r.get(1)?,sha256:r.get(2)?,size:r.get(3)?,mime:r.get(4)?,kind:r.get(5)?,status:r.get(6)?,restricted:r.get(7)?,occurrences:r.get(8)?,created_at:r.get(9)?};
+            if let Some(raw)=r.get::<_,Option<String>>(10)? {
+                let result=serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+                source.status=if result["metadata"]["no_audio_tracks"]==true {"no audio tracks · visual review pending"} else if r.get::<_,bool>(11)? {"text transcribed · all audio tracks · unreviewed"} else {"transcript record missing · needs attention"}.into();
+            }
+            normalize_document_status(&mut source);
+            Ok(source)
+        })?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=sources.len()>50;sources.truncate(50);
+        let next_cursor=if more {sources.last().map(|source|json!({"created_at":source.created_at,"id":source.id}))}else{None};
+        Ok(json!({"sources":sources,"next_cursor":next_cursor}))
+    }
     pub fn source_path(&self, source_id: &str) -> Result<PathBuf> {
         let s = self.source(source_id)?;
         ensure!(
             s.sha256.len() == 64 && s.sha256.chars().all(|c| c.is_ascii_hexdigit()),
             "Invalid source hash"
         );
-        let root = self.root.join("originals").canonicalize()?;
-        let path = root
-            .join(&s.sha256)
+        let original_root = self.root.join("originals");
+        ensure!(!is_link_or_reparse(&original_root)?, "Original storage is a link or reparse point");
+        let root = original_root.canonicalize()?;
+        ensure!(root.starts_with(&self.root), "Original storage escaped the case");
+        let original = root.join(&s.sha256);
+        ensure!(!is_link_or_reparse(&original)?, "Original is a link or reparse point");
+        let path = original
             .canonicalize()
             .context("Original is missing")?;
         ensure!(
@@ -409,12 +577,27 @@ impl Case {
         );
         Ok(path)
     }
+    /// Interactive verification: may reuse a session hash keyed by path, size
+    /// and mtime. Fast for browsing and citations; not tamper-proof against
+    /// same-size, mtime-preserving edits.
     pub fn verify_source(&self, source_id: &str) -> Result<PathBuf> {
         let s = self.source(source_id)?;
         let path = self.source_path(source_id)?;
         ensure!(
             file_hash_cached(&path)? == s.sha256,
             "Original bytes changed: integrity check failed"
+        );
+        Ok(path)
+    }
+    /// Strong verification: full fresh byte hash, never the interactive cache.
+    /// Used by explicit user verification and every protected publication path
+    /// (export, backup, artifact reuse, direct-media transmission).
+    pub fn verify_source_strong(&self, source_id: &str) -> Result<PathBuf> {
+        let s = self.source(source_id)?;
+        let path = self.source_path(source_id)?;
+        ensure!(
+            file_hash_strong(&path)? == s.sha256,
+            "Original bytes changed: strong integrity check failed"
         );
         Ok(path)
     }
@@ -448,7 +631,7 @@ impl Case {
             tx.execute("DELETE FROM source_fts WHERE source_id=?", [source_id])?;
             tx.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)", params![source_id, name, text])?;
             tx.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'", [])?;
-            tx.execute("UPDATE records SET stale=1 WHERE actor<>'processor' OR kind<>'transcript'", [])?;
+            tx.execute(STALE_DEPENDENTS_OF_SOURCE, params![source_id, ""])?;
             tx.commit()?;
         }
         Ok(revision)
@@ -478,7 +661,14 @@ impl Case {
         let lines: Vec<_> = text.lines().collect();
         ensure!(start <= lines.len().max(1), "Line outside revision");
         let end = (start - 1 + count).min(lines.len());
-        Ok(json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].join("\n"),"historical":true}))
+        // Same long-line bound and truncation reporting as the active-text read
+        // path, so a pathological single-line revision cannot balloon payloads.
+        let window = &lines[start - 1..end];
+        // A pinned revision is historical only when a different revision is
+        // now the active searchable text; a citation to the current wording
+        // must not be labelled as superseded.
+        let active: Option<i64> = self.db.query_row("SELECT revision FROM extracts WHERE source_id=?", [source_id], |r| r.get(0)).optional()?;
+        Ok(json!({"source_id":source_id,"revision":revision,"active_revision":active,"start":start,"end":end,"total_lines":lines.len(),"text":window.iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"historical":active!=Some(revision),"truncated_long_lines":window.iter().any(|s|s.chars().count()>2000),"locator":format!("evidence:{source_id}#R{revision}L{start}-L{end}")}))
     }
     pub fn import_files(&mut self, paths: &[String], production: &str) -> Result<Value> {
         ensure!(
@@ -555,7 +745,9 @@ impl Case {
             };
             let status = if text.is_some() {
                 "text indexed"
-            } else if ["image", "video", "audio", "pdf"].contains(&kind) || ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
+            } else if kind == "text" {
+                "text viewable · over 10 MB, not indexed"
+            } else if ["image", "video", "audio", "pdf"].contains(&kind) || crate::case::DOCUMENT_EXTENSIONS.contains(&ext.as_str()) {
                 "viewer available · extraction pending"
             } else {
                 "unsupported · preserved"
@@ -613,10 +805,20 @@ impl Case {
     }
     pub fn set_restricted(&mut self, source_id: &str, restricted: bool) -> Result<()> {
         self.source(source_id)?;
+        if restricted {
+            crate::processing::invalidate_source_lease(&self.root,source_id);
+            let mut query=self.db.prepare("SELECT id FROM processing_jobs WHERE source_id=? AND status='running'")?;
+            let active=query.query_map([source_id],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
+            drop(query);
+            for job in active {let _=crate::processing::cancel(self,&job);}
+        }
         self.db.execute(
             "UPDATE sources SET restricted=? WHERE id=?",
             params![restricted, source_id],
         )?;
+        let key=format!("source_policy_epoch:{source_id}");
+        let epoch=self.meta(&key)?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0).saturating_add(1);
+        self.set_meta(&key,&epoch.to_string())?;
         self.db.execute("UPDATE records SET stale=1 WHERE actor<>'processor' OR kind<>'transcript'", [])?;
         self.audit(
             "source_restriction",
@@ -624,16 +826,23 @@ impl Case {
         )
     }
     pub fn read_text(&self, source_id: &str, start: usize, count: usize) -> Result<Value> {
-        self.verify_source(source_id)?;
-        let (text, revision): (String, i64) = self
+        let path = self.verify_source(source_id)?;
+        let extract: Option<(String, i64)> = self
             .db
             .query_row(
                 "SELECT text,revision FROM extracts WHERE source_id=?",
                 [source_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?
-            .context("No text extraction exists. Source is preserved; processing is pending.")?;
+            .optional()?;
+        let Some((text, revision)) = extract else {
+            // Plain-text files over the 10 MB indexing limit are still
+            // readable page by page straight from the verified original.
+            if self.source(source_id)?.kind == "text" {
+                return read_original_lines(&path, source_id, start, count);
+            }
+            anyhow::bail!("No text extraction exists. Source is preserved; processing is pending.");
+        };
         ensure!(
             start >= 1 && count > 0 && count <= 200,
             "Request 1–200 lines starting at line 1 or later"
@@ -642,7 +851,7 @@ impl Case {
         ensure!(start <= lines.len().max(1), "Line outside source");
         let end = (start - 1 + count).min(lines.len());
         Ok(
-            json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"locator":format!("evidence:{source_id}#L{start}-L{end}"),"truncated_long_lines":lines[start-1..end].iter().any(|s|s.chars().count()>2000)}),
+            json!({"source_id":source_id,"revision":revision,"start":start,"end":end,"total_lines":lines.len(),"text":lines[start-1..end].iter().map(|s|s.chars().take(2000).collect::<String>()).collect::<Vec<_>>().join("\n"),"locator":format!("evidence:{source_id}#R{revision}L{start}-L{end}"),"truncated_long_lines":lines[start-1..end].iter().any(|s|s.chars().count()>2000)}),
         )
     }
     pub fn search(&self, query: &str, offset: usize) -> Result<Value> {
@@ -679,6 +888,31 @@ impl Case {
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+    pub fn record_summaries(&self) -> Result<Vec<Value>> {
+        let mut stmt=self.db.prepare("SELECT id,title,kind,revision,actor,review,protected,stale,updated_at,dependencies FROM records ORDER BY updated_at DESC,id DESC")?;
+        let rows=stmt.query_map([],|r|{
+            let kind:String=r.get(2)?;let actor:String=r.get(4)?;
+            Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"kind":kind,"revision":r.get::<_,i64>(3)?,"actor":actor,"review":r.get::<_,String>(5)?,"protected":r.get::<_,bool>(6)?,"stale":if actor=="processor"&&kind=="transcript"{false}else{r.get::<_,bool>(7)?},"updated_at":r.get::<_,String>(8)?,"dependencies":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(json!([]))}))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>,_>>()?)
+    }
+    pub fn record_page(&self,before:Option<(&str,&str)>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT id,title,kind,revision,actor,review,protected,stale,updated_at,dependencies FROM records WHERE (?1 IS NULL OR updated_at<?1 OR (updated_at=?1 AND id<?2)) ORDER BY updated_at DESC,id DESC LIMIT 51")?;
+        let mut records=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r|{
+            let kind:String=r.get(2)?;let actor:String=r.get(4)?;
+            Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"kind":kind,"revision":r.get::<_,i64>(3)?,"actor":actor,"review":r.get::<_,String>(5)?,"protected":r.get::<_,bool>(6)?,"stale":if actor=="processor"&&kind=="transcript"{false}else{r.get::<_,bool>(7)?},"updated_at":r.get::<_,String>(8)?,"dependencies":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(json!([]))}))
+        })?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=records.len()>50;records.truncate(50);
+        let next_cursor=if more {records.last().map(|record|json!({"updated_at":record["updated_at"],"id":record["id"]}))}else{None};
+        Ok(json!({"records":records,"next_cursor":next_cursor}))
+    }
+    pub fn record_summary(&self,id:&str)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT id,title,kind,revision,actor,review,protected,stale,updated_at,dependencies FROM records WHERE id=?")?;
+        stmt.query_row([id],|r|{
+            let kind:String=r.get(2)?;let actor:String=r.get(4)?;
+            Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"kind":kind,"revision":r.get::<_,i64>(3)?,"actor":actor,"review":r.get::<_,String>(5)?,"protected":r.get::<_,bool>(6)?,"stale":if actor=="processor"&&kind=="transcript"{false}else{r.get::<_,bool>(7)?},"updated_at":r.get::<_,String>(8)?,"dependencies":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(json!([]))}))
+        }).map_err(Into::into)
     }
     pub fn record(&self, record_id: &str) -> Result<Record> {
         self.db
@@ -970,33 +1204,95 @@ impl Case {
         receipt["skipped"] = json!(skipped);
         Ok(receipt)
     }
+    pub fn task_page(&self,before:Option<(&str,&str)>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT t.id,substr(t.prompt,1,500),t.mode,t.status,t.step,substr(t.answer,1,200),substr(t.error,1,300),t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),COALESCE(ct.conversation_id,t.id),length(t.answer)>200,m.value,(SELECT SUM(actual) FROM transmissions WHERE task_id=t.id),(SELECT EXISTS(SELECT 1 FROM transmissions WHERE task_id=t.id AND actual IS NULL)) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id LEFT JOIN meta m ON m.key='chat_title:'||COALESCE(ct.conversation_id,t.id) WHERE t.id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE(ct.conversation_id,t.id) NOT IN (SELECT id FROM hidden_conversations) AND t.mode<>'second_opinion' AND (?1 IS NULL OR t.created_at<?1 OR (t.created_at=?1 AND t.id<?2)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
+        let mut tasks=stmt.query_map(params![before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"conversation_id":r.get::<_,String>(11)?,"answer_truncated":r.get::<_,bool>(12)?,"title":r.get::<_,Option<String>>(13)?,"cost":r.get::<_,Option<f64>>(14)?,"cost_partial":r.get::<_,bool>(15)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=tasks.len()>50;tasks.truncate(50);
+        let next_cursor=if more {tasks.last().map(|task|json!({"created_at":task["created_at"],"id":task["id"]}))}else{None};
+        Ok(json!({"tasks":tasks,"next_cursor":next_cursor}))
+    }
+    pub fn conversation_detail(&self,conversation:&str,before:Option<(&str,&str)>)->Result<Value> {
+        ensure!(!self.db.query_row("SELECT EXISTS(SELECT 1 FROM hidden_conversations WHERE id=?)",[conversation],|r|r.get::<_,bool>(0))?,"Conversation is hidden");
+        let mut stmt=self.db.prepare("SELECT t.id,t.prompt,t.mode,t.status,t.step,t.answer,t.error,t.generation,t.created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=t.id),(SELECT SUM(actual) FROM transmissions WHERE task_id=t.id),(SELECT EXISTS(SELECT 1 FROM transmissions WHERE task_id=t.id AND actual IS NULL)) FROM tasks t LEFT JOIN conversation_tasks ct ON ct.task_id=t.id WHERE COALESCE(ct.conversation_id,t.id)=?1 AND t.id NOT IN (SELECT task_id FROM agent_assignments) AND t.mode<>'second_opinion' AND (?2 IS NULL OR t.created_at<?2 OR (t.created_at=?2 AND t.id<?3)) ORDER BY t.created_at DESC,t.id DESC LIMIT 51")?;
+        let mut tasks=stmt.query_map(params![conversation,before.map(|value|value.0),before.map(|value|value.1)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"step":r.get::<_,i64>(4)?,"answer":r.get::<_,String>(5)?,"error":r.get::<_,String>(6)?,"generation":r.get::<_,i64>(7)?,"created_at":r.get::<_,String>(8)?,"input_tokens":r.get::<_,i64>(9)?,"output_tokens":r.get::<_,i64>(10)?,"cost":r.get::<_,Option<f64>>(11)?,"cost_partial":r.get::<_,bool>(12)?,"conversation_id":conversation})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let has_older=tasks.len()>50;tasks.truncate(50);
+        for task in &mut tasks {task["progress"]=serde_json::to_value(crate::review_progress::load(self,task["id"].as_str().unwrap_or_default())?)?;task["title"]=json!(self.meta(&format!("chat_title:{conversation}"))?);}
+        let next_cursor=if has_older {tasks.last().map(|task|json!({"created_at":task["created_at"],"id":task["id"]}))}else{None};
+        Ok(json!({"tasks":tasks,"has_older":has_older,"next_cursor":next_cursor}))
+    }
+    pub fn case_summary(&self)->Result<Value> {
+        let (source_count,record_count,task_count,job_count):(i64,i64,i64,i64)=self.db.query_row("SELECT (SELECT count(*) FROM sources),(SELECT count(*) FROM records),(SELECT count(*) FROM tasks),(SELECT count(*) FROM processing_jobs)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        let audit_seq:i64=self.db.query_row("SELECT COALESCE(MAX(seq),0) FROM audit",[],|r|r.get(0))?;
+        let action_rowid:i64=self.db.query_row("SELECT COALESCE(MAX(rowid),0) FROM actions",[],|r|r.get(0))?;
+        let transmission_rowid:i64=self.db.query_row("SELECT COALESCE(MAX(rowid),0) FROM transmissions",[],|r|r.get(0))?;
+        let task_update:String=self.db.query_row("SELECT COALESCE(MAX(updated_at),'') FROM tasks",[],|r|r.get(0))?;
+        let (tasks_running,tasks_paused,tasks_complete):(i64,i64,i64)=self.db.query_row("SELECT COALESCE(SUM(status='running'),0),COALESCE(SUM(status='paused'),0),COALESCE(SUM(status='complete'),0) FROM tasks",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let (queued,running,failed,complete):(i64,i64,i64,i64)=self.db.query_row("SELECT COALESCE(SUM(status='queued'),0),COALESCE(SUM(status='running'),0),COALESCE(SUM(status IN ('failed','interrupted')),0),COALESCE(SUM(status='complete'),0) FROM processing_jobs",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        let source_bytes:i64=self.db.query_row("SELECT COALESCE(SUM(size),0) FROM sources",[],|r|r.get(0))?;
+        let jobs_attention:i64=self.db.query_row("SELECT count(*) FROM processing_jobs j WHERE j.status IN ('failed','interrupted') AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) AND NOT EXISTS(SELECT 1 FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id))",[],|r|r.get(0))?;
+        let viewer_request=self.meta("viewer_request")?.map(|value|digest(value.as_bytes()));
+        Ok(json!({"case_id":self.meta("id")?,"generation":self.generation()?,"audit_seq":audit_seq,"action_rowid":action_rowid,"transmission_rowid":transmission_rowid,"viewer_request_hash":viewer_request,"task_update":task_update,"tasks_running":tasks_running,"tasks_paused":tasks_paused,"tasks_complete":tasks_complete,"source_count":source_count,"source_bytes":source_bytes,"record_count":record_count,"task_count":task_count,"job_count":job_count,"jobs_queued":queued,"jobs_running":running,"jobs_failed":failed,"jobs_attention":jobs_attention,"jobs_complete":complete,"chat_pause":crate::automatic::chat_pause_reason(self)?}))
+    }
+    pub fn job_page(&self,before:Option<i64>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,substr(j.error,1,500),j.created_at,(EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) OR EXISTS(SELECT 1 FROM processing_jobs parent JOIN processing_jobs newer ON newer.source_id=parent.source_id AND newer.kind=parent.kind AND newer.rowid>parent.rowid WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id))),(SELECT parent.id FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id) ORDER BY parent.rowid DESC LIMIT 1),j.rowid FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE (?1 IS NULL OR j.rowid<?1) ORDER BY j.rowid DESC LIMIT 51")?;
+        let mut jobs=stmt.query_map([before],|r|Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?,"parent_run_id":r.get::<_,Option<String>>(8)?,"cursor":r.get::<_,i64>(9)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=jobs.len()>50;jobs.truncate(50);
+        let next_cursor=if more {jobs.last().and_then(|job|job["cursor"].as_i64())}else{None};
+        for job in &mut jobs {job.as_object_mut().unwrap().remove("cursor");}
+        Ok(json!({"jobs":jobs,"next_cursor":next_cursor}))
+    }
+    pub fn job_progress(&self,job_id:&str)->Result<Value> {
+        uuid::Uuid::parse_str(job_id)?;
+        let (kind,status,result,priority,attempt,heartbeat):(String,String,String,String,i64,Option<String>)=self.db.query_row(
+            "SELECT j.kind,j.status,j.result,s.priority,s.attempt,s.heartbeat FROM processing_jobs j JOIN job_schedule s ON s.job_id=j.id WHERE j.id=?",
+            [job_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+        let progress=if ["video_ocr_index","video_overview_index"].contains(&kind.as_str()) {
+            let state:Value=serde_json::from_str(&result)?;
+            json!({"unit":"seconds indexed","completed":state["next_start"]})
+        } else if kind=="full_audio" {
+            let path=self.root.join("staging").join(format!("transcript-{job_id}")).join("progress.json");
+            let within_staging=path.canonicalize().ok().zip(self.root.join("staging").canonicalize().ok()).is_some_and(|(file,staging)|file.starts_with(staging));
+            if within_staging && path.metadata().is_ok_and(|metadata|metadata.len()<=65536) && fs::symlink_metadata(&path).is_ok_and(|metadata|!metadata.file_type().is_symlink()) {
+                fs::read(&path).ok().and_then(|raw|serde_json::from_slice::<Value>(&raw).ok()).map(|value|json!({"unit":"seconds processed","completed":value["processed_seconds"],"total":value["estimated_seconds"],"segments":value["segments"],"track":value["track_number"],"tracks":value["track_count"]})).unwrap_or(Value::Null)
+            }else{Value::Null}
+        }else{Value::Null};
+        Ok(json!({"job_id":job_id,"kind":kind,"status":status,"priority":priority,"attempt":attempt,"heartbeat":heartbeat,"progress":progress}))
+    }
+    pub fn attention_job_page(&self,before:Option<i64>)->Result<Value> {
+        let mut stmt=self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,substr(j.error,1,500),j.created_at,j.rowid FROM processing_jobs j JOIN sources s ON s.id=j.source_id WHERE j.status IN ('failed','interrupted') AND (?1 IS NULL OR j.rowid<?1) AND NOT EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.rowid>j.rowid) AND NOT EXISTS(SELECT 1 FROM processing_jobs parent WHERE parent.source_id=j.source_id AND parent.kind IN ('video_ocr_index','video_overview_index') AND (json_extract(parent.result,'$.active_job')=j.id OR json_extract(parent.result,'$.last_failed_job')=j.id)) ORDER BY j.rowid DESC LIMIT 51")?;
+        let mut jobs=stmt.query_map([before],|r|Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":false,"parent_run_id":Value::Null,"cursor":r.get::<_,i64>(7)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=jobs.len()>50;jobs.truncate(50);
+        let next_cursor=if more {jobs.last().and_then(|job|job["cursor"].as_i64())}else{None};
+        for job in &mut jobs {job.as_object_mut().unwrap().remove("cursor");}
+        Ok(json!({"jobs":jobs,"next_cursor":next_cursor}))
+    }
     pub fn snapshot(&self) -> Result<Value> {
-        let mut stmt=self.db.prepare("SELECT id,prompt,mode,status,budget,reserved,spent,step,answer,error,generation,created_at,(SELECT COALESCE(SUM(json_extract(usage,'$.input_tokens')),0) FROM transmissions WHERE task_id=tasks.id),(SELECT COALESCE(SUM(json_extract(usage,'$.output_tokens')),0) FROM transmissions WHERE task_id=tasks.id) FROM tasks WHERE id NOT IN (SELECT task_id FROM agent_assignments) AND COALESCE((SELECT conversation_id FROM conversation_tasks WHERE task_id=tasks.id),tasks.id) NOT IN (SELECT id FROM hidden_conversations) ORDER BY created_at DESC")?;
-        let tasks=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"prompt":r.get::<_,String>(1)?,"mode":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"budget":r.get::<_,f64>(4)?,"reserved":r.get::<_,f64>(5)?,"spent":r.get::<_,f64>(6)?,"step":r.get::<_,i64>(7)?,"answer":r.get::<_,String>(8)?,"error":r.get::<_,String>(9)?,"generation":r.get::<_,i64>(10)?,"created_at":r.get::<_,String>(11)?,"input_tokens":r.get::<_,i64>(12)?,"output_tokens":r.get::<_,i64>(13)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let mut tasks = tasks;
-        for task in &mut tasks {
-            let conversation: Option<String> = self.db.query_row("SELECT conversation_id FROM conversation_tasks WHERE task_id=?", [task["id"].as_str().unwrap_or_default()], |r|r.get(0)).optional()?;
-            task["conversation_id"]=json!(conversation.unwrap_or_else(||task["id"].as_str().unwrap_or_default().to_string()));
-            task["progress"] = serde_json::to_value(crate::review_progress::load(self,task["id"].as_str().unwrap_or_default())?)?;
-            task["title"] = json!(self.meta(&format!("chat_title:{}", task["conversation_id"].as_str().unwrap_or_default()))?);
-        }
-        let spent: f64 = self.db.query_row(
-            "SELECT COALESCE(SUM(reserved),0) FROM transmissions",
-            [],
-            |r| r.get(0),
-        )?;
-        let mut jobs = self.db.prepare("SELECT j.id,j.source_id,s.name,j.kind,j.status,j.error,j.created_at,EXISTS(SELECT 1 FROM processing_jobs newer WHERE newer.source_id=j.source_id AND newer.kind=j.kind AND newer.status='complete' AND newer.rowid>j.rowid) FROM processing_jobs j JOIN sources s ON s.id=j.source_id ORDER BY j.created_at DESC")?;
-        let jobs = jobs.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"source_id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"error":r.get::<_,String>(5)?,"created_at":r.get::<_,String>(6)?,"superseded":r.get::<_,bool>(7)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let mut issues = self.db.prepare("SELECT id,name,output,created_at FROM actions WHERE status='failed' ORDER BY created_at DESC")?;
-        let issues = issues.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"error":r.get::<_,String>(2)?,"created_at":r.get::<_,String>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let tasks=self.task_page(None)?["tasks"].clone();
+        let job_page=self.job_page(None)?;
+        let attention_page=self.attention_job_page(None)?;
+        let source_page=self.source_page(None)?;
+        let record_page=self.record_page(None)?;
+        let jobs=job_page["jobs"].clone();
+        let mut issues = self.db.prepare("SELECT a.task_id,a.name,a.output,COUNT(*),(SELECT last.id FROM actions last WHERE last.status='failed' AND last.task_id=a.task_id AND last.name=a.name AND last.output=a.output ORDER BY last.rowid DESC LIMIT 1),MAX(a.created_at) FROM actions a WHERE a.status='failed' GROUP BY a.task_id,a.name,a.output ORDER BY MAX(a.rowid) DESC LIMIT 100")?;
+        let issues = issues.query_map([], |r| {let output=serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or(Value::Null);Ok(json!({"task_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"error":output["error"].as_str().unwrap_or("Tool failed; open the receipt for details"),"count":r.get::<_,i64>(3)?,"latest_receipt":r.get::<_,String>(4)?,"created_at":r.get::<_,String>(5)?}))})?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(
-            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":self.sources()?,"records":self.records()?,"settings":self.settings()?,"tasks":tasks,"budget_committed":spent,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
+            json!({"automatic_analysis":crate::automatic::status(self)?,"ai_config":crate::providers::load(self)?,"jobs":jobs,"job_next_cursor":job_page["next_cursor"],"attention_jobs":attention_page["jobs"],"attention_next_cursor":attention_page["next_cursor"],"issues":issues,"id":self.meta("id")?,"name":self.meta("name")?,"root":self.root,"generation":self.generation()?,"sources":source_page["sources"],"source_next_cursor":source_page["next_cursor"],"records":record_page["records"],"record_next_cursor":record_page["next_cursor"],"counts":self.case_summary()?,"settings":self.settings()?,"tasks":tasks,"viewer_request":self.meta("viewer_request")?.and_then(|v|serde_json::from_str::<Value>(&v).ok())}),
         )
     }
     pub fn actions(&self, task: &str) -> Result<Value> {
         let mut stmt=self.db.prepare("SELECT id,name,input,output,status,created_at FROM actions WHERE task_id=? ORDER BY created_at")?;
         let rows=stmt.query_map([task],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"input":r.get::<_,String>(2)?,"output":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"created_at":r.get::<_,String>(5)?})))?;
         Ok(json!(rows.collect::<std::result::Result<Vec<_>, _>>()?))
+    }
+    pub fn issue_history(&self, receipt: &str, offset: u64) -> Result<Value> {
+        let (task,name,output):(String,String,String)=self.db.query_row(
+            "SELECT task_id,name,output FROM actions WHERE id=? AND status='failed'",
+            [receipt],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))
+        )?;
+        let mut stmt=self.db.prepare("SELECT id,created_at FROM actions WHERE task_id=? AND name=? AND output=? AND status='failed' ORDER BY rowid DESC LIMIT 51 OFFSET ?")?;
+        let mut rows=stmt.query_map(rusqlite::params![task,name,output,offset.min(i64::MAX as u64) as i64],|r|Ok(json!({"id":r.get::<_,String>(0)?,"created_at":r.get::<_,String>(1)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let more=rows.len()>50;rows.truncate(50);
+        Ok(json!({"receipts":rows,"next_offset":if more{Some(offset+50)}else{None}}))
     }
     pub fn validate_citation(&self, citation: &str) -> Result<Value> {
         let rest = citation
@@ -1006,6 +1302,11 @@ impl Case {
             .split_once('#')
             .context("Citation requires an exact locator")?;
         let s = self.source(source_id)?;
+        // Which immutable extraction revision the line bounds resolve against.
+        // `R<rev>L a-b` pins the revision; bare `L a-b` is the legacy/active-text
+        // form (a navigation address whose meaning moves with the active row).
+        let mut revision_binding = "active-text";
+        let mut pinned_revision: Option<i64> = None;
         if let Some(artifact_id) = loc.strip_prefix("artifact:") {
             let (owner, _, _, _) = crate::processing::artifact(self, artifact_id)?;
             ensure!(owner == source_id, "Artifact belongs to another source");
@@ -1014,6 +1315,25 @@ impl Case {
         } else if loc == "image" {
             ensure!(s.kind == "image", "Source is not an image");
             self.verify_source(source_id)?;
+        } else if let Some(lines) = loc.strip_prefix('R') {
+            let (rev, rest) = lines.split_once('L').context("Use R2L1-L3 syntax")?;
+            let rev = canonical_locator_number(rev).context("Use R2L1-L3 syntax")?;
+            ensure!(rev >= 1, "Invalid extraction revision");
+            let (a, b) = rest.split_once("-L").context("Use R2L1-L3 syntax")?;
+            let a = canonical_locator_number(a).context("Use R2L1-L3 syntax")? as usize;
+            let b = canonical_locator_number(b).context("Use R2L1-L3 syntax")? as usize;
+            ensure!(b >= a && b - a < 200, "Invalid line interval");
+            // Pinned citations verify the original bytes exactly like the
+            // legacy form does; the wording itself is checked against the
+            // immutable revision below.
+            self.verify_source(source_id)?;
+            let result = self.read_text_revision(source_id, rev as i64, a, b - a + 1)?;
+            ensure!(
+                result["end"].as_u64() == Some(b as u64),
+                "Citation extends beyond extraction revision"
+            );
+            revision_binding = "pinned";
+            pinned_revision = Some(rev as i64);
         } else if let Some(lines) = loc.strip_prefix('L') {
             let (a, b) = lines.split_once("-L").context("Use L1-L3 syntax")?;
             let a: usize = a.parse()?;
@@ -1024,11 +1344,12 @@ impl Case {
                 result["end"].as_u64() == Some(b as u64),
                 "Citation extends beyond source"
             );
+            pinned_revision = result["revision"].as_i64();
         } else {
             bail!("This locator type is not implemented yet");
         }
         Ok(
-            json!({"valid":true,"source_id":source_id,"name":s.name,"citation":citation,"support":"Locator verified; evidentiary support requires review"}),
+            json!({"valid":true,"source_id":source_id,"name":s.name,"citation":citation,"revision":pinned_revision,"revision_binding":revision_binding,"support":"Locator verified; evidentiary support requires review"}),
         )
     }
     pub fn export_record(&mut self, record_id: &str, destination: &Path) -> Result<()> {
@@ -1072,6 +1393,76 @@ impl Case {
             json!({"record":record_id,"revision":r.revision,"hash":digest(body.as_bytes())}),
         )
     }
+    pub fn export_record_at_revision(&mut self, record_id: &str, expected_revision: i64, destination: &Path) -> Result<()> {
+        ensure!(self.record(record_id)?.revision == expected_revision, "Record changed since export was selected; refresh and try again");
+        self.export_record(record_id, destination)
+    }
+}
+
+/// Permanently delete an entire case folder after explicit confirmation.
+/// Fails closed unless the folder is a real case database, the confirmation
+/// repeats the case name, and the exclusive case lock is free — so a case open
+/// in this or another instance can never be removed underneath a live session
+/// (the caller closes the open case first). Read-only attributes on preserved
+/// originals are cleared during the removal walk; reparse points and symlinks
+/// are unlinked, never traversed.
+pub fn delete_case(root: &Path, confirm: &str) -> Result<Value> {
+    ensure!(root.is_absolute(), "Choose an absolute local path");
+    ensure!(root.is_dir(), "Case folder not found");
+    ensure!(
+        root.join("case.sqlite3").is_file(),
+        "No case database found; this is not a case folder"
+    );
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join("case.lock"))?;
+    lock.try_lock_exclusive().context(
+        "This case is open in another window. Close it there before deleting.",
+    )?;
+    let db = Connection::open(root.join("case.sqlite3"))?;
+    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    ensure!(version <= CASE_SCHEMA, "This case requires a newer application");
+    let name: String = db
+        .query_row("SELECT value FROM meta WHERE key='name'", [], |r| r.get(0))
+        .optional()
+        .map_err(|_| anyhow::anyhow!("Not an Evidence Desk case"))?
+        .context("Not an Evidence Desk case")?;
+    let sources: i64 = db.query_row("SELECT count(*) FROM sources", [], |r| r.get(0))?;
+    let records: i64 = db.query_row("SELECT count(*) FROM records", [], |r| r.get(0))?;
+    drop(db);
+    ensure!(
+        confirm.trim().eq_ignore_ascii_case(name.trim()),
+        "Type the case name exactly to confirm deletion"
+    );
+    // Clear the read-only flag on content-addressed originals so removal can
+    // proceed. Reparse points are skipped here and unlink — never follow —
+    // inside remove_dir_all.
+    let mut bytes = 0u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            #[cfg(windows)]
+            { use std::os::windows::fs::MetadataExt; if metadata.file_attributes() & 0x400 != 0 { continue; } }
+            if metadata.file_type().is_symlink() { continue; }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                bytes += metadata.len();
+                let mut permissions = metadata.permissions();
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(entry.path(), permissions);
+            }
+        }
+    }
+    fs::remove_dir_all(root).context(
+        "Case folder could not be fully removed; close any program using these files and retry",
+    )?;
+    Ok(json!({"deleted":true,"name":name,"sources":sources,"records":records,"bytes":bytes}))
 }
 
 pub fn safe_relative(path: &Path) -> bool {
@@ -1079,6 +1470,20 @@ pub fn safe_relative(path: &Path) -> bool {
         && path.components().all(|c| matches!(c, Component::Normal(_)))
         && !path.to_string_lossy().contains(':')
         && !path.to_string_lossy().contains('\\')
+}
+
+/// Canonical nonnegative integer for serialized citation locators: ASCII digits
+/// only, no sign and no leading zeros, so one location has exactly one spelling
+/// on both the Rust and TypeScript grammars.
+pub fn canonical_locator_number(text: &str) -> Option<u64> {
+    if text.is_empty()
+        || text.len() > 18
+        || !text.bytes().all(|b| b.is_ascii_digit())
+        || text.starts_with('0')
+    {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// Prepared outside the database writer lock. Fields remain private to the importer.
@@ -1180,7 +1585,73 @@ pub fn folder_paths(case_root:&Path,folder:&Path)->Result<(Vec<String>,Vec<Value
 
 fn normalize_document_status(source:&mut Source) {
     let ext=Path::new(&source.name).extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
-    if source.status=="unsupported · preserved" && ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
+    if source.status=="unsupported · preserved" && crate::case::DOCUMENT_EXTENSIONS.contains(&ext.as_str()) {
         source.status="document preview available · extraction pending".into();
     }
+}
+
+/// Originals that get a sandboxed document extraction when opened.
+pub const DOCUMENT_EXTENSIONS: [&str; 5] = ["docx", "xlsx", "pptx", "odt", "eml"];
+
+/// Sparse line index for large plain-text originals: the byte offset of every
+/// LINE_INDEX_STEP-th line, cached per (path, length, mtime). Reading a page
+/// seeks to the nearest checkpoint instead of loading the whole file.
+const LINE_INDEX_STEP: usize = 1024;
+type LineIndex = (u64, std::time::SystemTime, Vec<u64>, usize);
+fn line_index_cache() -> &'static Mutex<HashMap<PathBuf, LineIndex>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, LineIndex>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn line_index(path: &Path) -> Result<(Vec<u64>, usize)> {
+    use std::io::BufRead;
+    let metadata = fs::metadata(path)?;
+    let (len, modified) = (metadata.len(), metadata.modified()?);
+    if let Ok(cache) = line_index_cache().lock() {
+        if let Some((l, m, offsets, total)) = cache.get(path) {
+            if *l == len && *m == modified { return Ok((offsets.clone(), *total)); }
+        }
+    }
+    let mut reader = std::io::BufReader::with_capacity(1 << 20, fs::File::open(path)?);
+    let (mut offsets, mut total, mut position, mut buffer) = (vec![0u64], 0usize, 0u64, Vec::new());
+    loop {
+        buffer.clear();
+        let read = reader.read_until(b'\n', &mut buffer)?;
+        if read == 0 { break; }
+        total += 1;
+        position += read as u64;
+        if total % LINE_INDEX_STEP == 0 { offsets.push(position); }
+    }
+    if let Ok(mut cache) = line_index_cache().lock() {
+        if cache.len() >= 16 { cache.clear(); }
+        cache.insert(path.to_path_buf(), (len, modified, offsets.clone(), total));
+    }
+    Ok((offsets, total))
+}
+/// A page of lines read directly from a large plain-text original. It is not
+/// indexed for search and carries no line citation, because line citations
+/// must resolve against a recorded extraction revision.
+fn read_original_lines(path: &Path, source_id: &str, start: usize, count: usize) -> Result<Value> {
+    use std::io::{BufRead, Seek, SeekFrom};
+    ensure!(start >= 1 && count > 0 && count <= 200, "Request 1–200 lines starting at line 1 or later");
+    let (offsets, total) = line_index(path)?;
+    ensure!(start <= total.max(1), "Line outside source");
+    let checkpoint = (start - 1) / LINE_INDEX_STEP;
+    let mut reader = std::io::BufReader::new(fs::File::open(path)?);
+    reader.seek(SeekFrom::Start(offsets[checkpoint]))?;
+    let mut line_number = checkpoint * LINE_INDEX_STEP;
+    let (mut lines, mut long, mut buffer) = (Vec::new(), false, Vec::new());
+    while lines.len() < count {
+        buffer.clear();
+        if reader.read_until(b'\n', &mut buffer)? == 0 { break; }
+        line_number += 1;
+        if line_number < start { continue; }
+        let text = String::from_utf8_lossy(&buffer);
+        let text = text.trim_end_matches(['\n', '\r']);
+        long |= text.chars().count() > 2000;
+        lines.push(text.chars().take(2000).collect::<String>());
+    }
+    let end = start - 1 + lines.len();
+    Ok(json!({"source_id":source_id,"revision":null,"start":start,"end":end,"total_lines":total,"text":lines.join("\n"),
+        "locator":format!("evidence:{source_id}"),"truncated_long_lines":long,"raw_original":true,
+        "note":"Read directly from the original file, which is over the 10 MB indexing limit: not searchable and not citable by line."}))
 }

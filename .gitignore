@@ -9,6 +9,8 @@ src-tauri/target/
 .venv-worker/
 workers/models/
 src-tauri/resources/worker/
+src-tauri/resources/codex/codex.exe
+src-tauri/resources/codex/codex-app-server.exe
 __pycache__/
 test-results/
 playwright-report/
@@ -16,3 +18,7 @@ playwright-report/
 artifacts/
 tmp/
 output/
+.claude/worktrees/
+.codex/
+.agent-team/
+src-tauri/gen/schemas/linux-schema.json

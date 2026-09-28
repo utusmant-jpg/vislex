@@ -45,6 +45,87 @@ fn body(input: Value) -> Value {
 }
 
 #[test]
+fn tool_schemas_satisfy_openai_strict_mode() {
+    // Every tool ships with strict:true, and the Responses API rejects the whole
+    // chat request when any object schema omits additionalProperties:false or
+    // lists a property outside required. This guard keeps one malformed tool
+    // schema from disabling chat on every model.
+    fn check(schema: &Value, path: &str) {
+        let types = match &schema["type"] {
+            Value::String(kind) => vec![kind.clone()],
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|value| value.as_str().map(String::from))
+                .collect(),
+            _ => vec![],
+        };
+        let object_like = types.iter().any(|kind| kind == "object")
+            || schema.get("properties").is_some()
+            || schema.get("additionalProperties").is_some();
+        if object_like {
+            assert_eq!(
+                schema["additionalProperties"],
+                json!(false),
+                "object schema at {path} must set additionalProperties:false"
+            );
+            let required: Vec<String> = schema["required"]
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(props) = schema["properties"].as_object() {
+                for name in props.keys() {
+                    assert!(
+                        required.contains(name),
+                        "property {path}.{name} must be listed in required"
+                    );
+                }
+            }
+        }
+        if let Some(items) = schema.get("items") {
+            check(items, &format!("{path}.items"));
+        }
+        if let Some(props) = schema.get("properties").and_then(|props| props.as_object()) {
+            for (name, sub) in props {
+                check(sub, &format!("{path}.{name}"));
+            }
+        }
+    }
+    for tool in agent::tools("investigate") {
+        assert_eq!(
+            tool["strict"],
+            json!(true),
+            "tool {} must keep strict argument validation",
+            tool["name"]
+        );
+        check(&tool["parameters"], &format!("tool {}", tool["name"]));
+    }
+    check(&agent::visual_review_tool()["parameters"], "visual review tool");
+}
+
+#[test]
+fn review_candidate_candidate_blocks_match_finish_task_block_shape() {
+    // The candidate echoed back by finish_task is fed to review_candidate; its
+    // blocks schema must accept the same structured blocks.
+    let candidate = agent::tools("investigate")
+        .into_iter()
+        .find(|tool| tool["name"] == "review_candidate")
+        .unwrap();
+    let finish = agent::tools("investigate")
+        .into_iter()
+        .find(|tool| tool["name"] == "finish_task")
+        .unwrap();
+    assert_eq!(
+        candidate["parameters"]["properties"]["candidate"]["properties"]["blocks"]["items"],
+        finish["parameters"]["properties"]["blocks"]["items"]
+    );
+}
+
+#[test]
 fn providers_preserve_native_tool_pairs_and_signatures() {
     let input = json!([{"role":"user","content":"Inspect the report"},{"type":"function_call","call_id":"c1","name":"read_text","arguments":"{}"},{"type":"function_call_output","call_id":"c1","output":"source text"}]);
     let claude = providers::encode(Provider::Anthropic, &body(input.clone())).unwrap();
@@ -98,6 +179,144 @@ fn provider_rejects_orphans_truncation_and_url_models() {
     let mut request = body(json!([]));
     request["model"] = json!("model?key=secret");
     assert!(providers::encode(Provider::Gemini, &request).is_err());
+}
+
+#[test]
+fn claude_stream_waits_for_complete_signed_multi_tool_message() {
+    let wire = providers::encode(Provider::Anthropic, &body(json!([{"role":"user","content":"Synthetic question"}]))).unwrap();
+    assert_eq!(wire.body["stream"], true);
+    let events = vec![
+        json!({"type":"message_start","message":{"role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":12,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Check "}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the source."}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"synthetic thought"}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"signed"}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call-a","name":"read_text","input":{}}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"start\":"}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"1}"}}),
+        json!({"type":"content_block_stop","index":2}),
+        json!({"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"call-b","name":"read_text","input":{}}}),
+        json!({"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"start\":2}"}}),
+        json!({"type":"content_block_stop","index":3}),
+        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}),
+        json!({"type":"message_stop"}),
+    ];
+    let bytes = events.iter().map(|event| format!("data: {}\n\n", event)).collect::<String>().into_bytes();
+    let mut sse = agent::ResponseStream::default();
+    let mut claude = providers::ClaudeStream::default();
+    let mut completed = None;
+    for chunk in bytes.chunks(13) {
+        for event in sse.push(chunk).unwrap() {
+            let result = claude.push(&event).unwrap();
+            if result.is_some() { completed = result; }
+        }
+    }
+    let result = completed.unwrap();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["usage"]["input_tokens"], 12);
+    assert_eq!(result["usage"]["output_tokens"], 9);
+    assert_eq!(result["output"][0]["content"][0]["text"], "Check the source.");
+    assert_eq!(result["output"][1]["part"]["signature"], "signed");
+    assert_eq!(result["output"][2]["call_id"], "call-a");
+    assert_eq!(result["output"][2]["arguments"], "{\"start\":1}");
+    assert_eq!(result["output"][3]["call_id"], "call-b");
+}
+
+#[test]
+fn claude_stream_rejects_partial_and_malformed_tool_calls() {
+    let start = json!({"type":"message_start","message":{"role":"assistant","content":[],"stop_reason":null,"usage":{}}});
+    let tool = json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-a","name":"read_text","input":{}}});
+    let mut partial = providers::ClaudeStream::default();
+    partial.push(&start).unwrap();
+    partial.push(&tool).unwrap();
+    assert!(partial.push(&json!({"type":"message_stop"})).is_err());
+    let mut malformed = providers::ClaudeStream::default();
+    malformed.push(&start).unwrap();
+    malformed.push(&tool).unwrap();
+    malformed.push(&json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{bad"}})).unwrap();
+    assert!(malformed.push(&json!({"type":"content_block_stop","index":0})).is_err());
+    let mut truncated = providers::ClaudeStream::default();
+    truncated.push(&start).unwrap();
+    truncated.push(&json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}})).unwrap();
+    assert!(truncated.push(&json!({"type":"message_stop"})).unwrap_err().to_string().contains("output token limit"));
+    let mut rejected = providers::ClaudeStream::default();
+    assert!(rejected.push(&json!({"type":"error","error":{"message":"Synthetic provider error"}})).is_err());
+}
+
+#[test]
+fn gemini_stream_preserves_final_empty_signature_and_complete_tool_parts() {
+    let wire = providers::encode(Provider::Gemini, &body(json!([{"role":"user","content":"Synthetic question"}]))).unwrap();
+    assert!(wire.url.ends_with(":streamGenerateContent?alt=sse"));
+    let mut stream = providers::GeminiStream::default();
+    let (first, done) = stream.push(&json!({"candidates":[{"content":{"parts":[{"text":"Hello "}]}}]})).unwrap();
+    assert_eq!(first, vec!["Hello "]);
+    assert!(done.is_none());
+    let (second, done) = stream.push(&json!({"candidates":[{"content":{"parts":[{"text":"world"},{"thought":true,"text":"private","thoughtSignature":"thought-sig"},{"functionCall":{"id":"call-a","name":"read_text","args":{"start":1}},"thoughtSignature":"call-sig"},{"functionCall":{"id":"call-b","name":"read_text","args":{"start":2}}}]}}]})).unwrap();
+    assert_eq!(second, vec!["world"]);
+    assert!(done.is_none());
+    let (last, done) = stream.push(&json!({"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"final-sig"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":15,"candidatesTokenCount":8}})).unwrap();
+    assert!(last.is_empty());
+    let output = done.unwrap();
+    assert_eq!(output["usage"]["input_tokens"], 15);
+    assert_eq!(output["output"][0]["content"][0]["text"], "Hello world");
+    assert_eq!(output["output"][1]["part"]["thoughtSignature"], "thought-sig");
+    assert_eq!(output["output"][2]["native_part"]["thoughtSignature"], "call-sig");
+    assert_eq!(output["output"][3]["call_id"], "call-b");
+    assert_eq!(output["output"][4]["native_part"]["thoughtSignature"], "final-sig");
+    let sent = providers::encode(Provider::Gemini, &body(json!(output["output"]))).unwrap();
+    let parts = sent.body["contents"][0]["parts"].as_array().unwrap();
+    assert_eq!(parts[2]["thoughtSignature"], "call-sig");
+    assert_eq!(parts.last().unwrap()["thoughtSignature"], "final-sig");
+    let mut malformed = providers::GeminiStream::default();
+    assert!(malformed.push(&json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_text"}}]},"finishReason":"STOP"}]})).is_err());
+    let mut truncated = providers::GeminiStream::default();
+    assert!(truncated.push(&json!({"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"MAX_TOKENS"}]})).unwrap_err().to_string().contains("output token limit"));
+}
+#[test]
+fn provider_stop_reasons_distinguish_truncation_and_refusal() {
+    for (reason,expected) in [("max_tokens","incomplete"),("model_context_window_exceeded","incomplete"),("refusal","refused"),("pause_turn","paused")] {
+        let error=providers::decode(Provider::Anthropic,json!({"stop_reason":reason,"content":[]})).unwrap_err().to_string();
+        assert!(error.contains(expected),"{reason}: {error}");
+    }
+    for (reason,expected) in [("MAX_TOKENS","incomplete"),("SAFETY","blocked"),("RECITATION","blocked"),("MALFORMED_FUNCTION_CALL","malformed")] {
+        let error=providers::decode(Provider::Gemini,json!({"candidates":[{"finishReason":reason}]})).unwrap_err().to_string();
+        assert!(error.contains(expected),"{reason}: {error}");
+    }
+    let prompt=providers::decode(Provider::Gemini,json!({"promptFeedback":{"blockReason":"SAFETY"},"candidates":[]})).unwrap_err().to_string();
+    assert!(prompt.contains("prompt blocked"));
+    let unknown=providers::decode(Provider::Gemini,json!({"candidates":[{"finishReason":"untrusted arbitrary text"}]})).unwrap_err().to_string();
+    assert!(!unknown.contains("untrusted arbitrary text"));
+}
+#[test]
+fn gemini_preserves_signed_text_and_thought_parts_before_tool_calls() {
+    let response=json!({"candidates":[{"finishReason":"STOP","content":{"parts":[
+        {"text":"private thinking","thought":true,"thoughtSignature":"thought-sig"},
+        {"text":"I will inspect the source.","thoughtSignature":"text-sig"},
+        {"functionCall":{"id":"call-1","name":"read_text","args":{}},"thoughtSignature":"call-sig"}
+    ]}}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":6}});
+    let normalized=providers::decode(Provider::Gemini,response).unwrap();
+    let mut input=vec![json!({"role":"user","content":"Inspect"})];
+    input.extend(normalized["output"].as_array().unwrap().clone());
+    input.push(json!({"type":"function_call_output","call_id":"call-1","output":"source text"}));
+    let request=providers::encode(Provider::Gemini,&body(json!(input))).unwrap();
+    let parts=request.body["contents"][1]["parts"].as_array().unwrap();
+    assert_eq!(parts.len(),3);
+    assert_eq!(parts[0]["thoughtSignature"],"thought-sig");
+    assert_eq!(parts[1]["thoughtSignature"],"text-sig");
+    assert_eq!(parts[2]["thoughtSignature"],"call-sig");
+    assert_eq!(request.body["contents"][2]["parts"][0]["functionResponse"]["id"],"call-1");
+}
+#[test]
+fn provider_incomplete_reason_is_bounded_and_actionable() {
+    let event=json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}});
+    assert_eq!(providers::stream_failure_detail(&event),"Incomplete response: max_output_tokens");
+    let unknown=json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"arbitrary private text"}}});
+    assert_eq!(providers::stream_failure_detail(&unknown),"no provider detail supplied");
 }
 #[test]
 fn each_provider_can_complete_a_synthetic_single_provider_task() {
@@ -244,7 +463,7 @@ fn migration_backs_up_and_reopening_does_not_duplicate_search() {
     assert_eq!(
         c.db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        6
+        evidence_desk::case::CASE_SCHEMA
     );
     // Schema 6 backfills the active extraction as an immutable revision row.
     let backfilled: i64 = c
@@ -271,7 +490,7 @@ fn schema_v5_upgrade_snaps_v4_and_adds_lookup_indexes() {
     assert_eq!(
         c.db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        6
+        evidence_desk::case::CASE_SCHEMA
     );
     for index in ["actions_task","transmissions_task","occurrences_source","processing_jobs_source","artifacts_source"] {
         let present: bool = c
@@ -334,6 +553,7 @@ fn same_model_teams_are_blind_idempotent_and_cannot_publish_shared_edits() {
     .unwrap();
     let ids = teams::prepare(&mut c, &parent, "investigate").unwrap();
     assert_eq!(ids.len(), 3);
+    assert!(teams::status(&c, &parent).unwrap().as_array().unwrap().iter().all(|member| member.get("spent").is_none()));
     assert_eq!(ids, teams::prepare(&mut c, &parent, "investigate").unwrap());
     for child in &ids {
         assert_eq!(
@@ -626,21 +846,63 @@ fn job_history_only_resolves_after_same_processor_succeeds() {
 }
 
 #[test]
-fn app_preferences_replace_existing_case_model_without_credentials() {
+fn app_preferences_apply_exactly_the_chosen_policy_without_forcing() {
     let (_dir,mut c,_)=setup();
-    let mut settings=c.settings().unwrap();settings.model="app-model".into();
-    let preferences=json!({"config":{"provider":"openai","execution":"single","review":"challenge","pool":[]},"settings":settings});
+    // R04: the exact chosen policy is saved. A stricter review mode, custom
+    // execution and narrow grants survive application; saving a
+    // different model later cannot downgrade review or broaden grants.
+    let mut settings=c.settings().unwrap();
+    settings.offline=false;settings.allow_text=true;settings.allow_images=false;
+    settings.model="app-model".into();
+    let preferences=json!({"config":{"provider":"openai","execution":"single","review":"challenge","pool":[{"provider":"gemini","model":"vision-model","allow_text":true,"allow_images":false}]},"settings":settings});
     providers::apply_app_settings(&mut c,&preferences).unwrap();
     assert_eq!(c.settings().unwrap().model,"app-model");
-    assert_eq!(providers::load(&c).unwrap().execution,Execution::Auto);
-    assert_eq!(providers::load(&c).unwrap().review,Review::Standard);
+    assert_eq!(providers::load(&c).unwrap().execution,Execution::Single,"chosen execution must be preserved");
+    assert_eq!(providers::load(&c).unwrap().review,Review::Challenge,"chosen review mode must be preserved");
+    assert!(!c.settings().unwrap().allow_images,"image grant must not be forced on");
+    assert_eq!(providers::load(&c).unwrap().pool[0].allow_images,false,"per-profile grants must not be forced on");
+    // A model-only change preserves the rest of the policy exactly.
+    let mut model_only=preferences.clone();
+    model_only["settings"]["model"]=json!("replacement-model");
+    providers::apply_app_settings(&mut c,&model_only).unwrap();
+    assert_eq!(providers::load(&c).unwrap().review,Review::Challenge,"model change cannot downgrade review");
+    assert!(!c.settings().unwrap().allow_images,"model change cannot enable images");
     // VL-002: applying app preferences never silently enables direct media;
-    // it remains a separate explicit per-case opt-in.
+    // it remains a separate explicit opt-in.
     assert_ne!(c.meta("gemini_direct_media").unwrap().as_deref(),Some("true"));
     let other_dir=tempfile::tempdir().unwrap();let mut other=Case::create(&other_dir.path().join("second"),"Second case").unwrap();
     providers::apply_app_settings(&mut other,&preferences).unwrap();
-    assert_eq!(other.settings().unwrap().model,c.settings().unwrap().model);
+    assert_eq!(other.settings().unwrap().model,"app-model");
+    assert_eq!(providers::load(&other).unwrap().review,Review::Challenge,"second case receives the same chosen policy");
     let mut invalid=preferences;invalid["settings"]["model"]=json!("invalid model!");
     assert!(providers::apply_app_settings(&mut c,&invalid).is_err());
-    assert_eq!(c.settings().unwrap().model,"app-model");
+    assert_eq!(c.settings().unwrap().model,"replacement-model");
+}
+
+#[test]
+fn openrouter_catalogue_uses_published_capabilities_and_keeps_facts() {
+    use evidence_desk::providers::{self, Provider};
+    let catalogue = json!({"data":[
+        {"id":"google/gemini-2.5-flash","name":"Gemini Flash","context_length":1048576,
+         "architecture":{"input_modalities":["text","image","audio","video"],"output_modalities":["text"]},
+         "supported_parameters":["tools","reasoning"],"pricing":{"prompt":"0.0000003","completion":"0.0000025"}},
+        {"id":"openai/gpt-audio","name":"GPT Audio","architecture":{"input_modalities":["text","audio"],"output_modalities":["text","audio"]},"supported_parameters":["tools"]},
+        {"id":"vendor/no-tools","name":"No tools","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["temperature"]},
+        {"id":"vendor/image-gen","name":"Images","architecture":{"input_modalities":["text"],"output_modalities":["image"]}},
+        {"id":"perplexity/sonar-pro","name":"Sonar","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["tools"]},
+        {"id":"legacy/chat-model","name":"Legacy"},
+        {"id":"legacy/whisper-large","name":"Legacy audio"},
+        {"id":"vendor/bad-price","name":"Bad price","architecture":{"output_modalities":["text"]},"pricing":{"prompt":"free!"}}
+    ]});
+    let models = providers::model_options(Provider::Openrouter, &catalogue).unwrap();
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    // An audio-capable chat model is no longer hidden because its id says
+    // "audio"; models without tools, image-only and search models are dropped.
+    assert_eq!(ids, vec!["google/gemini-2.5-flash", "legacy/chat-model", "openai/gpt-audio", "vendor/bad-price"]);
+    let flash = &models[0];
+    assert_eq!(flash.input_modalities.as_deref(), Some(&["text".to_string(), "image".into(), "audio".into(), "video".into()][..]));
+    assert_eq!(flash.context_length, Some(1048576));
+    assert_eq!(flash.prompt_price.as_deref(), Some("0.0000003"));
+    assert!(models[3].prompt_price.is_none(), "unparseable prices are dropped, not shown");
+    assert!(models[1].input_modalities.is_none(), "unknown stays unknown");
 }

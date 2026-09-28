@@ -22,6 +22,7 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
                    'estimated_seconds': float(t.duration * t.time_base) if t.duration else (container.duration or 0) / av.time_base}
                   for t in container.streams if t.type == 'audio']
     pages, coverage = [], []
+    total_text_chars = 0
     rate, core, context = 16000, 60, 2
 
     def progress(data):
@@ -37,7 +38,7 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
         language = None
 
         def consume(end, final=False):
-            nonlocal window_start, audio, covered, decoded_seconds, gap_seconds, chunks, language
+            nonlocal window_start, audio, covered, decoded_seconds, gap_seconds, chunks, language, total_text_chars
             if (job / 'cancel.request').exists():
                 raise RuntimeError('Transcription cancelled; completed chunks remain in the private job journal')
             length = min(len(audio), max(0, round((end - window_start) * rate)))
@@ -49,11 +50,13 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
             key = hashlib.sha256(audio[:length].tobytes() + json.dumps([model_name, descriptor, window_start, core_length, length, language], sort_keys=True).encode()).hexdigest()
             cache = job / f'chunk-{key}.json'
             chunk_pages = []
+            chunk_text_chars = 0
             if cache.is_file():
                 cached = json.loads(cache.read_text(encoding='utf-8'))
                 if cached.get('key') != key:
                     raise ValueError('Invalid transcription checkpoint')
                 chunk_pages, language = cached['pages'], cached['language']
+                chunk_text_chars = sum(len(page['text']) for page in chunk_pages)
             else:
                 if covered[:length].any() and np.any(audio[:length]):
                     segments, info = model.transcribe(audio[:length], language=language, beam_size=3,
@@ -70,10 +73,14 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
                                       'text': ''.join(w.word for w in words).strip(),
                                       'language': info.language, 'language_probability': info.language_probability,
                                       'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob,
+                                      # Decoder diagnostics, not calibrated accuracy: a high compression
+                                      # ratio flags repetition loops; temperature > 0 means fallback decoding.
+                                      'compression_ratio': segment.compression_ratio, 'temperature': segment.temperature,
                                       'method': f'faster-whisper-{model_name} int8; unverified machine transcript',
                                       'words': [{'start': window_start + w.start, 'end': window_start + w.end,
                                                  'word': w.word, 'probability': w.probability} for w in words]})
-                        if len(chunk_pages) > 100000 or sum(len(p['text']) for p in chunk_pages) > 8_000_000:
+                        chunk_text_chars += len(chunk_pages[-1]['text'])
+                        if len(chunk_pages) > 100000 or chunk_text_chars > 8_000_000:
                             raise ValueError('Full transcript exceeds the published output limit')
                 temporary = cache.with_suffix('.next')
                 with temporary.open('w', encoding='utf-8') as output:
@@ -82,17 +89,20 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
                     os.fsync(output.fileno())
                 os.replace(temporary, cache)
             pages.extend(chunk_pages)
-            if len(pages) > 100000 or sum(len(p['text']) for p in pages) > 8_000_000:
+            total_text_chars += chunk_text_chars
+            if len(pages) > 100000 or total_text_chars > 8_000_000:
                 raise ValueError('Full transcript exceeds the published output limit')
             chunks += 1
             progress({'state': 'transcribing', 'track': descriptor['index'], 'track_number': track_number + 1,
                       'track_count': len(tracks), 'processed_seconds': min(end, window_start + core),
                       'estimated_seconds': descriptor['estimated_seconds'], 'segments': len(pages), 'chunks': chunks})
-            # Durable private processing journal: never misrepresented as a complete transcript.
-            # Rewritten atomically every ~10 chunks (and always at the end) to bound journal I/O.
+            # Per-chunk files hold the reusable wording. This small journal is
+            # progress only and never claims a complete transcript.
             if final or chunks % 10 == 0:
                 temporary = job / 'partial.next.json'
-                temporary.write_text(json.dumps({'status': 'partial', 'pages': pages}), encoding='utf-8')
+                temporary.write_text(json.dumps({'status': 'partial', 'segments': len(pages),
+                                                 'track': descriptor['index'], 'chunks': chunks,
+                                                 'last_completed_seconds': min(end, window_start + core)}), encoding='utf-8')
                 os.replace(temporary, job / 'partial.json')
             if not final:
                 audio[:context * rate] = audio[core * rate:]

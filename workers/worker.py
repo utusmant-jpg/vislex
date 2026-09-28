@@ -40,6 +40,12 @@ def process(job: Path, request: dict) -> dict:
     if kind in ('video_ocr', 'video_overview'):
         from video_discovery import discover
         return discover(job, request)
+    if kind == 'email':
+        from email_extract import extract
+        return extract(job, request)
+    if kind == 'media_clip':
+        from media_clip import clip
+        return clip(job, request)
     if kind == 'diarization':
         from diarization import diarize
         return diarize(job, request)
@@ -189,10 +195,51 @@ def process(job: Path, request: dict) -> dict:
         metadata['language'] = info.language
         metadata['language_probability'] = info.language_probability
         for segment in segments:
-            pages.append({'locator': f'track:{metadata["track_index"]}:seconds:{start+segment.start:.3f}-{start+segment.end:.3f}', 'text': segment.text, 'method': f'faster-whisper-{model_name} int8; unverified machine transcript', 'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob, 'words': [{'start': start+w.start, 'end': start+w.end, 'word': w.word, 'probability': w.probability} for w in segment.words or []]})
+            pages.append({'locator': f'track:{metadata["track_index"]}:seconds:{start+segment.start:.3f}-{start+segment.end:.3f}', 'text': segment.text, 'method': f'faster-whisper-{model_name} int8; unverified machine transcript', 'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob, 'compression_ratio': segment.compression_ratio, 'temperature': segment.temperature, 'words': [{'start': start+w.start, 'end': start+w.end, 'word': w.word, 'probability': w.probability} for w in segment.words or []]})
         notes = ['Unverified machine transcription using the selected local multilingual model; check names, numbers, and faint speech against original audio.', 'Only the selected audio track and interval were decoded. Other tracks remain unprocessed.', 'VAD is disabled. Decoder gaps are accounted separately and zero-filled for timing; silence does not establish absence of events.', 'Transcription is not direct audio understanding, speaker identity, or legal interpretation.']
     elif kind == 'video':
         import av
+        if request.get('operation') == 'frame_at':
+            target = float(request.get('target', -1))
+            direction = request.get('direction')
+            if not math.isfinite(target) or target < 0 or direction not in ('previous', 'next'):
+                raise ValueError('Invalid exact frame request')
+            leased_source = Path(request['source_lease'])
+            with av.open(str(leased_source)) as container:
+                video = next((s for s in container.streams if s.type == 'video'), None)
+                if video is None:
+                    raise ValueError('No decodable video stream')
+                origin = float((video.start_time or 0) * video.time_base)
+                seek_before = max(0., target - (30. if direction == 'previous' else 2.))
+                container.seek(max(0, int((seek_before + origin) * av.time_base)), backward=True)
+                selected = None
+                decoded = 0
+                for frame in container.decode(video):
+                    decoded += 1
+                    if decoded > 10000:
+                        raise ValueError('Exact frame decode limit reached')
+                    if frame.pts is None:
+                        continue
+                    relative = float(frame.pts * frame.time_base) - origin
+                    if direction == 'next' and relative > target + 1e-7:
+                        selected = (frame, relative)
+                        break
+                    if direction == 'previous':
+                        if relative < target - 1e-7:
+                            selected = (frame, relative)
+                        else:
+                            break
+                if selected is None:
+                    raise ValueError('No adjacent decoded frame in the supported seek window')
+                frame, relative = selected
+                image = frame.to_image()
+                original_size = list(image.size)
+                image.thumbnail((1920, 1080))
+                image.save(job / 'exact-frame.jpg', quality=92)
+                previews = [{'path': 'exact-frame.jpg', 'pts': frame.pts, 'time_base': str(frame.time_base), 'source_relative_seconds': relative, 'presentation_seconds': float(frame.pts * frame.time_base), 'original_size': original_size, 'output_size': list(image.size)}]
+                metadata = {'video_stream': video.index, 'origin_seconds': origin, 'requested_time': target, 'direction': direction, 'frames_decoded': decoded, 'selection': 'adjacent decoded presentation frame'}
+            notes = ['Exact adjacent decoded frame PTS from the original recording. The JPEG is a resized derivative; original bytes are preserved.', 'Audio and intervening activity were not inspected.']
+            return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': metadata, 'limitations': notes, 'previews': previews}
         start, end = float(request.get('start', 0)), float(request.get('end', 10))
         interval = float(request.get('interval', 1))
         if not (0 <= start < end and end - start <= 30 and interval >= 0.1 and (end-start)/interval <= 24):
@@ -229,21 +276,36 @@ def process(job: Path, request: dict) -> dict:
                     break
             metadata = {'streams': streams, 'video_stream': video.index, 'origin_seconds': origin, 'requested_interval': [start, end], 'sample_interval': interval, 'frames_decoded': decoded, 'sampled_frames': len(previews)}
         notes = ['Ordered sampled frames with actual decoder PTS; gaps between samples were not visually inspected.', 'Frames may be resized to fit 1920x1080. Originals are preserved. Audio was not inspected.', 'No object presence/absence or identity conclusion is established by decoding.']
+    elif kind == 'pdf_probe':
+        import pypdfium2 as pdfium
+        with pdfium.PdfDocument(str(Path(request['source_lease']))) as document:
+            count = len(document)
+            if count < 1:
+                raise ValueError('PDF has no physical pages')
+            first = document[0]
+            metadata = {'page_count': count, 'first_page_size_points': list(first.get_size()), 'numbering': 'physical PDF pages, starting at 1; printed labels may differ'}
+            first.close()
+        notes = ['Page count and geometry are metadata only; no page content was reviewed.']
     elif kind == 'pdf_page':
         import pypdfium2 as pdfium
         number = int(request.get('page', 1))
-        document = pdfium.PdfDocument(str(source))
-        if not 1 <= number <= len(document):
-            raise ValueError('PDF page is outside the document')
-        page = document[number - 1]
-        width, height = page.get_size()
-        scale = min(2.0, 2400/max(width, height))
-        bitmap = page.render(scale=scale)
-        image = bitmap.to_pil().convert('RGB')
-        image.save(job / 'pdf-page.jpg', quality=94)
-        metadata = {'page': number, 'page_count': len(document), 'page_size_points': [width, height], 'render_scale': scale, 'output_size': list(image.size)}
-        previews.append({'path': 'pdf-page.jpg', **metadata})
-        bitmap.close(); page.close(); document.close()
+        with pdfium.PdfDocument(str(Path(request['source_lease']))) as document:
+            if not 1 <= number <= len(document):
+                raise ValueError('PDF page is outside the document')
+            page = document[number - 1]
+            try:
+                width, height = page.get_size()
+                scale = min(2.0, 2400/max(width, height))
+                bitmap = page.render(scale=scale)
+                try:
+                    image = bitmap.to_pil().convert('RGB')
+                    image.save(job / 'pdf-page.jpg', quality=94)
+                finally:
+                    bitmap.close()
+                metadata = {'page': number, 'page_count': len(document), 'page_size_points': [width, height], 'render_scale': scale, 'output_size': list(image.size)}
+                previews.append({'path': 'pdf-page.jpg', **metadata})
+            finally:
+                page.close()
         notes = ['Rendered derivative of the physical PDF page. Printed/Bates labels may differ from the page index.', 'No OCR or interpretation is implied by rendering. Annotations and hidden document structures require separate review.']
     elif kind == 'pdf':
         from pypdf import PdfReader
@@ -289,26 +351,21 @@ def process(job: Path, request: dict) -> dict:
         else:
             notes = ['Preview uses EXIF orientation. Original bytes and metadata are preserved.', 'No OCR, identity attribution, or visual understanding is implied. Multipage images require page-by-page review.']
     elif kind == 'docx':
-        from docx import Document
-        document = Document(source)
-        from docx.text.paragraph import Paragraph
-        from docx.table import Table
-        # Preserve paragraph/table order in the source document.
-        for n, element in enumerate(document.element.body, 1):
-            if element.tag.endswith('}p'):
-                paragraph = Paragraph(element, document)
-                pages.append({'locator': f'block:{n}:paragraph', 'text': paragraph.text, 'method': 'python-docx'})
-            elif element.tag.endswith('}tbl'):
-                for row, cells in enumerate(Table(element, document).rows, 1):
-                    pages.append({'locator': f'block:{n}:table:row:{row}', 'text': '\t'.join(c.text for c in cells.cells), 'method': 'python-docx table'})
-        notes = ['Tracked revisions, comments, headers, footnotes, and embedded attachments are not extracted by this adapter. No page layout is implied.']
-    elif kind in ('pptx', 'odt'):
+        from docx_extract import extract as extract_docx
+        extracted = extract_docx(source)
+        pages, notes = extracted['pages'], extracted['notes']
+        metadata.update(extracted['metadata'])
+    elif kind == 'pptx':
+        from pptx_extract import extract as extract_pptx
+        extracted = extract_pptx(source)
+        pages, notes = extracted['pages'], extracted['notes']
+        metadata.update(extracted['metadata'])
+    elif kind == 'odt':
         import zipfile
         import xml.etree.ElementTree as ET
         import re
         with zipfile.ZipFile(source) as package:
-            names = ([n for n in package.namelist() if re.fullmatch(r'ppt/slides/slide[0-9]+\.xml', n)] if kind == 'pptx' else ['content.xml'])
-            names.sort(key=lambda n: int(re.search(r'slide([0-9]+)', n).group(1)) if kind == 'pptx' else 0)
+            names = ['content.xml']
             if sum(package.getinfo(n).file_size for n in names) > 32 * 1024 * 1024:
                 raise ValueError('Document XML exceeds extraction limit')
             for name in names:
@@ -316,17 +373,24 @@ def process(job: Path, request: dict) -> dict:
                 units = [node for node in root.iter() if node.tag in ('{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p', '{urn:oasis:names:tc:opendocument:xmlns:text:1.0}h', '{http://schemas.openxmlformats.org/drawingml/2006/main}p')]
                 for index, node in enumerate(units, 1):
                     pages.append({'locator': f'{name}:paragraph:{index}', 'text': ''.join(node.itertext()), 'method': 'document-xml'})
-        notes = ['Text preview only; slide layout, images, comments, embedded files and animations are not rendered. Original file is preserved.']
+        notes = ['Text preview only; layout, images, comments, embedded files and tracked changes are not rendered. Original file is preserved.']
     elif kind == 'xlsx':
         from openpyxl import load_workbook
         # Context managers keep both handles closed even when a corrupt workbook raises mid-read.
         with source.open('rb') as formulas_file, source.open('rb') as cached_file:
             formulas = load_workbook(formulas_file, read_only=True, data_only=False, keep_links=False)
             cached = load_workbook(cached_file, read_only=True, data_only=True, keep_links=False)
+            from xlsx_hidden import hidden_structure, summary
+            structure = {entry['name']: entry for entry in hidden_structure(source)}
             count = 0
-            for sheet in formulas:
-                for row in sheet:
-                    for cell in row:
+            total = len(formulas.sheetnames)
+            for position, sheet in enumerate(formulas, 1):
+                visibility = structure.get(sheet.title, {'name': sheet.title, 'state': sheet.sheet_state, 'hidden_rows': [], 'hidden_columns': [], 'hidden_rows_truncated': False})
+                pages.append({'locator': f'sheet:{sheet.title}', 'text': summary(visibility, position, total), 'method': 'xlsx workbook structure'})
+                cached_rows = iter(cached[sheet.title].iter_rows())
+                for row in sheet.iter_rows():
+                    values = next(cached_rows, ())
+                    for column, cell in enumerate(row):
                         if cell.value is None:
                             continue
                         count += 1
@@ -335,11 +399,12 @@ def process(job: Path, request: dict) -> dict:
                         value = cell.value
                         text = str(value)
                         if cell.data_type == 'f':
-                            text += '\nCached value: ' + str(cached[sheet.title][cell.coordinate].value)
+                            text += '\nCached value: ' + str(values[column].value if column < len(values) else None)
                         pages.append({'locator': f'sheet:{sheet.title}!{cell.coordinate}', 'text': text, 'method': 'openpyxl read-only', 'sheet_state': sheet.sheet_state})
             formulas.close()
             cached.close()
-        notes = ['Formulas are not executed. Cached values may be stale. Row/column visibility and styles require original-workbook review.']
+            metadata['sheets'] = list(structure.values())
+        notes = ['Formulas are not executed. Cached values may be stale or absent.', 'Each sheet unit states hidden or very hidden sheets and hidden rows and columns as declared in the file; cells in them are still listed. Styles, filters and conditional formatting are not reviewed.']
     else:
         raise ValueError('Unsupported processor kind')
     if sum(len(p['text']) for p in pages) > MAX_TEXT:

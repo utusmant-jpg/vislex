@@ -44,11 +44,13 @@ const at = '2026-09-20T14:32:00Z';
 
 const demoSource: Source = { id: 'demo-statement', name: '01 · Witness statement.txt', sha256: 'synthetic-preview-not-a-source-hash', size: sampleText.length, mime: 'text/plain', kind: 'text', status: 'text indexed', restricted: false, occurrences: 1, created_at: at };
 
-let demo: Snapshot | null = null;
+type DemoSnapshot=Omit<Snapshot,'records'> & {records:WorkingRecord[]};
+let demo: DemoSnapshot | null = null;
+let demoAuditSeq = 0;
 
-export function sampleSnapshot(): Snapshot {
+export function sampleSnapshot(): DemoSnapshot {
 
-  return { id: 'synthetic-demo', name: 'Harbor Street · sample case', root: 'Browser memory — no files stored', generation: 1, sources: [demoSource], records: [{ id: 'demo-note', title: 'Initial review notes', kind: 'note', content: '# Initial review\n\nThe witness statement reports two people near the north entrance. This is an attributed claim, not an independently verified observation.\n\nSource: evidence:demo-statement#L5-L7\n\n## Open questions\n\n- Obtain the original recording.\n- Reconcile the camera clock.\n- Inspect any supporting photographs.\n\nSynthetic demonstration only.', revision: 1, actor: 'human', review: 'unreviewed', protected: false, stale: false, updated_at: at, dependencies: ['demo-statement'] }], settings: { offline: true, allow_text: false, allow_images: false, model: '', case_budget: 10, input_per_million: 0, output_per_million: 0 }, tasks: [], budget_committed: 0 };
+  return { id: 'synthetic-demo', name: 'Harbor Street · sample case', root: 'Browser memory — no files stored', generation: 1, sources: [demoSource], records: [{ id: 'demo-note', title: 'Initial review notes', kind: 'note', content: '# Initial review\n\nThe witness statement reports two people near the north entrance. This is an attributed claim, not an independently verified observation.\n\nSource: evidence:demo-statement#L5-L7\n\n## Open questions\n\n- Obtain the original recording.\n- Reconcile the camera clock.\n- Inspect any supporting photographs.\n\nSynthetic demonstration only.', revision: 1, actor: 'human', review: 'unreviewed', protected: false, stale: false, updated_at: at, dependencies: ['demo-statement'] }], settings: { offline: true, allow_text: false, allow_images: false, model: '' }, tasks: [] };
 
 }
 
@@ -60,7 +62,7 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
 
   if (action === 'snapshot') result = demo;
 
-  else if (action === 'load_demo') { demo = sampleSnapshot(); result = demo; }
+  else if (action === 'load_demo') { demo = sampleSnapshot(); demoAuditSeq = 0; result = demo; }
 
   else if (action === 'close_case') { demo = null; result = null; }
 
@@ -71,7 +73,15 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
 
   else if (!demo) throw new Error('Open the synthetic sample, or run the desktop app for real case storage.');
 
-  else if (action === 'read_text') { const lines = sampleText.split('\n'); const start = Number(args.start ?? 1); const end = Math.min(start - 1 + Number(args.count ?? 200), lines.length); result = { text: lines.slice(start - 1, end).join('\n'), start, end, total_lines: lines.length, locator: `evidence:demo-statement#L${start}-L${end}`, truncated_long_lines: false }; }
+  else if (action === 'case_summary') {
+    if (args.case_id !== demo.id) throw new Error('Case changed');
+    result = { case_id: demo.id, generation: demo.generation, audit_seq: demoAuditSeq, action_rowid: 0, transmission_rowid: 0, viewer_request_hash: null, task_update: '', tasks_running: 0, tasks_paused: 0, tasks_complete: 0, source_count: demo.sources.length, source_bytes: demo.sources.reduce((sum, source) => sum + source.size, 0), record_count: demo.records.length, task_count: 0, job_count: 0, jobs_queued: 0, jobs_running: 0, jobs_failed: 0, jobs_attention: 0, jobs_complete: 0, chat_pause: null };
+  }
+  else if (action === 'investigation_workbench') result = { investigations: [], affected_objects: [], next_offset: null };
+  else if (action === 'evidence_list') result = { objects: [], next_offset: null };
+  else if (action === 'coverage_map') result = { sources: [{ source_id: demoSource.id, name: demoSource.name, status: 'text indexed', extracted_lines: sampleText.split('\n').length, rendered_pages: [], sampled_frame_count: 0, sampled_seconds: [], inspection_receipts: 0, failed_jobs: 0, next_check: 'Inspect the original statement and seek corroborating sources.' }], next_offset: null, note: 'Synthetic preview coverage. No physical evidence or media processing is available in this browser sample.' };
+  else if (action === 'read_text') { const lines = sampleText.split('\n'); const start = Number(args.start ?? 1); const end = Math.min(start - 1 + Number(args.count ?? 200), lines.length); result = { text: lines.slice(start - 1, end).join('\n'), start, end, total_lines: lines.length, revision: 1, locator: `evidence:demo-statement#R1L${start}-L${end}`, truncated_long_lines: false }; }
+  else if (action === 'record_detail') { const record = demo.records.find(r => r.id === args.record_id); if (args.case_id !== demo.id || !record || record.revision !== args.revision) throw new Error('Case or record revision changed'); result = record; }
 
   else if (action === 'search') { result = { results: sampleText.toLowerCase().includes(String(args.query).toLowerCase()) ? [{ source_id: demoSource.id, name: demoSource.name, excerpt: sampleText.split('\n').filter(s => s.toLowerCase().includes(String(args.query).toLowerCase())).join(' … ') }] : [], next_offset: null }; }
 
@@ -83,16 +93,18 @@ export async function api<T = unknown>(action: string, args: Record<string, unkn
 
     const record: WorkingRecord = { id: old?.id ?? crypto.randomUUID(), title: String(args.title), kind: String(args.kind), content: String(args.content), revision: Number(args.base_revision) + 1, actor: 'human', review: 'unreviewed', protected: old?.protected ?? false, stale: false, updated_at: new Date().toISOString(), dependencies: args.source_ids as string[] ?? [] };
 
-    demo.records = [record, ...demo.records.filter(r => r.id !== record.id)]; result = record;
+    demo.records = [record, ...demo.records.filter(r => r.id !== record.id)]; demoAuditSeq++; result = record;
 
-  } else if (action === 'set_restricted') { demo.sources = demo.sources.map(s => s.id === args.source_id ? { ...s, restricted: Boolean(args.restricted) } : s); }
+  } else if (action === 'set_restricted') { demo.sources = demo.sources.map(s => s.id === args.source_id ? { ...s, restricted: Boolean(args.restricted) } : s); demoAuditSeq++; }
 
-  else if (action === 'review_record') { demo.records = demo.records.map(r => r.id === args.record_id ? { ...r, ...(typeof args.protected === 'boolean' ? { protected: args.protected } : { review: 'human-reviewed' }) } : r); }
+  else if (action === 'review_record') { demo.records = demo.records.map(r => r.id === args.record_id ? { ...r, ...(typeof args.protected === 'boolean' ? { protected: args.protected } : { review: 'human-reviewed' }) } : r); demoAuditSeq++; }
 
   else if (action === 'save_ai_settings') { throw new Error('AI configuration requires the Windows desktop app.'); }
-  else if (action === 'save_settings') { demo.settings = args.settings as Snapshot['settings']; }
+  else if (action === 'save_settings') { demo.settings = args.settings as Snapshot['settings']; demoAuditSeq++; }
 
   else if (action === 'revisions') { const r = demo.records.find(r => r.id === args.record_id); result = r ? [{ ...r, reason: 'Browser sample — history is not persisted', created_at: r.updated_at }] : []; }
+
+  else if (action === 'read_extract_revision') { if (Number(args.revision) !== 1) throw new Error('Unknown extraction revision'); const lines = sampleText.split('\n'); const start = Number(args.start ?? 1); const end = Math.min(start - 1 + Number(args.count ?? 200), lines.length); result = { text: lines.slice(start - 1, end).join('\n'), start, end, total_lines: lines.length, revision: 1, historical: true, truncated_long_lines: false, locator: `evidence:demo-statement#R1L${start}-L${end}` }; }
 
   else if (action === 'actions') result = [];
 
@@ -108,9 +120,8 @@ export function formatBytes(bytes: number) { if (bytes >= 1024 ** 3) return `${(
 
 export function citationParts(value: string): { sourceId: string; locator: string } | null {
 
-  const match = /^evidence:([a-zA-Z0-9-]+)#(L\d+-L\d+|image|media|artifact:[a-zA-Z0-9-]+)$/.exec(value);
+  const match = /^evidence:([a-zA-Z0-9-]+)#(R[1-9]\d*L[1-9]\d*-L[1-9]\d*|L\d+-L\d+|image|media|artifact:[a-zA-Z0-9-]+)$/.exec(value);
 
   return match ? { sourceId: match[1], locator: match[2] } : null;
 
 }
-
