@@ -55,6 +55,10 @@ python3 -m unittest discover -s benchmarks -p 'test_*.py'
 python3 scripts/vislex_plan.py check
 ```
 
+## Optional ChatGPT-subscription route
+
+The Codex-sidecar subscription route is off by default. Build with `--features subscription` (it implies `desktop`) to include it, for example before running `scripts/native-codex-account-test.ps1`. Without the feature, saved subscription preferences stay readable, and every path that would use the route stops with an explicit reason. It never falls back to API keys.
+
 ## Windows
 
 Follow `README.md` → Verification for the full Windows sequence. Tier 1 is `cargo test --locked`, clippy and `cargo check --features desktop`. Tier 2 adds the packaged worker (`scripts/build-worker.ps1`), the ignored sandbox tests and the native CDP journeys.

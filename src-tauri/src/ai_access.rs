@@ -24,6 +24,20 @@ pub struct AccessSettings {
     pub subscription: Option<SubscriptionSelection>,
 }
 
+/// The ChatGPT-subscription route is off by default (decision 2026-09-28): it
+/// depends on an unverified, separately pinned sidecar and has stalled live
+/// tasks. Builds enable it only with the `subscription` Cargo feature. When it
+/// is off, saved preferences stay readable, and any case or task that asks for
+/// the route is stopped with this reason instead of silently using API keys.
+pub const SUBSCRIPTION_ROUTE_ENABLED: bool = cfg!(feature = "subscription");
+pub const SUBSCRIPTION_DISABLED_REASON: &str =
+    "The ChatGPT subscription route is disabled in this build. Choose an API provider in Settings → Accounts & models";
+
+pub fn ensure_subscription_enabled() -> Result<()> {
+    anyhow::ensure!(SUBSCRIPTION_ROUTE_ENABLED, "{SUBSCRIPTION_DISABLED_REASON}");
+    Ok(())
+}
+
 pub fn read(directory: &Path) -> Result<AccessRoute> {
     Ok(read_settings(directory)?.route)
 }
@@ -63,6 +77,13 @@ struct Saved {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(not(feature = "subscription"))]
+    fn subscription_route_is_off_by_default_with_a_stated_reason() {
+        assert!(!SUBSCRIPTION_ROUTE_ENABLED);
+        let error = ensure_subscription_enabled().unwrap_err().to_string();
+        assert!(error.contains("disabled in this build") && error.contains("API provider"), "{error}");
+    }
     #[test]
     fn route_defaults_to_api_and_round_trips_without_a_key() {
         let temp = tempfile::tempdir().unwrap();

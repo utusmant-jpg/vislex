@@ -184,6 +184,22 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     if ["ai_access_route","set_ai_access_route","save_codex_selection","codex_account_status","codex_account_login","codex_account_cancel_login","codex_account_logout","codex_account_models","codex_account_limits"].contains(&action) {
         let directory = app.path().app_config_dir()?;
         let home=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
+        if !crate::ai_access::SUBSCRIPTION_ROUTE_ENABLED {
+            // The saved route stays readable; everything that would use the
+            // sidecar is refused with the same stated reason.
+            if action == "ai_access_route" {
+                let settings=crate::ai_access::read_settings(&directory)?;
+                return Ok(json!({"route":settings.route,"subscription":settings.subscription,"subscription_ready":false,"account_ready":false,"route_available":false,
+                    "blocker":crate::ai_access::SUBSCRIPTION_DISABLED_REASON}));
+            }
+            if action == "set_ai_access_route" {
+                let route:crate::ai_access::AccessRoute=serde_json::from_value(args["route"].clone())?;
+                if route == crate::ai_access::AccessRoute::ChatgptSubscription { crate::ai_access::ensure_subscription_enabled()?; }
+                crate::ai_access::write(&directory,route)?;
+                return Ok(json!({"route":route}));
+            }
+            crate::ai_access::ensure_subscription_enabled()?;
+        }
         if action == "ai_access_route" {
             let settings=crate::ai_access::read_settings(&directory)?;
             let available=crate::codex_account::available(&home);
@@ -243,6 +259,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
     // Catalogue lookup can contact the account service. Validate before the
     // case mutex is held; the case/session is checked again at the write.
     if action=="save_case_codex_selection" && args["use_app"]!=true {
+        crate::ai_access::ensure_subscription_enabled()?;
         let model=text(&args,"model")?;
         let effort=text(&args,"effort")?;
         let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
@@ -961,6 +978,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let route=text(&args,"route")?;
             anyhow::ensure!(matches!(route,"app"|"api_keys"|"chatgpt_subscription"),"Invalid case AI access route");
             if route=="chatgpt_subscription" {
+                crate::ai_access::ensure_subscription_enabled()?;
                 let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
                 anyhow::ensure!(crate::codex_account::available(&runtime),"Verified Codex sidecar is unavailable");
             }
@@ -1058,6 +1076,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 }
                 Some(selected)
             } else {
+                // Never fall back to API keys: that would send case text to a
+                // different vendor than the one this case chose.
+                crate::ai_access::ensure_subscription_enabled()?;
                 let settings=c.settings()?;
                 anyhow::ensure!(!settings.offline && settings.allow_text,"Enable AI text access for this case in Settings");
                 let selection=case_subscription_selection(c,app)?.context("Choose a ChatGPT subscription model in Settings")?;
@@ -1150,6 +1171,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             if let Some(reason)=crate::automatic::chat_pause_reason(c)? {anyhow::bail!("{reason}");}
             let old=text(&args,"task_id")?;
             let subscription=c.meta(&format!("task_access_route:{old}"))?.as_deref()==Some("chatgpt_subscription");
+            if subscription { crate::ai_access::ensure_subscription_enabled()?; }
             if !subscription {
                 let profile=crate::providers::task_profile(c,old)?;
                 provider_key_for_case(profile.provider).map_err(|_|anyhow::anyhow!("Save an API key in Settings first"))?;
@@ -1456,6 +1478,8 @@ fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<
         if paused && prior_subscription!=subscription {return Ok(None);}
     }
     if subscription {
+        // Disabled route: automatic review waits rather than switching vendor.
+        if !crate::ai_access::SUBSCRIPTION_ROUTE_ENABLED {return Ok(None);}
         if case_subscription_selection(case,app)?.is_none() {return Ok(None);}
     } else {
         let provider=crate::providers::load(case)?.provider;
@@ -1472,6 +1496,13 @@ fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<
 }
 
 async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str)->anyhow::Result<()> {
+    if !crate::ai_access::SUBSCRIPTION_ROUTE_ENABLED {
+        // A task saved on the subscription route pauses with the stated reason;
+        // it is never re-sent through an API key.
+        with_case_expected(app,case_id,Some(epoch),|c|agent::pause(c,task,crate::ai_access::SUBSCRIPTION_DISABLED_REASON))?;
+        emit_case_changed(app);
+        return Ok(());
+    }
     let selection=with_case_expected(app,case_id,Some(epoch),|c|case_subscription_selection(c,app))?.context("Select a ChatGPT subscription model")?;
     let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
     anyhow::ensure!(crate::codex_account::available(&runtime),"Verified Codex sidecar is unavailable");
