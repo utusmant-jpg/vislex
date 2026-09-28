@@ -110,7 +110,6 @@ fn provider_key_for_case(provider: crate::providers::Provider) -> anyhow::Result
 
 
 
-fn key_entry() -> anyhow::Result<keyring::Entry> { provider_key_entry(crate::providers::Provider::Openai) }
 
 #[tauri::command]
 
@@ -342,41 +341,9 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         emit_case_changed(&app);
         return result;
     }
-    if action == "save_api_key" {
-        let state=app.state::<AppState>();
-        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
-        let case=guard.as_ref().context("Open a case first")?;
-        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before API key update");
-        require_session_epoch(&state,&args)?;
-
-        let key = text(&args, "key")?;
-
-        anyhow::ensure!(!key.trim().is_empty(), "Enter an API key");
-
-        key_entry()?.set_password(key.trim())?;
-
-        return Ok(json!({"saved":true}));
-
-    }
-
-    if action == "key_status" {
-
-        return Ok(json!({"configured":key_entry()?.get_password().is_ok()}));
-
-    }
-
-    if action == "delete_api_key" {
-        let state=app.state::<AppState>();
-        let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());
-        let case=guard.as_ref().context("Open a case first")?;
-        anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before API key update");
-        require_session_epoch(&state,&args)?;
-
-        key_entry()?.delete_credential()?;
-
-        return Ok(json!({"deleted":true}));
-
-    }
+    // The OpenAI-only save_api_key/key_status/delete_api_key commands were
+    // removed; save_provider_key/provider_key_status/delete_provider_key with
+    // provider "openai" use the same Credential Manager entry.
 
     if action=="playback_proxy" {
 
@@ -1031,7 +998,6 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
 
         "review_redaction" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction review");require_session_epoch(&state,&args)?;crate::exports::review_redaction(c,text(&args,"artifact_id")?,&serde_json::from_value::<Vec<u64>>(args["pages"].clone())?,text(&args,"note")?)?},
-        "export_redaction" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before redaction export");crate::exports::export_redaction(c,text(&args,"artifact_id")?,Path::new(text(&args,"path")?))?},
         "export_record" => {
 
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before export");

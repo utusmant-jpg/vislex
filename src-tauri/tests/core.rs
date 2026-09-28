@@ -1895,3 +1895,12 @@ fn protected_artifact_reads_detect_tampering_the_display_cache_cannot() {
     let error = evidence_desk::processing::artifact(&c, "artifact-tamper").unwrap_err().to_string();
     assert!(error.contains("integrity"), "{error}");
 }
+
+#[test]
+fn saved_provider_keys_keep_their_credential_names() {
+    use evidence_desk::providers::Provider;
+    // Existing users' keys live under these Credential Manager names; renaming
+    // one would silently lose a saved key.
+    assert_eq!(Provider::Openai.credential(), "openai-api-key");
+    assert_eq!(Provider::Openrouter.credential(), "openrouter-api-key");
+}
