@@ -6,9 +6,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 use uuid::Uuid;
 
@@ -743,6 +745,8 @@ impl Case {
             };
             let status = if text.is_some() {
                 "text indexed"
+            } else if kind == "text" {
+                "text viewable · over 10 MB, not indexed"
             } else if ["image", "video", "audio", "pdf"].contains(&kind) || ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
                 "viewer available · extraction pending"
             } else {
@@ -822,16 +826,23 @@ impl Case {
         )
     }
     pub fn read_text(&self, source_id: &str, start: usize, count: usize) -> Result<Value> {
-        self.verify_source(source_id)?;
-        let (text, revision): (String, i64) = self
+        let path = self.verify_source(source_id)?;
+        let extract: Option<(String, i64)> = self
             .db
             .query_row(
                 "SELECT text,revision FROM extracts WHERE source_id=?",
                 [source_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?
-            .context("No text extraction exists. Source is preserved; processing is pending.")?;
+            .optional()?;
+        let Some((text, revision)) = extract else {
+            // Plain-text files over the 10 MB indexing limit are still
+            // readable page by page straight from the verified original.
+            if self.source(source_id)?.kind == "text" {
+                return read_original_lines(&path, source_id, start, count);
+            }
+            anyhow::bail!("No text extraction exists. Source is preserved; processing is pending.");
+        };
         ensure!(
             start >= 1 && count > 0 && count <= 200,
             "Request 1–200 lines starting at line 1 or later"
@@ -1577,4 +1588,67 @@ fn normalize_document_status(source:&mut Source) {
     if source.status=="unsupported · preserved" && ["docx","xlsx","pptx","odt"].contains(&ext.as_str()) {
         source.status="document preview available · extraction pending".into();
     }
+}
+
+/// Sparse line index for large plain-text originals: the byte offset of every
+/// LINE_INDEX_STEP-th line, cached per (path, length, mtime). Reading a page
+/// seeks to the nearest checkpoint instead of loading the whole file.
+const LINE_INDEX_STEP: usize = 1024;
+type LineIndex = (u64, std::time::SystemTime, Vec<u64>, usize);
+fn line_index_cache() -> &'static Mutex<HashMap<PathBuf, LineIndex>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, LineIndex>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn line_index(path: &Path) -> Result<(Vec<u64>, usize)> {
+    use std::io::BufRead;
+    let metadata = fs::metadata(path)?;
+    let (len, modified) = (metadata.len(), metadata.modified()?);
+    if let Ok(cache) = line_index_cache().lock() {
+        if let Some((l, m, offsets, total)) = cache.get(path) {
+            if *l == len && *m == modified { return Ok((offsets.clone(), *total)); }
+        }
+    }
+    let mut reader = std::io::BufReader::with_capacity(1 << 20, fs::File::open(path)?);
+    let (mut offsets, mut total, mut position, mut buffer) = (vec![0u64], 0usize, 0u64, Vec::new());
+    loop {
+        buffer.clear();
+        let read = reader.read_until(b'\n', &mut buffer)?;
+        if read == 0 { break; }
+        total += 1;
+        position += read as u64;
+        if total % LINE_INDEX_STEP == 0 { offsets.push(position); }
+    }
+    if let Ok(mut cache) = line_index_cache().lock() {
+        if cache.len() >= 16 { cache.clear(); }
+        cache.insert(path.to_path_buf(), (len, modified, offsets.clone(), total));
+    }
+    Ok((offsets, total))
+}
+/// A page of lines read directly from a large plain-text original. It is not
+/// indexed for search and carries no line citation, because line citations
+/// must resolve against a recorded extraction revision.
+fn read_original_lines(path: &Path, source_id: &str, start: usize, count: usize) -> Result<Value> {
+    use std::io::{BufRead, Seek, SeekFrom};
+    ensure!(start >= 1 && count > 0 && count <= 200, "Request 1–200 lines starting at line 1 or later");
+    let (offsets, total) = line_index(path)?;
+    ensure!(start <= total.max(1), "Line outside source");
+    let checkpoint = (start - 1) / LINE_INDEX_STEP;
+    let mut reader = std::io::BufReader::new(fs::File::open(path)?);
+    reader.seek(SeekFrom::Start(offsets[checkpoint]))?;
+    let mut line_number = checkpoint * LINE_INDEX_STEP;
+    let (mut lines, mut long, mut buffer) = (Vec::new(), false, Vec::new());
+    while lines.len() < count {
+        buffer.clear();
+        if reader.read_until(b'\n', &mut buffer)? == 0 { break; }
+        line_number += 1;
+        if line_number < start { continue; }
+        let text = String::from_utf8_lossy(&buffer);
+        let text = text.trim_end_matches(['\n', '\r']);
+        long |= text.chars().count() > 2000;
+        lines.push(text.chars().take(2000).collect::<String>());
+    }
+    let end = start - 1 + lines.len();
+    Ok(json!({"source_id":source_id,"revision":null,"start":start,"end":end,"total_lines":total,"text":lines.join("\n"),
+        "locator":format!("evidence:{source_id}"),"truncated_long_lines":long,"raw_original":true,
+        "note":"Read directly from the original file, which is over the 10 MB indexing limit: not searchable and not citable by line."}))
 }

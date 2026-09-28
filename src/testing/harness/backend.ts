@@ -323,6 +323,7 @@ export class SyntheticBackend {
     if (!(start >= 1 && count > 0 && count <= 200)) throw new Error('Request 1–200 lines starting at line 1 or later');
     if (start > Math.max(lines.length, 1)) throw new Error(revision === null ? 'Line outside source' : 'Line outside revision');
     const end = Math.min(start - 1 + count, lines.length);
+    if (source.rawOriginal && revision === null) return { source_id: source.id, revision: null, start, end, total_lines: lines.length, text: lines.slice(start - 1, end).join('\n'), truncated_long_lines: false, locator: `evidence:${source.id}`, raw_original: true, note: 'Read from the original file. It is over the 10 MB indexing limit, so it is not searchable or citable by line.' };
     return { source_id: source.id, revision: rev, start, end, total_lines: lines.length, text: lines.slice(start - 1, end).join('\n'), ...(revision !== null ? { historical: rev !== source.currentRevision, active_revision: source.currentRevision } : {}), truncated_long_lines: false, locator: `evidence:${source.id}#R${rev}L${start}-L${end}` };
   }
 
@@ -432,7 +433,7 @@ export class SyntheticBackend {
       case 'search': case 'hybrid_search': {
         if (action === 'hybrid_search') this.requireCase(args, 'search', true);
         const query = String(args.query ?? '').toLowerCase();
-        const results = c.sources.filter(item => !item.restricted && item.revisions).flatMap(item => { const lines = item.revisions![item.currentRevision]; const index = lines.findIndex(line => line.toLowerCase().includes(query)); return index >= 0 ? [{ source_id: item.id, name: item.name, excerpt: lines[index], locator: `evidence:${item.id}#R${item.currentRevision}L${index + 1}-L${index + 1}` }] : []; }).slice(0, 20);
+        const results = c.sources.filter(item => !item.restricted && !item.rawOriginal && item.revisions).flatMap(item => { const lines = item.revisions![item.currentRevision]; const index = lines.findIndex(line => line.toLowerCase().includes(query)); return index >= 0 ? [{ source_id: item.id, name: item.name, excerpt: lines[index], locator: `evidence:${item.id}#R${item.currentRevision}L${index + 1}-L${index + 1}` }] : []; }).slice(0, 20);
         return action === 'hybrid_search' ? { results, remaining_passages: 0 } : { results, next_offset: null };
       }
       case 'revisions': return c.recordHistory[String(args.record_id)] ?? [];

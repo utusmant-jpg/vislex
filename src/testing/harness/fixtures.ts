@@ -46,6 +46,8 @@ export type HarnessSource = Source & {
   currentRevision: number;
   pageCount?: number;
   durationSeconds?: number;
+  /** Text original over the indexing limit: read page by page from the original, never cited by line. */
+  rawOriginal?: boolean;
 };
 export type HarnessJob = Job & { cursor: number; priority: string; attempt: number; progress: null | { unit: string; completed?: number; total?: number; segments?: number; track?: number; tracks?: number }; result?: Record<string, unknown> };
 export type Claim = { proposition: string; assessment: string; supporting: string[]; contrary: string[]; uncertainty: string; next_check: string };
@@ -182,6 +184,9 @@ export function buildHarborCase(now: number, sourceCount = 250): HarnessCase {
       currentRevision: 1, pageCount: spec.kind === 'pdf' ? 1 + Math.floor(random() * 40) : undefined, durationSeconds: ['audio', 'video'].includes(spec.kind) ? 30 + Math.floor(random() * 3600) : undefined,
     });
   }
+  // One oversized plain-text original: viewable page by page, not indexed or citable (mirrors case.rs read_original_lines).
+  const oversized = sources.find((item, index) => index >= fixed.length && item.kind === 'text' && !item.restricted);
+  if (oversized) Object.assign(oversized, { rawOriginal: true, status: 'text viewable · over 10 MB, not indexed', size: 48_000_000 });
   const statement = FIXTURE.statement, report = FIXTURE.report, photo = FIXTURE.photo, call = FIXTURE.call, camera = FIXTURE.camera, email = FIXTURE.email;
 
   const recordBase = (index: number, title: string, kind: string, content: string, extra: Partial<WorkingRecord>): WorkingRecord => ({ id: syntheticId('record', index), title, kind, content, revision: 1, actor: 'human', review: 'unreviewed', protected: false, stale: false, updated_at: iso(now, 30 + index * 11), dependencies: [], ...extra });

@@ -421,7 +421,8 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     for (const element of Array.from(document.querySelectorAll<HTMLElement>('.text-line[data-line]'))) {
       if (selection.containsNode(element, true) && element.textContent) numbers.push(Number(element.dataset.line));
     }
-    if (!numbers.length) { setAskChip(null); return; }
+    // Pages read straight from an unindexed original have no revision, so no line citation can be offered.
+    if (!numbers.length || page?.raw_original) { setAskChip(null); return; }
     setAskChip({ x: event.clientX, y: event.clientY, a: Math.min(...numbers), b: Math.max(...numbers), revision: page?.revision ?? 1 });
   }
 
@@ -473,7 +474,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
         <div className="viewer-source-meta">
           <span className="viewer-source-facts">{source.kind.toUpperCase()} · {formatBytes(source.size)} · {source.status}</span>
           {source.sha256 ? <Tooltip text={`SHA-256 ${source.sha256}`}><span className="viewer-hash mono" tabIndex={0}><Fingerprint size={12} aria-hidden="true" />{shortHash(source.sha256)}</span></Tooltip> : null}
-          {page ? <span className={`viewer-revision ${page.historical ? 'historical' : ''}`}>{page.historical ? <><History size={12} aria-hidden="true" />Pinned rev {page.revision}</> : <>Rev {page.revision} · current</>}</span> : null}
+          {page ? <span className={`viewer-revision ${page.historical ? 'historical' : ''}`}>{page.raw_original ? <>Original · not indexed</> : page.historical ? <><History size={12} aria-hidden="true" />Pinned rev {page.revision}</> : <>Rev {page.revision} · current</>}</span> : null}
         </div>
       </div>
       <div className="viewer-source-actions">
@@ -530,7 +531,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       </div> : null}
       {showText && page ? <article className="document-page" onMouseUp={onTextSelect}>
         <h2>{source.name.replace(/^\d+ · /, '')}</h2>
-        <p className="document-provenance">Extracted text · Revision {page.revision} · Lines {page.start}–{page.end} of {page.total_lines}</p>
+        <p className="document-provenance">{page.raw_original ? <>Original file · Lines {page.start}–{page.end} of {page.total_lines.toLocaleString()} · {page.note}</> : <>Extracted text · Revision {page.revision} · Lines {page.start}–{page.end} of {page.total_lines}</>}</p>
         {cited ? <p className="document-cited"><span className="document-cited-mark" aria-hidden="true" />Cited lines L{cited.start}–L{cited.end} are marked</p> : null}
         <div className="doc-rule" />
         {page.text === '' && page.total_lines === 0 ? <p className="document-empty">No text was extracted from this source. This does not establish that the original contains no text.</p> : null}

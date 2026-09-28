@@ -1932,3 +1932,32 @@ fn only_superseded_revisions_are_labelled_historical() {
     assert_eq!(new["historical"], false);
     assert_eq!(new["active_revision"], 2);
 }
+
+#[test]
+fn text_files_over_the_indexing_limit_are_readable_page_by_page_but_not_citable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut case = Case::create(&dir.path().join("big.ledcase"), "Large log").unwrap();
+    let log = dir.path().join("server.log");
+    let mut body = Vec::new();
+    for n in 1..=160_000u32 { body.extend_from_slice(format!("{n:06} synthetic log line with padding to make the file large enough\n").as_bytes()); }
+    body.extend_from_slice(b"\xff\xfe not utf-8 \xc3\x28 bytes\n");
+    body.extend_from_slice(b"final line without newline");
+    assert!(body.len() > 10 * 1024 * 1024);
+    fs::write(&log, &body).unwrap();
+    case.import_files(&[log.to_string_lossy().into()], "Synthetic").unwrap();
+    let source = case.sources().unwrap()[0].clone();
+    assert_eq!(source.status, "text viewable · over 10 MB, not indexed");
+    let first = case.read_text(&source.id, 1, 3).unwrap();
+    assert_eq!(first["raw_original"], true);
+    assert_eq!(first["total_lines"], 160_002);
+    assert!(first["text"].as_str().unwrap().starts_with("000001 synthetic"));
+    assert_eq!(first["locator"], format!("evidence:{}", source.id), "no line citation for unindexed text");
+    let middle = case.read_text(&source.id, 99_999, 2).unwrap();
+    assert!(middle["text"].as_str().unwrap().starts_with("099999 synthetic"));
+    assert!(middle["text"].as_str().unwrap().contains("\n100000 synthetic"));
+    let tail = case.read_text(&source.id, 160_001, 5).unwrap();
+    assert_eq!(tail["end"], 160_002);
+    assert!(tail["text"].as_str().unwrap().contains('\u{fffd}'), "invalid bytes are shown as replacement characters");
+    assert!(tail["text"].as_str().unwrap().ends_with("final line without newline"));
+    assert!(case.read_text(&source.id, 160_003, 1).is_err());
+}
