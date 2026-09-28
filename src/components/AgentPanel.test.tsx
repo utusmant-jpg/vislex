@@ -78,8 +78,10 @@ describe('chat composer interaction', () => {
 
   it('labels pending usage while a subscription turn is running', () => {
     panel(snapshot([task('current-task', 'current-chat')]), 'current-chat');
-    fireEvent.click(screen.getByRole('button', { name: /Considering the evidence/ }));
-    expect(screen.getByRole('status').textContent).toContain('Token usage pending');
+    expect(screen.getByRole('button', { name: /Considering the evidence/ })).toBeTruthy();
+    // The run clock is a role="timer" (not a live status) so it does not
+    // announce every second; it is visible without expanding the activity.
+    expect(screen.getByRole('timer').textContent).toContain('Token usage pending');
     expect(screen.queryByText(/0 tokens reported/)).toBeNull();
   });
 
@@ -183,6 +185,86 @@ describe('chat composer interaction', () => {
     expect(screen.getByText('Recent saved answer')).toBeTruthy();
     expect(api).toHaveBeenCalledWith('conversation_detail',{case_id:'case-1',conversation_id:'shared-chat',before:{created_at:recent.created_at,id:recent.id}});
     expect(screen.queryByRole('button',{name:'Load earlier messages'})).toBeNull();
+  });
+
+  it('renders a user stop as a neutral stopped turn with resume, not an alert', () => {
+    const stopped = { ...task('stopped-task', 'current-chat'), status: 'paused', error: 'Stopped by user' };
+    panel(snapshot([stopped]), 'current-chat');
+    expect(screen.getByText('Stopped', { selector: '.pill' })).toBeTruthy();
+    expect(screen.getByText('Stopped by user.')).toBeTruthy();
+    expect(screen.queryByText('Needs attention')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resume work' })).toBeTruthy();
+  });
+
+  it('keeps raw failure detail behind a disclosure and drafts a retry without sending', () => {
+    const failed = { ...task('failed-task', 'current-chat'), prompt: 'Which sources mention the van?', status: 'failed', error: 'Provider returned an error: rate limit' };
+    panel(snapshot([failed]), 'current-chat');
+    expect(screen.getByText('This response did not complete.')).toBeTruthy();
+    const detail = screen.getByText('Provider returned an error: rate limit').closest('details')!;
+    expect(detail.open).toBe(false);
+    expect(detail.textContent).toContain('Receipt: failed-task');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit and ask again' }));
+    expect((screen.getByRole('textbox', { name: 'Agent task' }) as HTMLTextAreaElement).value).toBe('Which sources mention the van?');
+    expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
+  });
+
+  it('states why sending is unavailable and where in settings to change it', () => {
+    const data = snapshot(); data.settings.allow_text = false;
+    const onSettings = vi.fn();
+    render(<AgentPanel snapshot={data} selection={null} conversationId={null} refresh={vi.fn(async () => undefined)} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={onSettings} onConversation={vi.fn()} />);
+    expect(screen.getByText('This case does not permit sending case text to AI.')).toBeTruthy();
+    // The dialog opens on its default section, so the path is stated as text
+    // and the button makes no claim to land on it.
+    expect(screen.getByText('Change this in Settings → This case → AI permissions')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Blocked question' } });
+    expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    expect(onSettings).toHaveBeenCalledWith('AI permissions');
+    // The case grant is shown apart from the model picker.
+    expect(screen.getByRole('button', { name: 'Case text not permitted' })).toBeTruthy();
+  });
+
+  it('announces once when the running turn settles', async () => {
+    const running = task('live-task', 'current-chat');
+    const view = panel(snapshot([running]), 'current-chat');
+    const region = document.querySelector('[aria-live="polite"]')!;
+    expect(region.textContent).toBe('');
+    view.rerender(<AgentPanel snapshot={snapshot([{ ...running, status: 'paused', error: 'Stopped by user' }])} selection={null} conversationId="current-chat" refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={view.onConversation} />);
+    await waitFor(() => expect(region.textContent).toBe('Response stopped.'));
+  });
+
+  it('announces a repeated outcome again when a second turn settles the same way', async () => {
+    const first = task('first-task', 'current-chat');
+    const view = panel(snapshot([first]), 'current-chat');
+    const region = document.querySelector('[aria-live="polite"]')!;
+    const rerender = (tasks: ReturnType<typeof task>[]) => view.rerender(<AgentPanel snapshot={snapshot(tasks)} selection={null} conversationId="current-chat" refresh={view.refresh} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={vi.fn()} onConversation={view.onConversation} />);
+    const done = { ...first, status: 'complete', answer: 'First answer' };
+    rerender([done]);
+    await waitFor(() => expect(region.textContent).toBe('Response saved.'));
+    const firstNode = region.firstElementChild;
+    const second = { ...task('second-task', 'current-chat'), created_at: '2026-09-22T00:01:00Z' };
+    rerender([done, second]);
+    rerender([done, { ...second, status: 'complete', answer: 'Second answer' }]);
+    // Same text, but a new node, so assistive technology hears it again.
+    await waitFor(() => expect(region.firstElementChild).not.toBe(firstNode));
+    expect(region.textContent).toBe('Response saved.');
+    expect(region.querySelectorAll('span')).toHaveLength(1);
+  });
+
+  it('keeps an unsent draft per conversation in memory across conversation switches', () => {
+    const one = { ...task('one', 'chat-one'), status: 'complete', answer: 'One' };
+    const two = { ...task('two', 'chat-two'), status: 'complete', answer: 'Two' };
+    const data = snapshot([one, two]);
+    const view = panel(data, 'chat-one');
+    const composer = () => screen.getByRole('textbox', { name: 'Agent task' }) as HTMLTextAreaElement;
+    fireEvent.change(composer(), { target: { value: 'Draft for chat one' } });
+    const props = { snapshot: data, selection: null, refresh: view.refresh, run: (fn: () => Promise<void>) => { void fn(); }, onSource: vi.fn(), onSettings: vi.fn(), onConversation: view.onConversation };
+    view.rerender(<AgentPanel {...props} conversationId="chat-two" />);
+    expect(composer().value).toBe('');
+    view.rerender(<AgentPanel {...props} conversationId="chat-one" />);
+    expect(composer().value).toBe('Draft for chat one');
+    expect(JSON.stringify({ ...sessionStorage }) + JSON.stringify({ ...localStorage })).not.toContain('Draft for chat one');
   });
 
   it('does not select a late chat response after the case changes', async () => {

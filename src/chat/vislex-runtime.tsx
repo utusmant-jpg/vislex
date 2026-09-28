@@ -3,10 +3,12 @@ import {
   useExternalStoreRuntime,
   type AppendMessage,
   type AssistantRuntime,
+  type MessageStatus,
   type ThreadMessageLike,
 } from '@assistant-ui/react';
 
 import type { Task } from '../types';
+import { turnOutcome } from './turn-state';
 
 /**
  * Bridges the Rust-owned conversation state to assistant-ui.
@@ -21,6 +23,22 @@ import type { Task } from '../types';
  * calls back into `onNew` below.
  */
 
+/**
+ * Mirror the backend's turn state onto assistant-ui's message status. A user
+ * Stop is `incomplete/cancelled`, never `error`; a paused turn that still
+ * needs review is `incomplete/other`; only a failed turn carries `error`.
+ */
+export function turnStatus(turn: Task): MessageStatus {
+  switch (turnOutcome(turn).kind) {
+    case 'running': return { type: 'running' };
+    case 'complete': return { type: 'complete', reason: 'stop' };
+    case 'stopped': return { type: 'incomplete', reason: 'cancelled' };
+    case 'failed': return { type: 'incomplete', reason: 'error', error: turn.error || 'failed' };
+    case 'paused': case 'interrupted': return { type: 'incomplete', reason: 'other' };
+    default: return { type: 'complete', reason: 'unknown' };
+  }
+}
+
 export function taskToMessages(turn: Task): ThreadMessageLike[] {
   const messages: ThreadMessageLike[] = [
     { role: 'user', content: turn.prompt, id: `${turn.id}:user`, createdAt: turn.created_at ? new Date(turn.created_at) : undefined },
@@ -32,6 +50,7 @@ export function taskToMessages(turn: Task): ThreadMessageLike[] {
       content: answer,
       id: `${turn.id}:assistant`,
       createdAt: turn.created_at ? new Date(turn.created_at) : undefined,
+      status: turnStatus(turn),
     });
   }
   return messages;
@@ -56,7 +75,7 @@ export function textOf(message: AppendMessage): string {
 }
 
 export function useVisLexRuntime({ turns, isRunning, onNew, onCancel }: VisLexRuntimeOptions): AssistantRuntime {
-  const signature = turns.map(turn => `${turn.id}:${turn.status}:${turn.step}:${turn.answer.length}`).join('|');
+  const signature = turns.map(turn => `${turn.id}:${turn.status}:${turn.step}:${turn.answer.length}:${turn.error.length}`).join('|');
   const messages = useMemo(() => turns.flatMap(taskToMessages), [signature]);
   return useExternalStoreRuntime({
     isRunning,
