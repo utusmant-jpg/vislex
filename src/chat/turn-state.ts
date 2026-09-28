@@ -4,6 +4,7 @@
 // and a single announcement when a live turn settles.
 import type { Snapshot, Task } from '../types';
 import type { PillState } from '../ui';
+import type { SettingsSection } from '../components/SettingsDialog';
 
 /** Pause reasons written by src-tauri (desktop.rs stop_task, agent::pause,
  *  automatic.rs CHAT_PREEMPTION, case.rs startup recovery). */
@@ -42,16 +43,17 @@ export function settledAnnouncement(previousStatus: string | undefined, turn: Pi
   }
 }
 
-export type SettingsSection = 'Providers & models' | 'AI permissions';
+export type { SettingsSection };
+/** Which settings the AI controls are edited for: app defaults, or this case. */
+export type SettingsScope = 'app' | 'case';
 
-/** The clicks that reach a section, as the Settings dialog is today. The case
- *  grant and offline switch are changed under the "This case" scope; the
- *  dialog itself opens on Providers & models at app scope, so this path is
- *  stated in text rather than implied by the Open settings button. */
-export function settingsPath(section: SettingsSection): string {
-  return section === 'AI permissions' ? 'Settings → This case → AI permissions' : 'Settings → Providers & models';
+/** The clicks that reach a section. "Open settings" lands on exactly this
+ *  section and scope, and the text names the same place so it can be found
+ *  again without the button. */
+export function settingsPath(section: SettingsSection, scope?: SettingsScope): string {
+  return `Settings → ${section}${scope === 'case' ? ' → This case' : ''}`;
 }
-export type ComposerBlock = { reason: 'desktop' | 'offline' | 'text-grant' | 'access-route' | 'subscription-model' | 'no-model' | 'preparing'; message: string; section?: SettingsSection };
+export type ComposerBlock = { reason: 'desktop' | 'offline' | 'text-grant' | 'access-route' | 'subscription-model' | 'no-model' | 'preparing'; message: string; section?: SettingsSection; scope?: SettingsScope };
 
 /** Why the composer cannot send right now, stated plainly and pointing at the
  *  settings section that changes it. Model availability is never treated as
@@ -61,12 +63,12 @@ export function composerBlock({ native, snapshot, accessKnown, subscriptionActiv
 }): ComposerBlock | null {
   if (!snapshot) return null;
   if (!native) return { reason: 'desktop', message: 'AI chat runs in the VisLex desktop app. This preview cannot send messages.' };
-  if (snapshot.settings.offline) return { reason: 'offline', message: 'Offline mode is on, so no AI requests are sent for this case.', section: 'AI permissions' };
-  if (!snapshot.settings.allow_text) return { reason: 'text-grant', message: 'This case does not permit sending case text to AI.', section: 'AI permissions' };
-  if (!accessKnown) return { reason: 'access-route', message: 'The AI access route for this case could not be read.', section: 'Providers & models' };
+  if (snapshot.settings.offline) return { reason: 'offline', message: 'Offline mode is on, so no AI requests are sent for this case.', section: 'Privacy & offline', scope: 'case' };
+  if (!snapshot.settings.allow_text) return { reason: 'text-grant', message: 'This case does not permit sending case text to AI.', section: 'Case permissions', scope: 'case' };
+  if (!accessKnown) return { reason: 'access-route', message: 'The AI access route for this case could not be read.', section: 'Accounts & models' };
   if (!modelReady) return subscriptionActive
-    ? { reason: 'subscription-model', message: 'Choose a ChatGPT subscription model and effort before sending.', section: 'Providers & models' }
-    : { reason: 'no-model', message: 'No configured model is permitted to receive case text.', section: 'Providers & models' };
+    ? { reason: 'subscription-model', message: 'Choose a ChatGPT subscription model and effort before sending.', section: 'Accounts & models' }
+    : { reason: 'no-model', message: 'No configured model is permitted to receive case text.', section: 'Accounts & models' };
   if (preparing) return { reason: 'preparing', message: 'Preparing case files before chat is available.' };
   return null;
 }

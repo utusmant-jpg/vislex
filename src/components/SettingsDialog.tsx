@@ -83,12 +83,15 @@ export function providerChangeNotice(savedProvider: Provider | null, nextProvide
   return `Saving makes ${providerNames[nextProvider]} the default company instead of ${providerNames[savedProvider]}. The case text and image grants were given for ${providerNames[savedProvider]}, so saving clears them. Grant them again for ${providerNames[nextProvider]} afterwards only if you intend to.`;
 }
 
-export default function SettingsDialog({ snapshot, onClose, refresh, initialSection }: { snapshot: Snapshot | null; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; initialSection?: SettingsSection }) {
+export default function SettingsDialog({ snapshot, onClose, refresh, initialSection, initialScope }: { snapshot: Snapshot | null; onClose: () => void; refresh: () => Promise<void>; run: (fn: () => Promise<void>) => void; initialSection?: SettingsSection; initialScope?: 'app' | 'case' }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const mounted = useRef(true);
   const [section, setSection] = useState<SettingsSection>(initialSection ?? 'Accounts & models');
-  const [scope, setScope] = useState<'app' | 'case'>('app');
-  const scopeRef = useRef<'app' | 'case'>('app');
+  // A link that names "This case" opens on the case's own settings; without a
+  // case there is only the app scope.
+  const openingScope: 'app' | 'case' = initialScope === 'case' && snapshot ? 'case' : 'app';
+  const [scope, setScope] = useState<'app' | 'case'>(openingScope);
+  const scopeRef = useRef<'app' | 'case'>(openingScope);
   const [caseScope, setCaseScope] = useState<'app' | 'case' | null>(null);
   const [appPreferences, setAppPreferences] = useState<AppPreferences | null>(null);
   const [settings, setSettings] = useState<Settings>({ ...(snapshot?.settings ?? emptySettings) });

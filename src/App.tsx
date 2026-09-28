@@ -10,6 +10,7 @@ import {
 import { api, formatBytes, native } from './bridge';
 import { motion } from 'motion/react';
 import { springs } from './lib/motion';
+import type { SettingsScope, SettingsSection } from './chat/turn-state';
 import type { Snapshot, Selection, SearchResult, WorkingRecord, RecordSummary, Source, Job, Task } from './types';
 import { suggestedMatterName } from './review';
 import { subscribeCaseChanges } from './caseEvents';
@@ -506,7 +507,9 @@ export default function App() {
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [focusComposerRequest, setFocusComposerRequest] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [settings, setSettings] = useState(false);
+  // null: closed. Otherwise the section (and scope) the dialog opens on, so a
+  // link that names a settings section lands on it.
+  const [settings, setSettings] = useState<{ section?: SettingsSection; scope?: SettingsScope } | null>(null);
   const settingsReturnFocus = useRef<HTMLElement | null>(null);
   const [modal, setModal] = useState<'create' | 'note' | 'backup' | 'restore' | 'delete' | null>(null);
   const modalReturnFocus = useRef<HTMLElement | null>(null);
@@ -767,7 +770,7 @@ export default function App() {
     run(async () => { installSnapshot(await api<Snapshot>('open_case', { ...(snapshot ? caseGuard(snapshot) : {}), path: item.root })); setView('chat'); });
   }
   function showModal(type: typeof modal) { modalReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setName(''); setPassword(''); setPasswordConfirm(''); setModal(type); }
-  function openSettings() { settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setSettings(true); }
+  function openSettings(section?: SettingsSection, scope?: SettingsScope) { settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setSettings({ section, scope }); }
   async function performModal() {
     if (modal === 'create') { const parent = await open({ directory: true, title: 'Choose a local parent folder' }); if (typeof parent !== 'string') return; const safeName = name.trim().replace(/[<>:"/\\|?*]/g, '-').replace(/[. ]+$/, ''); if (!safeName) throw new Error('Enter a case name.'); const path = `${parent}\\${safeName}.ledcase`; installSnapshot(await api<Snapshot>('create_case', { ...(snapshot ? caseGuard(snapshot) : {}), path, name })); setSelection(null); notify.success('Case created', 'Drop files anywhere to import evidence.'); }
     if (modal === 'note') { if (!snapshot) throw new Error('Open a case first.'); const created = await api<WorkingRecord>('write_record', { ...caseGuard(snapshot), title: name, kind, content: `# ${name}\n\n`, base_revision: 0, source_ids: source ? [source.id] : [], reason: 'Create working record' }); await refresh(); setSelection({ type: 'record', id: created.id }); }
@@ -836,7 +839,8 @@ export default function App() {
   const totalBytes = snapshot?.counts?.source_bytes ?? snapshot?.sources.reduce((total, item) => total + item.size, 0) ?? 0;
   const totalStorage = storage ? Object.values(storage).reduce((total, bytes) => total + bytes, 0) : 0;
   const recordCount = snapshot?.counts?.record_count ?? snapshot?.records.length ?? 0;
-  const aiState = !snapshot ? null : snapshot.settings.offline ? { label: 'AI off for this case', tone: 'off' } : !snapshot.settings.allow_text ? { label: 'AI may not read case text', tone: 'off' } : { label: snapshot.settings.model ? `AI permitted · ${snapshot.settings.model}` : 'AI permitted', tone: 'on' };
+  // Offline is changed under Privacy & offline; the text and image grants under Case permissions.
+  const aiState: { label: string; tone: 'on' | 'off'; section: SettingsSection } | null = !snapshot ? null : snapshot.settings.offline ? { label: 'AI off for this case', tone: 'off', section: 'Privacy & offline' } : !snapshot.settings.allow_text ? { label: 'AI may not read case text', tone: 'off', section: 'Case permissions' } : { label: snapshot.settings.model ? `AI permitted · ${snapshot.settings.model}` : 'AI permitted', tone: 'on', section: 'Case permissions' };
   const sourceCount = snapshot ? snapshot.counts?.source_count ?? snapshot.sources.length : 0;
   const caseStatus: { state: PillState; label: string } | null = !snapshot ? null : pendingCount ? { state: 'running', label: `${pendingCount} job${pendingCount === 1 ? '' : 's'} in progress` } : needsAttention ? { state: 'needs-attention', label: `${needsAttention} need${needsAttention === 1 ? 's' : ''} attention` } : { state: 'complete', label: 'Processing up to date' };
   const otherCases = projects.filter(project => project.id !== snapshot?.id);
@@ -950,7 +954,7 @@ export default function App() {
               <button className="quiet" onClick={() => run(openCase)}><FolderOpen size={15} />Open</button>
             </div>
             <div className="sidebar-footer-row">
-              <Tooltip text="Settings" shortcut="Ctrl+,"><button className="quiet sidebar-settings" onClick={openSettings}><Settings size={15} />Settings</button></Tooltip>
+              <Tooltip text="Settings" shortcut="Ctrl+,"><button className="quiet sidebar-settings" onClick={() => openSettings()}><Settings size={15} />Settings</button></Tooltip>
               <div className="spacer" />
               <ThemeToggle />
               <Tooltip text="Case options"><button className="icon-button" aria-label="Case options" aria-haspopup="menu" aria-expanded={!!moreMenu} onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setMoreMenu(moreMenu ? null : { x: Math.max(8, rect.right - 232), y: rect.top - 8 - 5 * 34 }); }}><MoreHorizontal size={16} /></button></Tooltip>
@@ -1024,7 +1028,7 @@ export default function App() {
         </span>
         {needsAttention ? <button className="status-attention" onClick={() => setView('jobs')}><StatusPill state="needs-attention" label={`${needsAttention} need${needsAttention === 1 ? 's' : ''} attention`} small /></button> : null}
         <div className="spacer" />
-        {aiState ? <button className={`status-ai ${aiState.tone}`} onClick={openSettings} title="Open AI permissions"><span className="status-ai-dot" aria-hidden="true" />{aiState.label}</button> : null}
+        {aiState ? <button className={`status-ai ${aiState.tone}`} onClick={() => openSettings(aiState.section, 'case')} title={`Open Settings → ${aiState.section} → This case`}><span className="status-ai-dot" aria-hidden="true" />{aiState.label}</button> : null}
         {recordCount || totalStorage ? <span className="muted">{recordCount === 1 ? '1 working file' : `${recordCount} working files`}{totalStorage ? ` · ${formatBytes(totalStorage)} on disk` : ''}</span> : null}
       </footer> : null}
 
@@ -1082,7 +1086,7 @@ export default function App() {
         <div className="palette-footer"><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span>{snapshot ? <span><kbd>Ctrl</kbd><kbd>↵</kbd> search text</span> : null}<span><kbd>Esc</kbd> close</span></div>
       </dialog>
 
-      {settings ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog key={snapshot ? `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}` : 'app'} snapshot={snapshot} onClose={() => setSettings(false)} refresh={refresh} run={run} /></Suspense> : null}
+      {settings ? <Suspense fallback={<WorkspaceLoading label="Opening settings…" settings />}><SettingsDialog key={snapshot ? `${snapshot.id}:${snapshot.session_epoch ?? 'preview'}` : 'app'} snapshot={snapshot} onClose={() => setSettings(null)} refresh={refresh} run={run} initialSection={settings.section} initialScope={settings.scope} /></Suspense> : null}
 
       {modal ? <dialog ref={dialog} className="modal lifecycle-modal" aria-label={modalTitle} onCancel={() => { setModal(null); setPassword(''); setPasswordConfirm(''); }}>
         <div className="modal-heading"><div><h2>{modalTitle}</h2><p>{modalLede}</p></div><button className="icon-button" aria-label="Close dialog" onClick={() => { setModal(null); setPassword(''); setPasswordConfirm(''); }}><X size={18} /></button></div>

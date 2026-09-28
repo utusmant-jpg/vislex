@@ -223,3 +223,20 @@ it('opens a requested section and lists real keyboard shortcuts', () => {
   expect(screen.getByText(/Reduced motion is (on|off)/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Save app AI settings' })).toBeNull();
 });
+
+it('opens on the section and case scope a settings link names, and falls back to app scope without a case', async () => {
+  const caseSettings = { ...snapshot, settings: { ...snapshot.settings, allow_text: false, allow_images: false } };
+  render(<SettingsDialog snapshot={caseSettings} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} initialSection="Case permissions" initialScope="case" />);
+  expect(screen.getByRole('heading', { level: 2, name: 'Case permissions' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Case permissions' }).getAttribute('aria-current')).toBe('page');
+  expect(screen.getByRole('button', { name: /^This case/ }).getAttribute('aria-pressed')).toBe('true');
+  // The case's own grant is shown, not the app default that arrives later.
+  const grant = await screen.findByRole('checkbox', { name: 'Case text may be sent to permitted models' });
+  await waitFor(() => expect(api).toHaveBeenCalledWith('app_ai_settings'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect((grant as HTMLInputElement).checked).toBe(false);
+  cleanup();
+  render(<SettingsDialog snapshot={null} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} initialSection="Privacy & offline" initialScope="case" />);
+  expect(screen.getByRole('heading', { level: 2, name: 'Privacy & offline' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Save app AI settings' })).toBeTruthy();
+});

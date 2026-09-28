@@ -101,7 +101,9 @@ test('the viewer opens each source kind and degrades honestly without media byte
 
   await openByName('05 · North entrance camera 04');
   await expect(viewer.getByText(/Playback derivatives are not available in the synthetic harness/)).toBeVisible();
-  await viewer.getByText('Video overview and visible text').click();
+  // The overview moved from a disclosure into the recording tools dock as a tab.
+  await viewer.getByRole('tab', { name: 'Visual discovery' }).click();
+  await expect(viewer.getByRole('region', { name: 'Video overview and visible text' })).toBeVisible();
   await expect(viewer.getByRole('img', { name: /Sample at 0\.000 seconds/ })).toBeVisible();
 
   await openByName('06 · Email from facilities');

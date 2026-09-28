@@ -214,13 +214,12 @@ describe('chat composer interaction', () => {
     const onSettings = vi.fn();
     render(<AgentPanel snapshot={data} selection={null} conversationId={null} refresh={vi.fn(async () => undefined)} run={fn => { void fn(); }} onSource={vi.fn()} onSettings={onSettings} onConversation={vi.fn()} />);
     expect(screen.getByText('This case does not permit sending case text to AI.')).toBeTruthy();
-    // The dialog opens on its default section, so the path is stated as text
-    // and the button makes no claim to land on it.
-    expect(screen.getByText('Change this in Settings → This case → AI permissions')).toBeTruthy();
+    // The path is stated as text, and Open settings lands on that same section and scope.
+    expect(screen.getByText('Change this in Settings → Case permissions → This case')).toBeTruthy();
     fireEvent.change(screen.getByRole('textbox', { name: 'Agent task' }), { target: { value: 'Blocked question' } });
     expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
-    expect(onSettings).toHaveBeenCalledWith('AI permissions');
+    expect(onSettings).toHaveBeenCalledWith('Case permissions', 'case');
     // The case grant is shown apart from the model picker.
     expect(screen.getByRole('button', { name: 'Case text not permitted' })).toBeTruthy();
   });
