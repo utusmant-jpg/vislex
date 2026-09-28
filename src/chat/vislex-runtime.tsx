@@ -14,11 +14,11 @@ import type { Task } from '../types';
  * The backend remains the single source of truth: turns arrive from the case
  * snapshot (and conversation_detail paging), streaming text still flows
  * through `agent-progress` events, and the final authoritative answer still
- * lands via the case-event snapshot refresh. This adapter mirrors that state
- * into assistant-ui's ExternalStoreRuntime so the chat surface can adopt its
- * thread/composer/tool components, and routes sends through
- * `runtime.thread.append` — the send button talks to assistant-ui, which
- * calls back into `onNew` below.
+ * lands via the case-event snapshot refresh. This adapter only mirrors that
+ * state into assistant-ui's ExternalStoreRuntime. It deliberately passes no
+ * onEdit / onReload / setMessages handlers, so assistant-ui can never rewrite
+ * or regenerate a turn locally; a runtime `append` is routed to `onNew`,
+ * which the panel wires to the same single send path the composer uses.
  */
 
 export function taskToMessages(turn: Task): ThreadMessageLike[] {
@@ -35,6 +35,22 @@ export function taskToMessages(turn: Task): ThreadMessageLike[] {
     });
   }
   return messages;
+}
+
+/** 32-bit FNV-1a over UTF-16 code units: a cheap content fingerprint so an
+ *  answer rewritten to the same length still invalidates memoised state. */
+export function contentFingerprint(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/** Everything about a turn that changes what is rendered or mirrored. */
+export function turnSignature(turn: Task): string {
+  return `${turn.id}:${turn.status}:${turn.step}:${turn.answer.length}:${contentFingerprint(turn.answer)}:${contentFingerprint(turn.error ?? '')}`;
 }
 
 export interface VisLexRuntimeOptions {
@@ -56,7 +72,8 @@ export function textOf(message: AppendMessage): string {
 }
 
 export function useVisLexRuntime({ turns, isRunning, onNew, onCancel }: VisLexRuntimeOptions): AssistantRuntime {
-  const signature = turns.map(turn => `${turn.id}:${turn.status}:${turn.step}:${turn.answer.length}`).join('|');
+  const signature = turns.map(turnSignature).join('|');
+  // The signature captures every mirrored field of `turns` (status, step, error and answer content).
   const messages = useMemo(() => turns.flatMap(taskToMessages), [signature]);
   return useExternalStoreRuntime({
     isRunning,
