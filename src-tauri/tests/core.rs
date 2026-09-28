@@ -1960,4 +1960,18 @@ fn text_files_over_the_indexing_limit_are_readable_page_by_page_but_not_citable(
     assert!(tail["text"].as_str().unwrap().contains('\u{fffd}'), "invalid bytes are shown as replacement characters");
     assert!(tail["text"].as_str().unwrap().ends_with("final line without newline"));
     assert!(case.read_text(&source.id, 160_003, 1).is_err());
+
+    // Automatic preparation keeps the gap visible but states the real reason:
+    // the file is over the indexing limit, not undecodable.
+    evidence_desk::automatic::enqueue(&mut case).unwrap();
+    assert!(evidence_desk::automatic::next(&mut case).unwrap().is_none());
+    let (status, error, result): (String, String, String) = case.db.query_row(
+        "SELECT status,error,result FROM processing_jobs WHERE kind='auto_prepare' AND source_id=?",
+        [&source.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!(status, "failed", "an unindexed source stays a visible gap");
+    assert!(error.contains("over the 10 MB indexing limit"), "{error}");
+    assert!(!error.contains("could not be decoded"), "{error}");
+    let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(result["over_index_limit"], true);
+    assert_eq!(result["native_text_indexed"], false);
 }

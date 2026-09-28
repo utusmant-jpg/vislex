@@ -109,7 +109,11 @@ pub fn next(case:&mut Case)->Result<Option<Job>> {
         let source=case.source(&source_id)?;
         if source.kind=="text" {
             let indexed:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM extracts WHERE source_id=?)",[&source_id],|r|r.get(0))?;
-            case.db.execute("UPDATE processing_jobs SET status=?,result=?,error=? WHERE id=?",params![if indexed {"complete"}else{"failed"},json!({"native_text_indexed":indexed,"model_inspected":false}).to_string(),if indexed {""}else{"Text could not be decoded/indexed; retained for review"},queue_id])?;
+            // Text over the import indexing limit (case.rs) is read page by page from
+            // the original. It stays a visible gap, with the real reason stated.
+            let over_limit=!indexed && source.size>10*1024*1024;
+            let reason=if indexed {""} else if over_limit {"Text is over the 10 MB indexing limit: readable page by page from the original, but not searchable or citable by line"} else {"Text could not be decoded/indexed; retained for review"};
+            case.db.execute("UPDATE processing_jobs SET status=?,result=?,error=? WHERE id=?",params![if indexed {"complete"}else{"failed"},json!({"native_text_indexed":indexed,"over_index_limit":over_limit,"model_inspected":false}).to_string(),reason,queue_id])?;
             continue;
         }
         match processing::prepare_request(case,&source_id,json!({"operation":"automatic"})) {
