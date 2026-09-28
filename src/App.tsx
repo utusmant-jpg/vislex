@@ -16,6 +16,10 @@ import { suggestedMatterName } from './review';
 import { subscribeCaseChanges } from './caseEvents';
 import EvidenceViewer, { SourceIcon } from './components/EvidenceViewer';
 import AgentPanel from './components/AgentPanel';
+import ShortcutsSheet from './components/ShortcutsSheet';
+import BrandMark from './components/BrandMark';
+import ChatBoundary from './components/ChatBoundary';
+import { deriveTitle } from './chat/titles';
 import FolderImport from './components/FolderImport';
 import PaneDivider from './components/PaneDivider';
 import SidebarDivider from './components/SidebarDivider';
@@ -61,10 +65,6 @@ function readRecentCases(): RecentCase[] {
 }
 function writeRecentCases(cases: RecentCase[]) { try { localStorage.setItem('vislex-projects', JSON.stringify(cases.map(({ id, name, root }) => ({ id, name, root })))); } catch { /* storage unavailable */ } }
 
-function BrandMark({ large = false }: { large?: boolean }) {
-  return <span className={`brand-mark ${large ? 'large' : ''}`} aria-hidden="true" data-tauri-drag-region><span /><span /><span /></span>;
-}
-
 function OnboardingHero({ recent, onCreate, onOpen, onRestore, onSample, onRecent }: { recent: RecentCase[]; onCreate: () => void; onOpen: () => void; onRestore: () => void; onSample: () => void; onRecent: (item: RecentCase) => void }) {
   const cards = [
     { icon: Plus, title: 'Create a case', body: 'Start a new local case folder', run: onCreate },
@@ -79,9 +79,9 @@ function OnboardingHero({ recent, onCreate, onOpen, onRestore, onSample, onRecen
       <p className="onboarding-lede">VisLex keeps your evidence local, cites every claim to the original file, and never sends anything without your permission.</p>
       <div className="onboarding-cards">
         {cards.map(card => <button className="onboarding-card" key={card.title} onClick={card.run}>
-          <span className="icon-tile" aria-hidden="true"><card.icon size={17} /></span>
+          <span className="icon-tile" aria-hidden="true"><card.icon size={16} /></span>
           <span className="onboarding-card-text"><strong>{card.title}</strong><span>{card.body}</span></span>
-          <ArrowRight size={15} className="onboarding-card-arrow" aria-hidden="true" />
+          <ArrowRight size={16} className="onboarding-card-arrow" aria-hidden="true" />
         </button>)}
       </div>
       {native && recent.length ? <section className="onboarding-recent" aria-label="Recent cases">
@@ -166,29 +166,29 @@ export function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRe
         <h2>Evidence library</h2>
         <p>{sourceTotal.toLocaleString()} original source{sourceTotal === 1 ? '' : 's'} · {recordTotal.toLocaleString()} working file{recordTotal === 1 ? '' : 's'}{restrictedCount ? ` · ${restrictedCount} restricted in view` : ''}</p>
       </div>
-      {onImport ? <div className="surface-actions"><button className="primary" disabled={!native} title={native ? undefined : 'Importing files requires the desktop app'} onClick={onImport}><FilePlus2 size={15} />Add files</button></div> : null}
+      {onImport ? <div className="surface-actions"><button className="primary" disabled={!native} title={native ? undefined : 'Importing files requires the desktop app'} onClick={onImport}><FilePlus2 size={16} />Add files</button></div> : null}
     </header>
     <div className="library-controls">
       <div className="segmented" role="group" aria-label="Library section">
         <button className={section === 'sources' ? 'selected' : ''} aria-pressed={section === 'sources'} onClick={() => { setSection('sources'); setKind(''); }}>Sources</button>
         <button className={section === 'records' ? 'selected' : ''} aria-pressed={section === 'records'} onClick={() => { setSection('records'); setKind(''); }}>Working files</button>
       </div>
-      <div className="search-box"><Search size={15} aria-hidden="true" /><input aria-label="Filter loaded evidence" placeholder={section === 'sources' ? 'Filter loaded file names…' : 'Filter loaded titles…'} value={query} onChange={event => setQuery(event.target.value)} />{query ? <button className="icon-button icon-button-sm" aria-label="Clear filter" onClick={() => setQuery('')}><X size={13} /></button> : null}</div>
+      <div className="search-box"><Search size={16} aria-hidden="true" /><input aria-label="Filter loaded evidence" placeholder={section === 'sources' ? 'Filter loaded file names…' : 'Filter loaded titles…'} value={query} onChange={event => setQuery(event.target.value)} />{query ? <button className="icon-button icon-button-sm" aria-label="Clear filter" onClick={() => setQuery('')}><X size={14} /></button> : null}</div>
       <span className="library-count" aria-live="polite">{filtered.toLocaleString()} shown of {(section === 'sources' ? sourceTotal : recordTotal).toLocaleString()}</span>
     </div>
     {/* An active kind filter keeps its chips even if a refresh drops the older
         pages that held other kinds, so "All kinds" always clears it. */}
     {section === 'sources' && (kinds.length > 1 || kind !== '') ? <div className="chip-row library-kinds" role="group" aria-label="Filter by kind">
       <button className={`chip ${kind === '' ? 'selected' : ''}`} aria-pressed={kind === ''} onClick={() => setKind('')}>All kinds</button>
-      {(kind && !kinds.includes(kind) ? [...kinds, kind] : kinds).map(option => <button key={option} className={`chip ${kind === option ? 'selected' : ''}`} aria-pressed={kind === option} onClick={() => setKind(option)}><SourceIcon kind={option} size={13} />{option}</button>)}
+      {(kind && !kinds.includes(kind) ? [...kinds, kind] : kinds).map(option => <button key={option} className={`chip ${kind === option ? 'selected' : ''}`} aria-pressed={kind === option} onClick={() => setKind(option)}><SourceIcon kind={option} size={14} />{option}</button>)}
     </div> : null}
     {section === 'sources' ? (filteredSources.length ? <div className="library-table" role="list" aria-label="Sources">
       <div className="library-head" aria-hidden="true"><span>Name</span><span>Status</span><span>Size</span><span>Added</span></div>
       {filteredSources.map(source => { const pill = sourceStatusPill(source); return <ContextMenu key={source.id} items={[
-        { label: 'Open', icon: <FolderOpen size={15} />, onSelect: () => onOpen(source.id) },
-        { label: 'Rename display name', icon: <Pencil size={15} />, shortcut: 'F2', onSelect: () => onRename(source.id, source.name) },
+        { label: 'Open', icon: <FolderOpen size={16} />, onSelect: () => onOpen(source.id) },
+        { label: 'Rename display name', icon: <Pencil size={16} />, shortcut: 'F2', onSelect: () => onRename(source.id, source.name) },
         'separator',
-        { label: source.restricted ? 'Allow AI analysis' : 'Restrict from AI analysis', icon: <Lock size={15} />, onSelect: () => onRestrict(source.id, !source.restricted) },
+        { label: source.restricted ? 'Allow AI analysis' : 'Restrict from AI analysis', icon: <Lock size={16} />, onSelect: () => onRestrict(source.id, !source.restricted) },
       ]}>
         <button className="library-row" role="listitem" onClick={() => onOpen(source.id)} title={`${source.name}\nStatus: ${source.status}${source.restricted ? ' · restricted from AI analysis' : ''}\nSHA-256 ${source.sha256}`} onKeyDown={event => { if (event.key === 'F2') { event.preventDefault(); onRename(source.id, source.name); } }}>
           <span className="library-name-cell">
@@ -201,7 +201,7 @@ export function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRe
           <span className="library-cell">{relativeTime(source.created_at)}</span>
         </button>
       </ContextMenu>; })}
-    </div> : <div className="empty-state">{query || kind ? <Search size={20} /> : <FolderOpen size={20} />}<h3>{query || kind ? 'No evidence matches' : 'No evidence yet'}</h3><p>{query || kind ? 'Try a different name or kind. Only loaded pages are filtered here — use Search (Ctrl K) for the whole case.' : 'Drop files anywhere in the window, or add files. Originals are copied into the case and hashed; the files you choose are never modified.'}</p>{!query && !kind && onImport && native ? <button className="primary" onClick={onImport}><FilePlus2 size={15} />Add files</button> : null}</div>) : null}
+    </div> : <div className="empty-state">{query || kind ? <Search size={20} /> : <FolderOpen size={20} />}<h3>{query || kind ? 'No evidence matches' : 'No evidence yet'}</h3><p>{query || kind ? 'Try a different name or kind. Only loaded pages are filtered here — use Search (Ctrl K) for the whole case.' : 'Drop files anywhere in the window, or add files. Originals are copied into the case and hashed; the files you choose are never modified.'}</p>{!query && !kind && onImport && native ? <button className="primary" onClick={onImport}><FilePlus2 size={16} />Add files</button> : null}</div>) : null}
     {section === 'records' ? (filteredRecords.length ? <div className="library-table" role="list" aria-label="Working files">
       <div className="library-head" aria-hidden="true"><span>Title</span><span>Review</span><span>Revision</span><span>Updated</span></div>
       {filteredRecords.map(record => <button className="library-row" role="listitem" key={record.id} onClick={() => onOpenRecord(record.id)} title={record.title}>
@@ -481,6 +481,7 @@ export default function App() {
   }, [viewerWidth]);
   const [storage, setStorage] = useState<Record<string, number> | null>(null);
   const [palette, setPalette] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [rename, setRename] = useState<{ kind: string; id: string; name: string } | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const renameDialog = useRef<HTMLDialogElement>(null);
@@ -570,6 +571,7 @@ export default function App() {
       const mod = event.ctrlKey || event.metaKey;
       if (mod && event.key.toLowerCase() === 'k') { event.preventDefault(); setPalette(value => !value); return; }
       if (mod && event.key === ',') { event.preventDefault(); setPalette(false); openSettings(); return; }
+      if (mod && event.key === '/') { event.preventDefault(); setPalette(false); setShortcutsOpen(value => !value); return; }
       // A focused widget that already used the arrow (tablists, playback
       // controls) prevents default; history must not act on the same press.
       if (event.altKey && !mod && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !typing && !event.defaultPrevented) { event.preventDefault(); moveInHistory(event.key === 'ArrowLeft' ? -1 : 1); return; }
@@ -738,7 +740,7 @@ export default function App() {
     else conversationRows.set(id, { newest: task, firstPrompt: task.prompt });
   }
   const conversations = [...conversationRows].map(([id, { newest, firstPrompt }]) => ({
-    id, title: newest.title ?? firstPrompt, running: newest.status === 'running', when: newest.created_at,
+    id, title: newest.title ?? deriveTitle(firstPrompt), running: newest.status === 'running', when: newest.created_at,
   }));
   const filteredConversations = chatFilter.trim() ? conversations.filter(chat => matchesModelFilter(chat.title, chatFilter)) : conversations;
   const listedConversations = allChats || chatFilter.trim() ? filteredConversations : filteredConversations.slice(0, 8);
@@ -770,7 +772,8 @@ export default function App() {
   const pendingCount = snapshot?.counts ? snapshot.counts.jobs_queued + snapshot.counts.jobs_running : pending.length;
   const needsAttention = (snapshot?.counts?.jobs_attention ?? snapshot?.jobs?.filter(job => !job.superseded && !job.parent_run_id && ['failed', 'interrupted'].includes(job.status)).length ?? 0)
     + (snapshot?.automatic_analysis?.review_state === 'failed' ? 1 : 0);
-  const selectSource = (id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); setActivePane('source'); };
+  // Stable identity: answer blocks are memoised on it and should not re-render on every case poll.
+  const selectSource = useCallback((id: string, locator?: string) => { setSelection({ type: 'source', id, locator }); setActivePane('source'); }, []);
 
   async function importFiles() {
     if (!snapshot) throw new Error('Create or open a case first.');
@@ -812,7 +815,9 @@ export default function App() {
 
   /* ------------------------------ command palette ----------------------------- */
   const paletteCommands = useMemo(() => [
-    { id: 'new-chat', label: 'New chat', hint: 'Ctrl+N', run: () => { chooseConversation(null); setPalette(false); } },
+    { id: 'new-chat', label: 'New chat', hint: 'Ctrl+N', run: () => { chooseConversation(null); setPalette(false); setFocusComposerRequest(value => value + 1); } },
+    ...(conversationId ? [{ id: 'rename-chat', label: 'Rename this chat', hint: 'F2', run: () => { setPalette(false); const chat = conversations.find(item => item.id === conversationId); if (chat) beginRename('chat', chat.id, chat.title); } }] : []),
+    { id: 'shortcuts', label: 'Keyboard shortcuts', hint: 'Ctrl+/', run: () => { setPalette(false); setShortcutsOpen(true); } },
     { id: 'view-evidence', label: 'Go to Evidence', hint: 'Ctrl+2', run: () => { setView('evidence'); setPalette(false); } },
     { id: 'view-findings', label: 'Go to Findings', hint: 'Ctrl+3', run: () => { setView('findings'); setPalette(false); } },
     { id: 'view-review', label: 'Go to Investigation workbench', hint: 'Ctrl+4', run: () => { setView('review'); setPalette(false); } },
@@ -822,17 +827,32 @@ export default function App() {
     { id: 'add-files', label: 'Add files to this case', hint: '', run: () => { setPalette(false); run(importFiles); } },
     { id: 'toggle-focus', label: focusMode ? 'Leave focus mode' : 'Enter focus mode', hint: '', run: () => { setPalette(false); setFocusMode(value => !value); } },
     { id: 'delete-case', label: 'Delete this case permanently', hint: '', run: () => { setPalette(false); if (snapshot && native) showModal('delete'); else notify.info('Open a native case to delete it.'); } },
-  ], [run, refresh, snapshot, focusMode]);
+  ], [run, refresh, snapshot, focusMode, conversationId, conversations]);
+  const paletteChats = useMemo(() => {
+    const text = query.trim();
+    if (!snapshot) return [];
+    return (text ? conversations.filter(chat => matchesModelFilter(chat.title, text)) : conversations.slice(0, 4)).slice(0, 6);
+  }, [query, snapshot, conversations]);
   const paletteMatches = useMemo(() => {
     const text = query.trim();
     if (!text || !snapshot) return [];
     return snapshot.sources.filter(item => matchesModelFilter(item.name, text)).slice(0, 6);
   }, [query, snapshot]);
-  const paletteItems = useMemo(() => [
-    ...paletteMatches.map(item => ({ kind: 'source' as const, id: item.id, label: item.name })),
-    ...(results ?? []).map((item, index) => ({ kind: 'result' as const, id: `${item.source_id}:${index}`, label: item.name, excerpt: item.excerpt, sourceId: item.source_id, locator: item.locator })),
-    ...paletteCommands.filter(command => (snapshot || command.id === 'settings') && (!query.trim() || matchesModelFilter(command.label, query))).map(command => ({ kind: 'command' as const, id: command.id, label: command.label, hint: command.hint, run: command.run })),
-  ], [paletteMatches, results, paletteCommands, query, snapshot]);
+  // A command whose name contains the query outranks fuzzy file and chat matches.
+  const paletteOrder = useMemo(() => {
+    const text = query.trim().toLowerCase();
+    return text && paletteCommands.some(command => command.label.toLowerCase().includes(text))
+      ? (['command', 'chat', 'source', 'result'] as const) : (['chat', 'source', 'result', 'command'] as const);
+  }, [query, paletteCommands]);
+  const paletteItems = useMemo(() => {
+    const byKind = {
+      chat: paletteChats.map(chat => ({ kind: 'chat' as const, id: chat.id, label: chat.title, excerpt: chat.running ? 'Working' : relativeTime(chat.when) })),
+      source: paletteMatches.map(item => ({ kind: 'source' as const, id: item.id, label: item.name })),
+      result: (results ?? []).map((item, index) => ({ kind: 'result' as const, id: `${item.source_id}:${index}`, label: item.name, excerpt: item.excerpt, sourceId: item.source_id, locator: item.locator })),
+      command: paletteCommands.filter(command => (snapshot || command.id === 'settings') && (!query.trim() || matchesModelFilter(command.label, query))).map(command => ({ kind: 'command' as const, id: command.id, label: command.label, hint: command.hint, run: command.run })),
+    };
+    return paletteOrder.flatMap(kind => byKind[kind] as ({ kind: typeof kind } & Record<string, unknown>)[]) as (typeof byKind.chat[number] | typeof byKind.source[number] | typeof byKind.result[number] | typeof byKind.command[number])[];
+  }, [paletteChats, paletteMatches, results, paletteCommands, query, snapshot, paletteOrder]);
   useEffect(() => { setPaletteIndex(0); }, [query, results]);
   useEffect(() => { document.getElementById(`case-command-item-${paletteIndex}`)?.scrollIntoView?.({ block: 'nearest' }); }, [paletteIndex]);
   function paletteKeyDown(event: React.KeyboardEvent) {
@@ -844,6 +864,7 @@ export default function App() {
     else if (event.key === 'Enter') { event.preventDefault(); paletteEnter(); }
   }
   function activatePaletteItem(item: (typeof paletteItems)[number]) {
+    if (item?.kind === 'chat') { chooseConversation(item.id); setPalette(false); setFocusComposerRequest(value => value + 1); return; }
     if (item?.kind === 'source') { selectSource(item.id); setPalette(false); return; }
     if (item?.kind === 'result') { selectSource(item.sourceId, item.locator.split('#')[1]); setPalette(false); return; }
     if (item?.kind === 'command') { item.run(); return; }
@@ -875,22 +896,22 @@ export default function App() {
   const caseStatus: { state: PillState; label: string } | null = !snapshot ? null : pendingCount ? { state: 'running', label: `${pendingCount} job${pendingCount === 1 ? '' : 's'} in progress` } : needsAttention ? { state: 'needs-attention', label: `${needsAttention} need${needsAttention === 1 ? 's' : ''} attention` } : { state: 'complete', label: 'Processing up to date' };
   const otherCases = projects.filter(project => project.id !== snapshot?.id);
   const caseMenuItems: MenuItem[] = [
-    ...otherCases.slice(0, 8).map(project => ({ label: project.name || 'Untitled case', icon: <FolderOpen size={15} />, onSelect: () => openRecent(project) }) as MenuItem),
+    ...otherCases.slice(0, 8).map(project => ({ label: project.name || 'Untitled case', icon: <FolderOpen size={16} />, onSelect: () => openRecent(project) }) as MenuItem),
     ...(otherCases.length ? ['separator' as const] : []),
-    { label: 'Create a case…', icon: <Plus size={15} />, onSelect: () => showModal('create') },
-    { label: native ? 'Open a case folder…' : 'Open the sample case', icon: <FolderOpen size={15} />, onSelect: () => run(openCase) },
-    { label: 'Restore from encrypted backup…', icon: <RotateCcw size={15} />, onSelect: () => showModal('restore') },
+    { label: 'Create a case…', icon: <Plus size={16} />, onSelect: () => showModal('create') },
+    { label: native ? 'Open a case folder…' : 'Open the sample case', icon: <FolderOpen size={16} />, onSelect: () => run(openCase) },
+    { label: 'Restore from encrypted backup…', icon: <RotateCcw size={16} />, onSelect: () => showModal('restore') },
     ...(snapshot ? ['separator' as const,
-      { label: 'Rename case…', icon: <Pencil size={15} />, shortcut: 'F2', onSelect: () => beginRename('case', snapshot.id, snapshot.name) },
-      { label: 'Export encrypted backup…', icon: <Archive size={15} />, onSelect: () => showModal('backup') },
-      { label: 'Delete case…', icon: <Trash2 size={15} />, danger: true, disabled: !native, onSelect: () => showModal('delete') }] as MenuItem[] : []),
+      { label: 'Rename case…', icon: <Pencil size={16} />, shortcut: 'F2', onSelect: () => beginRename('case', snapshot.id, snapshot.name) },
+      { label: 'Export encrypted backup…', icon: <Archive size={16} />, onSelect: () => showModal('backup') },
+      { label: 'Delete case…', icon: <Trash2 size={16} />, danger: true, disabled: !native, onSelect: () => showModal('delete') }] as MenuItem[] : []),
   ];
   const moreMenuItems: MenuItem[] = [
-    { label: 'New working file…', icon: <NotebookPen size={15} />, disabled: !snapshot, onSelect: () => showModal('note') },
-    { label: 'Export encrypted backup…', icon: <Archive size={15} />, disabled: !snapshot, onSelect: () => showModal('backup') },
-    { label: 'Restore from encrypted backup…', icon: <RotateCcw size={15} />, onSelect: () => showModal('restore') },
+    { label: 'New working file…', icon: <NotebookPen size={16} />, disabled: !snapshot, onSelect: () => showModal('note') },
+    { label: 'Export encrypted backup…', icon: <Archive size={16} />, disabled: !snapshot, onSelect: () => showModal('backup') },
+    { label: 'Restore from encrypted backup…', icon: <RotateCcw size={16} />, onSelect: () => showModal('restore') },
     'separator',
-    { label: 'Delete case…', icon: <Trash2 size={15} />, danger: true, disabled: !snapshot || !native, onSelect: () => showModal('delete') },
+    { label: 'Delete case…', icon: <Trash2 size={16} />, danger: true, disabled: !snapshot || !native, onSelect: () => showModal('delete') },
   ];
   const modalTitle = modal === 'create' ? 'Create a local case' : modal === 'note' ? 'New working file' : modal === 'backup' ? 'Encrypted case backup' : modal === 'delete' ? 'Delete this case permanently' : 'Restore a case';
   const modalLede = modal === 'create' ? 'A case is a local folder that holds hashed copies of your evidence, chats and findings.' : modal === 'note' ? 'Working files keep every revision. The current source is linked when one is open.' : modal === 'backup' ? 'Creates one encrypted archive with originals, notes, historical revisions and restricted material.' : modal === 'delete' ? 'This erases the case folder from disk.' : 'Choose the encrypted archive and where to restore it on the next steps.';
@@ -903,25 +924,25 @@ export default function App() {
         {snapshot ? <button className="case-switcher" aria-haspopup="menu" aria-expanded={!!caseMenu} aria-label={`Switch or manage case (current: ${snapshot.name})`} onDoubleClick={event => event.stopPropagation()} onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setCaseMenu(caseMenu ? null : { x: rect.left, y: rect.bottom + 6 }); }}>
           <FolderOpen size={14} aria-hidden="true" />
           <span className="title-case">{snapshot.name}</span>
-          <ChevronsUpDown size={13} aria-hidden="true" />
+          <ChevronsUpDown size={14} aria-hidden="true" />
         </button> : null}
         <div className="spacer" data-tauri-drag-region />
         <button className="command-bar" onDoubleClick={event => event.stopPropagation()} onClick={() => setPalette(true)} aria-label={snapshot ? 'Search case and run commands' : 'Search commands'}>
-          <Search size={14} aria-hidden="true" /><span>{snapshot ? 'Search evidence, meaning and commands' : 'Search commands'}</span><span className="command-bar-keys" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+          <Search size={14} aria-hidden="true" /><span>{snapshot ? 'Search chats, evidence and commands' : 'Search commands'}</span><span className="command-bar-keys" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span>
         </button>
         <div className="spacer" data-tauri-drag-region />
         <div className="titlebar-tools">
           {busy ? <span className="titlebar-busy" role="status" aria-label="Working"><span className="activity-dot" aria-hidden="true" /></span> : null}
-          {snapshot ? <Tooltip text={focusMode ? 'Leave focus mode' : 'Focus mode: one pane at a time'}><button className="icon-button" aria-label="Focus mode" aria-pressed={focusMode} onDoubleClick={event => event.stopPropagation()} onClick={() => setFocusMode(value => !value)}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button></Tooltip> : null}
+          {snapshot ? <Tooltip text={focusMode ? 'Leave focus mode' : 'Focus mode: one pane at a time'}><button className="icon-button" aria-label="Focus mode" aria-pressed={focusMode} onDoubleClick={event => event.stopPropagation()} onClick={() => setFocusMode(value => !value)}>{focusMode ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button></Tooltip> : null}
         </div>
         <div className="window-controls">
-          <button aria-label="Minimize window" onDoubleClick={event => event.stopPropagation()} onClick={() => { if (native) void getCurrentWindow().minimize(); }}><Minus size={15} /></button>
+          <button aria-label="Minimize window" onDoubleClick={event => event.stopPropagation()} onClick={() => { if (native) void getCurrentWindow().minimize(); }}><Minus size={16} /></button>
           <button aria-label="Maximize or restore window" onDoubleClick={event => event.stopPropagation()} onClick={() => { if (native) void getCurrentWindow().toggleMaximize(); }}><svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true"><rect x="0.5" y="0.5" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" /></svg></button>
           <button className="window-close" aria-label="Close window" onDoubleClick={event => event.stopPropagation()} onClick={() => { if (native) void getCurrentWindow().close(); }}><X size={16} /></button>
         </div>
       </header>
 
-      <div className="workspace" data-active-pane={activePane} data-layout={focusMode ? 'focus' : 'investigate'}>
+      <div className="workspace" data-active-pane={activePane} data-layout={focusMode ? 'focus' : 'investigate'} data-view={view}>
         <nav className="rail" aria-label="Workspaces">
           {views.map(item => <Tooltip key={item.id} text={item.label} shortcut={item.shortcut} side="right">
             <motion.button
@@ -951,23 +972,23 @@ export default function App() {
             {suggestedName && suggestedName !== snapshot?.name ? <button className="quiet suggest-name" title="Suggested from PDF filename; confirm against the charging document" onClick={() => snapshot && beginRename('case', snapshot.id, suggestedName)}>Use suggested matter name</button> : null}
           </div>
           <div className="sidebar-actions">
-            <button className="secondary sidebar-new-chat" disabled={!snapshot} onClick={() => { chooseConversation(null); setFocusComposerRequest(value => value + 1); }}><MessageSquarePlus size={15} />New chat<kbd>Ctrl N</kbd></button>
-            {snapshot && conversations.length > 4 ? <div className="search-box sidebar-filter"><Search size={13} aria-hidden="true" /><input aria-label="Filter chats" placeholder="Filter chats" value={chatFilter} onChange={event => setChatFilter(event.target.value)} /></div> : null}
+            <button className="secondary sidebar-new-chat" disabled={!snapshot} onClick={() => { chooseConversation(null); setFocusComposerRequest(value => value + 1); }}><MessageSquarePlus size={16} />New chat<kbd>Ctrl N</kbd></button>
+            {snapshot && conversations.length > 4 ? <div className="search-box sidebar-filter"><Search size={14} aria-hidden="true" /><input aria-label="Filter chats" placeholder="Filter chats" value={chatFilter} onChange={event => setChatFilter(event.target.value)} /></div> : null}
           </div>
           <nav className="sidebar-scroll" aria-label="Chats">
             {groupedConversations.length ? groupedConversations.map(group => <div className="chat-group" key={group.label}>
               <div className="tree-heading">{group.label}</div>
               {group.items.map(chat => <ContextMenu key={chat.id} items={[
-                { label: 'Rename chat', icon: <Pencil size={15} />, shortcut: 'F2', onSelect: () => beginRename('chat', chat.id, chat.title) },
-                { label: 'Delete chat', icon: <Trash2 size={15} />, danger: true, disabled: chat.running, onSelect: () => removeChat(chat.id) },
+                { label: 'Rename chat', icon: <Pencil size={16} />, shortcut: 'F2', onSelect: () => beginRename('chat', chat.id, chat.title) },
+                { label: 'Delete chat', icon: <Trash2 size={16} />, danger: true, disabled: chat.running, onSelect: () => removeChat(chat.id) },
               ]}>
                 <div className={`chat-item ${conversationId === chat.id ? 'selected' : ''}`} onKeyDown={event => { if (event.key === 'F2') { event.preventDefault(); beginRename('chat', chat.id, chat.title); } }}>
                   <button className="chat-open" title={chat.title} aria-current={conversationId === chat.id ? 'page' : undefined} onClick={() => chooseConversation(chat.id)}>
                     <span className="chat-title">{chat.title}</span>
                     {chat.running ? <span className="chat-running"><span className="activity-dot" aria-hidden="true" />Working</span> : <small className="chat-when">{relativeTime(chat.when)}</small>}
                   </button>
-                  <button className="icon-button icon-button-sm chat-action" aria-label={`Rename chat: ${chat.title}`} title="Rename chat (F2)" onClick={() => beginRename('chat', chat.id, chat.title)}><Pencil size={12} /></button>
-                  <button className="icon-button icon-button-sm chat-action chat-delete" aria-label={`Delete chat: ${chat.title}`} disabled={chat.running} onClick={() => removeChat(chat.id)}><Trash2 size={12} /></button>
+                  <button className="icon-button icon-button-sm chat-action" aria-label={`Rename chat: ${chat.title}`} title="Rename chat (F2)" onClick={() => beginRename('chat', chat.id, chat.title)}><Pencil size={14} /></button>
+                  <button className="icon-button icon-button-sm chat-action chat-delete" aria-label={`Delete chat: ${chat.title}`} disabled={chat.running} onClick={() => removeChat(chat.id)}><Trash2 size={14} /></button>
                 </div>
               </ContextMenu>)}
             </div>) : <p className="sidebar-empty">{!snapshot ? 'Open a case to see its chats.' : chatFilter ? 'No chats match this filter.' : 'No conversations yet. Ask your first question.'}</p>}
@@ -976,15 +997,15 @@ export default function App() {
           </nav>
           <div className="sidebar-footer">
             {snapshot ? <div className="sidebar-import">
-              <button className="quiet" disabled={!native} title={native ? 'Add files to this case' : 'Importing requires the desktop app'} onClick={() => run(importFiles)}><Import size={15} />Add files</button>
+              <button className="quiet" disabled={!native} title={native ? 'Add files to this case' : 'Importing requires the desktop app'} onClick={() => run(importFiles)}><Import size={16} />Add files</button>
               <FolderImport caseId={snapshot?.id} sessionEpoch={snapshot?.session_epoch} hasCase={!!snapshot} run={run} refresh={refresh} />
             </div> : null}
             <div className="sidebar-footer-row">
-              <button className="quiet" onClick={() => showModal('create')}><Plus size={15} />Create</button>
-              <button className="quiet" onClick={() => run(openCase)}><FolderOpen size={15} />Open</button>
+              <button className="quiet" onClick={() => showModal('create')}><Plus size={16} />Create</button>
+              <button className="quiet" onClick={() => run(openCase)}><FolderOpen size={16} />Open</button>
             </div>
             <div className="sidebar-footer-row">
-              <Tooltip text="Settings" shortcut="Ctrl+,"><button className="quiet sidebar-settings" onClick={() => openSettings()}><Settings size={15} />Settings</button></Tooltip>
+              <Tooltip text="Settings" shortcut="Ctrl+,"><button className="quiet sidebar-settings" onClick={() => openSettings()}><Settings size={16} />Settings</button></Tooltip>
               <div className="spacer" />
               <ThemeToggle />
               <Tooltip text="Case options"><button className="icon-button" aria-label="Case options" aria-haspopup="menu" aria-expanded={!!moreMenu} onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setMoreMenu(moreMenu ? null : { x: Math.max(8, rect.right - 232), y: rect.top - 8 - 5 * 34 }); }}><MoreHorizontal size={16} /></button></Tooltip>
@@ -1002,7 +1023,7 @@ export default function App() {
             onSample={() => run(async () => { installSnapshot(await api<Snapshot>('load_demo')); })}
             onRecent={openRecent}
           /> : null}
-          {visibleSnapshot && view === 'chat' ? <AgentPanel key={`${snapshot!.id}:${snapshot!.session_epoch ?? 'preview'}`} conversationId={conversationId} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={openSettings} focusRequest={focusComposerRequest} /> : null}
+          {visibleSnapshot && view === 'chat' ? <ChatBoundary resetKey={`${snapshot!.id}:${conversationId ?? 'new'}`}><AgentPanel key={`${snapshot!.id}:${snapshot!.session_epoch ?? 'preview'}`} conversationId={conversationId} onRename={() => { const chat = conversations.find(item => item.id === conversationId); if (chat) beginRename('chat', chat.id, chat.title); }} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={openSettings} focusRequest={focusComposerRequest} /></ChatBoundary> : null}
           {!snapshot && view !== 'chat' ? <div className="empty-state workspace-view"><FolderOpen size={20} /><h3>Open a case first</h3><p>This workspace becomes available once a case is open.</p><button className="primary" onClick={() => setView('chat')}>Choose a case</button></div> : null}
           {snapshot && view === 'evidence' ? <EvidenceLibrary
             snapshot={snapshot}
@@ -1024,8 +1045,8 @@ export default function App() {
           <div className="tab-strip">
             <button className="quiet pane-return" aria-label="Return to workspace" onClick={() => setActivePane('workspace')}><ArrowLeft size={14} /><span>Workspace</span></button>
             <div className="tab-history">
-              <Tooltip text="Previous location" shortcut="Alt+←"><button className="icon-button" aria-label="Previous location" disabled={navigationHistory.index <= 0} onClick={() => moveInHistory(-1)}><ArrowLeft size={15} /></button></Tooltip>
-              <Tooltip text="Next location" shortcut="Alt+→"><button className="icon-button" aria-label="Next location" disabled={navigationHistory.index >= navigationHistory.entries.length - 1} onClick={() => moveInHistory(1)}><ArrowRight size={15} /></button></Tooltip>
+              <Tooltip text="Previous location" shortcut="Alt+←"><button className="icon-button" aria-label="Previous location" disabled={navigationHistory.index <= 0} onClick={() => moveInHistory(-1)}><ArrowLeft size={16} /></button></Tooltip>
+              <Tooltip text="Next location" shortcut="Alt+→"><button className="icon-button" aria-label="Next location" disabled={navigationHistory.index >= navigationHistory.entries.length - 1} onClick={() => moveInHistory(1)}><ArrowRight size={16} /></button></Tooltip>
             </div>
             {/* The tablist owns only tabs. Closing is keyboard reachable through
                 Delete on a focused tab, Ctrl+W, the tab context menu (Shift+F10)
@@ -1061,7 +1082,7 @@ export default function App() {
                       {tab.type === 'source' ? <SourceIcon kind={visibleSnapshot?.sources.find(item => item.id === tab.id)?.kind ?? 'other'} size={14} /> : <NotebookPen size={14} aria-hidden="true" />}
                       <span>{tabTitle}</span>
                     </button>
-                    <span className="file-tab-close" aria-hidden="true" title="Close (Ctrl+W)" onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); closeTab(tab.id); }}><X size={12} /></span>
+                    <span className="file-tab-close" aria-hidden="true" title="Close (Ctrl+W)" onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); closeTab(tab.id); }}><X size={14} /></span>
                   </div>
                 </ContextMenu>;
               })}
@@ -1098,20 +1119,20 @@ export default function App() {
 
       <dialog ref={paletteDialog} className="modal command-palette" aria-label="Search and commands" onCancel={() => setPalette(false)} onClick={event => { if (event.target === event.currentTarget) setPalette(false); }}>
         <div className="palette-input-row">
-          <Search size={17} aria-hidden="true" />
-          <input autoFocus role="combobox" aria-autocomplete="list" aria-controls="case-command-results" aria-expanded={paletteItems.length > 0} aria-activedescendant={paletteItems[paletteIndex] ? `case-command-item-${paletteIndex}` : undefined} aria-label={snapshot ? 'Search case — evidence, meaning, chats and commands' : 'Search commands'} value={query} onChange={event => { setQuery(event.target.value); setResults(null); }} onKeyDown={paletteKeyDown} placeholder={snapshot ? 'Search evidence, meaning and commands…' : 'Search commands…'} />
+          <Search size={16} aria-hidden="true" />
+          <input autoFocus role="combobox" aria-autocomplete="list" aria-controls="case-command-results" aria-expanded={paletteItems.length > 0} aria-activedescendant={paletteItems[paletteIndex] ? `case-command-item-${paletteIndex}` : undefined} aria-label={snapshot ? 'Search case — evidence, meaning, chats and commands' : 'Search commands'} value={query} onChange={event => { setQuery(event.target.value); setResults(null); }} onKeyDown={paletteKeyDown} placeholder={snapshot ? 'Search chats, evidence, meaning and commands…' : 'Search commands…'} />
           {query.trim() && snapshot ? <span className="palette-state">{results === null ? <><kbd>Ctrl</kbd><kbd>↵</kbd> search text</> : `${results.length} result${results.length === 1 ? '' : 's'}`}</span> : null}
         </div>
         <div className="palette-results">
-          {query.trim() && snapshot && results === null ? <button className="palette-search-action" onClick={searchPalette}><span className="icon-tile" aria-hidden="true"><Search size={15} /></span><span>Search text &amp; meaning for “{query.trim()}”<small>Hybrid search across indexed evidence · Ctrl+Enter</small></span></button> : null}
+          {query.trim() && snapshot && results === null ? <button className="palette-search-action" onClick={searchPalette}><span className="icon-tile" aria-hidden="true"><Search size={16} /></span><span>Search text &amp; meaning for “{query.trim()}”<small>Hybrid search across indexed evidence · Ctrl+Enter</small></span></button> : null}
           {/* Focus normally stays in the combobox (aria-activedescendant). The
               listbox is also a tab stop so the scrolling results can be reached
               and navigated from the keyboard on their own. */}
           <div id="case-command-results" role="listbox" aria-label="Search results and commands" tabIndex={paletteItems.length ? 0 : -1} aria-activedescendant={paletteItems[paletteIndex] ? `case-command-item-${paletteIndex}` : undefined} onKeyDown={paletteKeyDown}>
-          {(['source', 'result', 'command'] as const).map(groupKind => {
+          {paletteOrder.map(groupKind => {
             const members = paletteItems.map((item, index) => ({ item, index })).filter(entry => entry.item.kind === groupKind);
             if (!members.length) return null;
-            const heading = groupKind === 'source' ? 'Evidence' : groupKind === 'result' ? 'Text & meaning' : 'Commands';
+            const heading = groupKind === 'chat' ? (query.trim() ? 'Chats' : 'Recent chats') : groupKind === 'source' ? 'Evidence' : groupKind === 'result' ? 'Text & meaning' : 'Commands';
             return <div role="group" aria-label={heading} key={groupKind} className="palette-section">
               <div className="palette-group" aria-hidden="true">{heading}</div>
               {members.map(({ item, index }) => <button
@@ -1123,7 +1144,7 @@ export default function App() {
                 tabIndex={-1}
                 onMouseMove={() => { if (paletteIndex !== index) setPaletteIndex(index); }}
                 onClick={() => { setPaletteIndex(index); activatePaletteItem(item); }}>
-                <span className="palette-item-icon" aria-hidden="true">{item.kind === 'source' ? <SourceIcon kind={snapshot?.sources.find(sourceItem => sourceItem.id === item.id)?.kind ?? 'other'} size={15} /> : item.kind === 'result' ? <Search size={15} /> : <ArrowRight size={15} />}</span>
+                <span className="palette-item-icon" aria-hidden="true">{item.kind === 'chat' ? <MessageSquare size={16} /> : item.kind === 'source' ? <SourceIcon kind={snapshot?.sources.find(sourceItem => sourceItem.id === item.id)?.kind ?? 'other'} size={16} /> : item.kind === 'result' ? <Search size={16} /> : <ArrowRight size={16} />}</span>
                 <span className="palette-item-text">{item.label}{'excerpt' in item && item.excerpt ? <small>{item.excerpt}</small> : null}</span>
                 {item.kind === 'command' && item.hint ? <span className="palette-kbd">{item.hint.split('+').map(key => <kbd key={key}>{key}</kbd>)}</span> : null}
               </button>)}
@@ -1151,6 +1172,8 @@ export default function App() {
         {modal === 'create' ? <p className="field-hint">Choose a local folder on the next step. The case uses your app AI settings, so it stays offline unless you have allowed AI there. Do not use a shared or cloud-synchronized working directory.</p> : null}
         <div className="modal-footer"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className={`primary ${modal === 'delete' ? 'danger-action' : ''}`} disabled={busy || (modal !== 'backup' && !name.trim()) || ((modal === 'backup' || modal === 'restore') && !password) || (modal === 'backup' && password !== passwordConfirm) || (modal === 'delete' && name.trim().toLowerCase() !== (snapshot?.name ?? '').trim().toLowerCase())} onClick={() => run(performModal)}>{busy ? 'Working…' : modal === 'note' ? 'Create file' : modal === 'delete' ? 'Delete case' : 'Continue'}{modal === 'delete' ? null : <ArrowRight size={14} />}</button></div>
       </dialog> : null}
+
+      {shortcutsOpen ? <ShortcutsSheet onClose={() => setShortcutsOpen(false)} /> : null}
 
       <ToastStack />
     </div>

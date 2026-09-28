@@ -4,13 +4,14 @@ import { cloneElement, createContext, useContext, useEffect, useId, useLayoutEff
 import { createPortal } from 'react-dom';
 import { Command } from 'cmdk';
 import {
-  AlertTriangle, Check, CheckCircle2, ChevronDown, CircleDashed, CircleStop, Copy, History, Info, LoaderCircle, Lock,
+  AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronDown, CircleDashed, CircleStop, Copy, History, Info, LoaderCircle, Lock,
   Moon, Search, Settings2, Sun, X, XCircle,
 } from 'lucide-react';
 import { api, citationParts } from './bridge';
 import { configuredProfiles, profileKey, providerNames } from './aiProfiles';
 import { MotionConfig } from 'motion/react';
 import type { AIProfile, Snapshot } from './types';
+import { SourceKindIcon, locatorWords, useCitationScope, type SourceInfo } from './chat/citation-context';
 
 /* ---------------------------------- status --------------------------------- */
 
@@ -40,7 +41,7 @@ function pillIcon(state: PillState, size: number) {
 /** Icon + label. The label ellipsizes when its container is narrow; pass
  *  `title` wherever that can happen so the full text stays available. */
 export function StatusPill({ state, label, small, title }: { state: PillState; label: string; small?: boolean; title?: string }) {
-  return <span className={`pill tone-${pillTone[state]} ${small ? 'pill-sm' : ''}`} title={title}>{pillIcon(state, small ? 12 : 13)}{label}</span>;
+  return <span className={`pill tone-${pillTone[state]} ${small ? 'pill-sm' : ''}`} title={title}>{pillIcon(state, small ? 13 : 14)}{label}</span>;
 }
 
 /* ---------------------------------- time ----------------------------------- */
@@ -417,7 +418,7 @@ export function ToastStack() {
     {toasts.map(toast => {
       const Icon = toastIcon[toast.kind];
       return <div className={`toast toast-${toast.kind}`} key={toast.id} role={toast.kind === 'error' ? 'alert' : 'status'}>
-        <Icon size={17} className="toast-icon" aria-hidden="true" />
+        <Icon size={16} className="toast-icon" aria-hidden="true" />
         <div className="toast-body">
           <strong>{toast.title}</strong>
           {toast.detail && toast.kind !== 'error' ? <p className="toast-message">{toast.detail}</p> : null}
@@ -520,7 +521,7 @@ export function CopyButton({ text, label, small }: { text: string; label?: strin
       className={`icon-button ${small ? 'icon-button-sm' : ''}`}
       aria-label={label ?? 'Copy to clipboard'}
       onClick={() => { void navigator.clipboard.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); }); }}>
-      {copied ? <Check size={small ? 13 : 15} /> : <Copy size={small ? 13 : 15} />}
+      {copied ? <Check size={small ? 14 : 16} /> : <Copy size={small ? 14 : 16} />}
     </button>
   </Tooltip>;
 }
@@ -537,22 +538,36 @@ export function citationLabel(locator: string): string {
   return locator;
 }
 
-type CitationPreview = { lines: { number: number; text: string }[]; revision?: number } | 'loading' | 'failed' | null;
+/** Move focus to the first focusable element after `element` in document order. */
+function focusAfter(element: HTMLElement | null) {
+  if (!element) return;
+  const focusable = [...document.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(item => !item.hasAttribute('disabled') && item.getClientRects().length > 0 && !item.closest('.citation-preview'));
+  const next = focusable[focusable.indexOf(element) + 1];
+  (next ?? element).focus();
+}
+
+type CitationPreview = { lines: { number: number; text: string }[]; revision?: number; historical?: boolean; activeRevision?: number } | 'loading' | 'failed' | null;
 /** The most cited lines a hover card fetches; longer ranges say how much is shown. */
 const PREVIEW_LINE_LIMIT = 12;
 
-/** Amber chip that opens the exact cited source. Hovering or focusing it shows
- *  the cited lines (the pinned revision for R-form citations) without leaving
- *  the current view. */
+/** Amber chip that opens the exact cited source. Inside an answer it shows the
+ *  citation's number; elsewhere its locator. Hovering or focusing it shows the
+ *  source and the cited lines (the pinned revision for R-form citations)
+ *  without leaving the current view; Tab moves into that card. */
 export function CitationChip({ value, onOpen, previewable = true }: { value: string; onOpen: (sourceId: string, locator: string) => void; previewable?: boolean }) {
   const parts = citationParts(value);
+  const scope = useCitationScope();
   const [preview, setPreview] = useState<CitationPreview>(null);
   const [open, setOpen] = useState(false);
   const timer = useRef<number>(0);
   const host = useRef<HTMLButtonElement | null>(null);
   const card = useRef<HTMLDivElement | null>(null);
+  const returning = useRef(false);
   useEffect(() => () => window.clearTimeout(timer.current), []);
   if (!parts) return <span className="citation-raw">{value}</span>;
+  const number = scope?.numberOf(value);
+  const info = scope?.source(parts.sourceId);
   const lineMatch = /^L(\d+)-L(\d+)$/.exec(parts.locator);
   const pinnedMatch = /^R(\d+)L([1-9]\d*)-L([1-9]\d*)$/.exec(parts.locator);
   const startLine = lineMatch ? Number(lineMatch[1]) : pinnedMatch ? Number(pinnedMatch[2]) : null;
@@ -560,10 +575,13 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
   // Only the cited range is fetched and labelled as cited; no context lines.
   const citedCount = startLine !== null && endLine !== null ? Math.max(1, endLine - startLine + 1) : 0;
   const pinnedRevision = pinnedMatch ? Number(pinnedMatch[1]) : null;
-  const supported = previewable && startLine !== null;
+  const hasLines = startLine !== null;
+  // Line citations always preview; whole-source citations preview when the
+  // answer can name the source.
+  const supported = previewable && (hasLines || !!info);
   const reveal = (delay: number) => {
     if (!supported) return;
-    if (preview === null) loadPreview();
+    if (preview === null && hasLines) loadPreview();
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setOpen(true), delay);
   };
@@ -573,21 +591,36 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
   // gap to scroll the lines or press "Open in viewer".
   const concealSoon = () => { window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setOpen(false), 200); };
   const leavesPreview = (next: EventTarget | null) => !(next instanceof Node && (card.current?.contains(next) || host.current?.contains(next)));
+  const label = citationLabel(parts.locator);
   return <span className="citation-host">
     <button
       ref={host}
-      className="citation"
-      title={value}
-      aria-label={`Open cited evidence, ${citationLabel(parts.locator)}`}
+      className={`citation ${number !== undefined ? 'citation-numbered' : ''}`}
+      title={number !== undefined ? undefined : value}
+      aria-label={`Open cited evidence, ${label}`}
       onClick={() => { conceal(); onOpen(parts.sourceId, parts.locator); }}
-      onMouseEnter={() => reveal(350)}
+      onMouseEnter={() => reveal(300)}
       onMouseLeave={concealSoon}
-      onFocus={event => { if (event.currentTarget.matches(':focus-visible')) reveal(0); }}
+      onFocus={event => { if (returning.current) { returning.current = false; return; } if (event.currentTarget.matches(':focus-visible')) reveal(0); }}
       onBlur={event => { if (leavesPreview(event.relatedTarget)) conceal(); }}
-      onKeyDown={event => { if (event.key === 'Escape') conceal(); }}>
-      {citationLabel(parts.locator)}
+      onKeyDown={event => {
+        if (event.key === 'Escape') conceal();
+        // The card is portalled; Tab moves into it rather than past it.
+        if (event.key === 'Tab' && !event.shiftKey && open && card.current) {
+          const target = card.current.querySelector<HTMLElement>('button, [tabindex]');
+          if (target) { event.preventDefault(); target.focus(); }
+        }
+      }}>
+      {number !== undefined ? number : label}
     </button>
-    {open && supported ? createPortal(<CitationPreviewCard anchor={host.current} preview={preview} pinnedRevision={pinnedRevision} range={{ start: startLine!, end: startLine! + citedCount - 1 }} cardRef={card} onOpen={() => { conceal(); onOpen(parts.sourceId, parts.locator); }} onEnter={() => window.clearTimeout(timer.current)} onLeave={concealSoon} onFocusLeave={next => { if (leavesPreview(next)) conceal(); }} />, overlayHost(host.current)) : null}
+    {open && supported ? createPortal(<CitationPreviewCard
+      anchor={host.current} preview={preview} hasLines={hasLines} pinnedRevision={pinnedRevision} locator={parts.locator} info={info}
+      range={hasLines ? { start: startLine!, end: startLine! + citedCount - 1 } : null} cardRef={card}
+      onOpen={() => { conceal(); onOpen(parts.sourceId, parts.locator); }}
+      onReturn={() => { conceal(); returning.current = true; host.current?.focus(); }}
+      onExit={() => { conceal(); focusAfter(host.current); }}
+      onEnter={() => window.clearTimeout(timer.current)} onLeave={concealSoon}
+      onFocusLeave={next => { if (leavesPreview(next)) conceal(); }} />, overlayHost(host.current)) : null}
   </span>;
 
   function loadPreview() {
@@ -595,41 +628,62 @@ export function CitationChip({ value, onOpen, previewable = true }: { value: str
     setPreview('loading');
     // Hover previews show the pinned revision's wording for R-form citations,
     // so a superseded extraction cannot silently preview as current text.
+    type Page = { text: string; start: number; revision?: number; historical?: boolean; active_revision?: number };
     const request = pinnedRevision !== null
-      ? api<{ text: string; start: number; revision?: number }>('read_extract_revision', { source_id: parts!.sourceId, revision: pinnedRevision, start: startLine, count: Math.min(citedCount, PREVIEW_LINE_LIMIT) })
-      : api<{ text: string; start: number; revision?: number }>('read_text', { source_id: parts!.sourceId, start: startLine, count: Math.min(citedCount, PREVIEW_LINE_LIMIT) });
+      ? api<Page>('read_extract_revision', { source_id: parts!.sourceId, revision: pinnedRevision, start: startLine, count: Math.min(citedCount, PREVIEW_LINE_LIMIT) })
+      : api<Page>('read_text', { source_id: parts!.sourceId, start: startLine, count: Math.min(citedCount, PREVIEW_LINE_LIMIT) });
     const last = startLine + Math.min(citedCount, PREVIEW_LINE_LIMIT) - 1;
     request
       .then(page => {
         const lines = page.text.split('\n').map((text, offset) => ({ number: page.start + offset, text }))
           .filter(line => line.number >= startLine && line.number <= last && line.text.trim());
-        setPreview({ lines, revision: page.revision });
+        setPreview({ lines, revision: page.revision, historical: page.historical === true, activeRevision: typeof page.active_revision === 'number' ? page.active_revision : undefined });
       })
       .catch(() => setPreview('failed'));
   }
 }
 
-function CitationPreviewCard({ anchor, preview, pinnedRevision, range, cardRef: card, onOpen, onEnter, onLeave, onFocusLeave }: { anchor: HTMLElement | null; preview: CitationPreview; pinnedRevision: number | null; range: { start: number; end: number }; cardRef: React.RefObject<HTMLDivElement | null>; onOpen: () => void; onEnter: () => void; onLeave: () => void; onFocusLeave: (next: EventTarget | null) => void }) {
+function CitationPreviewCard({ anchor, preview, hasLines, pinnedRevision, locator, info, range, cardRef: card, onOpen, onReturn, onExit, onEnter, onLeave, onFocusLeave }: {
+  anchor: HTMLElement | null; preview: CitationPreview; hasLines: boolean; pinnedRevision: number | null; locator: string; info: SourceInfo | undefined;
+  range: { start: number; end: number } | null; cardRef: React.RefObject<HTMLDivElement | null>;
+  onOpen: () => void; onReturn: () => void; onExit: () => void; onEnter: () => void; onLeave: () => void; onFocusLeave: (next: EventTarget | null) => void;
+}) {
   const [style, setStyle] = useState<React.CSSProperties>({ position: 'fixed', visibility: 'hidden' });
   useLayoutEffect(() => {
     if (!anchor) return;
     const rect = anchor.getBoundingClientRect();
-    const width = Math.min(420, window.innerWidth - 16);
-    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    const width = Math.min(hasLines ? 420 : 320, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(rect.left - 12, window.innerWidth - width - 8));
     const height = card.current?.offsetHeight ?? 200;
     const top = rect.bottom + height + 12 > window.innerHeight ? Math.max(8, rect.top - height - 6) : rect.bottom + 6;
     setStyle({ position: 'fixed', left, top, width });
-  }, [anchor, preview]);
-  return <div ref={card} className="popover-panel citation-preview" style={style} role="group" aria-label="Cited lines preview" onMouseEnter={onEnter} onMouseLeave={onLeave} onBlur={event => onFocusLeave(event.relatedTarget)}>
-    <div className="citation-preview-head">{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} · {pinnedRevision !== null ? `extraction revision ${pinnedRevision} · as cited` : 'current extraction'}</div>
-    {preview === 'loading' || preview === null ? <p className="small muted citation-preview-loading">Loading cited lines…</p> : null}
+  }, [anchor, preview, hasLines]);
+  const superseded = preview && typeof preview === 'object' && pinnedRevision !== null && preview.activeRevision !== undefined && preview.activeRevision !== pinnedRevision;
+  return <div ref={card} className="popover-panel citation-preview" style={style} role="group" aria-label={hasLines ? 'Cited lines preview' : 'Cited source preview'}
+    onMouseEnter={onEnter} onMouseLeave={onLeave} onBlur={event => onFocusLeave(event.relatedTarget)}
+    onKeyDown={event => {
+      if (event.key === 'Escape') { event.preventDefault(); onReturn(); }
+      if (event.key === 'Tab' && event.shiftKey && event.target === card.current?.querySelector('button')) { event.preventDefault(); onReturn(); }
+      // The card is portalled: Tab past its last control continues after the chip, not at the top of the page.
+      const controls = card.current ? [...card.current.querySelectorAll<HTMLElement>('button, [href], [tabindex]:not([tabindex="-1"])')] : [];
+      if (event.key === 'Tab' && !event.shiftKey && event.target === controls.at(-1)) { event.preventDefault(); onExit(); }
+    }}>
+    {info ? <div className="citation-preview-source">
+      <span className="citation-preview-icon"><SourceKindIcon kind={info.kind} size={14} /></span>
+      <strong title={info.name}>{info.name}</strong>
+      {info.restricted ? <span className="badge badge-restricted"><Lock size={12} aria-hidden="true" />Restricted</span> : null}
+    </div> : null}
+    {range ? <div className="citation-preview-head">{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} · {pinnedRevision !== null ? `extraction revision ${pinnedRevision} · as cited` : 'current extraction'}</div>
+      : <div className="citation-preview-head">{locatorWords(locator)}</div>}
+    {superseded ? <p className="citation-preview-note"><History size={13} aria-hidden="true" />Historical wording: the current extraction is revision {preview.activeRevision}.</p> : null}
+    {hasLines && (preview === 'loading' || preview === null) ? <p className="small muted citation-preview-loading">Loading cited lines…</p> : null}
     {preview === 'failed' ? <p className="small muted citation-preview-loading">Preview unavailable. Open the source to inspect it.</p> : null}
     {preview && typeof preview === 'object' ? <div className="citation-preview-lines">
       {preview.lines.map(line => <div className="citation-preview-line" key={line.number}><span className="line-number">{line.number}</span><span>{line.text}</span></div>)}
       {!preview.lines.length ? <p className="small muted">The cited lines are blank in this extraction.</p> : null}
     </div> : null}
-    {preview && typeof preview === 'object' && range.end - range.start + 1 > PREVIEW_LINE_LIMIT ? <p className="small muted">Showing the first {PREVIEW_LINE_LIMIT} of {range.end - range.start + 1} cited lines. Open the source for the rest.</p> : null}
-    <button className="quiet citation-preview-open" onClick={onOpen}>Open in viewer</button>
+    {preview && typeof preview === 'object' && range && range.end - range.start + 1 > PREVIEW_LINE_LIMIT ? <p className="small muted">Showing the first {PREVIEW_LINE_LIMIT} of {range.end - range.start + 1} cited lines. Open the source for the rest.</p> : null}
+    <button className="quiet citation-preview-open" onClick={onOpen}>Open in viewer<ArrowUpRight size={14} aria-hidden="true" /></button>
   </div>;
 }
 
@@ -691,8 +745,8 @@ export function ModelPicker({ snapshot, selected, onSelect, onManage, disabled }
     trigger={() => <>
       <span className="provider-dot" data-provider={selected?.provider} aria-hidden="true" />
       <span className="model-name">{selected?.model ?? 'Configure AI'}</span>
-      <ChevronDown size={13} aria-hidden="true" />
+      <ChevronDown size={14} aria-hidden="true" />
     </>}
-    footer={close => <button className="menu-item" onClick={() => { close(); onManage(); }}><Settings2 size={15} />Manage models &amp; permissions…</button>}
+    footer={close => <button className="menu-item" onClick={() => { close(); onManage(); }}><Settings2 size={16} />Manage models &amp; permissions…</button>}
   />;
 }

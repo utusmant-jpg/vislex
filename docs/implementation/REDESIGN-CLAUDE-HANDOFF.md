@@ -88,12 +88,65 @@ Kept current at the end of each slice. State at `3b8bb88` on `integrate/redesign
 Linux results at `3b8bb88`: `npm ci` exit 0; `tsc --noEmit` exit 0; Vitest 30 files, 294 passed; Playwright (Chromium) 58 passed; `npm run build` ok; `cargo test --tests` (host target) 238 passed, 0 failed, 4 ignored; Python workers/scripts/benchmarks 41/13/10 passed; `vislex_plan.py check` valid.
 
 - Fixed since `a9090e2`: punctuation after a citation chip stays on the chip's line (6c48e1c); the video transcript dock stays inside the viewer at 1366×768 and 1000×680 (b8cfdf6); changing the default company keeps grants only with a consent that names the new vendor (bdfeb3e). Each has a harness test.
-- Not run: `npm run desktop:build` and the packaged-app smoke journeys on Windows at `3b8bb88`; `scripts/native-protocol-origin-test.ps1`; Windows 125/150/200 % scaling screenshots; NVDA/Narrator; Edge; performance on named hardware. The desktop session ran native journeys (commits 4c7004f, 3f763b7, 1c9b692 adjust native test mode) but recorded no results, so none are claimed.
+- Windows run at `8b2fbee` (2026-09-28, results in `docs/TESTING.md` and `windows_verification_2026_09_28` in NEXT-STATUS.json): Tier 1, the rebuilt packaged worker, the 26 sandbox tests, `npm run desktop:build`, five native journeys on the debug build and the protocol-origin test on the release exe all passed. The release build refuses chat while the saved route is `chatgpt_subscription` (compiled out by default) until the user picks an API provider.
+- Still not run: `native-consent-acceptance.ps1`, `native-app-ai-acceptance.ps1`, `native-codex-account-test.ps1`; manual video scrubbing and PDF paging through `evidence://`; Windows 125/150/200 % scaling screenshots; NVDA/Narrator; Edge; performance on named hardware. The desktop session ran native journeys (commits 4c7004f, 3f763b7, 1c9b692 adjust native test mode) but recorded no results, so none are claimed.
 - `cargo fmt --check` fails repo-wide (about 40 files, also on `main`); it was never enforced and is left alone to avoid churn in shared Rust files.
 - Open visual item: Findings/Investigate take ~1–2 s to leave loading in the dev-server harness (unmeasured in production).
 - Open behaviour items: citation hover card is not Tab-reachable (Enter on the chip does the same); remaining legacy rules in src/styles.css are for classes still in use and mostly overridden.
 - Not done from the stack decision: `lucide-react` 1.x upgrade and `@tanstack/react-virtual` for long lists.
 - Branches not merged, on purpose: `impl/wave1-repairs`, `codex/chatgpt-subscription` and `codex/snapshot-subscription-20260927` are an older lineage whose code is already in the 2026-09-26 snapshot root (6cac65b) this history starts from; `codex/snapshot-{assistant,harness,settings}-20260927` are unverified Codex WIP rewrites of AgentPanel, SettingsDialog and a fake backend that the redesign replaced. They stay on origin untouched.
+
+## Flagship chat slice (2026-09-28, `claude/flagship-chat` from `main` 721c700)
+
+User brief: make the chat and agent workflow feel best-in-class, remove the brand from chat and processes, show "what it did" in plain words, better citations and typography, and a sharper app, desktop and taskbar icon. The plan is in the session plan file; decisions below.
+
+- **Decisions.** Tuned Inter (no serif), numbered citations with a per-answer Sources list, the "Aperture V" icon (two indigo blades and the amber evidence point), and small additive backend changes as the last phase. Brand stays in the title bar, onboarding and About only.
+- **Frontend.**
+  - `src/chat/activity-summary.ts` turns each stored action into a sentence using only its input and output; unknown tools fall back to the tool name.
+  - `ActivityTrace` shows a one-line recap, grouped runs, per-step facts and "Technical receipt" for the raw JSON.
+  - `citation-context.tsx`, `SourcesList.tsx` and `source-directory.ts` add per-answer numbering, source names (the loaded page, then an in-memory `source_detail` cache) and a Tab-reachable hover card. This closes the open "citation hover card is not Tab-reachable" item.
+  - `live-progress.ts` holds the live stream state, still filtered by case, session epoch and task.
+  - Composer keys: Esc, ↑, Ctrl+Shift+; and Ctrl+Shift+C.
+  - A `route-unavailable` composer block, requested by the integration session.
+  - Palette chat search and new commands, Ctrl+/ sheet, local chat titles (`src/chat/titles.ts`), chat error boundary, and a narrow-window evidence sheet in chat.
+  - Removed: unused `src/components/ui/*` shadcn copies and their dependencies, and legacy chat and responsive duplicates in `src/styles.css`. One of those duplicates used `!important` in the lower layer and blocked new rules.
+  - `lucide-react` upgraded to 1.48.0, closing the open stack item.
+- **Backend (additive).**
+  - `providers.rs`: Anthropic and Gemini emit `{activity}` and `{characters}` for tool use like OpenAI, with a unit test.
+  - `desktop.rs`: the subscription route emits an activity delta per tool and a case event after each saved receipt, both outside case locks.
+  - `case.rs`: `task_page` and `conversation_detail` add `updated_at`, used for "Took …" on completed turns.
+  - Coordinated with the research-browser and integration sessions before editing.
+- **Icon.** `app-icon.svg` (1024 master) and `app-icon-small.svg` (hand-tuned for 16–48 px). `npx tauri icon` generated the set; the 16/24/32/48 frames of `icon.ico` and `32x32.png` come from the small master.
+- **Measured.** 300 streaming updates of a 7,353-character answer in happy-dom, median of 3: old renderer 915 ms, new 94 ms, and 176 ms with the word fade. This is not a production or named-hardware measurement.
+- **Results at 8cb7cd5 (Windows, before review fixes).**
+  - `npm run build` passed.
+  - Vitest: 32 files, 313 passed.
+  - Playwright (Edge): 58 passed. This includes the harness a11y scans in both themes with an empty baseline.
+  - `cargo test` (host): 246 passed, 0 failed. Worker-dependent tests need `src-tauri/resources/worker`; they were run against the main checkout's packaged worker via a local junction.
+  - Interactive harness walkthrough in the browser pane:
+    - new chat, send, stream and Esc stop, then Resume shown;
+    - trace expand and step detail;
+    - citation hover card and whole-image card;
+    - Sources list opening the viewer;
+    - palette chat search, and the Ctrl+/ sheet;
+    - light theme;
+    - narrow 1000 px sheet.
+- **Independent review.** Codex run on `gpt-6-astra` at high reasoning, read-only, against 8cb7cd5. It found no critical or high issues and four medium ones. All four were verified and fixed:
+  1. Activity wording overstated media work. "Played" is now "Queued the original of … for the model to review", sampled video frames are no longer "Watched", and grouped transcription says "Transcribed".
+  2. Enter bypassed the route-unavailable block. `submit` now honours every composer block, with a unit test.
+  3. A resumed turn reshowed its stopped draft. The live state resets per run, and the subscription stream id is now `subscription:<task>:<transmission>`.
+  4. Escape from the citation card reopened it.
+  My own regression test for item 4 then showed that Tab past the portalled card jumped to the top of the page. Tab now continues after the marker, covered by a harness test repeated 6×. `selectSource` in App is now a stable callback, so memoised answer blocks skip case polls.
+- **Results after fixes (Windows).** `npm run build` passed. Vitest: 314 passed. Playwright (Edge): 59 passed. `cargo test`: 246 passed, 0 failed.
+- **Test wording updated where markup changed (same behaviour asserted).**
+  - `harness-assistant`: activity toggle name and failure line.
+  - `harness-chat`: plain tool label, same 39-character count.
+  - `AgentPanel.test`: greeting heading.
+- **Not run.**
+  - Native app with the new icon on the taskbar, Start, Alt-Tab and desktop shortcut at 100/125/150 %.
+  - Live provider streams for the new Anthropic/Gemini activity deltas and the subscription events.
+  - NVDA/Narrator.
+  - Performance on named hardware.
 
 ## Next action
 

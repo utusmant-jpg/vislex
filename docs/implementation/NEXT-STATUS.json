@@ -398,14 +398,15 @@
       ],
       "reviewer": "Workflow wf_3fc12f9a-9d8: independent adversarial reviewer per surface branch, then fix pass. Workflow wf_62db8cf5-34b: five-lens review (behaviour, honesty/evidence, a11y, test integrity, state/perf) of c04c8c3..HEAD with a separate refuting verifier per finding; 26 confirmed findings fixed in 5c47cd9. Reviewers are agents, not a human; agreement is not evidence.",
       "unrun_checks": [
-        "Native Tauri/WebView2 build (npm run desktop:build) and packaged-app smoke journeys on Windows at 3b8bb88, including scripts/native-protocol-origin-test.ps1; the desktop session ran native journeys before handoff but recorded no results, so none are claimed",
         "Native screenshot matrix at 125/150/200 percent Windows scaling and human review",
         "Screen reader (NVDA/Narrator) session; touch-target audit",
         "Edge channel Playwright (only Chromium 1194 on Linux)",
         "cargo fmt --check fails repo-wide (about 40 files, also on main); never enforced, not reformatted here to avoid churn in shared files",
-        "Performance measurement on named hardware (no performance claim is made)"
+        "Performance measurement on named hardware (no performance claim is made)",
+        "Native journeys not run: native-consent-acceptance.ps1, native-app-ai-acceptance.ps1, native-codex-account-test.ps1 (reasons in windows_verification_2026_09_28); Windows scaling screenshots, Edge and screen readers remain unrun"
       ],
-      "note": "Implemented, not verified. R21 depends on R14/R15/R16/R17, which are implemented but not verified, and the native Windows gates above are unrun at this commit. The three handoff open items (citation punctuation, 1366x768 video dock, vendor-switch grant consent) are fixed in 6c48e1c, b8cfdf6 and bdfeb3e with harness tests."
+      "note": "Implemented, not verified. R21 depends on R14/R15/R16/R17, which are implemented but not verified, and some native Windows gates remain unrun (see unrun_checks). The three handoff open items (citation punctuation, 1366x768 video dock, vendor-switch grant consent) are fixed in 6c48e1c, b8cfdf6 and bdfeb3e with harness tests.",
+      "windows_verification": "2026-09-28 at 8b2fbee: Windows Tier 1, packaged worker, sandbox tests, desktop build and six native journeys passed; see windows_verification_2026_09_28."
     },
     "R22": {
       "state": "pending",
@@ -447,7 +448,8 @@
         "python -m unittest discover -s workers -> 34 passed"
       ],
       "unrun_checks": "No live OpenRouter call was made; field names follow public docs and need a synthetic live probe. Routing policy UI, credits view and generation backfill are not implemented.",
-      "reviewer": "Single-session self review; no independent reviewer."
+      "reviewer": "Single-session self review; no independent reviewer.",
+      "windows_2026_09_28": "Provider race and concurrent-chats journeys passed on Windows (debug build, loopback mock provider). No live OpenRouter call was made. State stays implemented: not every acceptance line has Windows evidence."
     },
     "R27": {
       "state": "pending"
@@ -465,7 +467,8 @@
         "python -m unittest discover -s workers -> 34 passed"
       ],
       "unrun_checks": "No real vendor request was sent; AppContainer clip job and packaged worker not run on Windows; OpenAI direct transcription endpoint untested live; R24 security pass not done.",
-      "reviewer": "Single-session self review; no independent reviewer."
+      "reviewer": "Single-session self review; no independent reviewer.",
+      "windows_2026_09_28": "media_clip ran in the real AppContainer through the packaged worker and produced bounded mono 16 kHz WAV clips; the 26 sandbox tests passed. No second-opinion request was sent to any vendor. State stays implemented: not every acceptance line has Windows evidence."
     },
     "R29": {
       "state": "implemented",
@@ -480,7 +483,8 @@
         "python -m unittest discover -s workers -> 41 passed"
       ],
       "unrun_checks": "MSG, attachment child sources with transitive restriction, HEIC/RAW and the PDF text layer remain. A structured grid/slide renderer in the viewer is not built; units are shown as text. New extractors were not run inside the packaged AppContainer worker.",
-      "reviewer": "Single-session self review; no independent reviewer."
+      "reviewer": "Single-session self review; no independent reviewer.",
+      "windows_2026_09_28": "The packaged worker extracted a synthetic .eml, a DOCX with a tracked insertion, a reordered PPTX with hidden slide and notes, and an XLSX with hidden sheet/rows/column inside the AppContainer; the five new modules are in the PyInstaller bundle. A >10 MB text original was not opened in the packaged app. State stays implemented: not every acceptance line has Windows evidence."
     },
     "R30": {
       "state": "implemented",
@@ -495,7 +499,8 @@
         "python -m unittest discover -s workers -> 34 passed"
       ],
       "unrun_checks": "No real faster-whisper run on Windows produced the words; renderer heap budget on a 10 h transcript not measured.",
-      "reviewer": "Single-session self review; no independent reviewer."
+      "reviewer": "Single-session self review; no independent reviewer.",
+      "windows_2026_09_28": "No real faster-whisper word-probability output was inspected on Windows; local audio transcription sandbox tests passed. State stays implemented: not every acceptance line has Windows evidence."
     },
     "R31": {
       "state": "pending"
@@ -1053,5 +1058,49 @@
     "note": "This records a reviewable implementation slice, not completion or verification of R21 or product certification.",
     "fixed_functionality_cutoff": "4b5dc96 (includes redaction worker and Claude/Gemini streaming integrations; no further handoffs in this redesign pass)",
     "additional_integrations_after_c11c548": "2dbfa87, c484a40, 4da4606, ed8a3e1, 5289c19, 321b315, e93d3e2, 6ea0684, 54866ac, c300813, 84f24f5, ac4956b, cb06341, 36eb7b7, 3051fa3, 84706a6, edd8c3c, 4b5dc96"
+  },
+  "windows_verification_2026_09_28": {
+    "date": "2026-09-28",
+    "commit_under_test": "8b2fbee",
+    "branch": "integrate/redesign-final",
+    "summary": "Windows run of the integrated redesign + functional branch (merge of the cloud branch integrate/redesign-final-cora77 at d54f8c6 into the local integration branch). Tier 1, the packaged worker in the AppContainer, the packaged desktop build and the native journeys that can run without touching the user's real settings all passed. Three native journeys were not run and are listed under unrun_checks. Implemented is not verified: no task was moved to verified.",
+    "environment": "Windows 11 Home 10.0.26200 on an ARM64 machine, running the x86_64-pc-windows-msvc toolchain (rustc/cargo 1.98.1, Python 3.11.15 AMD64 under emulation, node 24.14.1, npm 11.11.0). Existing node_modules used (npm ci not re-run here; it passed on Linux).",
+    "commands": [
+      "npx tsc -p tsconfig.json --noEmit -> exit 0",
+      "npm test -- --run -> 30 files, 294 tests passed, exit 0",
+      "npx vite build -> exit 0",
+      "python scripts/vislex_plan.py check -> exit 0 (valid)",
+      "npx playwright test -> 58 passed (48 s), exit 0",
+      "cargo test --locked --manifest-path src-tauri/Cargo.toml -> 245 passed, 0 failed, 31 ignored across 13 result lines, exit 0",
+      "cargo check --locked --features desktop -> exit 0; cargo check --locked --features subscription -> exit 0",
+      "cargo clippy --locked --all-targets --features desktop -> exit 0 with warnings (lib: 38 warnings; not triaged here)",
+      "cargo fmt --check -> exit 1 (repo-wide, pre-existing, also on main; not reformatted)",
+      "PyInstaller rebuild of the packaged worker with the existing .venv-worker and downloaded models (no downloads): exit 0; PYZ table contains email_extract, docx_extract, pptx_extract, xlsx_hidden and media_clip",
+      "cargo test --locked --test sandbox -- --ignored --nocapture --test-threads=1 -> 26 passed, 0 failed (117.5 s) against the rebuilt worker",
+      "cargo test --locked --test worker_video_e2e -- --ignored -> 1 passed",
+      "Packaged worker in the real AppContainer on synthetic inputs built from the unit-test builders (temporary ignored Rust probe, deleted afterwards): .eml (headers/body/attachment SHA-256, HTML-only body reduced with no remote references, non-email refused), DOCX (tracked insertion kept as 'Base INSERTED text', insertions/deletions listed, comment, header, footnote, metadata 2 changes/1 comment), PPTX (presentation order, hidden slide, speaker notes, metadata 3/1/1), XLSX (hidden sheet, rows and column stated), media_clip on a 6 s tone and on fixtures/generated/synthetic-speech.wav (mono 16 kHz WAV, 40000 frames for the requested intervals) -> 19/19 checks passed",
+      "npm run desktop:build -> exit 0; release exe src-tauri/target/x86_64-pc-windows-msvc/release/local-evidence-desk.exe and NSIS installer VisLex_0.3.0_arm64-setup.exe (671 MB; the bundler labels it arm64 while the executable target is x86_64-pc-windows-msvc)",
+      "Debug exe built (cargo build --locked --features desktop --target x86_64-pc-windows-msvc) with npm run dev serving the page; journeys ran with VISLEX_TEST_MODE, which isolates the AI access preference in debug builds only",
+      "scripts/native-acceptance.ps1 (debug) -> exit 0: 6 synthetic originals, video_ocr 4 + video_overview 4 samples, inventory answer rendered with 0 model tokens, DOCX preview, 3 lexical results, 0 semantic results (indexed_passages 0: the saved-vector index was still empty when the script searched; f4ed6f6 made semantic search query saved vectors only, and the script accepts a lexical lead), DOCX and PDF exports, cross-case chat/source/export denied, unreviewed redaction denied, provider_calls 0",
+      "scripts/native-integrity-acceptance.ps1 (debug) -> exit 0: 256 MiB strong verify 1488 ms, 12 summaries completed during hashing, 28 stale-case and 62 stale-session actions denied, stale and wrong-target deletion denied, valid empty-case deletion succeeded",
+      "scripts/native-large-session.ps1 (debug) -> exit 0: 1 GiB import 12.93 s, verify 6.07 s, 20 summaries during verify, late previous-session verify denied; process-tree peak private memory 416,456,704 bytes (debug build; not comparable with the release numbers and no performance claim is made)",
+      "scripts/native-provider-race.ps1 (debug, loopback mock provider) -> exit 0: old task stayed paused after a late response, continuation completed with the second synthetic answer",
+      "scripts/native-concurrent-chats.ps1 (debug, loopback mock provider) -> exit 0: separate conversations, second finished while first running",
+      "scripts/native-protocol-origin-test.ps1 (release exe) -> exit 0: foreign origin 'null', foreign_read_blocked true"
+    ],
+    "findings": [
+      "The release build refuses chat on this PC: the saved preference %APPDATA%/org.localevidencedesk.app/ai-access.json says chatgpt_subscription, and that route is compiled out by default (11fb451). native-acceptance.ps1 on the release exe stopped at start_task with 'The ChatGPT subscription route is disabled in this build. Choose an API provider in Settings -> Accounts & models'. This is the intended blocker with no provider call, not a defect, but the user must pick an API provider (or build with --features subscription) before chat works on this machine. Journeys therefore ran on the debug build, which isolates the preference in test mode.",
+      "native-acceptance.ps1 has no assertion on semantic results, so a stale or empty saved-vector index passes it. Worth tightening if semantic readiness should be part of the gate."
+    ],
+    "unrun_checks": [
+      "scripts/native-consent-acceptance.ps1: needs the packaged VisLex.exe under artifacts/ and rewrites the real %APPDATA% ai-defaults.json (with backup); not run against the user's real settings",
+      "scripts/native-app-ai-acceptance.ps1: requires the packaged tauri.localhost page, but release builds do not isolate AI defaults in test mode, so it would touch the user's real settings; the debug build served from 127.0.0.1:1420 fails its page lookup",
+      "scripts/native-codex-account-test.ps1: needs a --features subscription build",
+      "Manual video scrubbing, PDF page loading and tampered-export refusal through the evidence:// protocol in the packaged app (cb0798d); Rust tests pass and the protocol-origin test passed, but no scrubbing was driven",
+      "OpenAI key save/load through the provider key commands (needs a credential); no live provider request of any kind was sent",
+      "A >10 MB plain-text original opened in the packaged app (1225158); the Rust tests cover it",
+      "4 ignored Rust tests outside sandbox.rs and worker_video_e2e.rs (2 + 1 + 1) were not run",
+      "Windows 125/150/200 percent scaling screenshots, Edge, NVDA/Narrator, performance on named hardware"
+    ]
   }
 }

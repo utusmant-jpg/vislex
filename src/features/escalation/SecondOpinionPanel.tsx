@@ -80,7 +80,7 @@ export default function SecondOpinionPanel({ caseId, sessionEpoch, sourceId, run
         <div className="second-opinion-row">
           <span className="mono">{formatSpan(candidate.start, candidate.end)}</span>
           <span className="second-opinion-reason">{candidate.reasons[0]?.detail ?? 'Flagged'}</span>
-          <button type="button" className="quiet" data-size="sm" aria-label={`Play ${formatSpan(candidate.start, candidate.end)}`} onClick={() => onSeek(candidate.start)}><Play size={13} aria-hidden="true" />Play</button>
+          <button type="button" className="quiet" data-size="sm" aria-label={`Play ${formatSpan(candidate.start, candidate.end)}`} onClick={() => onSeek(candidate.start)}><Play size={14} aria-hidden="true" />Play</button>
           {grant ? <button type="button" className="quiet" data-size="sm" disabled={!!busy} onClick={() => void prepare(candidate)}>Prepare clip</button> : null}
         </div>
         {candidate.reasons.length > 1 ? <p className="field-hint">{candidate.reasons.slice(1, 3).map(reason => reason.detail).join(' · ')}</p> : null}

@@ -209,7 +209,7 @@ export function buildHarborCase(now: number, sourceCount = 250): HarnessCase {
   const conversation0 = FIXTURE.timelineConversation;
   const makeTask = (index: number, conversation: string, prompt: string, answer: string, minutesAgo: number, extra: Partial<Task> = {}): Task => {
     const id = syntheticId('task', index);
-    const task: Task = { id, conversation_id: conversation, prompt, mode: 'investigate', status: 'complete', input_tokens: 18_000 + index * 311, output_tokens: 1_200 + index * 17, step: 6, answer, error: '', generation: 1, created_at: iso(now, minutesAgo), title: null, ...extra };
+    const task: Task = { id, conversation_id: conversation, prompt, mode: 'investigate', status: 'complete', input_tokens: 18_000 + index * 311, output_tokens: 1_200 + index * 17, step: 6, answer, error: '', generation: 1, created_at: iso(now, minutesAgo), updated_at: iso(now, minutesAgo - 1.4), title: null, ...extra };
     actions[id] = [
       { id: syntheticId('action', index * 10), name: 'search', input: '{"query":"north entrance"}', output: 'Synthetic search receipt: 3 passages matched.', status: 'complete', created_at: task.created_at },
       { id: syntheticId('action', index * 10 + 1), name: 'read_text', input: `{"source_id":"${statement}"}`, output: 'Synthetic read receipt: lines 1–15, revision 2.', status: 'complete', created_at: task.created_at },

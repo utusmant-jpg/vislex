@@ -70,13 +70,15 @@ export type SettingsScope = 'app' | 'case';
 export function settingsPath(section: SettingsSection, scope?: SettingsScope): string {
   return `Settings → ${section}${scope === 'case' ? ' → This case' : ''}`;
 }
-export type ComposerBlock = { reason: 'desktop' | 'offline' | 'text-grant' | 'access-route' | 'subscription-model' | 'no-model' | 'preparing'; message: string; section?: SettingsSection; scope?: SettingsScope };
+export type ComposerBlock = { reason: 'desktop' | 'offline' | 'text-grant' | 'access-route' | 'route-unavailable' | 'subscription-model' | 'no-model' | 'preparing'; message: string; section?: SettingsSection; scope?: SettingsScope };
 
 /** Why the composer cannot send right now, stated plainly and pointing at the
  *  settings section that changes it. Model availability is never treated as
  *  case authorization: the case text grant is checked on its own. */
-export function composerBlock({ native, snapshot, accessKnown, subscriptionActive, modelReady, preparing }: {
-  native: boolean; snapshot: Pick<Snapshot, 'settings'> | null; accessKnown: boolean; subscriptionActive: boolean; modelReady: boolean; preparing: boolean;
+export function composerBlock({ native, snapshot, accessKnown, subscriptionActive, routeBlocker, modelReady, preparing }: {
+  native: boolean; snapshot: Pick<Snapshot, 'settings'> | null; accessKnown: boolean; subscriptionActive: boolean;
+  /** The backend's stated reason the selected subscription route cannot run, if any. */
+  routeBlocker?: string; modelReady: boolean; preparing: boolean;
 }): ComposerBlock | null {
   if (!snapshot) return null;
   if (!native) return { reason: 'desktop', message: 'AI chat runs in the VisLex desktop app. This preview cannot send messages.' };
@@ -86,6 +88,8 @@ export function composerBlock({ native, snapshot, accessKnown, subscriptionActiv
   // settings: editing app settings would not change a case with an override,
   // and would change every case that inherits them.
   if (!accessKnown) return { reason: 'access-route', message: 'The AI access route for this case could not be read.', section: 'Accounts & models', scope: 'case' };
+  // A selected route the backend reports as unavailable fails on send; say so before.
+  if (subscriptionActive && routeBlocker) return { reason: 'route-unavailable', message: `The ChatGPT subscription route is unavailable: ${routeBlocker.replace(/\.$/, '')}.`, section: 'Accounts & models', scope: 'case' };
   if (!modelReady) return subscriptionActive
     ? { reason: 'subscription-model', message: 'Choose a ChatGPT subscription model and effort before sending.', section: 'Accounts & models', scope: 'case' }
     : { reason: 'no-model', message: 'No configured model is permitted to receive case text.', section: 'Accounts & models', scope: 'case' };
