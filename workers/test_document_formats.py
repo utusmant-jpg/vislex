@@ -63,7 +63,8 @@ class DocumentFormats(unittest.TestCase):
                 for number in (10, 2, 1):
                     archive.writestr(f"ppt/slides/slide{number}.xml", f'<root xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>Slide {number} &amp; text</a:t></a:r></a:p></root>')
             result = process(job, {"kind": "pptx"})
-            self.assertEqual([p["text"] for p in result["pages"]], ["Slide 1 & text", "Slide 2 & text", "Slide 10 & text"])
+            self.assertEqual([p["text"] for p in result["pages"] if ":paragraph:" in p["locator"]], ["Slide 1 & text", "Slide 2 & text", "Slide 10 & text"])
+            self.assertEqual(result["pages"][0]["text"], "Slide 1 of 3 by part number")
 
     def test_odt_heading_paragraph_and_table_text(self):
         with tempfile.TemporaryDirectory() as directory:

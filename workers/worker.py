@@ -355,13 +355,17 @@ def process(job: Path, request: dict) -> dict:
         extracted = extract_docx(source)
         pages, notes = extracted['pages'], extracted['notes']
         metadata.update(extracted['metadata'])
-    elif kind in ('pptx', 'odt'):
+    elif kind == 'pptx':
+        from pptx_extract import extract as extract_pptx
+        extracted = extract_pptx(source)
+        pages, notes = extracted['pages'], extracted['notes']
+        metadata.update(extracted['metadata'])
+    elif kind == 'odt':
         import zipfile
         import xml.etree.ElementTree as ET
         import re
         with zipfile.ZipFile(source) as package:
-            names = ([n for n in package.namelist() if re.fullmatch(r'ppt/slides/slide[0-9]+\.xml', n)] if kind == 'pptx' else ['content.xml'])
-            names.sort(key=lambda n: int(re.search(r'slide([0-9]+)', n).group(1)) if kind == 'pptx' else 0)
+            names = ['content.xml']
             if sum(package.getinfo(n).file_size for n in names) > 32 * 1024 * 1024:
                 raise ValueError('Document XML exceeds extraction limit')
             for name in names:
@@ -369,7 +373,7 @@ def process(job: Path, request: dict) -> dict:
                 units = [node for node in root.iter() if node.tag in ('{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p', '{urn:oasis:names:tc:opendocument:xmlns:text:1.0}h', '{http://schemas.openxmlformats.org/drawingml/2006/main}p')]
                 for index, node in enumerate(units, 1):
                     pages.append({'locator': f'{name}:paragraph:{index}', 'text': ''.join(node.itertext()), 'method': 'document-xml'})
-        notes = ['Text preview only; slide layout, images, comments, embedded files and animations are not rendered. Original file is preserved.']
+        notes = ['Text preview only; layout, images, comments, embedded files and tracked changes are not rendered. Original file is preserved.']
     elif kind == 'xlsx':
         from openpyxl import load_workbook
         # Context managers keep both handles closed even when a corrupt workbook raises mid-read.
