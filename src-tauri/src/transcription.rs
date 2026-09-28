@@ -405,7 +405,12 @@ pub fn publish_staged_transcript(case:&mut Case,job:&Job,staged:StagedTranscript
             ensure!(start.is_finite()&&end.is_finite()&&end>=start&&content.len()<=10000,"Invalid transcript segment");
             let words=segment["words"].to_string();
             ensure!(words.len()<=200000,"Transcript word timing payload is too large");
-            let metadata=json!({"language":segment["language"],"language_probability":segment["language_probability"],"method":segment["method"],"locator":segment["locator"]});
+            let mut metadata=json!({"language":segment["language"],"language_probability":segment["language_probability"],"method":segment["method"],"locator":segment["locator"]});
+            // Decoder diagnostics used to flag uncertain segments. They are not
+            // calibrated accuracy; only finite numbers are kept.
+            for key in ["avg_logprob","no_speech_prob","compression_ratio","temperature"] {
+                if let Some(value)=segment[key].as_f64().filter(|v|v.is_finite()) { metadata[key]=json!(value); }
+            }
             case.db.execute("INSERT INTO transcript_segments(run_id,ordinal,source_id,track,start_seconds,end_seconds,text,words,metadata) VALUES(?,?,?,?,?,?,?,?,?)",params![job.id,ordinal as i64,job.source.id,track as i64,start,end,content,words,metadata.to_string()])?;
         }
         let record=case.write_record(None,0,&format!("Full transcript · {}",job.source.name.chars().take(170).collect::<String>()),"transcript",&staged.record_text,"processor","All audio tracks decoded to EOF; unreviewed machine transcription",None,vec![job.source.id.clone()])?;
@@ -462,6 +467,19 @@ pub fn status(case: &Case, source: &str) -> Result<Value> {
         json!({"job_id":job,"status":state,"progress":progress,"result":result,"error":error,"record":record}),
     )
 }
+/// Words the recogniser itself scored below this probability are shown for
+/// review. The probability is a decoder diagnostic, not calibrated accuracy.
+pub const UNCERTAIN_WORD_PROBABILITY: f64 = 0.5;
+/// Low-probability words of one segment, bounded so a page stays small; the
+/// full word list remains available through the segment detail.
+pub fn uncertain_words(words:&Value)->(usize,Vec<Value>) {
+    let items=words.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let uncertain=items.iter().filter(|w|w["probability"].as_f64().is_some_and(|p|p.is_finite()&&p<UNCERTAIN_WORD_PROBABILITY))
+        .take(64)
+        .map(|w|json!({"word":w["word"].as_str().unwrap_or("").chars().take(64).collect::<String>(),"start":w["start"],"end":w["end"],"probability":w["probability"]}))
+        .collect();
+    (items.len(),uncertain)
+}
 pub fn segment_page(case:&Case,source_id:&str,run_id:&str,cursor:Option<i64>)->Result<Value> {
     uuid::Uuid::parse_str(run_id)?;
     let source=case.source(source_id)?;
@@ -469,8 +487,12 @@ pub fn segment_page(case:&Case,source_id:&str,run_id:&str,cursor:Option<i64>)->R
     let (job_source,kind,status):(String,String,String)=case.db.query_row("SELECT source_id,kind,status FROM processing_jobs WHERE id=?",[run_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     ensure!(job_source==source_id&&kind=="full_audio"&&status=="complete","Transcript version is not available");
     let start=cursor.unwrap_or(0);ensure!(start>=0,"Invalid transcript cursor");
-    let mut statement=case.db.prepare("SELECT ordinal,track,start_seconds,end_seconds,text,metadata FROM transcript_segments WHERE run_id=? AND ordinal>=? ORDER BY ordinal LIMIT 26")?;
-    let mut segments=statement.query_map(params![run_id,start],|r|Ok(json!({"ordinal":r.get::<_,i64>(0)?,"track":r.get::<_,i64>(1)?,"start":r.get::<_,f64>(2)?,"end":r.get::<_,f64>(3)?,"text":r.get::<_,String>(4)?,"metadata":serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or(Value::Null)})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+    let mut statement=case.db.prepare("SELECT ordinal,track,start_seconds,end_seconds,text,metadata,words FROM transcript_segments WHERE run_id=? AND ordinal>=? ORDER BY ordinal LIMIT 26")?;
+    let mut segments=statement.query_map(params![run_id,start],|r|{
+        let words=serde_json::from_str::<Value>(&r.get::<_,String>(6)?).unwrap_or(Value::Null);
+        let (word_count,uncertain)=uncertain_words(&words);
+        Ok(json!({"ordinal":r.get::<_,i64>(0)?,"track":r.get::<_,i64>(1)?,"start":r.get::<_,f64>(2)?,"end":r.get::<_,f64>(3)?,"text":r.get::<_,String>(4)?,"metadata":serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or(Value::Null),"word_count":word_count,"uncertain_words":uncertain}))
+    })?.collect::<std::result::Result<Vec<_>,_>>()?;
     let more=segments.len()>25;segments.truncate(25);
     for segment in &mut segments {
         let correction:Option<(String,i64,String,String)>=case.db.query_row("SELECT id,revision,proposed_text,review FROM transcript_corrections WHERE run_id=? AND ordinal=? ORDER BY revision DESC LIMIT 1",params![run_id,segment["ordinal"].as_i64().context("Missing segment ordinal")?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
@@ -578,6 +600,36 @@ mod staging_tests {
         assert_ne!(rerun.id,job.id);
         assert_eq!(status(&case,&source.id).unwrap()["job_id"],rerun.id);
         assert_eq!(segment_page(&case,&source.id,&job.id,Some(1399)).unwrap()["segments"][0]["correction"]["review"],"rejected");
+    }
+    #[test]
+    fn segment_pages_carry_decoder_signals_and_low_probability_words() {
+        let dir=tempfile::tempdir().unwrap();
+        let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/variable-timing.mp4");
+        let mut case=Case::create(&dir.path().join("case.ledcase"),"Synthetic confidence").unwrap();
+        case.import_files(&[input.to_string_lossy().into()],"Synthetic fixture").unwrap();
+        let source=case.sources().unwrap().into_iter().find(|s|s.kind=="video").unwrap();
+        let job=begin(&mut case,&source.id).unwrap();
+        let words=json!([
+            {"word":" Meet","start":0.0,"end":0.3,"probability":0.97},
+            {"word":" at","start":0.3,"end":0.4,"probability":0.91},
+            {"word":" 4:15","start":0.4,"end":0.9,"probability":0.31},
+            {"word":" sharp","start":0.9,"end":1.2,"probability":f64::NAN}
+        ]);
+        let pages=json!([{"start":0.0,"end":1.2,"track":0,"text":"Meet at 4:15 sharp","words":words,
+            "avg_logprob":-1.2,"no_speech_prob":0.08,"compression_ratio":1.4,"temperature":0.2,"language":"en","language_probability":0.98}]);
+        let staged=stage_transcript(&job,json!({"pages":pages,"metadata":{},"limitations":[]})).unwrap();
+        publish_staged_transcript(&mut case,&job,staged).unwrap();
+        let page=segment_page(&case,&source.id,&job.id,None).unwrap();
+        let segment=&page["segments"][0];
+        assert_eq!(segment["metadata"]["avg_logprob"],-1.2);
+        assert_eq!(segment["metadata"]["no_speech_prob"],0.08);
+        assert_eq!(segment["metadata"]["compression_ratio"],1.4);
+        assert_eq!(segment["metadata"]["temperature"],0.2);
+        assert_eq!(segment["word_count"],4);
+        let uncertain=segment["uncertain_words"].as_array().unwrap();
+        assert_eq!(uncertain.len(),1,"only finite probabilities below the threshold are flagged");
+        assert_eq!(uncertain[0]["word"]," 4:15");
+        assert_eq!(uncertain[0]["probability"],0.31);
     }
     #[test]
     fn staged_transcript_is_recoverable_and_registers_once() {

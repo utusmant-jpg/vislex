@@ -73,6 +73,9 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
                                       'text': ''.join(w.word for w in words).strip(),
                                       'language': info.language, 'language_probability': info.language_probability,
                                       'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob,
+                                      # Decoder diagnostics, not calibrated accuracy: a high compression
+                                      # ratio flags repetition loops; temperature > 0 means fallback decoding.
+                                      'compression_ratio': segment.compression_ratio, 'temperature': segment.temperature,
                                       'method': f'faster-whisper-{model_name} int8; unverified machine transcript',
                                       'words': [{'start': window_start + w.start, 'end': window_start + w.end,
                                                  'word': w.word, 'probability': w.probability} for w in words]})

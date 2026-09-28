@@ -39,7 +39,7 @@ function syntheticSha(seed: string): string {
 }
 
 export type EvidenceObject = { id: string; revision: number; kind: string; title: string; content: string; source_ids: string[]; locators: string[]; review: string; stale: boolean; actor: string; start_seconds: number | null; end_seconds: number | null; dependencies: { id: string; revision: number }[] };
-export type Segment = { ordinal: number; track: number; start: number; end: number; text: string; correction?: { id: string; revision: number; text: string; review: 'pending' | 'accepted' | 'rejected' } };
+export type Segment = { ordinal: number; track: number; start: number; end: number; text: string; word_count?: number; uncertain_words?: { word: string; start: number; end: number; probability: number }[]; correction?: { id: string; revision: number; text: string; review: 'pending' | 'accepted' | 'rejected' } };
 export type HarnessSource = Source & {
   /** Extracted text by extraction revision; absent for sources without text. */
   revisions?: Record<number, string[]>;
@@ -263,7 +263,7 @@ export function buildHarborCase(now: number, sourceCount = 250): HarnessCase {
   ];
 
   const transcripts: HarnessCase['transcripts'] = {
-    [call]: { jobId: syntheticId('job', 90), recordId: records[2].id, status: 'complete', segments: Array.from({ length: 60 }, (_, index) => ({ ordinal: index, track: 0, start: index * 3.5, end: index * 3.5 + 3, text: `${index % 2 ? 'Synthetic dispatcher' : 'Synthetic caller'}: fictional line ${index + 1} of the dispatch call.`, ...(index === 2 ? { correction: { id: syntheticId('correction', 2), revision: 1, text: 'Synthetic caller: I can see two people at the north door.', review: 'pending' as const } } : {}) })) },
+    [call]: { jobId: syntheticId('job', 90), recordId: records[2].id, status: 'complete', segments: Array.from({ length: 60 }, (_, index) => ({ ordinal: index, track: 0, start: index * 3.5, end: index * 3.5 + 3, text: `${index % 2 ? 'Synthetic dispatcher' : 'Synthetic caller'}: fictional line ${index + 1} of the dispatch call.`, word_count: 8, ...(index === 4 || index === 7 ? { uncertain_words: [{ word: ' fictional', start: index * 3.5 + 1, end: index * 3.5 + 1.4, probability: 0.32 }] } : {}), ...(index === 2 ? { correction: { id: syntheticId('correction', 2), revision: 1, text: 'Synthetic caller: I can see two people at the north door.', review: 'pending' as const } } : {}) })) },
     [sources[9].id]: { jobId: FIXTURE.jobs.transcriptRunning, recordId: '', status: 'running', segments: [], progress: { state: 'transcribing', track_number: 1, track_count: 1, processed_seconds: 96.4, estimated_seconds: 212, segments: 31 } },
   };
 

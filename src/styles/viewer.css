@@ -252,6 +252,11 @@
 .transcript-model select { min-height: 28px; height: 28px; font-size: var(--text-sm); }
 .transcript-note { margin: var(--space-2) 0 0; font-size: var(--text-caption); color: var(--warning); }
 .transcript-window { margin: var(--space-3) 0 var(--space-1); font-size: var(--text-caption); color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* Low-confidence words: a dotted underline plus a tinted background, so the
+   mark does not rely on colour alone. The text colour is never changed. */
+.uncertain-word { text-decoration: underline dotted var(--warning); text-decoration-thickness: 2px; text-underline-offset: 3px; background: var(--warning-bg); border-radius: 2px; }
+.transcript-uncertain-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-3) 0 0; font-size: var(--text-caption); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.transcript-uncertain-bar > span { margin-right: auto; }
 .full-transcript-text { display: flex; flex-direction: column; gap: 1px; max-height: none; overflow: visible; margin-top: 0; }
 .transcript-page { align-self: center; margin: 6px 0; }
 .transcript-segment { position: relative; border-radius: var(--radius-sm); }

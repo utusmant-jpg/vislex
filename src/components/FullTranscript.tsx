@@ -5,9 +5,10 @@ import { api, native } from '../bridge';
 import { transcriptPlaybackLine, type TranscriptTiming } from '../review';
 import type { WorkingRecord } from '../types';
 import { StatusPill, Tooltip } from '../ui';
+import { markUncertain, stepUncertain, uncertainOrdinals, uncertainTitle, type UncertainWord } from '../features/transcript-confidence/uncertain';
 
 type State = { job_id:string;status: string; error: string; progress: { state?: string; track_number?: number; track_count?: number; processed_seconds?: number; estimated_seconds?: number; segments?: number }; result: { saved_files?: string[]; segments?: number; segmented?:boolean; metadata?: TranscriptTiming & { no_audio_tracks?: boolean } }; record: WorkingRecord | null };
-type Segment={ordinal:number;track:number;start:number;end:number;text:string;correction?:{id:string;revision:number;text:string;review:'pending'|'accepted'|'rejected'}};
+type Segment={ordinal:number;track:number;start:number;end:number;text:string;word_count?:number;uncertain_words?:UncertainWord[];correction?:{id:string;revision:number;text:string;review:'pending'|'accepted'|'rejected'}};
 type SegmentPage={segments:Segment[];next_cursor:number|null};
 const VISIBLE_SEGMENTS=200;
 /** Split a caption prefix like "track 0 · 00:00:01.000 → 00:00:02.000" into its track and time range. */
@@ -26,6 +27,11 @@ export function highlightMatches(text:string,query:string){
   const parts:React.ReactNode[]=[];let from=0;let at=lower.indexOf(needle);
   while(at>=0){const begin=origin[at];const finish=endOf(at+needle.length-1);if(begin>=from){if(begin>from)parts.push(text.slice(from,begin));parts.push(<mark key={begin}>{text.slice(begin,finish)}</mark>);from=finish;}at=lower.indexOf(needle,at+needle.length);}
   if(from<text.length)parts.push(text.slice(from));return parts;
+}
+/** Caption text with low-confidence words underlined; a search query takes over highlighting. */
+function CaptionText({text,query,words,show}:{text:string;query:string;words?:UncertainWord[];show:boolean}){
+  if(query.trim()||!show||!words?.length)return <>{highlightMatches(text,query)}</>;
+  return <>{markUncertain(text,words).map((part,index)=>part.uncertain?<span key={index} className="uncertain-word" title={uncertainTitle(part.uncertain)}>{part.text}</span>:<span key={index}>{part.text}</span>)}</>;
 }
 function clock(seconds:number){const milliseconds=Math.round(Math.max(0,seconds)*1000);return `${String(Math.floor(milliseconds/3600000)).padStart(2,'0')}:${String(Math.floor(milliseconds/60000)%60).padStart(2,'0')}:${String(Math.floor(milliseconds/1000)%60).padStart(2,'0')}.${String(milliseconds%1000).padStart(3,'0')}`;}
 
@@ -47,6 +53,8 @@ export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, re
   const [editingOrdinal,setEditingOrdinal]=useState<number|null>(null);
   const [correctionText,setCorrectionText]=useState('');
   const [correctionReason,setCorrectionReason]=useState('');
+  const [showUncertain,setShowUncertain]=useState(true);
+  const [uncertainCursor,setUncertainCursor]=useState<number|null>(null);
   const segmentKey=useRef('');
   const transcriptRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -77,6 +85,15 @@ export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, re
   const progress = state?.progress;
   const matchingSegments=useMemo(()=>segments.filter(segment=>!filter.trim()||segment.text.toLowerCase().includes(filter.trim().toLowerCase())),[segments,filter]);
   const visibleSegments=matchingSegments.slice(segmentWindowStart,segmentWindowStart+VISIBLE_SEGMENTS);
+  const flagged=useMemo(()=>uncertainOrdinals(segments),[segments]);
+  const flaggedWords=useMemo(()=>segments.reduce((total,segment)=>total+(segment.uncertain_words?.length??0),0),[segments]);
+  function jumpUncertain(direction:1|-1){
+    const ordinal=stepUncertain(flagged,uncertainCursor,direction);if(ordinal===null)return;
+    setUncertainCursor(ordinal);setFollow(false);setFilter('');
+    const index=segments.findIndex(segment=>segment.ordinal===ordinal);
+    if(index>=0&&(index<segmentWindowStart||index>=segmentWindowStart+VISIBLE_SEGMENTS))setSegmentWindowStart(Math.max(0,index-50));
+    requestAnimationFrame(()=>{transcriptRef.current?.querySelector<HTMLButtonElement>(`[data-ordinal="${ordinal}"] .caption-row`)?.focus();});
+  }
   useEffect(()=>{setSegmentWindowStart(0);},[filter]);
   // Follow re-windows only when playback reaches a different segment, so paging
   // or loading more segments is not undone while the playing segment is unchanged.
@@ -136,16 +153,22 @@ export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, re
     {state?.record && state.result.metadata?.container_origin_seconds === undefined ? <p className="transcript-note">This older transcript has no playback clock mapping. Retranscribe to enable accurate seek links.</p> : null}
     {segmentError ? <p role="alert" className="small danger-text">Could not read transcript segments: {segmentError}</p> : null}
     {state?.record && state.result.segmented ? <div className="full-transcript-text" ref={transcriptRef}>
+      {flagged.length?<div className="transcript-uncertain-bar" role="group" aria-label="Low-confidence words">
+        <span>{flaggedWords} low-confidence {flaggedWords===1?'word':'words'} in {flagged.length} loaded {flagged.length===1?'segment':'segments'}</span>
+        <button className="quiet" data-size="sm" aria-pressed={showUncertain} onClick={()=>setShowUncertain(value=>!value)}>{showUncertain?'Hide marks':'Show marks'}</button>
+        <button className="quiet" data-size="sm" onClick={()=>jumpUncertain(-1)}>Previous uncertain</button>
+        <button className="quiet" data-size="sm" onClick={()=>jumpUncertain(1)}>Next uncertain</button>
+      </div>:null}
       <p className="transcript-window">{state.result.segments ?? 0} saved segments · {segments.length} loaded. Showing {matchingSegments.length?segmentWindowStart+1:0}–{Math.min(matchingSegments.length,segmentWindowStart+VISIBLE_SEGMENTS)} of {matchingSegments.length} matching loaded segments. Search covers loaded segments.</p>
       {segmentWindowStart>0?<button className="quiet transcript-page" onClick={()=>setSegmentWindowStart(Math.max(0,segmentWindowStart-VISIBLE_SEGMENTS))}>Show previous 200 loaded segments</button>:null}
       {visibleSegments.map(segment=>{
         const line=`[track ${segment.track} · ${clock(segment.start)} → ${clock(segment.end)}] ${segment.text}`;
         const interval=transcriptPlaybackLine(line,state.result.metadata);
         const active=interval?currentTime>=interval.start&&currentTime<interval.end:false;
-        return <div key={segment.ordinal} className={`transcript-segment ${active?'active':''}`}>
+        return <div key={segment.ordinal} data-ordinal={segment.ordinal} className={`transcript-segment ${active?'active':''}`}>
           <div className="transcript-segment-row">
             <button className={`transcript-line caption-row ${active?'active':''}`} ref={active?activeRef:undefined} aria-current={active?'true':undefined} aria-label={`Seek to ${interval?.start ?? segment.start} seconds: ${segment.text}`} onClick={()=>onSeek(interval?.start ?? segment.start)}>
-              <CaptionTime prefix={line.slice(1,line.indexOf(']'))} /><span className="caption-text">{highlightMatches(segment.text,filter)}</span>
+              <CaptionTime prefix={line.slice(1,line.indexOf(']'))} /><span className="caption-text"><CaptionText text={segment.text} query={filter} words={segment.uncertain_words} show={showUncertain}/></span>
             </button>
             {caseId&&editingOrdinal!==segment.ordinal?<button className="quiet transcript-suggest" aria-label="Suggest correction" onClick={()=>{setEditingOrdinal(segment.ordinal);setCorrectionText(segment.correction?.text??segment.text);setCorrectionReason('');}}><span>Suggest</span></button>:null}
           </div>

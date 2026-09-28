@@ -189,7 +189,7 @@ def process(job: Path, request: dict) -> dict:
         metadata['language'] = info.language
         metadata['language_probability'] = info.language_probability
         for segment in segments:
-            pages.append({'locator': f'track:{metadata["track_index"]}:seconds:{start+segment.start:.3f}-{start+segment.end:.3f}', 'text': segment.text, 'method': f'faster-whisper-{model_name} int8; unverified machine transcript', 'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob, 'words': [{'start': start+w.start, 'end': start+w.end, 'word': w.word, 'probability': w.probability} for w in segment.words or []]})
+            pages.append({'locator': f'track:{metadata["track_index"]}:seconds:{start+segment.start:.3f}-{start+segment.end:.3f}', 'text': segment.text, 'method': f'faster-whisper-{model_name} int8; unverified machine transcript', 'avg_logprob': segment.avg_logprob, 'no_speech_prob': segment.no_speech_prob, 'compression_ratio': segment.compression_ratio, 'temperature': segment.temperature, 'words': [{'start': start+w.start, 'end': start+w.end, 'word': w.word, 'probability': w.probability} for w in segment.words or []]})
         notes = ['Unverified machine transcription using the selected local multilingual model; check names, numbers, and faint speech against original audio.', 'Only the selected audio track and interval were decoded. Other tracks remain unprocessed.', 'VAD is disabled. Decoder gaps are accounted separately and zero-filled for timing; silence does not establish absence of events.', 'Transcription is not direct audio understanding, speaker identity, or legal interpretation.']
     elif kind == 'video':
         import av
