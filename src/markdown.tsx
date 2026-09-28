@@ -9,7 +9,7 @@ export type Block =
   | { kind: 'paragraph'; text: string }
   | { kind: 'code'; language: string; lines: string[] }
   | { kind: 'quote'; lines: string[] }
-  | { kind: 'list'; ordered: boolean; items: string[] }
+  | { kind: 'list'; ordered: boolean; items: string[]; start?: number }
   | { kind: 'table'; header: string[]; rows: string[][] }
   | { kind: 'rule' };
 
@@ -27,6 +27,10 @@ function isTableDivider(line: string): boolean {
   return /^\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes('-');
 }
 
+const headingPattern = /^(#{1,6})\s+(.*)$/;
+// A quote line is ">" optionally followed by one space; a bare ">" is an empty quote line.
+const quotePattern = /^>(?: |$)/;
+
 export function parseBlocks(markdown: string): Block[] {
   const blocks: Block[] = [];
   const lines = markdown.replace(/\r\n/g, '\n').split('\n');
@@ -34,7 +38,7 @@ export function parseBlocks(markdown: string): Block[] {
   while (index < lines.length) {
     const line = lines[index];
     if (!line.trim()) { index += 1; continue; }
-    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+    const heading = headingPattern.exec(line);
     if (heading) { blocks.push({ kind: 'heading', level: heading[1].length, text: heading[2] }); index += 1; continue; }
     if (/^(---+|\*\*\*+|___+)\s*$/.test(line)) { blocks.push({ kind: 'rule' }); index += 1; continue; }
     if (line.trim().startsWith('```')) {
@@ -46,9 +50,9 @@ export function parseBlocks(markdown: string): Block[] {
       blocks.push({ kind: 'code', language, lines: code });
       continue;
     }
-    if (line.startsWith('> ')) {
+    if (quotePattern.test(line)) {
       const quote: string[] = [];
-      while (index < lines.length && lines[index].startsWith('> ')) { quote.push(lines[index].slice(2)); index += 1; }
+      while (index < lines.length && quotePattern.test(lines[index])) { quote.push(lines[index].replace(quotePattern, '')); index += 1; }
       blocks.push({ kind: 'quote', lines: quote });
       continue;
     }
@@ -63,7 +67,8 @@ export function parseBlocks(markdown: string): Block[] {
         items.push(item[3]);
         index += 1;
       }
-      blocks.push({ kind: 'list', ordered, items });
+      const start = ordered ? Number(listMatch[3]) : 1;
+      blocks.push(ordered && start !== 1 ? { kind: 'list', ordered, items, start } : { kind: 'list', ordered, items });
       continue;
     }
     if (line.includes('|') && index + 1 < lines.length && isTableDivider(lines[index + 1])) {
@@ -75,7 +80,7 @@ export function parseBlocks(markdown: string): Block[] {
       continue;
     }
     const paragraph: string[] = [];
-    while (index < lines.length && lines[index].trim() && !/^(#{1,4}\s|> |```|(\s*([-*]|\d+[.)])\s))/.test(lines[index]) && !/^(-{3,}|\*{3,})\s*$/.test(lines[index])) {
+    while (index < lines.length && lines[index].trim() && !/^(#{1,6}\s|>(?: |$)|```|(\s*([-*]|\d+[.)])\s))/.test(lines[index]) && !/^(-{3,}|\*{3,})\s*$/.test(lines[index])) {
       paragraph.push(lines[index]);
       index += 1;
     }
@@ -112,21 +117,29 @@ export function Markdown({ text, onSource, caret, className }: { text: string; o
           const Tag = (block.level <= 1 ? 'h3' : block.level === 2 ? 'h4' : 'h5') as 'h3' | 'h4' | 'h5';
           return <Tag key={index}><InlineMarkdown text={block.text} onSource={onSource} />{tail}</Tag>;
         }
-        case 'paragraph':
-          return <p key={index}>{block.text.split('\n').map((line, lineIndex) => <span key={lineIndex}>
-            <InlineMarkdown text={line} onSource={onSource} />{lineIndex < block.text.split('\n').length - 1 ? <br /> : null}
+        case 'paragraph': {
+          const lines = block.text.split('\n');
+          return <p key={index}>{lines.map((line, lineIndex) => <span key={lineIndex}>
+            <InlineMarkdown text={line} onSource={onSource} />{lineIndex < lines.length - 1 ? <br /> : null}
           </span>)}{tail}</p>;
+        }
         case 'code':
-          return <pre className="code-block" key={index}><code>{block.lines.join('\n')}</code>{tail}</pre>;
+          return <pre className="code-block" key={index} data-language={block.language || undefined}>
+            {block.language ? <span className="code-language" aria-hidden="true">{block.language}</span> : null}
+            <code>{block.lines.join('\n')}</code>{tail}
+          </pre>;
         case 'quote':
           return <blockquote key={index}>{block.lines.map((line, lineIndex) => <p key={lineIndex}><InlineMarkdown text={line} onSource={onSource} /></p>)}{tail}</blockquote>;
         case 'list': {
-          const Tag = block.ordered ? 'ol' : 'ul';
-          return <Tag key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}><InlineMarkdown text={item} onSource={onSource} /></li>)}{tail}</Tag>;
+          // The streaming caret sits inside the last item: a list may only contain <li> children.
+          const items = block.items.map((item, itemIndex) => <li key={itemIndex}><InlineMarkdown text={item} onSource={onSource} />{itemIndex === block.items.length - 1 ? tail : null}</li>);
+          return block.ordered
+            ? <ol key={index} start={block.start}>{items}</ol>
+            : <ul key={index}>{items}</ul>;
         }
         case 'table':
           return <div className="table-wrap" key={index}><table>
-            <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}><InlineMarkdown text={cell} onSource={onSource} /></th>)}</tr></thead>
+            <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex} scope="col"><InlineMarkdown text={cell} onSource={onSource} /></th>)}</tr></thead>
             <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}><InlineMarkdown text={cell} onSource={onSource} /></td>)}</tr>)}</tbody>
           </table>{tail}</div>;
         case 'rule':
