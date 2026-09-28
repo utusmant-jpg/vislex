@@ -103,6 +103,33 @@ def stop(process):
     return None
 
 
+def worker_command(args, workspace, env):
+    requested_model = getattr(args, "model", None)
+    effort = getattr(args, "reasoning", None) or ("max" if args.provider == "glm" else "medium")
+    if args.provider == "codex":
+        model = requested_model or "gpt-6-sol"
+        if model not in ("gpt-6-sol", "gpt-6-astra"):
+            raise RuntimeError("Codex workers may use only gpt-6-sol or gpt-6-astra")
+        if effort not in ("low", "medium", "high", "xhigh", "max"):
+            raise RuntimeError("Unsupported Codex reasoning effort")
+        command = [executable("codex"), "exec", "--model", model, "-c",
+                   f'model_reasoning_effort="{effort}"', "--json", "--color", "never", "--sandbox",
+                   "read-only" if args.mode == "review" else "workspace-write", "-C", str(workspace), "-"]
+    else:
+        if requested_model:
+            raise RuntimeError("GLM workers are fixed to glm-5.3; --model applies only to Codex")
+        if effort not in ("low", "high", "max"):
+            raise RuntimeError("GLM-5.3 reasoning must be low, high or max")
+        model = "zai-coding-plan/glm-5.3"
+        config = json.loads((ROOT / "opencode.json").read_text(encoding="utf-8"))
+        config["provider"]["zai-coding-plan"]["models"]["glm-5.3"]["options"]["reasoningEffort"] = effort
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config)
+        command = [executable("glm"), "run", "--pure", "--format", "json", "--model",
+                   model, "--variant", effort, "--agent", "team-" + args.mode,
+                   "Read the task packet supplied on standard input and complete only that task."]
+    return command, model, effort
+
+
 def dispatch(args):
     workspace = Path(args.workspace).resolve()
     git(workspace, "rev-parse", "--show-toplevel")
@@ -121,23 +148,14 @@ def dispatch(args):
     task = ("You are a delegated development worker, not the team coordinator. "
             "Do not start other workers. Complete only the following task.\n\n" + task)
     env = os.environ.copy()
-    if args.provider == "codex":
-        command = [executable("codex"), "exec", "--json", "--color", "never", "--sandbox",
-                   "read-only" if args.mode == "review" else "workspace-write", "-C", str(workspace), "-"]
-        if args.model:
-            command[2:2] = ["--model", args.model]
-    else:
-        config = json.loads((ROOT / "opencode.json").read_text(encoding="utf-8"))
-        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config)
-        command = [executable("glm"), "run", "--pure", "--format", "json", "--model",
-                   "zai-coding-plan/glm-5.3", "--variant", "max", "--agent", "team-" + args.mode,
-                   "Read the task packet supplied on standard input and complete only that task."]
+    command, model, reasoning = worker_command(args, workspace, env)
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
     folder = run_path(run_id)
     folder.mkdir(parents=True)
     packet = folder / "task.txt"
     packet.write_text(task, encoding="utf-8")
     metadata = {"id": run_id, "provider": args.provider, "mode": args.mode,
+                "model": model, "reasoning": reasoning,
                 "workspace": str(workspace), "head": git(workspace, "rev-parse", "HEAD"),
                 "status": "running", "started": dt.datetime.now(dt.timezone.utc).isoformat()}
     save(folder / "run.json", metadata)
@@ -201,7 +219,9 @@ def main():
     run.add_argument("--task-file", required=True)
     run.add_argument("--workspace", default=str(ROOT))
     run.add_argument("--mode", choices=["review", "build"], default="review")
-    run.add_argument("--model", help="Optional Codex model; default inherits user configuration")
+    run.add_argument("--model", choices=["gpt-6-sol", "gpt-6-astra"], help="Codex model; default gpt-6-sol")
+    run.add_argument("--reasoning", choices=["low", "medium", "high", "xhigh", "max"],
+                     help="Codex: low/medium/high/xhigh/max; GLM: low/high/max")
     for name in ("status", "cancel"):
         sub = commands.add_parser(name)
         sub.add_argument("run_id")
@@ -229,7 +249,7 @@ def main():
         subprocess.run([executable("codex"), "login", "status"], check=True)
         subprocess.run([executable("glm"), "auth", "list"], check=True)
         subprocess.run([executable("glm"), "models", "zai-coding-plan"], check=True, cwd=ROOT)
-        print("GLM: Coding Plan only, glm-5.3, max reasoning; Claude uses its own account.")
+        print("GLM: Coding Plan only, glm-5.3, low/high/max. Codex: gpt-6-sol or gpt-6-astra.")
         print("Doctor checks installation and stored credentials, not live provider connectivity.")
         return 0
     folder = run_path(args.run_id)

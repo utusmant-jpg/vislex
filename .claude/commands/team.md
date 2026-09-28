@@ -7,6 +7,8 @@ Act as the Claude coordinator for this request: $ARGUMENTS
 Read AGENTS.md, CLAUDE.md and docs/AGENT-TEAM.md. Run `python scripts/agent_team.py doctor`.
 Use the existing implementation queue when the request concerns queue work. Inspect current branch and dirty files before dispatch.
 
+Follow the per-task model/reasoning policy in CLAUDE.md. Always pass `--reasoning`. GLM is fixed to GLM-5.3 with low/high/max. Codex uses only GPT-6 Sol or GPT-6 Astra; pass `--model gpt-6-sol` or `--model gpt-6-astra` and low/medium/high/xhigh/max reasoning. State each selection and why before dispatch. Use stronger reasoning for hard correctness work, and do not substitute models or billing to bypass limits.
+
 Choose bounded tasks based on dependencies and file ownership. Create local UTF-8 task packets under `.agent-team/packets/` containing explicit instructions, owned files, invariants, acceptance commands and requested evidence. Do not include client evidence or credentials.
 
 Use actual workers with `python scripts/agent_team.py run codex --task-file <packet> --workspace <path> --mode review` or `python scripts/agent_team.py run glm --task-file <packet> --workspace <path> --mode build`. Builds require a separate registered Git worktree. Use Claude's worktree facilities where available, preserving the user's current checkout. Keep one writer per shared file and coordinate before dispatch. Background shell execution is appropriate for long runs; record the run ID printed by the helper and poll status only when needed.

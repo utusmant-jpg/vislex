@@ -5,8 +5,8 @@ Open this repository in VS Code and use its **Claude Code** panel. Start a new c
 ## Accounts and models
 
 - Claude Code uses your existing Claude Max login. Do not change its Anthropic endpoint to Z.ai.
-- Codex CLI uses your existing ChatGPT login and configured model/reasoning. `codex login status` checks it.
-- OpenCode uses the **Z.AI Coding Plan** provider, `zai-coding-plan/glm-5.3`, with max reasoning. Credentials are in the user's native OpenCode credential store, outside this repository. `opencode auth login` can replace the credential; select **Z.AI Coding Plan**, not the separately billed Z.AI provider.
+- Codex CLI uses your existing ChatGPT login and only GPT-6 Sol or GPT-6 Astra. Claude chooses the model and reasoning per task. `codex login status` checks authentication.
+- OpenCode uses the **Z.AI Coding Plan** provider, only `zai-coding-plan/glm-5.3`, with low/high/max reasoning chosen per task. Credentials are in the user's native OpenCode credential store, outside this repository. `opencode auth login` can replace the credential; select **Z.AI Coding Plan**, not the separately billed Z.AI provider.
 - The ZCode app remains independently available. Its stored Coding Plan token was tried locally but rejected by the platform with HTTP 401. Use your Z.ai platform API key for OpenCode instead. No secret was added to source files. A ZCode login alone is not the same as a valid OpenCode API credential.
 - GLM-5.3 is text-only. Use Claude or an actual vision tool for visual inspection. Provider quotas still apply; reported zero API cost does not mean zero subscription usage.
 
@@ -18,13 +18,17 @@ To enter the Z.ai key locally, select **Terminal > Run Task > Agent team: Connec
 
 ```powershell
 python scripts/agent_team.py doctor
-python scripts/agent_team.py run codex --task-file .agent-team/packets/review.txt --mode review
-python scripts/agent_team.py run glm --task-file .agent-team/packets/build.txt --workspace "C:\path\to\isolated-worktree" --mode build
+python scripts/agent_team.py run codex --model gpt-6-astra --reasoning high --task-file .agent-team/packets/review.txt --mode review
+python scripts/agent_team.py run glm --reasoning high --task-file .agent-team/packets/build.txt --workspace "C:\path\to\isolated-worktree" --mode build
 python scripts/agent_team.py status <run-id>
 python scripts/agent_team.py cancel <run-id>
 ```
 
-Claude can run the worker command in the background using its shell tool. Each run saves the packet, JSON events, stderr, result, session ID and reported usage under ignored `.agent-team/runs/<run-id>/`. A follow-up uses a new packet referencing the prior result and precise remaining work. Ctrl+C also cancels a foreground run. Runs do not share conversation memory automatically.
+Claude can run the worker command in the background using its shell tool. Each run saves the selected model and reasoning, packet, JSON events, stderr, result, session ID and reported usage under ignored `.agent-team/runs/<run-id>/`. A follow-up uses a new packet referencing the prior result and precise remaining work. Ctrl+C also cancels a foreground run. Runs do not share conversation memory automatically.
+
+GLM is fixed to 5.3. Supported effort is low/high/max; medium and xhigh are rejected for GLM. Codex allows only `gpt-6-sol` or `gpt-6-astra` with low/medium/high/xhigh/max. Omitting flags defaults to Sol/medium for Codex and GLM-5.3/max for GLM; the coordinator should pass flags explicitly using CLAUDE.md's task guidelines. Selections are per invocation and do not change the global Codex model configuration or Claude's own model.
+
+Per-task routing validation: `python scripts/test_agent_team.py` passed all seven checks, including explicit Codex model/effort arguments and GLM effort overrides without changing the source configuration. These checks validate launcher behavior, not live model availability or generation; the quota blockers below still apply.
 
 Review mode denies edits (Codex read-only sandbox; OpenCode review agent also denies shell execution). Builds require a separate registered worktree of this repository. Codex retains its sandbox. OpenCode uses tool permissions rather than an OS sandbox, denies external-directory access and public session sharing, and prompts/blocks unapproved shell operations. Claude should run any necessary blocked check itself after inspecting the command. Never use bypass-permissions flags to work around a failure.
 

@@ -16,6 +16,35 @@ import agent_team
 
 
 class LauncherTests(unittest.TestCase):
+    def test_codex_model_and_reasoning_are_explicit(self):
+        args = argparse.Namespace(provider="codex", mode="review", model="gpt-6-astra", reasoning="xhigh")
+        with mock.patch.object(agent_team, "executable", return_value="codex.exe"):
+            command, model, effort = agent_team.worker_command(args, agent_team.ROOT, {})
+        self.assertEqual((model, effort), ("gpt-6-astra", "xhigh"))
+        self.assertEqual(command[command.index("--model") + 1], model)
+        self.assertIn('model_reasoning_effort="xhigh"', command)
+        args.model = "another-model"
+        with self.assertRaises(RuntimeError):
+            agent_team.worker_command(args, agent_team.ROOT, {})
+
+    def test_glm_effort_overrides_config_without_changing_source(self):
+        original = (agent_team.ROOT / "opencode.json").read_bytes()
+        for effort in ("low", "high", "max"):
+            args = argparse.Namespace(provider="glm", mode="review", model=None, reasoning=effort)
+            env = {}
+            with mock.patch.object(agent_team, "executable", return_value="opencode.exe"):
+                command, model, selected = agent_team.worker_command(args, agent_team.ROOT, env)
+            self.assertEqual(model, "zai-coding-plan/glm-5.3")
+            self.assertEqual(selected, effort)
+            self.assertEqual(command[command.index("--variant") + 1], effort)
+            config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+            self.assertEqual(config["provider"]["zai-coding-plan"]["models"]["glm-5.3"]["options"]["reasoningEffort"], effort)
+        self.assertEqual((agent_team.ROOT / "opencode.json").read_bytes(), original)
+        for effort in ("medium", "xhigh"):
+            args.reasoning = effort
+            with self.assertRaises(RuntimeError):
+                agent_team.worker_command(args, agent_team.ROOT, {})
+
     def test_primary_checkout_cannot_be_a_build_target(self):
         args = argparse.Namespace(workspace=str(agent_team.ROOT), mode="build")
         with self.assertRaisesRegex(RuntimeError, "separate registered worktree"):
