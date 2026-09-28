@@ -4,7 +4,7 @@ $repo=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $binary=if ($BinaryPath) {(Resolve-Path -LiteralPath $BinaryPath).Path} else {Join-Path $repo 'src-tauri\target\x86_64-pc-windows-msvc\debug\local-evidence-desk.exe'}
 if (-not (Test-Path -LiteralPath $binary)) {throw 'Build the debug desktop app first.'}
 if ($binary -match '[\\/]release[\\/]') {throw 'The synthetic provider endpoint is enabled only in debug builds. Use the debug executable.'}
-try {$null=Invoke-WebRequest -Uri 'http://127.0.0.1:1420/' -TimeoutSec 2} catch {throw 'Start npm run dev before the debug provider race; its WebView requires the Vite page at 127.0.0.1:1420.'}
+try {$null=Invoke-WebRequest -Uri 'http://127.0.0.1:1420/' -TimeoutSec 2 -UseBasicParsing} catch {throw 'Start npm run dev before the debug provider race; its WebView requires the Vite page at 127.0.0.1:1420.'}
 $mockScript=Join-Path $PSScriptRoot 'native-provider-mock.mjs'
 $mock=Start-Process -FilePath (Get-Command node).Source -ArgumentList @("`"$mockScript`"","$MockPort") -WindowStyle Hidden -PassThru
 try {
