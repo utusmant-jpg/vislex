@@ -87,6 +87,12 @@ impl Config {
         Ok(())
     }
 }
+/// The model name without a gateway vendor prefix or routing suffix:
+/// "openai/gpt-5:nitro" -> "gpt-5". Used only to recognise model families.
+pub fn base_model_id(model: &str) -> &str {
+    let tail = model.rsplit('/').next().unwrap_or(model);
+    tail.split(':').next().unwrap_or(tail)
+}
 pub fn validate_model(model: &str) -> Result<()> {
     ensure!(
         !model.trim().is_empty()
@@ -285,6 +291,9 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
         // "deny" restricts routing to upstreams that do not store or train on
         // requests; OpenRouter's documented default is "allow".
         let mut request = json!({"model":model,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true},"max_tokens":body["max_output_tokens"],"provider":{"data_collection":"deny"}});
+        // OpenRouter's unified reasoning parameter carries the same effort the
+        // coordinator chose for direct OpenAI requests.
+        if let Some(effort) = body["reasoning"]["effort"].as_str() { request["reasoning"] = json!({"effort": effort}); }
         request["tool_choice"] = match body["tool_choice"]["name"].as_str() {
             Some(name) => json!({"type":"function","function":{"name":name}}),
             None => json!("auto"),
@@ -1285,6 +1294,19 @@ mod stream_transport_tests {
         let error = send_wire(Provider::Openrouter, "synthetic-key", WireRequest { url, body: json!({"model":"vendor/model","stream":true}) }, |_| {}).await.unwrap_err();
         server.join().unwrap();
         assert!(error.to_string().len() < 500, "provider detail must stay bounded");
+    }
+
+    #[test]
+    fn gateway_model_ids_are_normalised_and_reasoning_effort_is_forwarded() {
+        assert_eq!(base_model_id("openai/gpt-5"), "gpt-5");
+        assert_eq!(base_model_id("openai/gpt-5-mini:nitro"), "gpt-5-mini");
+        assert_eq!(base_model_id("gpt-5"), "gpt-5");
+        let body = json!({"model":"openai/gpt-5","instructions":"Rules","max_output_tokens":16384,"reasoning":{"effort":"high"},"tools":[],"input":[{"type":"message","role":"user","content":"Question"}]});
+        let wire = encode(Provider::Openrouter, &body).unwrap();
+        assert_eq!(wire.body["reasoning"], json!({"effort":"high"}));
+        assert_eq!(wire.body["max_tokens"], 16384);
+        let plain = encode(Provider::Openrouter, &json!({"model":"vendor/model","instructions":"Rules","max_output_tokens":4096,"tools":[],"input":[]})).unwrap();
+        assert!(plain.body.get("reasoning").is_none());
     }
 
     #[test]
