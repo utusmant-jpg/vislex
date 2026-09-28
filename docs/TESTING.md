@@ -57,7 +57,7 @@ python3 scripts/vislex_plan.py check
 
 ## Optional ChatGPT-subscription route
 
-The Codex-sidecar subscription route is off by default. Build with `--features subscription` (it implies `desktop`) to include it, for example before running `scripts/native-codex-account-test.ps1`. Without the feature, saved subscription preferences stay readable, and every path that would use the route stops with an explicit reason. It never falls back to API keys.
+The Codex-sidecar subscription route is a Cargo feature that stays off for headless `cargo test` and the Linux checks, so they do not compile Tauri. The desktop npm scripts (`npm run desktop`, `desktop:build`, `desktop:build:x64`) pass `--features subscription` (it implies `desktop`), so app builds and dev runs on Windows include the route, for example before running `scripts/native-codex-account-test.ps1`. Without the feature, saved subscription preferences stay readable, and every path that would use the route stops with an explicit reason. It never falls back to API keys.
 
 ## Windows
 
