@@ -59,13 +59,13 @@ export default function SpeakerTurns({ caseId, sessionEpoch, sourceId, onSeek, d
     const to = turns.length ? turns[turns.length - 1].end : 1;
     return { from, to: to > from ? to : from + 1 };
   })() : null;
-  return <details className="speaker-turns"><summary><UserRound size={13} />Anonymous speaker turns</summary>
+  return <details className="speaker-turns"><summary><UserRound size={14} aria-hidden="true" />Anonymous speaker turns<span className="speaker-turns-hint">Navigation proposals · not identities</span></summary>
     <p className="small muted">Local speaker clusters are navigation proposals. Labels may split or merge voices and never establish a person's identity. Each run has its own labels.</p>
-    <div className="input-row"><label>Audio track<input type="number" min={0} value={track} onChange={event => setTrack(Number(event.target.value))} /></label><label>Start (s)<input type="number" min={0} value={start} onChange={event => setStart(Number(event.target.value))} /></label><label>End (s)<input type="number" min={1} value={end} onChange={event => setEnd(Number(event.target.value))} /></label><button className="secondary" disabled={busy || end <= start || end - start > 600} onClick={() => void analyze()}>{busy ? 'Analyzing voices…' : 'Propose speaker turns'}</button></div>
+    <div className="input-row speaker-controls"><label>Audio track<input type="number" min={0} value={track} onChange={event => setTrack(Number(event.target.value))} /></label><label>Start (s)<input type="number" min={0} value={start} onChange={event => setStart(Number(event.target.value))} /></label><label>End (s)<input type="number" min={1} value={end} onChange={event => setEnd(Number(event.target.value))} /></label><button className="secondary" disabled={busy || end <= start || end - start > 600} onClick={() => void analyze()}>{busy ? 'Analyzing voices…' : 'Propose speaker turns'}</button></div>
     {error ? <p role="alert" className="danger-text">{error}</p> : null}
     {result && laneRange ? <>
-      <p className="small">{result.metadata.turns.length} proposed turns · {result.metadata.gap_seconds.toFixed(2)} seconds undecoded within requested interval</p>
-      <div className="speaker-lanes" role="img" aria-label={`Speaker lanes from ${laneRange.from.toFixed(1)} to ${laneRange.to.toFixed(1)} seconds`}>
+      <p className="speaker-stats">{result.metadata.turns.length} proposed turns · {result.metadata.gap_seconds.toFixed(2)} seconds undecoded within requested interval</p>
+      <div className="speaker-lanes" role="group" aria-label={`Speaker lanes from ${laneRange.from.toFixed(1)} to ${laneRange.to.toFixed(1)} seconds`}>
         {speakers.map((speaker, laneIndex) => <div className="speaker-lane" key={speaker}>
           <span className="speaker-lane-label" title={label(speaker)}>{label(speaker)}</span>
           <div className="speaker-lane-track" data-lane={laneIndex % 6}>
