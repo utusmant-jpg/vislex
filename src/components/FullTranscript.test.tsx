@@ -76,6 +76,20 @@ it('splits caption prefixes into track and time and marks search matches in plac
   expect(highlightMatches('No query','  ')).toBe('No query');
 });
 
+it('keeps highlighted matches on the original characters when lowercasing changes string length',()=>{
+  // "İ".toLowerCase() is two UTF-16 units, so offsets in a whole-string lowercase copy drift from the original.
+  const view=render(<p>{highlightMatches('İİ said yes','said')}</p>);
+  expect(Array.from(view.container.querySelectorAll('mark')).map(mark=>mark.textContent)).toEqual(['said']);
+  expect(view.container.textContent).toBe('İİ said yes');
+  cleanup();
+  const expanded=render(<p>{highlightMatches('Say İstanbul twice: İSTANBUL','i̇stanbul')}</p>);
+  expect(Array.from(expanded.container.querySelectorAll('mark')).map(mark=>mark.textContent)).toEqual(['İstanbul','İSTANBUL']);
+  expect(expanded.container.textContent).toBe('Say İstanbul twice: İSTANBUL');
+  cleanup();
+  const astral=render(<p>{highlightMatches('𝐀 note: Note','note')}</p>);
+  expect(Array.from(astral.container.querySelectorAll('mark')).map(mark=>mark.textContent)).toEqual(['note','Note']);
+});
+
 it('shows an empty transcript state with the transcribe action and keeps the honesty line',async()=>{
   api.mockImplementation((action:string)=>Promise.resolve(action==='full_transcription_status'?null:null));
   render(<FullTranscript caseId="empty-case" sessionEpoch={2} sourceId="empty-source" run={fn=>{void fn();}} refresh={async()=>undefined} onSeek={vi.fn()} currentTime={0}/>);

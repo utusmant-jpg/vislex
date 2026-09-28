@@ -13,8 +13,20 @@ const VISIBLE_SEGMENTS=200;
 /** Split a caption prefix like "track 0 · 00:00:01.000 → 00:00:02.000" into its track and time range. */
 export function captionParts(prefix:string):{track:string|null;time:string}{const match=/^track (\d+) · (.*)$/.exec(prefix);return match?{track:match[1],time:match[2]}:{track:null,time:prefix};}
 function CaptionTime({prefix}:{prefix:string}){const parts=captionParts(prefix);return <span className="caption-time mono">{parts.track!==null?<span className="caption-track" title={`Audio track ${parts.track} — not a speaker identity`}>T{parts.track}</span>:null}<span className="caption-clock">{parts.time}</span></span>;}
-/** Wrap case-insensitive occurrences of the search query in <mark> so the match is visible, not only filtered. */
-export function highlightMatches(text:string,query:string){const needle=query.trim().toLowerCase();if(!needle)return text;const parts:React.ReactNode[]=[];const lower=text.toLowerCase();let from=0;let at=lower.indexOf(needle);while(at>=0){if(at>from)parts.push(text.slice(from,at));parts.push(<mark key={at}>{text.slice(at,at+needle.length)}</mark>);from=at+needle.length;at=lower.indexOf(needle,from);}if(from<text.length)parts.push(text.slice(from));return parts;}
+/** Wrap case-insensitive occurrences of the search query in <mark> so the match is visible, not only filtered.
+ * Lowercasing can change string length (for example "İ" becomes two UTF-16 units), so matches are found in a
+ * per-code-point lowercase copy that keeps a map back to original offsets; the <mark> always wraps the original characters. */
+export function highlightMatches(text:string,query:string){
+  const needle=query.trim().toLowerCase();if(!needle)return text;
+  let lower='';const origin:number[]=[];
+  for(let index=0;index<text.length;){const char=String.fromCodePoint(text.codePointAt(index)!);const folded=char.toLowerCase();for(let unit=0;unit<folded.length;unit++)origin.push(index);lower+=folded;index+=char.length;}
+  origin.push(text.length);
+  // The original offset just past the code point that produced lower-case unit `position`.
+  const endOf=(position:number)=>{const begin=origin[position];let next=position+1;while(next<origin.length&&origin[next]===begin)next++;return origin[next];};
+  const parts:React.ReactNode[]=[];let from=0;let at=lower.indexOf(needle);
+  while(at>=0){const begin=origin[at];const finish=endOf(at+needle.length-1);if(begin>=from){if(begin>from)parts.push(text.slice(from,begin));parts.push(<mark key={begin}>{text.slice(begin,finish)}</mark>);from=finish;}at=lower.indexOf(needle,at+needle.length);}
+  if(from<text.length)parts.push(text.slice(from));return parts;
+}
 function clock(seconds:number){const milliseconds=Math.round(Math.max(0,seconds)*1000);return `${String(Math.floor(milliseconds/3600000)).padStart(2,'0')}:${String(Math.floor(milliseconds/60000)%60).padStart(2,'0')}:${String(Math.floor(milliseconds/1000)%60).padStart(2,'0')}.${String(milliseconds%1000).padStart(3,'0')}`;}
 
 export default function FullTranscript({ sourceId, caseId, sessionEpoch, run, refresh, onSeek, currentTime, open = true }: { open?: boolean; onSeek: (time: number) => void; currentTime: number; sourceId: string; caseId?:string; sessionEpoch?:number; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void> }) {
