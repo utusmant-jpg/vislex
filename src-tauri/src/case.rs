@@ -12,6 +12,9 @@ use std::{
 };
 use uuid::Uuid;
 
+/// The case database schema version this build migrates to. Cases with a
+/// higher `user_version` were written by a newer app and are refused.
+pub const CASE_SCHEMA: i64 = 8;
 pub fn id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -256,7 +259,7 @@ impl Case {
         // fail with a raw SQLITE_BUSY error.
         db.busy_timeout(std::time::Duration::from_secs(15))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 8, "This case requires a newer application");
+        ensure!(version <= CASE_SCHEMA, "This case requires a newer application");
         if create {
             db.execute_batch(SCHEMA)?;
         } else {
@@ -1367,7 +1370,7 @@ pub fn delete_case(root: &Path, confirm: &str) -> Result<Value> {
     )?;
     let db = Connection::open(root.join("case.sqlite3"))?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    ensure!(version <= 8, "This case requires a newer application");
+    ensure!(version <= CASE_SCHEMA, "This case requires a newer application");
     let name: String = db
         .query_row("SELECT value FROM meta WHERE key='name'", [], |r| r.get(0))
         .optional()

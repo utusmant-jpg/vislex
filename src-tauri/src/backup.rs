@@ -293,13 +293,16 @@ pub fn restore(archive_path: &Path, destination: &Path, password: &str) -> Resul
     // cannot validate; restoring it unverifiable would fail open. The field must
     // be the exact integer version when present in any form; older manifests
     // without the field are version 1 by definition.
-    if !manifest["artifact_formats"].is_null() {
-        let version = manifest["artifact_formats"].as_u64();
+    // Any version from 1 to the current one restores, because formats are
+    // only ever added; a newer version is refused.
+    let artifact_formats = if manifest["artifact_formats"].is_null() { 1 } else {
+        let version = manifest["artifact_formats"].as_u64().unwrap_or(0);
         ensure!(
-            version == Some(u64::from(crate::artifact_registry::ARTIFACT_FORMAT_VERSION)),
+            crate::artifact_registry::restorable_version(version),
             "Unsupported artifact format version"
         );
-    }
+        version as u32
+    };
     let files = manifest["files"]
         .as_array()
         .context("Missing manifest files")?;
@@ -310,6 +313,12 @@ pub fn restore(archive_path: &Path, destination: &Path, password: &str) -> Resul
         ensure!(
             safe_relative(Path::new(path)) && seen.insert(path),
             "Invalid manifest path"
+        );
+        // An artifact must be a format that existed at the backup's own version.
+        ensure!(
+            !path.starts_with("artifacts/")
+                || crate::artifact_registry::parse_artifact_file_at(path, artifact_formats).is_some(),
+            "Backup artifact format is newer than its manifest version"
         );
         ensure!(
             file_hash(&staging.path().join(path))? == item["sha256"].as_str().unwrap_or(""),

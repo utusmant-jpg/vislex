@@ -1832,3 +1832,18 @@ fn openrouter_web_search_models_never_receive_case_text() {
     let other=check_permission(&c,&ordinary).err().map(|e|e.to_string()).unwrap_or_default();
     assert!(!other.contains("Web-search"),"{other}");
 }
+
+#[test]
+fn a_case_from_a_newer_app_is_refused_without_changes() {
+    let dir=tempfile::tempdir().unwrap();
+    let root=dir.path().join("case");
+    drop(Case::create(&root,"Newer schema").unwrap());
+    let db=root.join("case.sqlite3");
+    let conn=rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(&format!("PRAGMA user_version={};",evidence_desk::case::CASE_SCHEMA+1)).unwrap();
+    drop(conn);
+    let before=std::fs::read(&db).unwrap();
+    let error=Case::open(&root).err().expect("newer case must be refused").to_string();
+    assert!(error.contains("requires a newer application"),"{error}");
+    assert_eq!(std::fs::read(&db).unwrap(),before,"refusal must not modify the case database");
+}
