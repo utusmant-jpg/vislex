@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
-  AArrowDown, ChevronsLeft, ChevronsRight, FileText, Film, Image as ImageIcon, Info, Pause, Play,
-  RotateCw, ScanLine, SkipBack, SkipForward, Volume2, VolumeX, ZoomIn, ZoomOut,
+  AArrowDown, AlertTriangle, Captions, Check, ChevronsLeft, ChevronsRight, FileQuestion, FileText, Film, Fingerprint, History,
+  Image as ImageIcon, Info, Link2, Lock, Pause, PanelBottomClose, PanelBottomOpen, Play, RotateCw, ScanSearch, SkipBack,
+  SkipForward, SquareDashedMousePointer, StepBack, StepForward, Volume2, VolumeX, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { api, evidenceUrl, formatBytes } from '../bridge';
 import type { Source, TextPage } from '../types';
@@ -9,6 +10,7 @@ import { parsePinnedTextLocator } from '../citationLocator';
 import FullTranscript from './FullTranscript';
 import RedactionPanel from './RedactionPanel';
 import VideoDiscovery from './VideoDiscovery';
+import { ViewerTabs, tabPanelProps } from './ViewerTabs';
 import { Skeleton, Tooltip } from '../ui';
 import { setViewerContext } from '../viewerContext';
 
@@ -26,7 +28,47 @@ function formatClockMs(seconds: number): string {
   return `${h > 0 ? `${h}:${String(m).padStart(2, '0')}` : m}:${String(s).padStart(2, '0')}.${String(total%1000).padStart(3, '0')}`;
 }
 
+/** Line range a text locator cites, for highlighting. Pinned (R…L…-L…) and legacy (L… / L…-L…) forms only. */
+export function citedLineRange(locator: string | undefined | null): { start: number; end: number } | null {
+  const match = /^(?:R[1-9]\d*)?L([1-9]\d*)(?:-L([1-9]\d*))?$/.exec(locator ?? '');
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : start;
+  return end >= start ? { start, end } : null;
+}
+
+/** Short, readable form of a content hash; the full value stays available in the tooltip and copy action. */
+export function shortHash(hash: string): string {
+  return hash.length > 16 ? `${hash.slice(0, 8)}…${hash.slice(-6)}` : hash;
+}
+
+const RESTRICTED_WHY = 'Restricted from AI analysis. Redaction and visual discovery are hidden for this source. Change this in the Evidence library.';
+
 const APPROXIMATE_STEP_SECONDS = 1 / 30;
+
+/** Icon-only copy action with local confirmation; failures route through the caller's run(). */
+function CopyAction({ label, value, icon, run }: { label: string; value: () => string; icon: React.ReactNode; run: (fn: () => Promise<void>) => void }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { if (!copied) return; const timer = window.setTimeout(() => setCopied(false), 1400); return () => window.clearTimeout(timer); }, [copied]);
+  return <Tooltip text={copied ? 'Copied' : label}>
+    <button className="icon-button" aria-label={label} onClick={() => run(async () => { await navigator.clipboard.writeText(value()); setCopied(true); })}>
+      {copied ? <Check size={16} aria-hidden="true" /> : icon}
+    </button>
+  </Tooltip>;
+}
+
+/** A viewer failure: plain title, the message (long raw detail behind a disclosure), and a recovery action when one exists. */
+function ViewerProblem({ title, message, onRetry, retryLabel = 'Try again' }: { title: string; message: string; onRetry?: () => void; retryLabel?: string }) {
+  const long = message.length > 180 || message.includes('\n');
+  return <div className="viewer-problem notice error" role="alert">
+    <AlertTriangle size={16} aria-hidden="true" />
+    <div className="viewer-problem-body">
+      <strong>{title}</strong>
+      {long ? <details><summary>Technical detail</summary><pre>{message}</pre></details> : <p>{message}</p>}
+      {onRetry ? <button className="secondary" data-size="sm" onClick={onRetry}>{retryLabel}</button> : null}
+    </div>
+  </div>;
+}
 
 /** Custom forensic transport shared by video and audio. Native controls stay off. */
 function MediaControls({ media, element, filmstrip, onSeek, onExactStep, exactBusy }: { media: React.RefObject<HTMLMediaElement | null>; element: HTMLMediaElement | null; filmstrip: { artifact: string; time: number }[] | null; onSeek: (time: number) => void; onExactStep?: (direction:'previous'|'next')=>void; exactBusy?:boolean }) {
@@ -81,41 +123,57 @@ function MediaControls({ media, element, filmstrip, onSeek, onExactStep, exactBu
     else if (event.key === ']') markB();
   }} tabIndex={0} role="group" aria-label="Playback controls — space to play, J K L to shuttle, comma and period for approximate time steps">
     <div className="media-progress">
-      <input
-        aria-label="Seek position"
-        type="range"
-        min={0}
-        max={duration || 0}
-        step={0.01}
-        value={Math.min(time, duration || 0)}
-        onChange={event => onSeek(Number(event.target.value))}
-        style={loopA !== null && loopB !== null && loopA < loopB && duration > 0 ? { '--loop-a': `${(loopA / duration) * 100}%`, '--loop-b': `${(loopB / duration) * 100}%` } as React.CSSProperties : undefined}
-      />
-      {loopA !== null && loopB !== null && loopB > loopA ? <span className="loop-range" style={{ left: `${(loopA / (duration || 1)) * 100}%`, width: `${((loopB - loopA) / (duration || 1)) * 100}%` }} /> : null}
+      <span className="media-time mono">{formatClockMs(time)}</span>
+      <div className="media-seek">
+        <input
+          aria-label="Seek position"
+          type="range"
+          min={0}
+          max={duration || 0}
+          step={0.01}
+          value={Math.min(time, duration || 0)}
+          onChange={event => onSeek(Number(event.target.value))}
+          style={loopA !== null && loopB !== null && loopA < loopB && duration > 0 ? { '--loop-a': `${(loopA / duration) * 100}%`, '--loop-b': `${(loopB / duration) * 100}%` } as React.CSSProperties : undefined}
+        />
+        {loopA !== null && loopB !== null && loopB > loopA ? <span className="loop-range" style={{ left: `${(loopA / (duration || 1)) * 100}%`, width: `${((loopB - loopA) / (duration || 1)) * 100}%` }} /> : null}
+      </div>
+      <span className="media-duration mono">{formatClockMs(duration)}</span>
     </div>
     {filmstrip?.length ? <div className="filmstrip" aria-label="Filmstrip of sampled frames">
       {filmstrip.map(frameSample => <Tooltip key={frameSample.artifact} text={`Jump to ${formatClockMs(frameSample.time)}`}>
-        <button onClick={() => onSeek(frameSample.time)}><img src={evidenceUrl(`artifact/${frameSample.artifact}`)} alt="" loading="lazy" /></button>
+        <button onClick={() => onSeek(frameSample.time)} aria-label={`Jump to ${formatClockMs(frameSample.time)}`}><img src={evidenceUrl(`artifact/${frameSample.artifact}`)} alt="" loading="lazy" /></button>
       </Tooltip>)}
     </div> : null}
     <div className="media-buttons">
-      <Tooltip text="Back 10 seconds (J)"><button className="icon-button" aria-label="Back 10 seconds" onClick={() => skip(-10)}><ChevronsLeft size={16} /></button></Tooltip>
-      <Tooltip text="Back about 33 ms (,)"><button className="icon-button" aria-label="Back about 33 milliseconds" onClick={() => frame(-1)}><SkipBack size={14} /></button></Tooltip>
-      <button className="media-play" aria-label={playing ? 'Pause' : 'Play'} onClick={toggle}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
-      <Tooltip text="Forward about 33 ms (.)"><button className="icon-button" aria-label="Forward about 33 milliseconds" onClick={() => frame(1)}><SkipForward size={14} /></button></Tooltip>
-      <Tooltip text="Forward 10 seconds (L)"><button className="icon-button" aria-label="Forward 10 seconds" onClick={() => skip(10)}><ChevronsRight size={16} /></button></Tooltip>
-      {onExactStep ? <><button className="quiet" disabled={exactBusy} onClick={()=>onExactStep('previous')}>Inspect previous decoded frame</button><button className="quiet" disabled={exactBusy} onClick={()=>onExactStep('next')}>Inspect next decoded frame</button></> : null}
-      <span className="media-time mono">{formatClockMs(time)} <span className="media-duration">/ {formatClockMs(duration)}</span></span>
+      <div className="media-group">
+        <Tooltip text="Back 10 seconds (J)"><button className="icon-button" aria-label="Back 10 seconds" onClick={() => skip(-10)}><ChevronsLeft size={16} /></button></Tooltip>
+        <Tooltip text="Back about 33 ms (,)"><button className="icon-button" aria-label="Back about 33 milliseconds" onClick={() => frame(-1)}><SkipBack size={15} /></button></Tooltip>
+        <button className="media-play" aria-label={playing ? 'Pause' : 'Play'} onClick={toggle}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
+        <Tooltip text="Forward about 33 ms (.)"><button className="icon-button" aria-label="Forward about 33 milliseconds" onClick={() => frame(1)}><SkipForward size={15} /></button></Tooltip>
+        <Tooltip text="Forward 10 seconds (L)"><button className="icon-button" aria-label="Forward 10 seconds" onClick={() => skip(10)}><ChevronsRight size={16} /></button></Tooltip>
+      </div>
+      {onExactStep ? <div className="media-group media-exact" role="group" aria-label="Exact decoded frames">
+        <span className="media-group-label" aria-hidden="true">Decoded frame</span>
+        <Tooltip text="Inspect previous decoded frame"><button className="icon-button" aria-label="Inspect previous decoded frame" disabled={exactBusy} onClick={()=>onExactStep('previous')}><StepBack size={15} /></button></Tooltip>
+        <Tooltip text="Inspect next decoded frame"><button className="icon-button" aria-label="Inspect next decoded frame" disabled={exactBusy} onClick={()=>onExactStep('next')}><StepForward size={15} /></button></Tooltip>
+      </div> : null}
       <div className="spacer" />
-      <Tooltip text="Mark loop start ([)"><button className={`media-loop ${loopA !== null ? 'active' : ''}`} aria-label="Mark loop start" onClick={markA}>A</button></Tooltip>
-      <Tooltip text="Mark loop end (])"><button className={`media-loop ${loopB !== null ? 'active' : ''}`} aria-label="Mark loop end" onClick={markB}>B</button></Tooltip>
-      {loopA !== null || loopB !== null ? <button className="quiet" onClick={() => { setLoopA(null); setLoopB(null); }}>Clear loop</button> : null}
-      <label className="media-rate">Speed
-        <select aria-label="Playback speed" value={rate} onChange={event => applyRate(Number(event.target.value))}>
-          {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value}×</option>)}
-        </select>
-      </label>
-      <Tooltip text={muted ? 'Unmute' : 'Mute'}><button className="icon-button" aria-label={muted ? 'Unmute' : 'Mute'} onClick={toggleMute}>{muted ? <VolumeX size={15} /> : <Volume2 size={15} />}</button></Tooltip>
+      <div className="media-group">
+        <Tooltip text={loopA !== null ? `Loop start ${formatClockMs(loopA)} ([)` : 'Mark loop start ([)'}><button className={`media-loop ${loopA !== null ? 'active' : ''}`} aria-label="Mark loop start" onClick={markA}>A</button></Tooltip>
+        <Tooltip text={loopB !== null ? `Loop end ${formatClockMs(loopB)} (])` : 'Mark loop end (])'}><button className={`media-loop ${loopB !== null ? 'active' : ''}`} aria-label="Mark loop end" onClick={markB}>B</button></Tooltip>
+        {loopA !== null || loopB !== null ? <>
+          <span className="media-loop-range mono">{loopA !== null ? formatClockMs(loopA) : '—'} → {loopB !== null ? formatClockMs(loopB) : '—'}</span>
+          <button className="quiet" onClick={() => { setLoopA(null); setLoopB(null); }}>Clear loop</button>
+        </> : null}
+      </div>
+      <div className="media-group">
+        <label className="media-rate">Speed
+          <select aria-label="Playback speed" value={rate} onChange={event => applyRate(Number(event.target.value))}>
+            {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value}×</option>)}
+          </select>
+        </label>
+        <Tooltip text={muted ? 'Unmute' : 'Mute'}><button className="icon-button" aria-label={muted ? 'Unmute' : 'Mute'} onClick={toggleMute}>{muted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button></Tooltip>
+      </div>
     </div>
   </div>;
 }
@@ -133,13 +191,20 @@ function PdfPageView({ index, ratio, artifact, ensure, onVisible, register }: {
     prefetch.observe(node);visible.observe(node);
     return () => {prefetch.disconnect();visible.disconnect();};
   }, [index, ensure, onVisible]);
-  return <div className="pdf-page" ref={node => { ref.current = node; register(index, node); }} data-page={index} style={{ aspectRatio: `${ratio}` }}>
-    {artifact ? <img src={evidenceUrl(`artifact/${artifact}`)} alt={`Page ${index}`} loading="lazy" draggable={false} /> : <div className="pdf-page-skeleton"><Skeleton /></div>}
-    <span className="pdf-page-label">{index}</span>
+  // The page label sits in the gap below the paper so it never overlays original page pixels.
+  return <div className="pdf-page-frame">
+    <div className="pdf-page" ref={node => { ref.current = node; register(index, node); }} data-page={index} style={{ aspectRatio: `${ratio}` }}>
+      {artifact ? <img src={evidenceUrl(`artifact/${artifact}`)} alt={`Page ${index}`} loading="lazy" draggable={false} /> : <div className="pdf-page-skeleton" aria-hidden="true"><Skeleton /><Skeleton /><Skeleton /></div>}
+    </div>
+    <span className="pdf-page-label mono" aria-hidden="true">{index}</span>
   </div>;
 }
 
+type SourceView = 'original' | 'redaction';
+type DockTool = 'transcript' | 'discovery';
+
 export default function EvidenceViewer({ source, locator, run, refresh, onLocatorSelect, onAsk, caseId, sessionEpoch }: { source: Source; locator?: string; run: (fn: () => Promise<void>) => void; refresh: () => Promise<void>; onLocatorSelect: (locator: string) => void; onAsk?: () => void; caseId?:string; sessionEpoch?:number }) {
+  const tabPrefix = useId();
   const media = useRef<HTMLMediaElement | null>(null);
   const [mediaElement,setMediaElement]=useState<HTMLMediaElement|null>(null);
   const bindMedia=useCallback((node:HTMLMediaElement|null)=>{media.current=node;setMediaElement(node);},[]);
@@ -159,6 +224,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const pinnedText = parsePinnedTextLocator(locator);
   const requestedRevision = pinnedText?.revision ?? null;
   const requestedPage = locator?.startsWith('page:') ? Number(locator.slice(5)) : null;
+  const cited = citedLineRange(locator);
   const [page, setPage] = useState<TextPage | null>(null);
   const [error, setError] = useState('');
   const [start, setStart] = useState(1);
@@ -179,6 +245,17 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
   const exactRequest=useRef(0);
   const filmstripWindow = Number.isFinite(currentTime) && currentTime >= 0 ? Math.floor(currentTime / 120) : 0;
   const [askChip, setAskChip] = useState<{ x: number; y: number; a: number; b: number; revision: number } | null>(null);
+  // Retry counters: each one re-issues exactly the request that failed.
+  const [textReload, setTextReload] = useState(0);
+  const [officeReload, setOfficeReload] = useState(0);
+  const [pdfReload, setPdfReload] = useState(0);
+  // Viewer sub-views: original vs. redaction for pages/images, and the tool dock under recordings.
+  const redactable = ['pdf', 'image'].includes(source.kind) && !source.restricted;
+  const isMedia = ['video', 'audio'].includes(source.kind);
+  const [view, setView] = useState<SourceView>('original');
+  const [dockTool, setDockTool] = useState<DockTool>('transcript');
+  const [dockOpen, setDockOpen] = useState(true);
+  useEffect(() => { setView('original'); }, [locator]);
 
   // PDF continuous-scroll state
   const [pdfCount, setPdfCount] = useState<number | null>(null);
@@ -205,7 +282,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       if(requestedPage!==null && (!Number.isSafeInteger(requestedPage)||requestedPage<1||requestedPage>count))setError('Requested physical PDF page is outside this document.');
     }).catch(reason=>{if(epoch===pdfEpoch.current)setError(String(reason));});
     return()=>{pdfEpoch.current++;};
-  },[caseId,sessionEpoch,source.id,source.kind]);
+  },[caseId,sessionEpoch,source.id,source.kind,pdfReload]);
   const ensurePage = useCallback((target: number) => {
     if(pdfCount===null || !Number.isSafeInteger(target)||target<1||target>pdfCount||pdfArtifacts[target]||pdfPending.current.has(target))return;
     const epoch=pdfEpoch.current;const pending=pdfPending.current;pending.add(target);
@@ -259,7 +336,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     setProcessing(true);
     api<{ limitations: string[] }>('process_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { if (active) { setShowText(true); setLimitations(result.limitations); void refresh(); } }).catch(e => { if (active) setError(String(e)); }).finally(() => { if (active) setProcessing(false); });
     return () => { active = false; };
-  }, [source.id, locator, officeDocument]);
+  }, [source.id, locator, officeDocument, officeReload]);
 
   useEffect(() => {
     let active = true; setArtifactText(null); setDerivedMime('');
@@ -292,7 +369,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       request.then(value => { if (active) { setPage(value); setError(''); } }).catch(e => { if (active) setError(String(e)); });
     }
     return () => { active = false; };
-  }, [source.id, source.kind, start, showText, source.status, requestedRevision]);
+  }, [source.id, source.kind, start, showText, source.status, requestedRevision, textReload]);
 
   useEffect(() => {
     if (requestedTime != null && media.current?.readyState && Number.isFinite(requestedTime)) media.current.currentTime = requestedTime;
@@ -356,24 +433,58 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     setPdfPageInput(null);
   };
 
-  return <div className="viewer">
+  const onOriginal = view === 'original';
+  // Files without an inline preview explain themselves first; any failure detail follows below.
+  const unsupported = !showText && !derived && source.kind === 'other' && !processing;
+  const problemTitle = showText ? 'Extracted text is not available' : source.kind === 'pdf' ? 'This PDF could not be displayed' : source.kind === 'video' ? 'This recording could not be played' : source.kind === 'audio' ? 'This audio could not be played' : officeDocument ? 'Document text could not be extracted' : 'This preview could not open';
+  const retry = showText ? () => { setError(''); setTextReload(value => value + 1); }
+    : source.kind === 'pdf' ? () => { setError(''); setPdfReload(value => value + 1); }
+    : officeDocument && !locator ? () => { setError(''); setOfficeReload(value => value + 1); }
+    : undefined;
+  const retryLabel = showText ? 'Read text again' : source.kind === 'pdf' ? 'Reload pages' : 'Retry extraction';
+  const sourceViews = redactable ? [
+    { id: 'original' as const, label: source.kind === 'pdf' ? 'Original pages' : 'Original image', icon: <SourceIcon kind={source.kind} size={14} /> },
+    { id: 'redaction' as const, label: 'Redaction', icon: <SquareDashedMousePointer size={14} aria-hidden="true" /> },
+  ] : [];
+  const dockTools = isMedia ? [
+    { id: 'transcript' as const, label: 'Transcript', icon: <Captions size={14} aria-hidden="true" /> },
+    ...(source.kind === 'video' && !source.restricted ? [{ id: 'discovery' as const, label: 'Visual discovery', icon: <ScanSearch size={14} aria-hidden="true" /> }] : []),
+  ] : [];
+  const canvasPanel = redactable ? tabPanelProps(tabPrefix, 'original', onOriginal) : {};
+
+  return <div className="viewer" data-kind={source.kind}>
     <header className="viewer-source-header">
-      <div className="viewer-source-icon"><SourceIcon kind={source.kind} size={17} /></div>
+      <span className="viewer-source-icon"><SourceIcon kind={source.kind} size={17} /></span>
       <div className="viewer-source-identity">
         <strong title={source.name}>{source.name}</strong>
-        <span>{source.kind.toUpperCase()} · {formatBytes(source.size)} · {source.status}</span>
+        <div className="viewer-source-meta">
+          <span className="viewer-source-facts">{source.kind.toUpperCase()} · {formatBytes(source.size)} · {source.status}</span>
+          {source.sha256 ? <Tooltip text={`SHA-256 ${source.sha256}`}><span className="viewer-hash mono" tabIndex={0}><Fingerprint size={12} aria-hidden="true" />{shortHash(source.sha256)}</span></Tooltip> : null}
+          {page ? <span className={`viewer-revision ${page.historical ? 'historical' : ''}`}>{page.historical ? <><History size={12} aria-hidden="true" />Pinned rev {page.revision}</> : <>Rev {page.revision} · current</>}</span> : null}
+        </div>
       </div>
-      {source.restricted ? <span className="viewer-restricted" role="status" aria-label="Restricted">Restricted</span> : null}
+      <div className="viewer-source-actions">
+        {source.restricted ? <Tooltip text={RESTRICTED_WHY}><span className="viewer-restricted" role="status" aria-label="Restricted" tabIndex={0}><Lock size={12} aria-hidden="true" />Restricted</span></Tooltip> : null}
+        {source.sha256 ? <CopyAction label="Copy SHA-256 hash" value={() => source.sha256} icon={<Fingerprint size={16} aria-hidden="true" />} run={run} /> : null}
+        {page ? <CopyAction label="Copy evidence link" value={() => page.locator} icon={<Link2 size={16} aria-hidden="true" />} run={run} /> : null}
+      </div>
     </header>
-    {source.kind === 'image' ? <div className="image-controls">
-      <Tooltip text="Zoom out"><button className="icon-button" aria-label="Zoom out" onClick={() => setZoom(value => Math.max(0.25, value - 0.25))}><ZoomOut size={15} /></button></Tooltip>
-      <span className="mono">{Math.round(zoom * 100)}%</span>
-      <Tooltip text="Zoom in"><button className="icon-button" aria-label="Zoom in" onClick={() => setZoom(value => Math.min(6, value + 0.25))}><ZoomIn size={15} /></button></Tooltip>
-      <Tooltip text="Fit width"><button className="quiet" onClick={() => setZoom(1)}>Fit</button></Tooltip>
-      <Tooltip text="Rotate view"><button className="icon-button" aria-label="Rotate view" onClick={() => setRotation(value => value + 90)}><RotateCw size={15} /></button></Tooltip>
+
+    {sourceViews.length ? <div className="viewer-tabbar">
+      <ViewerTabs tabs={sourceViews} value={view} onChange={setView} label="Source views" prefix={tabPrefix} />
     </div> : null}
 
-    {source.kind === 'pdf' ? <div className="pdf-navigation">
+    {source.kind === 'image' && onOriginal ? <div className="viewer-toolbar image-controls">
+      <Tooltip text="Zoom out"><button className="icon-button" aria-label="Zoom out" onClick={() => setZoom(value => Math.max(0.25, value - 0.25))}><ZoomOut size={16} /></button></Tooltip>
+      <span className="viewer-zoom mono" aria-live="polite">{Math.round(zoom * 100)}%</span>
+      <Tooltip text="Zoom in"><button className="icon-button" aria-label="Zoom in" onClick={() => setZoom(value => Math.min(6, value + 0.25))}><ZoomIn size={16} /></button></Tooltip>
+      <Tooltip text="Fit width"><button className="quiet" onClick={() => setZoom(1)}>Fit</button></Tooltip>
+      <span className="toolbar-divider" aria-hidden="true" />
+      <Tooltip text="Rotate view"><button className="icon-button" aria-label="Rotate view" onClick={() => setRotation(value => value + 90)}><RotateCw size={16} /></button></Tooltip>
+      <span className="viewer-toolbar-note">View only · the original is unchanged</span>
+    </div> : null}
+
+    {source.kind === 'pdf' && onOriginal ? <div className="viewer-toolbar pdf-navigation">
       <Tooltip text="Previous physical page"><button className="icon-button" aria-label="Previous page" disabled={pdfCount===null||pdfPage<=1} onClick={() => scrollToPdfPage(pdfPage-1)}><ChevronsLeft size={16} /></button></Tooltip>
       <label className="pdf-page-input">Page
         <input
@@ -386,34 +497,49 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
             if(event.key==='Escape'){event.preventDefault();ignorePdfBlur.current=true;setPdfPageInput(null);event.currentTarget.blur();}
           }} />
       </label>
-      <span className="muted small">{pdfCount ? `of ${pdfCount} physical pages` : 'Checking page count…'}</span>
+      <span className="pdf-page-count">{pdfCount ? `of ${pdfCount} physical pages` : 'Checking page count…'}</span>
       <Tooltip text="Next physical page"><button className="icon-button" aria-label="Next page" disabled={pdfCount===null||pdfPage>=pdfCount} onClick={() => scrollToPdfPage(pdfPage+1)}><ChevronsRight size={16} /></button></Tooltip>
       <div className="spacer" />
-      <button className="quiet" disabled={pdfCount===null} onClick={() => run(async () => { await navigator.clipboard.writeText(`evidence:${source.id}#page:${pdfPage}`); })}>Copy page navigation link (not a citation)</button>
+      <button className="quiet" disabled={pdfCount===null} onClick={() => run(async () => { await navigator.clipboard.writeText(`evidence:${source.id}#page:${pdfPage}`); })}><Link2 size={14} aria-hidden="true" />Copy page navigation link (not a citation)</button>
     </div> : null}
 
-    <div className={`source-canvas ${source.kind}`}>
-      {processing ? <div className="preview-progress" role="status"><ScanLine size={17} className="pulse" />{needsProxy ? 'Opening video…' : 'Opening source…'}</div> : null}
-      {error ? <div className="notice error"><Info size={18} />{error}</div> : null}
+    <div className={`source-canvas ${source.kind}`} {...canvasPanel}>
+      {processing ? <div className="preview-progress" role="status"><span className="activity-dot" aria-hidden="true" />{needsProxy ? 'Opening video…' : 'Opening source…'}</div> : null}
+      {error && !unsupported ? <ViewerProblem title={problemTitle} message={error} onRetry={retry} retryLabel={retryLabel} /> : null}
 
-      {showText && page === null && !error ? <div className="document-page"><Skeleton /></div> : null}
+      {showText && page?.historical ? <div className="viewer-pinned-banner" role="note">
+        <History size={16} aria-hidden="true" />
+        <div><strong>Pinned revision {page.revision} — not the current text</strong><span>Historical extraction revision {page.revision} — superseded wording preserved; this is not the current active text.</span></div>
+      </div> : null}
+      {showText && page === null && !error ? <div className="document-page document-page-loading" role="status" aria-label="Loading extracted text">
+        <Skeleton className="skeleton-title" />
+        {Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className={index % 3 === 2 ? 'skeleton-short' : ''} />)}
+      </div> : null}
       {showText && page ? <article className="document-page" onMouseUp={onTextSelect}>
-        {page.historical ? <p className="small muted historical-notice" role="note">Historical extraction revision {page.revision} — superseded wording preserved; this is not the current active text.</p> : null}
         <h2>{source.name.replace(/^\d+ · /, '')}</h2>
         <p className="document-provenance">Extracted text · Revision {page.revision} · Lines {page.start}–{page.end} of {page.total_lines}</p>
+        {cited ? <p className="document-cited"><span className="document-cited-mark" aria-hidden="true" />Cited lines L{cited.start}–L{cited.end} are marked</p> : null}
         <div className="doc-rule" />
+        {page.text === '' && page.total_lines === 0 ? <p className="document-empty">No text was extracted from this source. This does not establish that the original contains no text.</p> : null}
         <div className="text-lines">
-          {page.text.split('\n').map((line, index) => <div className="text-line" data-line={start + index} key={index}><span className="line-number">{start + index}</span><span>{line || '\u00a0'}</span></div>)}
+          {page.text.split('\n').map((line, index) => {
+            const number = start + index;
+            const isCited = !!cited && number >= cited.start && number <= cited.end;
+            return <div className={`text-line${isCited ? ' cited' : ''}`} data-line={number} data-cited={isCited || undefined} key={index}><span className="line-number">{number}</span><span>{line || ' '}</span></div>;
+          })}
         </div>
       </article> : null}
 
       {artifactText !== null ? <article className="document-page">
         <h2>{source.name}</h2>
+        <p className="document-provenance">Derived text units · not the original file</p>
+        <div className="doc-rule" />
         <pre className="artifact-text">{artifactText || 'No text segments were returned. This does not establish absence of speech.'}</pre>
-        <button className="quiet" onClick={() => { setDerived(null); setShowText(false); }}>Back to original</button>
+        <button className="secondary" data-size="sm" onClick={() => { setDerived(null); setShowText(false); }}>Back to original</button>
       </article> : null}
 
       {!showText && ((!derived && source.kind === 'image') || (derived && derivedMime === 'image/jpeg')) ? <div className="image-stage">
+        {derived ? <p className="derived-label"><Info size={13} aria-hidden="true" />Derived frame or crop — not the original file</p> : null}
         <img
           className="evidence-image"
           src={derived ? evidenceUrl(`artifact/${derived}`) : url}
@@ -425,7 +551,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
             setProcessing(true);
             void api<{ published: unknown[] }>('process_source', { case_id: caseId, session_epoch: sessionEpoch, source_id: source.id }).then(result => { setDerived((result.published as { artifact_id?: string }[])?.[0]?.artifact_id ?? null); }).catch(e => setError(String(e))).finally(() => setProcessing(false));
           }} />
-        {derived && source.kind === 'video' ? <button className="quiet back-source" onClick={() => setDerived(null)}>Back to recording</button> : null}
+        {derived && source.kind === 'video' ? <button className="secondary back-source" data-size="sm" onClick={() => setDerived(null)}>Back to recording</button> : null}
       </div> : null}
 
       {!showText && !derived && source.kind === 'video' ? <video
@@ -440,19 +566,23 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       /> : null}
 
       {!showText && !derived && source.kind === 'audio' ? <div className="audio-stage">
-        <Volume2 size={52} />
-        <h2>{source.name}</h2>
+        <span className="audio-stage-icon"><Volume2 size={26} aria-hidden="true" /></span>
+        <h2 title={source.name}>{source.name}</h2>
         <p className="small muted">{formatBytes(source.size)} · {source.status}</p>
         <audio ref={bindMedia} onTimeUpdate={onTimeUpdate} onLoadedMetadata={onLoadedMetadata} src={url} controls={false} preload="metadata" onError={() => setError('This audio format is not supported by the installed viewer.')} />
       </div> : null}
 
-      {!showText && !derived && source.kind === 'other' && !processing ? <div className="empty-content">
-        <FileText size={38} />
-        <h2>{officeDocument ? 'Document preview could not open' : 'Original file preserved'}</h2>
+      {!showText && !derived && source.kind === 'other' && !processing ? <div className="empty-state viewer-empty">
+        <FileQuestion size={20} aria-hidden="true" />
+        <h3>{officeDocument ? 'Document preview could not open' : 'Original file preserved'}</h3>
         <p>{officeDocument ? 'See the error below, then reopen the file to retry extraction.' : 'This file format does not yet have an inline preview.'}</p>
       </div> : null}
+      {error && unsupported ? <ViewerProblem title={problemTitle} message={error} onRetry={retry} retryLabel={retryLabel} /> : null}
 
-      {!showText && !derived && source.kind === 'pdf' && pdfCount===null && !error ? <div className="document-page"><Skeleton /></div> : null}
+      {!showText && !derived && source.kind === 'pdf' && pdfCount===null && !error ? <div className="document-page document-page-loading" role="status" aria-label="Checking page count">
+        <Skeleton className="skeleton-title" />
+        {Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className={index % 3 === 2 ? 'skeleton-short' : ''} />)}
+      </div> : null}
       {!showText && !derived && source.kind === 'pdf' && pdfCount!==null ? <div className="pdf-continuous">
         {pdfWindowStart>1?<div className="pdf-page-spacer" style={{width:'min(820px, 100%)',aspectRatio:`${pdfApproxRatio/(pdfWindowStart-1)}`}} aria-hidden="true"/>:null}
         {Array.from({ length: pdfWindowEnd-pdfWindowStart+1 }, (_, index) => pdfWindowStart+index).map(pageNumber => <PdfPageView
@@ -468,22 +598,43 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       </div> : null}
     </div>
 
+    {redactable ? <div className="viewer-tool-view" {...tabPanelProps(tabPrefix, 'redaction', view === 'redaction')}>
+      <RedactionPanel caseId={caseId} sessionEpoch={sessionEpoch} sourceId={source.id} kind={source.kind} />
+    </div> : null}
+
     {askChip ? <div className="ask-chip" style={{ left: askChip.x, top: askChip.y }} role="toolbar" aria-label="Selection actions">
       <button onClick={() => { onLocatorSelect(`R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); if (onAsk) onAsk(); else window.dispatchEvent(new CustomEvent('vislex:focus-composer')); }}><AArrowDown size={13} />Ask about L{askChip.a}–L{askChip.b}</button>
       <button onClick={() => { void navigator.clipboard.writeText(`evidence:${source.id}#R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); }}>Copy citation (rev {askChip.revision})</button>
     </div> : null}
 
-    {['video', 'audio'].includes(source.kind) && !showText && !derived ? <MediaControls media={media} element={mediaElement} filmstrip={source.kind === 'video' ? filmstrip : null} onExactStep={source.kind==='video'?direction=>{void stepExact(direction);}:undefined} exactBusy={exactBusy} onSeek={time => { exactRequest.current++;displayedFrameTime.current=null;setExactBusy(false);setExactFrame(null);if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} /> : null}
-    {source.kind==='video' && exactFrame && !showText && !derived ? <div className="exact-frame-inspection" role="region" aria-label="Exact decoded frame"><img src={evidenceUrl(`artifact/${exactFrame.artifact}`)} alt={`Decoded frame at source time ${formatClockMs(exactFrame.time)}`} style={{maxWidth:'100%',maxHeight:'40vh',objectFit:'contain'}} /><p>Decoded source frame at {formatClockMs(exactFrame.time)} · PTS {exactFrame.pts} × {exactFrame.timeBase}. This image is a derivative of one frame.</p><button className="quiet" onClick={()=>void navigator.clipboard.writeText(exactFrame.locator)}>Copy frame citation</button></div> : null}
-    {['video', 'audio'].includes(source.kind) ? <FullTranscript caseId={caseId} sessionEpoch={sessionEpoch} currentTime={currentTime} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} sourceId={source.id} run={run} refresh={refresh} /> : null}
-    {source.kind === 'video' && !source.restricted ? <VideoDiscovery key={`${sessionEpoch}:${source.id}`} caseId={caseId} sessionEpoch={sessionEpoch} sourceId={source.id} onFrame={id => { setDerived(id); setShowText(false); }} onSeek={time => { setDerived(null); setShowText(false); setPendingSeek(time); }} /> : null}
-    {['pdf', 'image'].includes(source.kind) && !source.restricted ? <RedactionPanel caseId={caseId} sessionEpoch={sessionEpoch} sourceId={source.id} kind={source.kind} /> : null}
+    {isMedia && !showText && !derived ? <MediaControls media={media} element={mediaElement} filmstrip={source.kind === 'video' ? filmstrip : null} onExactStep={source.kind==='video'?direction=>{void stepExact(direction);}:undefined} exactBusy={exactBusy} onSeek={time => { exactRequest.current++;displayedFrameTime.current=null;setExactBusy(false);setExactFrame(null);if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} /> : null}
+    {source.kind==='video' && exactFrame && !showText && !derived ? <div className="exact-frame-inspection" role="region" aria-label="Exact decoded frame">
+      <img src={evidenceUrl(`artifact/${exactFrame.artifact}`)} alt={`Decoded frame at source time ${formatClockMs(exactFrame.time)}`} />
+      <div className="exact-frame-facts">
+        <p>Decoded source frame at {formatClockMs(exactFrame.time)} · PTS {exactFrame.pts} × {exactFrame.timeBase}. This image is a derivative of one frame.</p>
+        <button className="secondary" data-size="sm" onClick={()=>void navigator.clipboard.writeText(exactFrame.locator)}><Link2 size={14} aria-hidden="true" />Copy frame citation</button>
+      </div>
+    </div> : null}
+    {isMedia ? <section className={`viewer-dock ${dockOpen ? 'open' : 'collapsed'}`} aria-label="Recording tools">
+      <div className="viewer-dock-bar">
+        {dockTools.length > 1
+          ? <ViewerTabs tabs={dockTools} value={dockTool} onChange={tool => { setDockTool(tool); setDockOpen(true); }} label="Recording tools" prefix={`${tabPrefix}dock`} />
+          : <span className="viewer-dock-title"><Captions size={14} aria-hidden="true" />Transcript</span>}
+        <div className="spacer" />
+        <Tooltip text={dockOpen ? 'Collapse tools' : 'Expand tools'}><button className="icon-button" aria-expanded={dockOpen} aria-label={dockOpen ? 'Collapse tools' : 'Expand tools'} onClick={() => setDockOpen(value => !value)}>{dockOpen ? <PanelBottomClose size={16} /> : <PanelBottomOpen size={16} />}</button></Tooltip>
+      </div>
+      <div className="viewer-dock-panel" {...(dockTools.length > 1 ? tabPanelProps(`${tabPrefix}dock`, 'transcript', dockOpen && dockTool === 'transcript') : { hidden: !dockOpen })}>
+        <FullTranscript open={dockOpen && dockTool === 'transcript'} caseId={caseId} sessionEpoch={sessionEpoch} currentTime={currentTime} onSeek={time => { if (media.current) { media.current.currentTime = time; setCurrentTime(time); } }} sourceId={source.id} run={run} refresh={refresh} />
+      </div>
+      {source.kind === 'video' && !source.restricted ? <div className="viewer-dock-panel" {...tabPanelProps(`${tabPrefix}dock`, 'discovery', dockOpen && dockTool === 'discovery')}>
+        <VideoDiscovery key={`${sessionEpoch}:${source.id}`} caseId={caseId} sessionEpoch={sessionEpoch} sourceId={source.id} onFrame={id => { setDerived(id); setShowText(false); }} onSeek={time => { setDerived(null); setShowText(false); setPendingSeek(time); }} />
+      </div> : null}
+    </section> : null}
     {limitations.length ? <details className="processing-limitations disclosure">
       <summary><Info size={13} />About this preview<span className="disclosure-count">{limitations.length}</span></summary>
       {limitations.map(limitation => <p key={limitation}>{limitation}</p>)}
     </details> : null}
     {page ? <div className="locator-bar">
-      <button className="quiet" onClick={() => run(async () => { await navigator.clipboard.writeText(page.locator); })}>Copy evidence link</button>
       <code>{page.historical ? `rev ${page.revision} · ` : ''}L{page.start}–L{page.end} / {page.total_lines}</code>
       <div className="spacer" />
       <Tooltip text="Previous 200 lines"><button className="icon-button" aria-label="Previous lines" disabled={start === 1} onClick={() => setStart(value => Math.max(1, value - 200))}><ChevronsLeft size={16} /></button></Tooltip>

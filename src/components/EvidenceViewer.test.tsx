@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import EvidenceViewer from './EvidenceViewer';
+import EvidenceViewer, { citedLineRange, shortHash } from './EvidenceViewer';
 import type { Source, TextPage } from '../types';
 import {getViewerContext} from '../viewerContext';
 
@@ -230,4 +230,100 @@ it('keeps a very large PDF viewer window bounded and jumps to a valid physical p
   fireEvent.keyDown(screen.getByRole('spinbutton',{name:'Current page'}),{key:'Enter'});
   await waitFor(()=>expect(view.container.querySelector('[data-page="5000"]')).toBeTruthy());
   expect(view.container.querySelectorAll('.pdf-page').length).toBeLessThanOrEqual(13);
+});
+
+it('parses cited line ranges and shortens hashes for display only', () => {
+  expect(citedLineRange('L9-L11')).toEqual({ start: 9, end: 11 });
+  expect(citedLineRange('R2L5-L7')).toEqual({ start: 5, end: 7 });
+  expect(citedLineRange('L4')).toEqual({ start: 4, end: 4 });
+  expect(citedLineRange('L9-L3')).toBeNull();
+  expect(citedLineRange('page:3')).toBeNull();
+  expect(citedLineRange(undefined)).toBeNull();
+  expect(shortHash('9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08')).toBe('9f86d081…f00a08');
+  expect(shortHash('short')).toBe('short');
+});
+
+it('marks exactly the cited lines of the extracted text', async () => {
+  api.mockResolvedValue({ text: 'two\nthree\nfour', start: 2, end: 4, total_lines: 9, revision: 3, historical: false, locator: 'evidence:source-one#R3L2-L4', truncated_long_lines: false });
+  const view = render(<EvidenceViewer source={source} locator="L2-L3" run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  await waitFor(() => expect(screen.getByText('three')).toBeTruthy());
+  expect(view.container.querySelector('[data-line="2"]')?.getAttribute('data-cited')).toBe('true');
+  expect(view.container.querySelector('[data-line="3"]')?.getAttribute('data-cited')).toBe('true');
+  expect(view.container.querySelector('[data-line="4"]')?.hasAttribute('data-cited')).toBe(false);
+  expect(screen.getByText(/Cited lines L2–L3 are marked/)).toBeTruthy();
+  expect(screen.getByText('Rev 3 · current')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Copy evidence link' })).toBeTruthy();
+});
+
+it('offers a retry that re-reads extracted text after a failure', async () => {
+  let calls = 0;
+  api.mockImplementation(async () => { calls++; if (calls === 1) throw new Error('Extraction is still running'); return { text: 'Recovered wording', start: 1, end: 1, total_lines: 1, revision: 1, historical: false, locator: 'evidence:source-one#R1L1-L1', truncated_long_lines: false }; });
+  render(<EvidenceViewer source={source} run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  expect(await screen.findByText('Extracted text is not available')).toBeTruthy();
+  expect(screen.getByRole('alert').textContent).toContain('Extraction is still running');
+  fireEvent.click(screen.getByRole('button', { name: 'Read text again' }));
+  await waitFor(() => expect(screen.getByText('Recovered wording')).toBeTruthy());
+  expect(api.mock.calls.filter(([action]) => action === 'read_text')).toHaveLength(2);
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('switches a PDF between original pages and redaction with keyboard tabs while keeping pages mounted', async () => {
+  observePdfPages();
+  const pdf: Source = { ...source, kind: 'pdf', mime: 'application/pdf', name: 'Tabs.pdf' };
+  api.mockImplementation(async (action: string, args: { page?: number }) => action === 'probe_pdf' ? { metadata: { page_count: 1, first_page_size_points: [612, 792] } } : action === 'render_page' ? { published: [{ artifact_id: 'page-one', metadata: { page: args.page, page_count: 1, page_size_points: [612, 792] } }], limitations: [] } : {});
+  const view = render(<EvidenceViewer source={pdf} run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  await waitFor(() => expect(view.container.querySelectorAll('.pdf-page')).toHaveLength(1));
+  const tablist = screen.getByRole('tablist', { name: 'Source views' });
+  const original = screen.getByRole('tab', { name: 'Original pages' });
+  expect(original.getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByRole('tabpanel', { name: 'Original pages' })).toBeTruthy();
+  original.focus();
+  fireEvent.keyDown(tablist, { key: 'ArrowRight' });
+  const redaction = screen.getByRole('tab', { name: 'Redaction' });
+  expect(redaction.getAttribute('aria-selected')).toBe('true');
+  expect(document.activeElement).toBe(redaction);
+  expect(screen.getByRole('tabpanel', { name: 'Redaction' })).toBeTruthy();
+  expect(screen.queryByRole('spinbutton', { name: 'Current page' })).toBeNull();
+  expect(view.container.querySelector('.source-canvas')?.hasAttribute('hidden')).toBe(true);
+  expect(view.container.querySelectorAll('.pdf-page')).toHaveLength(1);
+  fireEvent.keyDown(tablist, { key: 'Home' });
+  expect(screen.getByRole('spinbutton', { name: 'Current page' })).toBeTruthy();
+});
+
+it('does not offer redaction for a restricted image and explains the restriction', () => {
+  const image: Source = { ...source, kind: 'image', mime: 'image/jpeg', name: 'Photo.jpg', restricted: true };
+  render(<EvidenceViewer source={image} run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  expect(screen.queryByRole('tablist', { name: 'Source views' })).toBeNull();
+  expect(screen.getByRole('status', { name: 'Restricted' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Zoom in' })).toBeTruthy();
+});
+
+it('switches recording tools in the dock and collapses it without losing the transport', () => {
+  const videoSource: Source = { ...source, kind: 'video', mime: 'video/mp4', name: 'Dock.mp4' };
+  api.mockResolvedValue({ samples: [] });
+  const view = render(<EvidenceViewer source={videoSource} run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  const tools = screen.getByRole('tablist', { name: 'Recording tools' });
+  expect(screen.getByRole('tab', { name: 'Transcript' }).getAttribute('aria-selected')).toBe('true');
+  screen.getByRole('tab', { name: 'Transcript' }).focus();
+  fireEvent.keyDown(tools, { key: 'ArrowRight' });
+  expect(screen.getByRole('tab', { name: 'Visual discovery' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByRole('tabpanel', { name: 'Visual discovery' })).toBeTruthy();
+  const collapse = screen.getByRole('button', { name: 'Collapse tools' });
+  expect(collapse.getAttribute('aria-expanded')).toBe('true');
+  fireEvent.click(collapse);
+  expect(screen.getByRole('button', { name: 'Expand tools' }).getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByRole('tabpanel')).toBeNull();
+  expect(view.container.querySelectorAll('.viewer-dock-panel[hidden]')).toHaveLength(2);
+  expect(screen.getByRole('button', { name: 'Play' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('tab', { name: 'Transcript' }));
+  expect(screen.getByRole('tabpanel', { name: 'Transcript' })).toBeTruthy();
+});
+
+it('shows only the transcript tool for a restricted recording', () => {
+  const videoSource: Source = { ...source, kind: 'video', mime: 'video/mp4', name: 'Restricted.mp4', restricted: true };
+  api.mockResolvedValue({ samples: [] });
+  render(<EvidenceViewer source={videoSource} run={fn => { void fn(); }} refresh={async () => undefined} onLocatorSelect={vi.fn()} />);
+  expect(screen.queryByRole('tablist', { name: 'Recording tools' })).toBeNull();
+  expect(screen.queryByRole('tab', { name: 'Visual discovery' })).toBeNull();
+  expect(api).not.toHaveBeenCalledWith('browse_video_discovery', expect.anything());
 });

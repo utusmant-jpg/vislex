@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import RedactionPanel from './RedactionPanel';
 
 const api = vi.hoisted(() => vi.fn());
@@ -56,4 +56,52 @@ it('clears review state on source change and ignores a late preparation result',
   expect(screen.queryByRole('button', { name: 'Export derivative only' })).toBeNull();
   fireEvent.click(screen.getByText('Prepare a reviewed redaction'));
   expect(screen.getByRole('button', { name: 'Build review copy' }).hasAttribute('disabled')).toBe(true);
+});
+
+it('asks for explicit confirmation before discarding every marked rectangle', async () => {
+  api.mockResolvedValue(undefined);
+  render(<RedactionPanel caseId="case-a" sessionEpoch={3} sourceId="source-a" kind="image" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Add rectangle' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add rectangle' }));
+  const clear = screen.getByRole('button', { name: 'Clear all rectangles' });
+  fireEvent.click(clear);
+  const dialog = screen.getByRole('alertdialog', { name: 'Discard 2 rectangles?' });
+  expect(dialog.textContent).toContain('The original source is unchanged.');
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep rectangles' }));
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(document.activeElement).toBe(clear);
+  expect(screen.getByRole('spinbutton', { name: 'X of rectangle 2 in pixels' })).toBeTruthy();
+  fireEvent.click(clear);
+  fireEvent.click(screen.getByRole('button', { name: 'Discard rectangles' }));
+  expect(screen.queryByRole('spinbutton', { name: 'X of rectangle 1 in pixels' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Build review copy' }).hasAttribute('disabled')).toBe(true);
+});
+
+it('confirms before switching drawing mode would discard marked rectangles', async () => {
+  api.mockResolvedValue({ published: [{ artifact_id: 'base' }] });
+  render(<RedactionPanel caseId="case-a" sessionEpoch={3} sourceId="source-a" kind="image" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Draw redactions' }));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Stop drawing' }).getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(screen.getByRole('button', { name: 'Add rectangle' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Stop drawing' }));
+  expect(screen.getByRole('alertdialog', { name: 'Discard 1 rectangle?' }).textContent).toContain('Stopping drawing clears every marked area');
+  fireEvent.click(screen.getByRole('button', { name: 'Keep rectangles' }));
+  expect(screen.getByRole('button', { name: 'Stop drawing' })).toBeTruthy();
+  expect(screen.getByRole('spinbutton', { name: 'X of rectangle 1 in pixels' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Stop drawing' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Discard rectangles' }));
+  expect(screen.getByRole('button', { name: 'Draw redactions' })).toBeTruthy();
+  expect(screen.queryByRole('spinbutton', { name: 'X of rectangle 1 in pixels' })).toBeNull();
+  await waitFor(() => expect(api).toHaveBeenCalledWith('process_source', { case_id: 'case-a', session_epoch: 3, source_id: 'source-a' }));
+});
+
+it('shows redaction progress as steps with the current step marked', () => {
+  render(<RedactionPanel caseId="case-a" sessionEpoch={3} sourceId="source-a" kind="pdf" />);
+  const steps = within(screen.getByRole('list', { name: 'Redaction progress' })).getAllByRole('listitem');
+  expect(steps[0].getAttribute('aria-current')).toBe('step');
+  fireEvent.click(screen.getByRole('button', { name: 'Add rectangle' }));
+  expect(steps[0].textContent).toContain('(done)');
+  expect(steps[1].getAttribute('aria-current')).toBe('step');
 });
