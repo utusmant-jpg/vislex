@@ -18,3 +18,4 @@ playwright-report/
 artifacts/
 tmp/
 output/
+.claude/worktrees/
