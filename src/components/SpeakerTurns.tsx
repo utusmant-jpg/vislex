@@ -65,7 +65,7 @@ export default function SpeakerTurns({ caseId, sessionEpoch, sourceId, onSeek, d
     {error ? <p role="alert" className="danger-text">{error}</p> : null}
     {result && laneRange ? <>
       <p className="speaker-stats">{result.metadata.turns.length} proposed turns · {result.metadata.gap_seconds.toFixed(2)} seconds undecoded within requested interval</p>
-      <div className="speaker-lanes" role="img" aria-label={`Speaker lanes from ${laneRange.from.toFixed(1)} to ${laneRange.to.toFixed(1)} seconds`}>
+      <div className="speaker-lanes" role="group" aria-label={`Speaker lanes from ${laneRange.from.toFixed(1)} to ${laneRange.to.toFixed(1)} seconds`}>
         {speakers.map((speaker, laneIndex) => <div className="speaker-lane" key={speaker}>
           <span className="speaker-lane-label" title={label(speaker)}>{label(speaker)}</span>
           <div className="speaker-lane-track" data-lane={laneIndex % 6}>

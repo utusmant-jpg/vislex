@@ -450,7 +450,8 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     { id: 'transcript' as const, label: 'Transcript', icon: <Captions size={14} aria-hidden="true" /> },
     ...(source.kind === 'video' && !source.restricted ? [{ id: 'discovery' as const, label: 'Visual discovery', icon: <ScanSearch size={14} aria-hidden="true" /> }] : []),
   ] : [];
-  const canvasPanel = redactable ? tabPanelProps(tabPrefix, 'original', onOriginal) : {};
+  // The canvas scrolls, so it is focusable for keyboard scrolling; it is the Original tab panel when tabs exist.
+  const canvasPanel = redactable ? tabPanelProps(tabPrefix, 'original', onOriginal) : { role: 'region' as const, 'aria-label': 'Source content' };
 
   return <div className="viewer" data-kind={source.kind}>
     <header className="viewer-source-header">
@@ -503,7 +504,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       <button className="quiet" disabled={pdfCount===null} onClick={() => run(async () => { await navigator.clipboard.writeText(`evidence:${source.id}#page:${pdfPage}`); })}><Link2 size={14} aria-hidden="true" />Copy page navigation link (not a citation)</button>
     </div> : null}
 
-    <div className={`source-canvas ${source.kind}`} {...canvasPanel}>
+    <div className={`source-canvas ${source.kind}`} tabIndex={0} {...canvasPanel}>
       {processing ? <div className="preview-progress" role="status"><span className="activity-dot" aria-hidden="true" />{needsProxy ? 'Opening video…' : 'Opening source…'}</div> : null}
       {error && !unsupported ? <ViewerProblem title={problemTitle} message={error} onRetry={retry} retryLabel={retryLabel} /> : null}
 
