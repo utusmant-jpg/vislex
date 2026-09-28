@@ -66,7 +66,8 @@ test.describe('chat through the mocked IPC harness', () => {
     // OpenAI Responses shape: { activity: <tool name> } then { characters } per
     // argument chunk ('{"terms":["north' + ' entrance"],' + '"offset":0}' = 39 bytes).
     await page.evaluate(id => window.__vislexHarness!.toolCall(id, { name: 'search_passages', intervalMs: 40 }), taskId);
-    await expect(page.locator('.activity-live')).toHaveText('search passages · 39 characters received');
+    // The requested tool is named in plain words (search_passages → searching).
+    await expect(page.locator('.activity-live')).toHaveText('Searching the evidence · 39 characters received');
     await page.getByRole('button', { name: 'Stop response' }).click();
     await expect(page.locator('.activity-live')).toHaveCount(0);
   });

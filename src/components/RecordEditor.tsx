@@ -49,12 +49,12 @@ function RecordEditorBody({ caseId, sessionEpoch, record, refresh, run, onSource
   const closeHistory = () => { if (historyPanel.current?.contains(document.activeElement)) historyToggle.current?.focus(); setHistoryOpen(false); setRevisions(null); };
   return <div className={`record-view ${historyOpen ? 'with-history' : ''}`}>
     <div className="record-toolbar viewer-tools">
-      <span className="badge"><FilePenLine size={13} aria-hidden="true"/>{record.kind.toUpperCase()}</span>
-      <span className={`pill pill-sm tone-${review.tone} record-review`}>{review.tone === 'warning' ? <AlertTriangle size={12} aria-hidden="true"/> : review.tone === 'success' ? <Check size={12} aria-hidden="true"/> : <PenLine size={12} aria-hidden="true"/>}{review.label}</span>
+      <span className="badge"><FilePenLine size={14} aria-hidden="true"/>{record.kind.toUpperCase()}</span>
+      <span className={`pill pill-sm tone-${review.tone} record-review`}>{review.tone === 'warning' ? <AlertTriangle size={14} aria-hidden="true"/> : review.tone === 'success' ? <Check size={14} aria-hidden="true"/> : <PenLine size={14} aria-hidden="true"/>}{review.label}</span>
       <div className="spacer"/>
       <div className="segmented record-mode" role="group" aria-label="Editor mode">
-        <button aria-pressed={!preview} onClick={() => setPreview(false)}><PenLine size={13} aria-hidden="true"/>Edit</button>
-        <button aria-pressed={preview} onClick={() => setPreview(true)}><Eye size={13} aria-hidden="true"/>Preview</button>
+        <button aria-pressed={!preview} onClick={() => setPreview(false)}><PenLine size={14} aria-hidden="true"/>Edit</button>
+        <button aria-pressed={preview} onClick={() => setPreview(true)}><Eye size={14} aria-hidden="true"/>Preview</button>
       </div>
       <Tooltip text={historyOpen ? 'Close revision history' : 'Revision history'}><button ref={historyToggle} className="quiet record-tool" aria-label="History" aria-pressed={historyOpen} onClick={() => historyOpen ? closeHistory() : openHistory()}><History size={14} aria-hidden="true"/><span>History</span></button></Tooltip>
       <Tooltip text="Export the saved revision"><button className="quiet record-tool" aria-label="Export saved revision" onClick={() => run(async () => { const expected_revision = record.revision; const path = await save({ defaultPath: `${record.title.replace(/[^a-zA-Z0-9 -]/g, '')}.md`, filters: [{ name: 'Saved report', extensions: ['md', 'json', 'txt', 'docx', 'pdf'] }] }); if (path) await api(/\.(docx|pdf)$/i.test(path)?'export_word':'export_record', { case_id: caseId, session_epoch: sessionEpoch, record_id: record.id, expected_revision, path }); })}><Download size={14} aria-hidden="true"/><span>Export saved revision</span></button></Tooltip>
@@ -75,7 +75,7 @@ function RecordEditorBody({ caseId, sessionEpoch, record, refresh, run, onSource
           : <textarea className="markdown-editor" aria-label="Working file content" spellCheck={false} value={content} onChange={e => setContent(e.target.value)} />}
       </div>
       {historyOpen ? <aside ref={historyPanel} className="history-panel" aria-label="Revision history">
-        <div className="history-head"><span className="section-title">Revision history{revisions ? <span className="count">{revisions.length}</span> : null}</span><button className="icon-button" aria-label="Close revision history" onClick={closeHistory}><X size={15}/></button></div>
+        <div className="history-head"><span className="section-title">Revision history{revisions ? <span className="count">{revisions.length}</span> : null}</span><button className="icon-button" aria-label="Close revision history" onClick={closeHistory}><X size={16}/></button></div>
         {revisions === null ? <p className="history-loading status-line" role="status"><span className="activity-dot" aria-hidden="true"/>Loading revisions…</p> : null}
         {revisions?.length === 0 ? <p className="history-empty">No saved revisions are listed for this working file.</p> : null}
         {revisions ? <ol className="history-list">{revisions.map(r => <li key={r.revision} className={r.revision === record.revision ? 'current' : ''}>
@@ -85,7 +85,7 @@ function RecordEditorBody({ caseId, sessionEpoch, record, refresh, run, onSource
             {r.revision === record.revision ? <span className="badge">Current</span> : null}
           </summary>
             <pre>{r.content}</pre>
-            <button className="secondary" data-size="sm" disabled={r.revision === record.revision || dirty} onClick={() => run(async () => { const restored = await api<WorkingRecord>('rollback', { case_id: caseId, session_epoch: sessionEpoch, record_id: record.id, target: r.revision, base_revision: record.revision }); setContent(restored.content); setTitle(restored.title); setBase(restored.revision); closeHistory(); await refresh(); })}><RotateCcw size={13} aria-hidden="true"/>Restore as new revision</button>
+            <button className="secondary" data-size="sm" disabled={r.revision === record.revision || dirty} onClick={() => run(async () => { const restored = await api<WorkingRecord>('rollback', { case_id: caseId, session_epoch: sessionEpoch, record_id: record.id, target: r.revision, base_revision: record.revision }); setContent(restored.content); setTitle(restored.title); setBase(restored.revision); closeHistory(); await refresh(); })}><RotateCcw size={14} aria-hidden="true"/>Restore as new revision</button>
             {r.revision !== record.revision && dirty ? <p className="history-hint">Save or discard your draft before restoring.</p> : null}
           </details>
         </li>)}</ol> : null}

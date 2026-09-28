@@ -1,1 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="110" fill="#172820"/><g fill="#95dfbf"><rect x="124" y="235" width="65" height="155" rx="14"/><rect x="222" y="120" width="65" height="270" rx="14"/><rect x="320" y="175" width="65" height="215" rx="14"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100">
+  <!-- VisLex "Aperture V": two blades form a V; the amber square is the evidence point. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1D2030"/><stop offset="1" stop-color="#0A0B11"/></linearGradient>
+    <linearGradient id="bladeA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9398FF"/><stop offset="1" stop-color="#5A5FF0"/></linearGradient>
+    <linearGradient id="bladeB" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#E1E3FF"/><stop offset="1" stop-color="#A7ABFF"/></linearGradient>
+    <linearGradient id="point" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFD37D"/><stop offset="1" stop-color="#F0A532"/></linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22.5" fill="url(#tile)"/>
+  <rect x="0.4" y="0.4" width="99.2" height="99.2" rx="22.1" fill="none" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="0.8"/>
+  <path d="M20 25h15.5l19 52H43.5z" fill="url(#bladeA)"/>
+  <path d="M64.5 25H80L57 77l-7-17.5z" fill="url(#bladeB)"/>
+  <rect x="44.5" y="15.5" width="11" height="11" rx="2.6" fill="url(#point)"/>
+</svg>

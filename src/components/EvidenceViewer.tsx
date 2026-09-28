@@ -147,15 +147,15 @@ function MediaControls({ media, element, filmstrip, onSeek, onExactStep, exactBu
     <div className="media-buttons">
       <div className="media-group">
         <Tooltip text="Back 10 seconds (J)"><button className="icon-button" aria-label="Back 10 seconds" onClick={() => skip(-10)}><ChevronsLeft size={16} /></button></Tooltip>
-        <Tooltip text="Back about 33 ms (,)"><button className="icon-button" aria-label="Back about 33 milliseconds" onClick={() => frame(-1)}><SkipBack size={15} /></button></Tooltip>
-        <button className="media-play" aria-label={playing ? 'Pause' : 'Play'} onClick={toggle}>{playing ? <Pause size={17} /> : <Play size={17} />}</button>
-        <Tooltip text="Forward about 33 ms (.)"><button className="icon-button" aria-label="Forward about 33 milliseconds" onClick={() => frame(1)}><SkipForward size={15} /></button></Tooltip>
+        <Tooltip text="Back about 33 ms (,)"><button className="icon-button" aria-label="Back about 33 milliseconds" onClick={() => frame(-1)}><SkipBack size={16} /></button></Tooltip>
+        <button className="media-play" aria-label={playing ? 'Pause' : 'Play'} onClick={toggle}>{playing ? <Pause size={16} /> : <Play size={16} />}</button>
+        <Tooltip text="Forward about 33 ms (.)"><button className="icon-button" aria-label="Forward about 33 milliseconds" onClick={() => frame(1)}><SkipForward size={16} /></button></Tooltip>
         <Tooltip text="Forward 10 seconds (L)"><button className="icon-button" aria-label="Forward 10 seconds" onClick={() => skip(10)}><ChevronsRight size={16} /></button></Tooltip>
       </div>
       {onExactStep ? <div className="media-group media-exact" role="group" aria-label="Exact decoded frames">
         <span className="media-group-label" aria-hidden="true">Decoded frame</span>
-        <Tooltip text="Inspect previous decoded frame"><button className="icon-button" aria-label="Inspect previous decoded frame" disabled={exactBusy} onClick={()=>onExactStep('previous')}><StepBack size={15} /></button></Tooltip>
-        <Tooltip text="Inspect next decoded frame"><button className="icon-button" aria-label="Inspect next decoded frame" disabled={exactBusy} onClick={()=>onExactStep('next')}><StepForward size={15} /></button></Tooltip>
+        <Tooltip text="Inspect previous decoded frame"><button className="icon-button" aria-label="Inspect previous decoded frame" disabled={exactBusy} onClick={()=>onExactStep('previous')}><StepBack size={16} /></button></Tooltip>
+        <Tooltip text="Inspect next decoded frame"><button className="icon-button" aria-label="Inspect next decoded frame" disabled={exactBusy} onClick={()=>onExactStep('next')}><StepForward size={16} /></button></Tooltip>
       </div> : null}
       <div className="spacer" />
       <div className="media-group">
@@ -488,17 +488,17 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
 
   return <div className="viewer" data-kind={source.kind}>
     <header className="viewer-source-header">
-      <span className="viewer-source-icon"><SourceIcon kind={source.kind} size={17} /></span>
+      <span className="viewer-source-icon"><SourceIcon kind={source.kind} size={16} /></span>
       <div className="viewer-source-identity">
         <strong title={source.name}>{source.name}</strong>
         <div className="viewer-source-meta">
           <span className="viewer-source-facts">{source.kind.toUpperCase()} · {formatBytes(source.size)} · {source.status}</span>
-          {source.sha256 ? <Tooltip text={`SHA-256 ${source.sha256}`}><span className="viewer-hash mono" tabIndex={0}><Fingerprint size={12} aria-hidden="true" />{shortHash(source.sha256)}</span></Tooltip> : null}
-          {page ? <span className={`viewer-revision ${superseded ? 'historical' : ''}`}>{page.raw_original ? <>Original · not indexed</> : page.historical && !pinnedCurrent ? <><History size={12} aria-hidden="true" />Pinned rev {page.revision}</> : <>Rev {page.revision} · current</>}</span> : null}
+          {source.sha256 ? <Tooltip text={`SHA-256 ${source.sha256}`}><span className="viewer-hash mono" tabIndex={0}><Fingerprint size={14} aria-hidden="true" />{shortHash(source.sha256)}</span></Tooltip> : null}
+          {page ? <span className={`viewer-revision ${superseded ? 'historical' : ''}`}>{page.raw_original ? <>Original · not indexed</> : page.historical && !pinnedCurrent ? <><History size={14} aria-hidden="true" />Pinned rev {page.revision}</> : <>Rev {page.revision} · current</>}</span> : null}
         </div>
       </div>
       <div className="viewer-source-actions">
-        {source.restricted ? <Tooltip text={RESTRICTED_WHY}><span className="viewer-restricted" role="status" aria-label="Restricted" tabIndex={0}><Lock size={12} aria-hidden="true" />Restricted</span></Tooltip> : null}
+        {source.restricted ? <Tooltip text={RESTRICTED_WHY}><span className="viewer-restricted" role="status" aria-label="Restricted" tabIndex={0}><Lock size={14} aria-hidden="true" />Restricted</span></Tooltip> : null}
         {source.sha256 ? <CopyAction label="Copy SHA-256 hash" value={() => source.sha256} icon={<Fingerprint size={16} aria-hidden="true" />} run={run} /> : null}
         {page ? <CopyAction label="Copy evidence link" value={() => page.locator} icon={<Link2 size={16} aria-hidden="true" />} run={run} /> : null}
       </div>
@@ -573,7 +573,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       </article> : null}
 
       {!showText && ((!derived && source.kind === 'image') || (derived && derivedMime === 'image/jpeg')) ? <div className="image-stage">
-        {derived ? <p className="derived-label"><Info size={13} aria-hidden="true" />Derived frame or crop — not the original file</p> : null}
+        {derived ? <p className="derived-label"><Info size={14} aria-hidden="true" />Derived frame or crop — not the original file</p> : null}
         <img
           className="evidence-image"
           src={derived ? evidenceUrl(`artifact/${derived}`) : url}
@@ -637,7 +637,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
     </div> : null}
 
     {askChip ? <div className="ask-chip" style={{ left: askChip.x, top: askChip.y }} role="toolbar" aria-label="Selection actions">
-      <button onClick={() => { onLocatorSelect(`R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); if (onAsk) onAsk(); else window.dispatchEvent(new CustomEvent('vislex:focus-composer')); }}><AArrowDown size={13} />Ask about L{askChip.a}–L{askChip.b}</button>
+      <button onClick={() => { onLocatorSelect(`R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); if (onAsk) onAsk(); else window.dispatchEvent(new CustomEvent('vislex:focus-composer')); }}><AArrowDown size={14} />Ask about L{askChip.a}–L{askChip.b}</button>
       <button onClick={() => { void navigator.clipboard.writeText(`evidence:${source.id}#R${askChip.revision}L${askChip.a}-L${askChip.b}`); setAskChip(null); }}>Copy citation (rev {askChip.revision})</button>
     </div> : null}
 
@@ -665,7 +665,7 @@ export default function EvidenceViewer({ source, locator, run, refresh, onLocato
       </div> : null}
     </section> : null}
     {limitations.length ? <details className="processing-limitations disclosure">
-      <summary><Info size={13} />About this preview<span className="disclosure-count">{limitations.length}</span></summary>
+      <summary><Info size={14} />About this preview<span className="disclosure-count">{limitations.length}</span></summary>
       {limitations.map(limitation => <p key={limitation}>{limitation}</p>)}
     </details> : null}
     {page ? <div className="locator-bar">

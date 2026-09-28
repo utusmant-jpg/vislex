@@ -1,5 +1,5 @@
 /* ============================================================================
-   VisLex design tokens ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â "Ink & Evidence, calibrated"
+   VisLex design tokens: "Ink & Evidence, calibrated"
    The single source of truth for colour, type, space, radius, elevation,
    density and motion. Everything else (legacy sheet, surface sheets, Tailwind
    utilities, Radix primitives) reads these semantic names.
@@ -26,22 +26,29 @@
     /* ---------- typography ---------- */
     --font-sans: 'Inter Variable', 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
     --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
-    --text-caption: 11.5px;   /* floor: nothing informative is smaller */
-    --text-sm: 12.5px;
+    --text-caption: 12px;     /* floor: nothing informative is smaller */
+    --text-sm: 13px;
     --text-base: 14px;
-    --text-reading: 15px;
+    --text-reading: 16px;     /* assistant answers and long-form reading */
     --text-lg: 17px;
-    --text-xl: 21px;
-    --text-2xl: 28px;
+    --text-xl: 20px;
+    --text-2xl: 26px;
     --text-display: 34px;
     --leading-tight: 1.3;
     --leading-ui: 1.45;
-    --leading-reading: 1.7;
+    --leading-reading: 1.62;
     --weight-regular: 400;
-    --weight-medium: 520;
+    --weight-medium: 510;
     --weight-semibold: 600;
     --tracking-tight: -0.011em;
     --tracking-display: -0.022em;
+    /* Inter: tailed l (cv05), single-storey a (cv11), round quotes (ss03). */
+    --font-features: 'cv05', 'cv11', 'ss03';
+    --measure-reading: 70ch;
+    /* Icon scale: inline/meta, controls, navigation. */
+    --icon-sm: 14px;
+    --icon-md: 16px;
+    --icon-lg: 18px;
     --tracking-caps: 0.07em;
 
     /* ---------- space (4px grid) ---------- */
@@ -78,11 +85,12 @@
     --rail-w: 52px;
 
     /* ---------- motion ---------- */
-    --dur-fast: 90ms;
-    --dur-base: 150ms;
-    --dur-slow: 220ms;
+    --dur-fast: 120ms;
+    --dur-base: 180ms;
+    --dur-slow: 240ms;
     --dur-slower: 320ms;
     --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+    --ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
     --ease-exit: cubic-bezier(0.4, 0, 1, 1);
     --ease-emphasized: cubic-bezier(0.3, 1.2, 0.4, 1);
 
@@ -103,6 +111,7 @@
     --surface-2: oklch(21.6% 0.008 265);
     --surface-3: oklch(24.6% 0.010 265);
     --inset: oklch(14% 0.006 265);
+    --bubble: oklch(25.5% 0.010 265);
     --media-stage: oklch(9% 0.004 265);
 
     --hover: oklch(100% 0 0 / 0.055);
@@ -178,6 +187,7 @@
     --surface-2: oklch(100% 0 0);
     --surface-3: oklch(100% 0 0);
     --inset: oklch(96.4% 0.003 85);
+    --bubble: oklch(94.6% 0.005 85);
     --media-stage: oklch(92% 0.004 265);
 
     --hover: oklch(22% 0.012 265 / 0.05);
@@ -248,6 +258,7 @@
   /* ---------- density: compact shares every semantic role ---------- */
   [data-density="compact"] {
     --text-base: 13px;
+    --text-reading: 15px;
     --control-h: 28px;
     --control-h-sm: 24px;
     --control-h-lg: 34px;

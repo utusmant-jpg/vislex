@@ -30,8 +30,8 @@ describe('chat composer interaction', () => {
     const data = snapshot();
     data.counts = { audit_seq: 1, source_count: 42, source_bytes: 0, record_count: 3, task_count: 0, job_count: 0, jobs_queued: 0, jobs_running: 0, jobs_failed: 0, jobs_attention: 0, jobs_complete: 0 };
     panel(data);
-    expect(screen.getByRole('heading', { name: 'Synthetic case' })).toBeTruthy();
-    expect(screen.getByLabelText('Case at a glance').textContent).toContain('42Evidence sources');
+    expect(screen.getByRole('heading', { name: /know about.*Synthetic/ })).toBeTruthy();
+    expect(screen.getByLabelText('Case at a glance').textContent).toContain('42 evidence sources');
     fireEvent.click(screen.getByRole('button', { name: /Build a timeline/ }));
     expect((screen.getByRole('textbox', { name: 'Agent task' }) as HTMLTextAreaElement).value).toContain('Build a timeline');
     expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());

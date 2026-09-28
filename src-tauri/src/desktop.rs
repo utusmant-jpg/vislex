@@ -1617,7 +1617,11 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
         crate::codex_case::run(&runtime,&selection.model,&selection.effort,&instructions,&definitions,&context,
             |call_id,name,args| {
                 *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
+                // Live step name, as the API-key route streams it, then a case
+                // event once the receipt is saved so the chat refreshes steps.
+                let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":format!("subscription:{tid}"),"delta":{"activity":name}}));
                 let result=run_subscription_tool(&handle,&cid,epoch,&tid,call_id,name,args,&worker_jobs);
+                emit_case_changed(&handle);
                 *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
                 result
             },

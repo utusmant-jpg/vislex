@@ -88,7 +88,8 @@ test.describe('assistant surface', () => {
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await toggle.focus();
     await page.keyboard.press('Enter');
-    await expect(turn.getByRole('button', { name: /3 actions/ })).toHaveAttribute('aria-expanded', 'true');
+    // The collapsed line recaps the steps in plain words; the name keeps its "Activity" prefix.
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     const receipts = turn.getByRole('list', { name: 'Recorded actions' });
     await expect(receipts.getByRole('listitem')).toHaveCount(3);
     // Status is an icon plus a word, never colour alone.
@@ -96,7 +97,8 @@ test.describe('assistant surface', () => {
     await expect(receipts.getByRole('listitem').filter({ hasText: 'Search' })).toContainText('Done');
     await expect(turn.getByRole('button', { name: /1 failed/ })).toBeVisible();
     await receipts.getByText('Render page').click();
-    await expect(receipts.getByText('Synthetic failure: page renderer timed out.')).toBeVisible();
+    // The reason shows on the failed step itself; the raw receipt repeats it behind "Technical receipt".
+    await expect(receipts.getByText('Synthetic failure: page renderer timed out.').last()).toBeVisible();
     expect((await lastCall(page, 'actions')).args).toMatchObject({ task_id: expect.any(String) });
   });
 

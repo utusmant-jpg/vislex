@@ -13,6 +13,7 @@
 @import "./styles/base.css" layer(base);
 @import "./styles/primitives.css" layer(primitives);
 @import "./styles.css" layer(legacy);
+@import "./styles/prose.css" layer(surfaces);
 @import "./styles/shell.css" layer(surfaces);
 @import "./styles/assistant.css" layer(surfaces);
 @import "./styles/viewer.css" layer(surfaces);

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import BrandMark from './BrandMark';
 import {
   AlertTriangle, Cpu, Info, KeyRound, Keyboard, ListChecks, Lock, Palette, Plus, RefreshCw, Save, ShieldCheck, Trash2, X,
 } from 'lucide-react';
@@ -25,13 +26,13 @@ const sectionGroups: { label: string; items: SettingsSection[] }[] = [
 /** Sections that edit AI settings share one draft, one scope and one save. */
 const aiSections: SettingsSection[] = ['Accounts & models', 'Case permissions', 'Privacy & offline', 'Review & processing'];
 const sectionIcons: Record<SettingsSection, ReactNode> = {
-  'Accounts & models': <KeyRound size={15} />,
-  'Case permissions': <ShieldCheck size={15} />,
-  'Privacy & offline': <Lock size={15} />,
-  'Review & processing': <ListChecks size={15} />,
-  'Appearance': <Palette size={15} />,
-  'Keyboard & accessibility': <Keyboard size={15} />,
-  'About': <Info size={15} />,
+  'Accounts & models': <KeyRound size={16} />,
+  'Case permissions': <ShieldCheck size={16} />,
+  'Privacy & offline': <Lock size={16} />,
+  'Review & processing': <ListChecks size={16} />,
+  'Appearance': <Palette size={16} />,
+  'Keyboard & accessibility': <Keyboard size={16} />,
+  'About': <Info size={16} />,
 };
 const sectionSummaries: Record<SettingsSection, string> = {
   'Accounts & models': 'Provider keys, subscription sign-in and the models VisLex may call.',
@@ -350,7 +351,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                 <div className="settings-key-row">
                   <input aria-label={`${providerNames[provider]} API key`} type="password" autoComplete="off" value={keys[provider] ?? ''} disabled={loading[provider]} onChange={e => setKeys(s => ({ ...s, [provider]: e.target.value }))} placeholder={stored[provider] ? 'Key saved in Windows Credential Manager' : 'Paste API key'} />
                   <button type="button" className="secondary" disabled={!native || (!loading[provider] && !stored[provider] && !keys[provider]?.trim())} aria-disabled={loading[provider] || undefined} onClick={() => void loadModels(provider)}>{loading[provider] ? 'Loading…' : keys[provider]?.trim() ? 'Save key & load models' : 'Load models'}</button>
-                  {stored[provider] ? <button type="button" className="icon-button" aria-label={`Remove saved ${providerNames[provider]} key`} title="Remove stored key" onClick={() => void removeKey(provider)}><Trash2 size={15} /></button> : null}
+                  {stored[provider] ? <button type="button" className="icon-button" aria-label={`Remove saved ${providerNames[provider]} key`} title="Remove stored key" onClick={() => void removeKey(provider)}><Trash2 size={16} /></button> : null}
                 </div>
                 {catalogErrors[provider] ? <p role="alert" className="small danger-text">{catalogErrors[provider]}</p> : null}
                 {profiles.map((p, i) => p.provider !== provider ? null : <div className="settings-model" key={i}>
@@ -449,7 +450,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
           {section === 'Keyboard & accessibility' ? <KeyboardSettings /> : null}
 
           {section === 'About' ? <div className="settings-section settings-about">
-            <div className="settings-about-brand"><span className="brand-mark" aria-hidden="true"><span /><span /><span /></span><p><strong>VisLex</strong> · local evidence workspace</p></div>
+            <div className="settings-about-brand"><BrandMark size={28} /><p><strong>VisLex</strong> · local evidence workspace</p></div>
             <p className="small muted">Cases are stored in .ledcase folders on this machine. Originals are copied, hashed and never modified. AI providers are contacted only when you enable them, and case text or images leave this machine solely through those enabled models. Keys live in Windows Credential Manager. No telemetry, hosted file storage, or runtime model downloads.</p>
             {snapshot ? <dl className="settings-kv compact">
               <div><dt>Case generation</dt><dd>{snapshot.generation}</dd></div>
@@ -462,7 +463,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
         {isAiSection ? <footer className="settings-footer">
           {grantNotice && section !== 'Case permissions' ? <p className="settings-footer-warning" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>{keepGrants ? `Saving changes the default company to ${providerNames[nextProvider]} and keeps the grants you confirmed for it.` : 'Saving changes the default company and clears case grants.'} <button type="button" className="settings-link" onClick={() => setSection('Case permissions')}>Review case permissions</button></span></p> : null}
           {error ? <p role="alert" className="small danger-text">{error}</p> : null}
-          <div className="settings-footer-actions"><span className="settings-footer-scope">{scope === 'app' ? 'Saving updates app AI settings' : 'Saving updates this case only'}</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>Cancel</button><button type="button" className="primary" disabled={!native || (scope === 'app' && !appPreferences)} aria-disabled={busy || undefined} onClick={() => void save()}><Save size={15} />{saving ? 'Saving…' : scope === 'app' ? 'Save app AI settings' : 'Save case AI override'}</button></div>
+          <div className="settings-footer-actions"><span className="settings-footer-scope">{scope === 'app' ? 'Saving updates app AI settings' : 'Saving updates this case only'}</span><button type="button" className="secondary" disabled={busy} onClick={onClose}>Cancel</button><button type="button" className="primary" disabled={!native || (scope === 'app' && !appPreferences)} aria-disabled={busy || undefined} onClick={() => void save()}><Save size={16} />{saving ? 'Saving…' : scope === 'app' ? 'Save app AI settings' : 'Save case AI override'}</button></div>
         </footer> : null}
       </div>
     </div>
