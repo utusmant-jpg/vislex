@@ -68,6 +68,7 @@ for a completed call), `axeViolations`.
 
 ## Specs
 
+- `harness-assistant.spec.ts` — Enter/Shift+Enter and composer autosize, streaming states named with real units, neutral announced Stop, completion announcement and usage, activity receipts by keyboard, failure disclosure with composer-only retry, disabled-send reasons with the settings section, keyboard citation chips, and entrance motion only for the newly sent turn.
 - `harness-chat.spec.ts` — compose, send, streamed tokens, Stop with the exact guard (late deltas after Stop do not revive the draft), scripted tool-call activity, completion with citations, citation chips opening exact (and historical) locators, draft retention across workspace and conversation switches without browser storage, chat preparation pause.
 - `harness-settings.spec.ts` — appearance changes issue no IPC; saving never widens grants; model availability is not chat authorization; case override guard; save failure.
 - `harness-case-switch.spec.ts` — held responses from the previous case are discarded; stale-epoch events and deltas are ignored; switch refusal is surfaced.
@@ -77,13 +78,14 @@ for a completed call), `axeViolations`.
 
 Known app issues are encoded as `test.fail` (the test passes while the issue
 exists and fails once it is fixed, prompting removal) or as named entries in
-the axe baseline. Current entries: a user Stop renders as an error alert; a
-citation pinned to the current extraction revision is labelled as superseded
-historical wording (case.rs `read_text_revision` always returns
-`historical: true`); the Settings model combobox options are inert under the
-modal dialog; the open-file
+the axe baseline. Current entries: a citation pinned to the current extraction
+revision is labelled as superseded historical wording (case.rs
+`read_text_revision` always returns `historical: true`); the Settings model
+combobox options are inert under the modal dialog; the open-file
 tab strip nests buttons in `role="tablist"`; the palette results region is not
-keyboard-scrollable; the chat token count misses 4.5:1 contrast in light theme.
+keyboard-scrollable. Resolved by the assistant redesign and removed: a user
+Stop rendered as an error alert; the chat token count missed 4.5:1 contrast in
+light theme.
 
 ## Limits
 

@@ -37,7 +37,8 @@ test.describe('chat through the mocked IPC harness', () => {
     await expect(live).toHaveCount(0);
     expect(await page.evaluate(id => window.__vislexHarness!.task(id)?.status, taskId)).toBe('paused');
     const turn = page.locator('.conversation-turn').filter({ hasText: 'Harness question about the north entrance' });
-    await expect(turn.getByText('Paused', { exact: true })).toBeVisible();
+    // The backend pauses the task with "Stopped by user"; the chat labels it Stopped.
+    await expect(turn.getByText('Stopped', { exact: true })).toBeVisible();
     // A user stop is not reported as a failure state.
     await expect(turn.getByText('Needs attention')).toHaveCount(0);
     // desktop.rs notices the stop by polling every 150 ms while the provider
@@ -71,11 +72,9 @@ test.describe('chat through the mocked IPC harness', () => {
   });
 
   test('user stop renders as a neutral stopped state, not an error alert', async ({ page }) => {
-    // Known issue (recorded in the harness handoff): AgentPanel renders every
-    // task error — including the backend's "Stopped by user" pause reason — as
-    // `.notice.error` with role="alert". Remove test.fail once the chat surface
-    // renders a user stop neutrally.
-    test.fail(true, 'AgentPanel shows "Stopped by user" as an error alert');
+    // Formerly a known issue (every task error, including the backend's
+    // "Stopped by user" pause reason, rendered as `.notice.error` role="alert").
+    // The assistant redesign renders a user stop neutrally, so test.fail is removed.
     await openHarness(page);
     await page.evaluate(() => window.__vislexHarness!.setScenario({ autoStream: false }));
     await page.getByRole('button', { name: /^New chat/ }).click();
@@ -83,7 +82,8 @@ test.describe('chat through the mocked IPC harness', () => {
     await page.getByRole('button', { name: 'Send message' }).click();
     await page.getByRole('button', { name: 'Stop response' }).click();
     const turn = page.locator('.conversation-turn').filter({ hasText: 'Stop me neutrally' });
-    await expect(turn.getByText('Paused', { exact: true })).toBeVisible();
+    await expect(turn.getByText('Stopped', { exact: true })).toBeVisible();
+    await expect(turn.getByText('Stopped by user.')).toBeVisible();
     await expect(turn.getByRole('alert')).toHaveCount(0, { timeout: 2000 });
   });
 
