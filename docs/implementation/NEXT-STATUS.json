@@ -446,17 +446,17 @@
     },
     "R29": {
       "state": "implemented",
-      "commit": "0476d80",
+      "commit": "9fcbd50",
       "environment": "Linux cloud container (x86_64-unknown-linux-gnu, rustc stable); not Windows, not the packaged worker",
-      "evidence": "1225158 large-text originals paged via sparse line index, not citable by line (core test with 160,000 lines; harness journey). 0476d80 sandboxed .eml extraction (4 worker tests, Rust routing test).",
+      "evidence": "1225158 large-text originals paged via sparse line index, not citable by line (core test with 160,000 lines; harness journey). 0476d80 sandboxed .eml extraction (4 worker tests, Rust routing test). 56f6a3d DOCX read from WordprocessingML: tracked insertions no longer vanish from paragraph text (python-docx 1.2 dropped them), each change listed with declared author/date, comments, headers, footers and notes as units. 6f3eb60 PPTX in presentation.xml order with hidden flags and speaker notes. 9fcbd50 XLSX sheet units state hidden sheets, rows and columns. Worker suite 41 passed.",
       "commands": [
         "npx tsc --noEmit -> exit 0",
         "npx vitest run -> 263 passed",
         "playwright harness -> 47 passed, 1 expected failure (known combobox issue)",
         "cargo test --target x86_64-unknown-linux-gnu --tests -> 238 passed, 0 failed",
-        "python -m unittest discover -s workers -> 34 passed"
+        "python -m unittest discover -s workers -> 41 passed"
       ],
-      "unrun_checks": "Office structure, MSG, attachment child sources, HEIC/RAW and PDF text layer remain. Email worker not run inside the packaged AppContainer.",
+      "unrun_checks": "MSG, attachment child sources with transitive restriction, HEIC/RAW and the PDF text layer remain. A structured grid/slide renderer in the viewer is not built; units are shown as text. New extractors were not run inside the packaged AppContainer worker.",
       "reviewer": "Single-session self review; no independent reviewer."
     },
     "R30": {
