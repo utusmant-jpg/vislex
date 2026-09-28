@@ -383,25 +383,29 @@
     },
     "R21": {
       "state": "implemented",
-      "commit": "a9090e2",
-      "branch": "claude/redesign-v14qbo",
-      "environment": "Cloud Linux container; Node 22.22.2; Chromium 1194 headless via PW_CHROMIUM_PATH; no Windows, WebView2, Edge or Rust toolchain run",
+      "commit": "3b8bb88",
+      "branch": "integrate/redesign-final-cora77",
+      "environment": "Cloud Linux container; Node 22.22.2; npm 10.9.7; Chromium 1194 headless via PW_CHROMIUM_PATH; stable Rust x86_64-unknown-linux-gnu; Python 3.11.15; no Windows, WebView2 or Edge run",
       "evidence": "Claude-led redesign per docs/CLAUDE-REDESIGN-PROMPT.md; decisions, agents and per-slice results in docs/implementation/REDESIGN-CLAUDE-HANDOFF.md and docs/implementation/REDESIGN-SPEC.md. Single token source src/tokens.css with contrast unit test (src/tokens.test.ts); shared primitives in src/ui.tsx and src/styles/primitives.css; redesigned shell/onboarding/library/jobs/palette, assistant chat, evidence viewer family, findings/workbench/dossier and settings. Mocked-IPC Playwright harness (harness.html, src/testing/harness/**, e2e/harness-*.spec.ts, e2e/HARNESS.md) drives the real app code paths with a 250-source synthetic case; excluded from the production bundle (vite build grep). Screenshots reviewed by the lead (vision) at 1366x768, 1440x900 and 1920x1080 in dark and light.",
       "commands": [
-        "npx tsc -p tsconfig.json --noEmit -> exit 0 at a9090e2",
-        "npx vitest run -> 29 files, 277 passed at a9090e2",
-        "PW_CHROMIUM_PATH=/opt/pw-browsers/chromium CI=1 npx playwright test -> 52 passed at 34a19f3 (includes axe WCAG A/AA dark+light over harness scenes with an empty baseline, keyboard/focus, reduced motion, forced colors, overflow at target sizes); a9090e2 only changes src/App.test.tsx",
-        "npx vite build --outDir <scratch> -> ok; grep for __vislexHarness/SyntheticBackend in output -> 0 files"
+        "npm ci -> exit 0 at 3b8bb88",
+        "npx tsc -p tsconfig.json --noEmit -> exit 0 at 3b8bb88",
+        "npx vitest run -> 30 files, 294 passed at 3b8bb88",
+        "PW_CHROMIUM_PATH=/opt/pw-browsers/chromium CI=1 npx playwright test -> 58 passed at 3b8bb88 (includes axe WCAG A/AA dark+light, keyboard/focus, reduced motion, forced colors, overflow at target sizes, citation-chip punctuation, 1366x768 and 1000x680 transcript dock, default-company grant consent)",
+        "npm run build -> ok at 3b8bb88",
+        "VISLEX_WORKER_PATH=<placeholder> RUSTUP_TOOLCHAIN=stable cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu --tests -> 238 passed, 0 failed, 4 ignored at 3b8bb88",
+        "python -m unittest workers/scripts/benchmarks -> 41 / 13 / 10 passed at 3b8bb88; python3 scripts/vislex_plan.py check -> valid, 33 tasks"
       ],
       "reviewer": "Workflow wf_3fc12f9a-9d8: independent adversarial reviewer per surface branch, then fix pass. Workflow wf_62db8cf5-34b: five-lens review (behaviour, honesty/evidence, a11y, test integrity, state/perf) of c04c8c3..HEAD with a separate refuting verifier per finding; 26 confirmed findings fixed in 5c47cd9. Reviewers are agents, not a human; agreement is not evidence.",
       "unrun_checks": [
-        "Native Tauri/WebView2 build of this branch on Windows, including scripts/native-protocol-origin-test.ps1 for the merged CORS fix",
+        "Native Tauri/WebView2 build (npm run desktop:build) and packaged-app smoke journeys on Windows at 3b8bb88, including scripts/native-protocol-origin-test.ps1; the desktop session ran native journeys before handoff but recorded no results, so none are claimed",
         "Native screenshot matrix at 125/150/200 percent Windows scaling and human review",
         "Screen reader (NVDA/Narrator) session; touch-target audit",
-        "cargo test (no Rust changed in this redesign, but not run in this environment)",
+        "Edge channel Playwright (only Chromium 1194 on Linux)",
+        "cargo fmt --check fails repo-wide (about 40 files, also on main); never enforced, not reformatted here to avoid churn in shared files",
         "Performance measurement on named hardware (no performance claim is made)"
       ],
-      "note": "Implemented, not verified. R21 depends on R14/R15/R16/R17, which are implemented but not verified, so R21 cannot be verified before them. Browser mocks do not establish packaged Tauri correctness."
+      "note": "Implemented, not verified. R21 depends on R14/R15/R16/R17, which are implemented but not verified, and the native Windows gates above are unrun at this commit. The three handoff open items (citation punctuation, 1366x768 video dock, vendor-switch grant consent) are fixed in 6c48e1c, b8cfdf6 and bdfeb3e with harness tests."
     },
     "R22": {
       "state": "pending",

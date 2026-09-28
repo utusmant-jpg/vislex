@@ -83,14 +83,18 @@ Lead (this session): folded the desktop WIP into real commits, Playwright contai
 
 ## Unrun checks and open items
 
-Kept current at the end of each slice. State at `a9090e2`:
+Kept current at the end of each slice. State at `3b8bb88` on `integrate/redesign-final-cora77` (pushed to origin; merges `claude/redesign-v14qbo`, `claude/stoic-ride-1c8hns`, `claude/redesign-assistant` and `claude/redesign`, with conflict decisions in merge commits 09d76ce, a252aef, 0a479f2 and 022fef0).
 
-- Not run: native Tauri/WebView2 build of this branch on Windows; `scripts/native-protocol-origin-test.ps1` for the merged CORS fix; `cargo test`; Windows 125/150/200 % scaling screenshots; NVDA/Narrator; performance on named hardware; Edge (only Chromium 1194 on Linux).
-- Open visual items: in chat at narrow widths punctuation after a citation chip can wrap alone (markdown.tsx); with a video open at 1366×768 the viewer transcript dock is cramped under the controls (viewer.css); Findings/Investigate take ~1–2 s to leave loading in the dev-server harness (unmeasured in production).
-- Open behaviour items: switching default vendor still has no one-step "keep grants for the new vendor" consent in the UI (backend accepts `grants_for_provider`); citation hover card is not Tab-reachable (Enter on the chip does the same); remaining legacy rules in src/styles.css are for classes still in use and mostly overridden.
+Linux results at `3b8bb88`: `npm ci` exit 0; `tsc --noEmit` exit 0; Vitest 30 files, 294 passed; Playwright (Chromium) 58 passed; `npm run build` ok; `cargo test --tests` (host target) 238 passed, 0 failed, 4 ignored; Python workers/scripts/benchmarks 41/13/10 passed; `vislex_plan.py check` valid.
+
+- Fixed since `a9090e2`: punctuation after a citation chip stays on the chip's line (6c48e1c); the video transcript dock stays inside the viewer at 1366×768 and 1000×680 (b8cfdf6); changing the default company keeps grants only with a consent that names the new vendor (bdfeb3e). Each has a harness test.
+- Not run: `npm run desktop:build` and the packaged-app smoke journeys on Windows at `3b8bb88`; `scripts/native-protocol-origin-test.ps1`; Windows 125/150/200 % scaling screenshots; NVDA/Narrator; Edge; performance on named hardware. The desktop session ran native journeys (commits 4c7004f, 3f763b7, 1c9b692 adjust native test mode) but recorded no results, so none are claimed.
+- `cargo fmt --check` fails repo-wide (about 40 files, also on `main`); it was never enforced and is left alone to avoid churn in shared Rust files.
+- Open visual item: Findings/Investigate take ~1–2 s to leave loading in the dev-server harness (unmeasured in production).
+- Open behaviour items: citation hover card is not Tab-reachable (Enter on the chip does the same); remaining legacy rules in src/styles.css are for classes still in use and mostly overridden.
 - Not done from the stack decision: `lucide-react` 1.x upgrade and `@tanstack/react-virtual` for long lists.
-- Local branches `worktree-wf_3fc12f9a-9d8-{1,2,3,8}` exist only in the cloud container; their commits are all contained in `claude/redesign-v14qbo`.
+- Branches not merged, on purpose: `impl/wave1-repairs`, `codex/chatgpt-subscription` and `codex/snapshot-subscription-20260927` are an older lineage whose code is already in the 2026-09-26 snapshot root (6cac65b) this history starts from; `codex/snapshot-{assistant,harness,settings}-20260927` are unverified Codex WIP rewrites of AgentPanel, SettingsDialog and a fake backend that the redesign replaced. They stay on origin untouched.
 
 ## Next action
 
-Pull `claude/redesign-v14qbo` on the Windows machine, reconcile it with any newer local work (e.g. `claude/redesign`, `codex/vislex-redesign` and Codex worktrees), run the native gates above, then merge to `main` only after they pass.
+On Windows, check out `integrate/redesign-final-cora77`, run `npm run desktop:build`, the packaged-app smoke journeys and `scripts/native-protocol-origin-test.ps1`, and record results. Then merge into `main` with a merge commit (main is an ancestor, so it can also fast-forward) and tag, after the user approves.
