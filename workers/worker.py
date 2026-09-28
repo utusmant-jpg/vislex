@@ -351,19 +351,10 @@ def process(job: Path, request: dict) -> dict:
         else:
             notes = ['Preview uses EXIF orientation. Original bytes and metadata are preserved.', 'No OCR, identity attribution, or visual understanding is implied. Multipage images require page-by-page review.']
     elif kind == 'docx':
-        from docx import Document
-        document = Document(source)
-        from docx.text.paragraph import Paragraph
-        from docx.table import Table
-        # Preserve paragraph/table order in the source document.
-        for n, element in enumerate(document.element.body, 1):
-            if element.tag.endswith('}p'):
-                paragraph = Paragraph(element, document)
-                pages.append({'locator': f'block:{n}:paragraph', 'text': paragraph.text, 'method': 'python-docx'})
-            elif element.tag.endswith('}tbl'):
-                for row, cells in enumerate(Table(element, document).rows, 1):
-                    pages.append({'locator': f'block:{n}:table:row:{row}', 'text': '\t'.join(c.text for c in cells.cells), 'method': 'python-docx table'})
-        notes = ['Tracked revisions, comments, headers, footnotes, and embedded attachments are not extracted by this adapter. No page layout is implied.']
+        from docx_extract import extract as extract_docx
+        extracted = extract_docx(source)
+        pages, notes = extracted['pages'], extracted['notes']
+        metadata.update(extracted['metadata'])
     elif kind in ('pptx', 'odt'):
         import zipfile
         import xml.etree.ElementTree as ET
