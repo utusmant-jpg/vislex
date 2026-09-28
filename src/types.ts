@@ -10,7 +10,7 @@ export type RecordSummary = Omit<WorkingRecord, 'content'>;
 
 export type Settings = { offline: boolean; allow_text: boolean; allow_images: boolean; model: string };
 
-export type Task = { progress?: {summary:string;citations:string[];gaps:string[];next_steps:string[];checkpoint_step:number;duplicate_reads:number}; title?: string | null; answer_truncated?: boolean; id: string; conversation_id?: string; prompt: string; mode: string; status: string; input_tokens: number; output_tokens: number; step: number; answer: string; error: string; generation: number; created_at: string };
+export type Task = { progress?: {summary:string;citations:string[];gaps:string[];next_steps:string[];checkpoint_step:number;duplicate_reads:number}; title?: string | null; answer_truncated?: boolean; id: string; conversation_id?: string; prompt: string; mode: string; status: string; input_tokens: number; output_tokens: number; /** Provider-reported USD cost; null or absent means not reported. */ cost?: number | null; /** True when some requests in the task reported no cost. */ cost_partial?: boolean; step: number; answer: string; error: string; generation: number; created_at: string };
 
 export type Job = {superseded?:boolean;parent_run_id?:string|null;id:string;source_id:string;name:string;kind:string;status:string;error:string;created_at:string};
 

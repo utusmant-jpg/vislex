@@ -1787,3 +1787,48 @@ fn delete_case_refuses_folders_that_are_not_cases() {
     assert!(plain.exists());
     assert!(evidence_desk::case::delete_case(&dir.path().join("missing"), "anything").is_err());
 }
+
+#[test]
+fn provider_reported_cost_reaches_the_task_and_missing_cost_stays_unreported() {
+    let (_dir, mut c, sid) = setup(); enable(&mut c);
+    let task=agent::start(&mut c,"Cost visibility", "investigate",vec![sid.clone()],vec![],0.).unwrap();
+    // First request: the generation id was persisted while pending (as the
+    // desktop progress callback does) and the final usage reports a cost.
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    c.db.execute("UPDATE transmissions SET usage=json_object('generation_id','gen-synthetic-7') WHERE id=?",[&request.transmission]).unwrap();
+    let text=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":5,"cost":0.25},"output":[{"type":"function_call","call_id":"read","name":"search_passages","arguments":json!({"terms":["blue"],"offset":0}).to_string()}]});
+    assert!(agent::receive(&mut c,&task,&request.transmission,text).unwrap());
+    let (actual,generation):(Option<f64>,Option<String>)=c.db.query_row("SELECT actual,json_extract(usage,'$.generation_id') FROM transmissions WHERE id=?",[&request.transmission],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(actual,Some(0.25));
+    assert_eq!(generation.as_deref(),Some("gen-synthetic-7"),"the pending generation id survives the final usage write");
+    let row=&c.task_page(None).unwrap()["tasks"][0];
+    assert_eq!(row["cost"],0.25);
+    assert_eq!(row["cost_partial"],false);
+    // Second request reports no cost: the total is kept but marked partial,
+    // and nothing is shown as zero.
+    let request=agent::prepare_request(&mut c,&task).unwrap();
+    let answer=json!({"status":"completed","usage":{"input_tokens":10,"output_tokens":5},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic answer."}]}]});
+    agent::receive(&mut c,&task,&request.transmission,answer).unwrap();
+    let actual:Option<f64>=c.db.query_row("SELECT actual FROM transmissions WHERE id=?",[&request.transmission],|r|r.get(0)).unwrap();
+    assert_eq!(actual,None);
+    let row=&c.task_page(None).unwrap()["tasks"][0];
+    assert_eq!(row["cost"],0.25);
+    assert_eq!(row["cost_partial"],true);
+    let detail=c.conversation_detail(row["conversation_id"].as_str().unwrap(),None).unwrap();
+    assert_eq!(detail["tasks"][0]["cost_partial"],true);
+}
+
+#[test]
+fn openrouter_web_search_models_never_receive_case_text() {
+    use evidence_desk::providers::{check_permission, Profile, Provider};
+    let (_dir, c, _sid) = { let (d, mut c, s) = setup(); enable(&mut c); (d, c, s) };
+    for model in ["openai/gpt-5:online", "perplexity/sonar-pro", "openai/gpt-4o-search-preview"] {
+        let profile=Profile{provider:Provider::Openrouter,model:model.into(),allow_text:true,allow_images:false};
+        let error=check_permission(&c,&profile).unwrap_err().to_string();
+        assert!(error.contains("Web-search models are not permitted"),"{model}: {error}");
+    }
+    let ordinary=Profile{provider:Provider::Openrouter,model:"openai/gpt-5".into(),allow_text:true,allow_images:false};
+    // Other rules (pool membership) may still refuse it, but never as web search.
+    let other=check_permission(&c,&ordinary).err().map(|e|e.to_string()).unwrap_or_default();
+    assert!(!other.contains("Web-search"),"{other}");
+}

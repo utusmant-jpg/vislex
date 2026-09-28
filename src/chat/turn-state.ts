@@ -72,16 +72,28 @@ export function composerBlock({ native, snapshot, accessKnown, subscriptionActiv
   return null;
 }
 
-export type Usage = { input: number; output: number; total: number; reportedTurns: number };
+export type Usage = { input: number; output: number; total: number; reportedTurns: number; cost: number | null; costPartial: boolean };
 
-/** Sum only what providers reported; turns with no reported usage add nothing. */
-export function usageOf(turns: Pick<Task, 'input_tokens' | 'output_tokens'>[]): Usage {
-  let input = 0, output = 0, reportedTurns = 0;
+/** Sum only what providers reported; turns with no reported usage add nothing.
+ *  Cost is null when no provider reported one, and marked partial when some
+ *  requests reported none, so an unknown cost is never shown as zero. */
+export function usageOf(turns: Pick<Task, 'input_tokens' | 'output_tokens' | 'cost' | 'cost_partial'>[]): Usage {
+  let input = 0, output = 0, reportedTurns = 0, cost: number | null = null, costPartial = false;
   for (const turn of turns) {
     const turnInput = Number.isFinite(turn.input_tokens) ? turn.input_tokens : 0;
     const turnOutput = Number.isFinite(turn.output_tokens) ? turn.output_tokens : 0;
     if (turnInput + turnOutput > 0) reportedTurns += 1;
     input += turnInput; output += turnOutput;
+    const turnCost = typeof turn.cost === 'number' && Number.isFinite(turn.cost) ? turn.cost : null;
+    if (turnCost !== null) cost = (cost ?? 0) + turnCost;
+    if (turn.cost_partial || (turnCost === null && turnInput + turnOutput > 0)) costPartial = true;
   }
-  return { input, output, total: input + output, reportedTurns };
+  return { input, output, total: input + output, reportedTurns, cost, costPartial };
+}
+
+/** Provider-reported cost as text; null when nothing was reported. */
+export function costLabel(cost: number | null | undefined, partial = false): string | null {
+  if (typeof cost !== 'number' || !Number.isFinite(cost)) return null;
+  const amount = cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
+  return partial ? `${amount}+ reported (some requests reported no cost)` : `${amount} reported`;
 }

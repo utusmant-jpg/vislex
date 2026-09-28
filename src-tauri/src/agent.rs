@@ -1498,9 +1498,17 @@ pub fn receive_prepared(case: &mut Case, task: &str, transmission: &str, respons
         state == "pending",
         "Transmission was already handled; refusing replay"
     );
+    // Keep a generation id recorded while the request was pending, and copy a
+    // provider-reported cost into `actual`; an unreported cost stays NULL.
+    let mut usage = response["usage"].clone();
+    if usage["generation_id"].is_null() {
+        let earlier: Option<String> = case.db.query_row("SELECT json_extract(usage,'$.generation_id') FROM transmissions WHERE id=?", [transmission], |r| r.get(0)).unwrap_or(None);
+        if let (Some(id), Some(object)) = (earlier, usage.as_object_mut()) { object.insert("generation_id".into(), json!(id)); }
+    }
+    let cost = usage["cost"].as_f64().filter(|c| c.is_finite() && *c >= 0.0);
     case.db.execute(
-        "UPDATE transmissions SET status='received',usage=? WHERE id=?",
-        params![response["usage"].to_string(), transmission],
+        "UPDATE transmissions SET status='received',usage=?,actual=? WHERE id=?",
+        params![usage.to_string(), cost, transmission],
     )?;
     let running: String =
         case.db

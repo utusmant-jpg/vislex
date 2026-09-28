@@ -1375,7 +1375,15 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
 
             let response=tokio::select! {
 
-                result=crate::providers::send(prepared.provider,&key,prepared.body,|delta|{let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":delta}));})=>result,
+                result=crate::providers::send(prepared.provider,&key,prepared.body,|delta|{
+                    // Persist the provider's generation id while the row is pending,
+                    // so a cancelled or failed request can still be reconciled.
+                    if let Some(id)=delta["generation_id"].as_str() {
+                        let _=with_case_expected(&app,&case_id,Some(epoch),|c|{c.db.execute("UPDATE transmissions SET usage=json_object('generation_id',?) WHERE id=? AND status='pending'",rusqlite::params![id,prepared.transmission])?;Ok(())});
+                        return;
+                    }
+                    let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":delta}));
+                })=>result,
 
                 _=cancelled(&app,&case_id,epoch,&task)=>Err(anyhow::anyhow!("Request cancelled; transmission may have occurred")),
 

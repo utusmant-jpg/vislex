@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   APP_STOPPED_REASON, CHAT_PREEMPTION_REASON, COORDINATOR_STOP_REASON, USER_STOP_REASON,
-  composerBlock, settingsPath, settledAnnouncement, turnOutcome, usageOf,
+  composerBlock, costLabel, settingsPath, settledAnnouncement, turnOutcome, usageOf,
 } from './turn-state';
 
 describe('turnOutcome', () => {
@@ -76,7 +76,25 @@ describe('composerBlock', () => {
 describe('usageOf', () => {
   it('sums reported usage and counts only turns that reported any', () => {
     expect(usageOf([{ input_tokens: 10, output_tokens: 5 }, { input_tokens: 0, output_tokens: 0 }, { input_tokens: 1, output_tokens: 2 }]))
-      .toEqual({ input: 11, output: 7, total: 18, reportedTurns: 2 });
-    expect(usageOf([])).toEqual({ input: 0, output: 0, total: 0, reportedTurns: 0 });
+      .toMatchObject({ input: 11, output: 7, total: 18, reportedTurns: 2 });
+    expect(usageOf([])).toEqual({ input: 0, output: 0, total: 0, reportedTurns: 0, cost: null, costPartial: false });
+  });
+  it('sums reported cost, never shows an unknown cost as zero, and marks partial totals', () => {
+    expect(usageOf([{ input_tokens: 10, output_tokens: 5 }])).toMatchObject({ cost: null, costPartial: true });
+    expect(usageOf([{ input_tokens: 10, output_tokens: 5, cost: 0.2, cost_partial: false }, { input_tokens: 1, output_tokens: 1, cost: 0.05 }]))
+      .toMatchObject({ cost: 0.25, costPartial: false });
+    expect(usageOf([{ input_tokens: 10, output_tokens: 5, cost: 0.2 }, { input_tokens: 1, output_tokens: 1, cost: null }]))
+      .toMatchObject({ cost: 0.2, costPartial: true });
+    expect(usageOf([{ input_tokens: 10, output_tokens: 5, cost: 0.2, cost_partial: true }])).toMatchObject({ cost: 0.2, costPartial: true });
+  });
+});
+
+describe('costLabel', () => {
+  it('states reported cost and flags partial totals', () => {
+    expect(costLabel(null)).toBeNull();
+    expect(costLabel(undefined)).toBeNull();
+    expect(costLabel(0.004)).toBe('$0.0040 reported');
+    expect(costLabel(1.5)).toBe('$1.50 reported');
+    expect(costLabel(1.5, true)).toBe('$1.50+ reported (some requests reported no cost)');
   });
 });
