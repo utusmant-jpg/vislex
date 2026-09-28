@@ -238,7 +238,7 @@ export function buildHarborCase(now: number, sourceCount = 250): HarnessCase {
   jobs.push(job(FIXTURE.jobs.videoIndexRunning, 1, 4, 'video_overview_index', 'running', { progress: { unit: 'seconds indexed', completed: 640 } }));
   jobs.push(job(FIXTURE.jobs.prepareRunning, 2, 12, 'auto_prepare', 'running'));
   jobs.push(job(FIXTURE.jobs.queued, 3, 15, 'full_audio', 'queued'));
-  jobs.push(job(FIXTURE.jobs.failed, 4, 9, 'auto_prepare', 'failed', { error: 'Synthetic failure: the PDF renderer exited before page 3. The original is unchanged; recover to retry from saved progress.' }));
+  jobs.push(job(FIXTURE.jobs.failed, 4, 12 + 6, 'pdf_page', 'failed', { error: 'Synthetic failure: the PDF renderer exited before page 3. The original is unchanged; recover to retry from saved progress.' }));
   jobs.push(job(FIXTURE.jobs.interrupted, 5, 10, 'video_ocr_index', 'interrupted', { error: 'Synthetic interruption: the application closed during indexing.' }));
   jobs.push(job(syntheticId('job', 6), 6, 15, 'auto_prepare', 'cancelled'));
   jobs.push(job(syntheticId('job', 7), 7, 21, 'full_audio', 'failed', { error: 'Synthetic failure: audio decoder rejected track 2.', superseded: true }));
