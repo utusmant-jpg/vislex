@@ -65,18 +65,18 @@ Follow `README.md` → Verification for the full Windows sequence. Tier 1 is `ca
 
 ## Latest Linux run (cloud container, 2026-09-28)
 
-Tested commit: `7b01ebf` on `claude/stoic-ride-1c8hns`. Nothing below has run on Windows; see `docs/implementation/LOCAL-FINALIZE.md` for the Windows checks still owed.
+Tested commit: `3b8bb88` on `integrate/redesign-final-cora77`. Nothing below has run on Windows; see `docs/implementation/LOCAL-FINALIZE.md` for the Windows checks still owed.
 
 | Check | Result |
 |---|---|
+| `npm ci` | exit 0 |
 | `tsc --noEmit` | exit 0 |
-| Vitest | 29 files, 263 tests passed |
-| `vite build` | ok |
-| Playwright (Chromium) | 47 passed, plus one intentional expected failure for a known combobox issue |
+| Vitest | 30 files, 294 tests passed |
+| `npm run build` | ok |
+| Playwright (Chromium) | 58 passed |
 | Rust, host target, `--tests` | 238 passed, 0 failed, 4 ignored |
 | Python workers / scripts / benchmarks | 41 / 13 / 10 passed |
 | `vislex_plan.py check` | valid, 33 tasks |
+| `cargo fmt --check` | fails repo-wide (about 40 files, also on `main`); not enforced |
 
 Environment: Node 22.22.2, npm 10.9.7, stable Rust (x86_64-unknown-linux-gnu), Python 3.11.15.
-
-The first baseline, on `b2bcd85` of `claude/redesign-v14qbo`, had 5 Playwright failures, all fixed on this branch.
