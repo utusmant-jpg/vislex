@@ -219,6 +219,15 @@ it('opens a record preview citation and states that export uses saved text', asy
   await waitFor(()=>expect(api).toHaveBeenCalledWith('export_record',{case_id:'synthetic-case',record_id:'record-1',expected_revision:1,path:'C:\\synthetic\\saved.md'}));
 });
 
+// The case-open effect (App.tsx) resets view, selection and tabs as a passive
+// effect after the case name first renders. Interacting before it has run lets
+// that reset overwrite the interaction on a slow run, so wait for its
+// storage_usage request, which the same effect issues.
+async function caseOpened(name = 'Synthetic case') {
+  await screen.findAllByText(name);
+  await waitFor(() => expect(api).toHaveBeenCalledWith('storage_usage'));
+}
+
 it('opens the clicked palette search hit at its exact historical locator', async () => {
   const current=snapshot();
   current.session_epoch=9;
@@ -228,7 +237,7 @@ it('opens the clicked palette search hit at its exact historical locator', async
     {source_id:'source-one',name:'Second hit',excerpt:'second',locator:'evidence:source-one#R1L9-L9'},
   ],remaining_passages:0}:action==='storage_usage'?{}:null);
   render(<App/>);
-  await screen.findAllByText('Synthetic case');
+  await caseOpened();
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
   const search=screen.getByRole('combobox',{name:/Search case/});
   fireEvent.change(search,{target:{value:'hit'}});
@@ -253,7 +262,7 @@ it('opens a cited source that is outside the first case page', async () => {
   const older:Source={id:'older-source',name:'Older statement.txt',sha256:'hash',size:20,mime:'text/plain',kind:'text',status:'text ready',restricted:false,occurrences:1,created_at:'2026-09-01T00:00:00Z'};
   api.mockImplementation(async (action:string)=>action==='snapshot'?current:action==='hybrid_search'?{results:[{source_id:older.id,name:older.name,excerpt:'older evidence',locator:`evidence:${older.id}#R1L2-L2`}],remaining_passages:0}:action==='source_detail'?older:action==='storage_usage'?{}:null);
   render(<App/>);
-  await screen.findAllByText('Synthetic case');
+  await caseOpened();
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
   fireEvent.change(screen.getByRole('combobox',{name:/Search case/}),{target:{value:'older evidence'}});
   fireEvent.click(screen.getByRole('button',{name:/Search text & meaning/}));
@@ -270,7 +279,7 @@ it('loads older chats by cursor and fetches the full selected answer on demand',
   const full='Exact saved answer '.repeat(100);
   api.mockImplementation(async (action:string,args:{conversation_id?:string})=>action==='snapshot'?current:action==='task_page'?{tasks:[old],next_cursor:null}:action==='conversation_detail'?{tasks:args.conversation_id==='old-chat'?[{...old,answer:full}]:[],has_older:false}:action==='storage_usage'?{}:null);
   render(<App/>);
-  await screen.findAllByText('Synthetic case');
+  await caseOpened();
   fireEvent.click(screen.getByRole('button',{name:'Show all chats'}));
   fireEvent.click(screen.getByRole('button',{name:'Load older chats'}));
   fireEvent.click(await screen.findByTitle('Older question'));
@@ -285,7 +294,7 @@ it('takes a selected historical text range to Chat and focuses the composer', as
   api.mockImplementation(async (action:string)=>action==='snapshot'?current:action==='read_text'?{text:'selected wording',start:5,end:5,total_lines:10,revision:1,locator:'evidence:source-one#R1L5-L5',truncated_long_lines:false}:action==='storage_usage'?{}:null);
   const selection=vi.spyOn(window,'getSelection').mockReturnValue({isCollapsed:false,containsNode:()=>true} as unknown as globalThis.Selection);
   render(<App/>);
-  await screen.findAllByText('Synthetic case');
+  await caseOpened();
   fireEvent.click(screen.getByRole('button',{name:'Evidence'}));
   fireEvent.keyDown(window,{key:'k',ctrlKey:true});
   fireEvent.change(screen.getByRole('combobox',{name:/Search case/}),{target:{value:'Statement'}});
@@ -307,7 +316,7 @@ it('discards a refresh from the previous case after switching projects', async (
   let reads=0;
   api.mockImplementation(async (action:string)=>action==='snapshot'?(++reads===1?old:late):action==='open_case'?next:action==='storage_usage'?{}:null);
   render(<App/>);
-  await screen.findAllByText('Synthetic case');
+  await caseOpened();
   fireEvent.click(screen.getByRole('button',{name:/^Jobs(, \d+ needs? attention)?$/}));
   fireEvent.click(await screen.findByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
@@ -329,7 +338,7 @@ it('keeps the latest same-case refresh when an earlier request returns last', as
   let reads=0;
   api.mockImplementation(async (action:string)=>action==='snapshot'?(++reads===1?initial:reads===2?earlier:newest):action==='storage_usage'?{}:null);
   render(<App/>);
-  await screen.findAllByText('Synthetic case');
+  await caseOpened();
   fireEvent.click(screen.getByRole('button',{name:/^Jobs(, \d+ needs? attention)?$/}));
   fireEvent.click(await screen.findByRole('button',{name:'Queue missing full transcripts'}));
   await waitFor(()=>expect(reads).toBe(2));
@@ -411,7 +420,7 @@ it('cancels case creation without calling the backend', async () => {
 it('shows an informational findings preview with no empty-page pagination', async () => {
   api.mockImplementation(async (action:string) => action === 'snapshot' ? snapshot() : action === 'storage_usage' ? {} : null);
   render(<App />);
-  await screen.findAllByText('Synthetic case');
+  await caseOpened();
   fireEvent.click(screen.getByRole('button', { name: 'Findings' }));
   expect(await screen.findByRole('heading', { name: 'No findings on this page' })).toBeTruthy();
   expect(screen.getByText(/This browser shows the layout only/)).toBeTruthy();
