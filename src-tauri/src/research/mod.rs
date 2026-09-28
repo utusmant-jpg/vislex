@@ -55,9 +55,15 @@ impl NavigationPolicy {
             ensure!(!debugging_port_requested(arguments.as_deref()), "Test mode opens the research pane only against VISLEX_RESEARCH_MOCK_URL");
         }
         ensure!(!debugging_port_requested(arguments.as_deref()), "The research browser does not open while a WebView2 debugging switch is configured");
-        // Measured in the R34 spike: this variable overrides the pane's own data directory,
-        // which would put the research session in the application webview's profile.
-        ensure!(std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none(), "The research browser does not open while WEBVIEW2_USER_DATA_FOLDER is set");
+        ensure!(
+            !arguments.as_deref().is_some_and(|arguments| arguments.to_ascii_lowercase().contains("user-data-dir")),
+            "The research browser does not open while a WebView2 profile switch is configured"
+        );
+        // Measured in the R34 spike: WEBVIEW2_USER_DATA_FOLDER overrides the pane's own data
+        // directory. The others attach a script debugger or substitute the browser runtime.
+        for variable in ["WEBVIEW2_USER_DATA_FOLDER", "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER", "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"] {
+            ensure!(std::env::var_os(variable).is_none(), "The research browser does not open while {variable} is set");
+        }
         Ok(Self { sso_hosts, mock_origin: None })
     }
 
@@ -107,10 +113,29 @@ pub fn debugging_port_requested(additional_browser_arguments: Option<&str>) -> b
     additional_browser_arguments.is_some_and(|arguments| arguments.to_ascii_lowercase().contains("remote-debugging"))
 }
 
-/// Comparable form of a path: canonical when it exists (resolving `..`, junctions and short
-/// names), without the verbatim prefix, lower-cased, split into components.
+/// Canonical form of `path`: its nearest existing ancestor is canonicalized (resolving `..`,
+/// junctions, `subst` drives and short names) and the not-yet-existing remainder appended.
+fn canonical_prefix(path: &Path) -> std::path::PathBuf {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(resolved) = std::fs::canonicalize(existing) {
+            return rest.iter().rev().fold(resolved, |joined, part| joined.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// Comparable form of a path: canonical as far as it exists, without the verbatim prefix,
+/// lower-cased, split into components.
 pub fn path_components(path: &Path) -> Vec<String> {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let resolved = canonical_prefix(path);
     let text = resolved.to_string_lossy().replace('/', r"\");
     let text = match text.strip_prefix(r"\\?\UNC\") {
         Some(rest) => format!(r"\\{rest}"),

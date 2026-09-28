@@ -34,7 +34,8 @@
     ],
     "resources": [
       "resources/worker/**/*",
-      "resources/codex/**/*"
+      "resources/codex/**/*",
+      "resources/research/**/*"
     ],
     "icon": [
       "icons/icon.ico",

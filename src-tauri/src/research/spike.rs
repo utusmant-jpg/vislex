@@ -269,5 +269,17 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, start: String, profile: std::pat
         "hidden_webview_still_evaluates": hidden_still_runs,
     });
     pane::close(&app)?;
+    // The spike fails unless the isolation invariants held, not merely because it ran.
+    let refused = |value: &Value| value.as_str().is_some_and(|text| text.starts_with("refused") || text.starts_with("error") || text.starts_with("no "));
+    let mut violations = Vec::new();
+    if !refused(&report["isolation"]["invoke"]) { violations.push("research page could invoke commands"); }
+    if !refused(&report["isolation"]["evidence_fetch"]) { violations.push("research page could fetch evidence"); }
+    if !refused(&report["framed_app_attack"]["invoke_from_frame"]) { violations.push("framed VisLex UI could invoke commands"); }
+    if report["navigation"]["url_after_blocked"].as_str().is_some_and(|url| url.contains("example.com")) { violations.push("blocked navigation proceeded"); }
+    if report["navigation"]["webview_count"].as_u64() != Some(2) { violations.push("a pop-up created another webview"); }
+    if !report["environment"]["webview2_user_data_folder_env"].as_bool().unwrap_or(true) && report["environment"]["effective_user_data_folder_is_profile"] != Value::Bool(true) {
+        violations.push("research pane did not use its own profile");
+    }
+    ensure!(violations.is_empty(), "Isolation violated: {}; report {}", violations.join(", "), report);
     Ok(report)
 }

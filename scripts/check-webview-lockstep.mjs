@@ -7,7 +7,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const root = process.env.VISLEX_LOCKSTEP_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), '..');
 const failures = [];
 
 const packages = readFileSync(join(root, 'src-tauri', 'Cargo.lock'), 'utf8')

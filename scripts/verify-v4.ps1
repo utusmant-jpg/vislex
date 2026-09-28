@@ -8,6 +8,8 @@ $v4Checks = @(
     @{ Name = 'frontend-tests'; Command = 'npm.cmd'; Arguments = @('test') },
     @{ Name = 'desktop-check'; Command = 'cargo'; Arguments = @('check','--manifest-path','src-tauri/Cargo.toml','--features','desktop') },
     @{ Name = 'webview-lockstep'; Command = 'node'; Arguments = @('scripts/check-webview-lockstep.mjs') },
+    @{ Name = 'webview-lockstep-tests'; Command = 'node'; Arguments = @('--test','scripts/check-webview-lockstep.test.mjs') },
+    @{ Name = 'research-injected-script'; Command = 'node'; Arguments = @('scripts/build-research-injected.mjs','--check') },
     @{ Name = 'research-desktop-check'; Command = 'cargo'; Arguments = @('check','--manifest-path','src-tauri/Cargo.toml','--features','research') },
     @{ Name = 'research-release-check'; Command = 'cargo'; Arguments = @('check','--release','--manifest-path','src-tauri/Cargo.toml','--features','research') },
     @{ Name = 'rust-tests'; Command = 'cargo'; Arguments = @('test','--manifest-path','src-tauri/Cargo.toml') },

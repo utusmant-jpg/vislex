@@ -19,7 +19,12 @@ Both runs use only the synthetic loopback fixture `scripts/research-fixture-serv
 - **Port mode** (`scripts/native-research-spike.ps1`): uses the existing native-test setup, with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port` and `WEBVIEW2_USER_DATA_FOLDER` set. The main webview invokes the debug-only `research_spike` action. The run fails if the report says `ok: false`.
 - **Startup mode** (`scripts/native-research-spike-startup.ps1`): neither variable is set. The debug test-mode app runs the spike itself at startup, writes `artifacts/research-spike-startup.json`, and exits non-zero on failure. This is the configuration a user build has.
 
-The spike code is `src-tauri/src/research/spike.rs`. It is compiled only with `research` + Windows + `debug_assertions`; `cargo check --release --features research` passes without it. It runs only when `VISLEX_TEST_MODE=1` and a loopback `VISLEX_RESEARCH_MOCK_URL` are set.
+The spike code is `src-tauri/src/research/spike.rs`. It is compiled only with `research` + Windows + `debug_assertions`; `cargo check --release --features research` passes without it. It runs only when `VISLEX_TEST_MODE=1` and a loopback `VISLEX_RESEARCH_MOCK_URL` are set. A run fails (`ok: false`, non-zero exit) unless every isolation invariant below held:
+- the research page and the framed probe cannot invoke commands;
+- the evidence fetch fails;
+- the blocked navigation does not proceed;
+- no pop-up webview appears;
+- in startup mode, the pane uses its own profile.
 
 ## Results (startup mode unless noted)
 
@@ -82,8 +87,14 @@ These worked when called once:
 - In port mode, no `DevToolsActivePort` file appears in the profile even though a port is active, so an active listener cannot be detected from the profile.
 
 The pane therefore enforces the following:
-- **Before creation:** it refuses to open while the environment contains a debugging switch (any `-`, `--` or `/` prefix) or `WEBVIEW2_USER_DATA_FOLDER`, or while the WebView2 `AdditionalBrowserArguments` or `UserDataFolder` registry policies exist.
-- **After creation:** it confirms the effective folder equals its own profile and closes the pane otherwise.
+- **Before creation:** it refuses to open while any of these is present:
+  - a debugging switch (any `-`, `--` or `/` prefix) or a `user-data-dir` switch in the browser arguments;
+  - `WEBVIEW2_USER_DATA_FOLDER`, `WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER` or `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` in the environment;
+  - the WebView2 `AdditionalBrowserArguments` or `UserDataFolder` registry policies. A registry read error other than "not found" counts as present.
+
+  An administrator's `BrowserExecutableFolder` policy (a fixed-version runtime) is not refused.
+- **After creation:** it confirms the effective folder equals its own profile, and otherwise closes the pane and clears its policy. `open()` reuses an existing pane only if it passed that check.
+- The profile boundary canonicalizes the nearest existing ancestor, so junctions, `subst` drives and short names on a case path are resolved.
 
 Both checks are skipped only in debug test mode against a loopback fixture.
 
@@ -115,10 +126,45 @@ Native acceptance used `VISLEX_WORKER_PATH` pointing at the main checkout's buil
 - **Configuration refusals:** the pane refuses unsafe configurations before creation and verifies its effective profile after creation. It does not rely on a `DevToolsActivePort` marker.
 - **Iframe navigations:** subframes are not covered by the navigation allowlist. Captures and agent actions must therefore operate on the main frame, or on frames whose origin the agent tools check explicitly (R42/R50).
 
+## R35: page observation script and sizing
+
+**Script.** `src-tauri/resources/research/injected-script.js` (321,108 bytes, sha256 `93f3fbc1…3de2`) is Playwright 1.63.0's injected script, which is Apache-2.0.
+- `scripts/build-research-injected.mjs` extracts it unchanged from the locked `playwright-core`.
+- `--check` proves it is reproducible and is wired into `verify-v4.ps1`.
+- LICENSE, NOTICE and ThirdPartyNotices are bundled beside it.
+- It evaluates to the `InjectedScript` class. Playwright itself runs this class in an isolated utility world.
+
+**Output.** `ariaSnapshot(element, {mode: "ai"})` returns YAML with roles, accessible names, link URLs and `[ref=eN]`. `ariaSnapshotForRecorder()` also returns the ref map (element → ref).
+
+**Ref stability.** Measured in Edge via Playwright, dev tooling only:
+- after a re-render that inserts a row above existing rows, unchanged elements keep their refs;
+- a replaced element gets a new ref, so a stale ref fails and the agent must re-snapshot.
+
+**Password fields.** A password input is reported as a plain `textbox`. The credential-field guard in R42 must use DOM attributes, not the snapshot role.
+
+**Sizing on public legal pages.** Measured in Edge via Playwright, with tokens estimated as characters ÷ 4:
+
+| Page | Raw HTML | Full snapshot | Interactive lines only | Main landmark | Snapshot time |
+|---|---|---|---|---|---|
+| Google Scholar case-law results ("duty of care" negligence) | 41,585 | 4,191 | 1,334 | 3,124 | 28 ms |
+| LII 42 U.S.C. § 1983 | 9,789 | 1,909 | 731 | 851 | 12 ms |
+
+Both interactive views are under the plan's ≤3k-token target for a results page.
+
+**Automated-browser blocking.**
+- CourtListener returned a CDN 403 to the automated headless browser.
+- Justia returned a Cloudflare challenge.
+
+The research pane is a headed, user-signed-in WebView2, but sites that detect automation remain a risk. The pacing and caps apply, and a challenge must end the task and hand control back to the user.
+
+**Not run.** Westlaw pages were not measured; that needs the developer's own signed-in account, and is part of R36.
+
 ## Not run / open
 
 - The Linux `cargo check` for `desktop` and `research` has been added to CI but was not run locally.
-- R35 (ariaSnapshot sizing) and R36 (the real Westlaw DOM survey) are not started.
+- R36 (the real Westlaw DOM survey and Westlaw snapshot sizing) needs the developer's own signed-in Westlaw account and is not started.
 - Cross-origin iframe sessions (`CallDevToolsProtocolMethodForSession`) were not exercised.
 - Which layer blocks the framed-app probe is not isolated.
 - Only one machine was measured, an ARM64 host running x64 under emulation.
+- Startup mode clears `WEBVIEW2_USER_DATA_FOLDER`, so the main application webview uses the user's real VisLex WebView2 profile during that run. The research pane still uses its own temporary profile, and no case data is involved.
+- The command's webview-label check is not exercised on its own. Every probe observed was refused earlier, by Tauri's remote-origin rule or by the framed page never loading.

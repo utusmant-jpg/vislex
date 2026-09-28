@@ -28,6 +28,8 @@ pub struct Rect {
 #[derive(Default)]
 pub struct PaneState {
     opening: AtomicBool,
+    /// True only while a pane exists that passed `verify_isolation`.
+    verified: AtomicBool,
     /// Set by Stop; checked between DevTools calls by agent jobs.
     pub cancel: Arc<AtomicBool>,
     /// The policy the open pane was created with; navigation and pop-up handlers read it.
@@ -62,7 +64,10 @@ impl Drop for Opening<'_> {
 fn registry_overrides() -> Vec<String> {
     use windows::{
         core::HSTRING,
-        Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_ANY},
+        Win32::{
+            Foundation::ERROR_FILE_NOT_FOUND,
+            System::Registry::{RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_ANY},
+        },
     };
     let executable = std::env::current_exe().ok().and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned())).unwrap_or_default();
     let mut found = Vec::new();
@@ -75,7 +80,8 @@ fn registry_overrides() -> Vec<String> {
                 }
                 let mut size = 0u32;
                 let status = unsafe { RegGetValueW(hive, &subkey, &HSTRING::from(value), RRF_RT_ANY, None, None, Some(&mut size as *mut u32)) };
-                if status.is_ok() {
+                // Anything but "not found" (including access denied) counts as present.
+                if status != ERROR_FILE_NOT_FOUND {
                     found.push(format!(r"{hive_name}\...\WebView2\{key}\{value}"));
                 }
             }
@@ -111,7 +117,9 @@ fn verify_isolation<R: Runtime>(_pane: &Webview<R>, _profile: &Path, _allow_debu
 /// from the process environment, so no caller can open the pane with a weaker one. Returns the
 /// existing pane if it is already open.
 pub fn open<R: Runtime>(app: &AppHandle<R>, start: &str, profile: PathBuf, case_root: Option<&Path>, sso_hosts: Vec<String>, rect: Rect) -> Result<Webview<R>> {
+    let state = app.state::<PaneState>();
     if let Some(existing) = webview(app) {
+        ensure!(state.verified.load(Ordering::SeqCst), "The research pane is closing; try again");
         return Ok(existing);
     }
     let policy = NavigationPolicy::resolve(sso_hosts)?;
@@ -121,10 +129,10 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, start: &str, profile: PathBuf, case_
     if let Some(case_root) = case_root {
         ensure_profile_boundary(case_root, &profile)?;
     }
-    let state = app.state::<PaneState>();
     ensure!(!state.opening.swap(true, Ordering::SeqCst), "The research pane is already opening");
     let _opening = Opening(&state.opening);
     if let Some(existing) = webview(app) {
+        ensure!(state.verified.load(Ordering::SeqCst), "The research pane is closing; try again");
         return Ok(existing);
     }
     std::fs::create_dir_all(&profile).context("Could not create the research browser profile")?;
@@ -155,9 +163,11 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, start: &str, profile: PathBuf, case_
     let window = app.get_window("main").context("Main window unavailable")?;
     let pane = window.add_child(builder, LogicalPosition::new(rect.x, rect.y), LogicalSize::new(rect.width.max(1.0), rect.height.max(1.0)))?;
     if let Err(error) = verify_isolation(&pane, &profile, allow_debugging) {
-        let _ = pane.close();
+        *state.policy.lock().unwrap_or_else(|error| error.into_inner()) = None;
+        pane.close().context("The research pane failed verification and could not be closed")?;
         return Err(error);
     }
+    state.verified.store(true, Ordering::SeqCst);
     Ok(pane)
 }
 
@@ -175,6 +185,9 @@ pub fn layout<R: Runtime>(app: &AppHandle<R>, rect: Rect, visible: bool) -> Resu
 }
 
 pub fn close<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
+    let state = app.state::<PaneState>();
+    state.verified.store(false, Ordering::SeqCst);
+    *state.policy.lock().unwrap_or_else(|error| error.into_inner()) = None;
     if let Some(pane) = webview(app) {
         pane.close()?;
     }
