@@ -1710,13 +1710,17 @@ pub fn run() {
 
                     .ok_or_else(|| anyhow::anyhow!("Case closed"))?;
 
-                let (mime, path) = if let Some(artifact_id) = source_id.strip_prefix("artifact/") {
+                // Display only: resolve the artifact under the lock and verify it
+                // after releasing it, with the interactive (len, mtime) hash
+                // cache. Exports, redaction, agent reads and citations keep the
+                // strong hash in processing::artifact.
+                let (mime, path, expected) = if let Some(artifact_id) = source_id.strip_prefix("artifact/") {
 
-                    let (_, mime, path, _) = crate::processing::artifact(c, artifact_id)?;
+                    let (_, mime, path, hash, _) = crate::processing::artifact_descriptor(c, artifact_id)?;
 
                     anyhow::ensure!(["image/jpeg","video/mp4"].contains(&mime.as_str()), "Not a display artifact");
 
-                    (mime, path)
+                    (mime, path, Some(hash))
 
                 } else {
 
@@ -1730,11 +1734,14 @@ pub fn run() {
 
                     );
 
-                    (s.mime, c.source_path(source_id)?)
+                    (s.mime, c.source_path(source_id)?, None)
 
                 };
 
                 drop(guard); // File streaming must not block settings and agent control.
+                if let Some(expected) = expected {
+                    anyhow::ensure!(crate::case::file_hash_cached(&path)? == expected, "Artifact integrity check failed");
+                }
                 let mut file = std::fs::File::open(path)?;
 
                 let size = file.metadata()?.len();

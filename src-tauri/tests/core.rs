@@ -1870,3 +1870,28 @@ fn new_source_text_marks_only_dependent_records_stale() {
     c.import_files(&[third.to_string_lossy().into()], "Production C").unwrap();
     assert!(stale(&c, &on_b.id));
 }
+
+#[test]
+fn protected_artifact_reads_detect_tampering_the_display_cache_cannot() {
+    let (_dir, c, sid) = setup();
+    let bytes = b"synthetic display artifact bytes".to_vec();
+    let hash = evidence_desk::case::digest(&bytes);
+    let relative = format!("artifacts/{hash}.jpg");
+    fs::create_dir_all(c.root.join("artifacts")).unwrap();
+    let path = c.root.join(&relative);
+    fs::write(&path, &bytes).unwrap();
+    c.db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)", rusqlite::params!["artifact-tamper", sid, hash, "image/jpeg", relative, "{}", "2026-09-28T00:00:00Z"]).unwrap();
+    assert!(evidence_desk::processing::artifact(&c, "artifact-tamper").is_ok());
+    // Prime the interactive cache, then change a byte without changing the
+    // length or the modification time.
+    assert_eq!(evidence_desk::case::file_hash_cached(&path).unwrap(), hash);
+    let stamp = filetime::FileTime::from_last_modification_time(&fs::metadata(&path).unwrap());
+    let mut tampered = bytes.clone();
+    tampered[0] ^= 1;
+    fs::write(&path, &tampered).unwrap();
+    filetime::set_file_mtime(&path, stamp).unwrap();
+    // Display may still see the cached value, which is documented as a
+    // browsing optimisation; protected reads must refuse.
+    let error = evidence_desk::processing::artifact(&c, "artifact-tamper").unwrap_err().to_string();
+    assert!(error.contains("integrity"), "{error}");
+}
