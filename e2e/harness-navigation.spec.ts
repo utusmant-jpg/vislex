@@ -53,6 +53,18 @@ test('evidence library pages a large case with the generation and audit guard', 
   await expect(longRow).toHaveAttribute('title', /unusually long descriptive file name/);
   const overflow = await longRow.locator('.library-name').evaluate(element => element.scrollWidth > element.clientWidth);
   expect(overflow, 'very long names are truncated visually, not wrapped over neighbours').toBe(true);
+  // Status pills that ellipsize keep their full text in a title, and the row title names the status.
+  const status = longRow.locator('.library-cell .pill');
+  const statusText = (await status.textContent())!.trim();
+  await expect(status).toHaveAttribute('title', statusText);
+  await expect(longRow).toHaveAttribute('title', new RegExp(`Status: ${statusText}`));
+  // With the viewer open the table narrows: the name column keeps room and headers do not overlap.
+  await longRow.click();
+  const head = page.locator('.library-head > span');
+  const [nameBox, statusBox] = [await head.nth(0).boundingBox(), await head.nth(1).boundingBox()];
+  expect(nameBox!.x + nameBox!.width).toBeLessThanOrEqual(statusBox!.x);
+  expect(await longRow.locator('.library-name').evaluate(element => element.clientWidth)).toBeGreaterThan(120);
+  await page.keyboard.press('Control+w');
 
   // Restricting a source sends the exact guard and the pill appears.
   await page.getByRole('textbox', { name: 'Filter loaded evidence' }).fill('');

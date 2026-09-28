@@ -37,8 +37,10 @@ function pillIcon(state: PillState, size: number) {
   }
 }
 
-export function StatusPill({ state, label, small }: { state: PillState; label: string; small?: boolean }) {
-  return <span className={`pill tone-${pillTone[state]} ${small ? 'pill-sm' : ''}`}>{pillIcon(state, small ? 12 : 13)}{label}</span>;
+/** Icon + label. The label ellipsizes when its container is narrow; pass
+ *  `title` wherever that can happen so the full text stays available. */
+export function StatusPill({ state, label, small, title }: { state: PillState; label: string; small?: boolean; title?: string }) {
+  return <span className={`pill tone-${pillTone[state]} ${small ? 'pill-sm' : ''}`} title={title}>{pillIcon(state, small ? 12 : 13)}{label}</span>;
 }
 
 /* ---------------------------------- time ----------------------------------- */

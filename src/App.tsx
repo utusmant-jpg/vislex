@@ -188,13 +188,13 @@ export function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRe
         'separator',
         { label: source.restricted ? 'Allow AI analysis' : 'Restrict from AI analysis', icon: <Lock size={15} />, onSelect: () => onRestrict(source.id, !source.restricted) },
       ]}>
-        <button className="library-row" role="listitem" onClick={() => onOpen(source.id)} title={`${source.name}\nSHA-256 ${source.sha256}`} onKeyDown={event => { if (event.key === 'F2') { event.preventDefault(); onRename(source.id, source.name); } }}>
+        <button className="library-row" role="listitem" onClick={() => onOpen(source.id)} title={`${source.name}\nStatus: ${source.status}${source.restricted ? ' · restricted from AI analysis' : ''}\nSHA-256 ${source.sha256}`} onKeyDown={event => { if (event.key === 'F2') { event.preventDefault(); onRename(source.id, source.name); } }}>
           <span className="library-name-cell">
             <span className="library-kind"><SourceIcon kind={source.kind} size={16} /></span>
             <span className="library-name-text"><span className="library-name">{source.name}</span><span className="library-sub">{source.kind}{source.sha256 ? ` · ${source.sha256.slice(0, 10)}` : ''}</span></span>
             {source.restricted ? <StatusPill state="restricted" label="Restricted" small /> : null}
           </span>
-          <span className="library-cell"><StatusPill state={pill.state} label={pill.label} small /></span>
+          <span className="library-cell"><StatusPill state={pill.state} label={pill.label} title={pill.label} small /></span>
           <span className="library-cell mono">{formatBytes(source.size)}</span>
           <span className="library-cell">{relativeTime(source.created_at)}</span>
         </button>
@@ -208,7 +208,7 @@ export function EvidenceLibrary({ snapshot, onOpen, onOpenRecord, onRename, onRe
           <span className="library-name-text"><span className="library-name">{record.title}</span><span className="library-sub">{record.kind}{record.actor ? ` · ${record.actor}` : ''}</span></span>
           {record.protected ? <StatusPill state="protected" label="Locked" small /> : null}
         </span>
-        <span className="library-cell">{record.stale ? <StatusPill state="stale" label="Needs recheck" small /> : record.review === 'human-reviewed' ? <StatusPill state="accepted" label="Reviewed" small /> : <StatusPill state="unreviewed" label="Unreviewed" small />}</span>
+        <span className="library-cell">{record.stale ? <StatusPill state="stale" label="Needs recheck" title="Needs recheck" small /> : record.review === 'human-reviewed' ? <StatusPill state="accepted" label="Reviewed" title="Reviewed" small /> : <StatusPill state="unreviewed" label="Unreviewed" title="Unreviewed" small />}</span>
         <span className="library-cell mono">rev {record.revision}</span>
         <span className="library-cell">{relativeTime(record.updated_at)}</span>
       </button>)}
