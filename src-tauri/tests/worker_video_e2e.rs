@@ -2,11 +2,17 @@
 //! support video_ocr inside the real AppContainer. A stale bundle built before
 //! the video-discovery worker code answered "Unsupported processor kind" for
 //! every discovery job while transcription kept working.
+//!
+//! It needs the packaged worker (built by scripts/build-worker.ps1, gitignored)
+//! and a Windows AppContainer, so it is Windows-only and opt-in like sandbox.rs.
+//! Run it with: cargo test --test worker_video_e2e -- --ignored
+#![cfg(windows)]
 use evidence_desk::{processing, sandbox};
 use serde_json::json;
 use std::{fs, time::Duration};
 
 #[test]
+#[ignore = "Requires packaged worker and generated fixtures"]
 fn worker_runs_video_ocr_in_appcontainer() {
     let dir = tempfile::tempdir().unwrap();
     let job = dir.path().join("job");
