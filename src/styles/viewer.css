@@ -6,6 +6,11 @@
 
 /* ------------------------------------------------------------ frame */
 .viewer { display: flex; flex: 1; min-height: 0; min-width: 0; flex-direction: column; background: var(--surface-1); container-type: inline-size; container-name: viewer; }
+/* The column must not overflow: an overflowing dock was clipped by nothing,
+   and the transcript's scroll-into-view then scrolled the whole app shell.
+   clip (not hidden) is not a scroll container, so scroll-into-view cannot
+   scroll the column either, even below the minimum window size. */
+.viewer { overflow: clip; }
 .viewer [hidden] { display: none !important; }
 
 /* ------------------------------------------------------------ source header */
@@ -71,7 +76,7 @@
 }
 
 /* ------------------------------------------------------------ canvas and states */
-.source-canvas { flex: 1; min-height: 180px; overflow: auto; position: relative; background: var(--media-stage); scrollbar-gutter: stable; }
+.source-canvas { flex: 1; min-height: clamp(120px, 18vh, 180px); overflow: auto; position: relative; background: var(--media-stage); scrollbar-gutter: stable; }
 .source-canvas.text, .source-canvas.other { background: var(--canvas); }
 .source-canvas:focus-visible, .viewer-tool-view:focus-visible, .viewer-dock-panel:focus-visible { outline-offset: -2px; }
 .source-canvas.video, .source-canvas.audio { display: flex; flex-direction: column; justify-content: center; }
@@ -220,7 +225,10 @@
 
 /* ------------------------------------------------------------ recording tool dock */
 .viewer-dock { display: flex; flex-direction: column; flex-shrink: 0; min-height: 0; border-top: 1px solid var(--border); background: var(--surface-1); }
-.viewer-dock.open { height: clamp(200px, 38vh, 460px); }
+/* The open dock keeps its preferred height where there is room and shrinks
+   to a floor before the column would overflow; on short viewports the stage
+   above yields first (see .source-canvas). */
+.viewer-dock.open { flex: 0 1 clamp(240px, 44vh, 460px); min-height: 160px; }
 .viewer-dock-bar { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-2) 0 var(--space-3); border-bottom: 1px solid var(--border-subtle); flex-shrink: 0; min-height: 38px; }
 .viewer-dock.collapsed .viewer-dock-bar { border-bottom: 0; }
 .viewer-dock-title { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text-1); }
@@ -253,13 +261,14 @@
 .transcript-model { margin: 0 0 var(--space-2); }
 .transcript-model select { min-height: 28px; height: 28px; font-size: var(--text-sm); }
 .transcript-note { margin: var(--space-2) 0 0; font-size: var(--text-caption); color: var(--warning); }
-.transcript-window { margin: var(--space-3) 0 var(--space-1); font-size: var(--text-caption); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.transcript-window { margin: var(--space-2) 0 var(--space-1); font-size: var(--text-caption); color: var(--text-3); font-variant-numeric: tabular-nums; }
 /* Low-confidence words: a dotted underline plus a tinted background, so the
    mark does not rely on colour alone. The text colour is never changed. */
 .uncertain-word { text-decoration: underline dotted var(--warning); text-decoration-thickness: 2px; text-underline-offset: 3px; background: var(--warning-bg); border-radius: 2px; }
 .transcript-uncertain-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-3) 0 0; font-size: var(--text-caption); color: var(--text-2); font-variant-numeric: tabular-nums; }
 .transcript-uncertain-bar > span { margin-right: auto; }
-.second-opinion { margin: var(--space-3) 0; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); display: grid; gap: var(--space-2); font-size: var(--text-caption); }
+.second-opinion { margin: var(--space-2) 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); display: grid; gap: var(--space-1); font-size: var(--text-caption); }
+.second-opinion .field-hint { margin: 0; }
 .second-opinion-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .second-opinion-count { color: var(--text-2); margin-right: auto; font-variant-numeric: tabular-nums; }
 .second-opinion-list { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-1); }
