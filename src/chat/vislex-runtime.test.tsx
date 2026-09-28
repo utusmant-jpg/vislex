@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
-import { taskToMessages, useVisLexRuntime } from './vislex-runtime';
+import { taskToMessages, turnStatus, useVisLexRuntime } from './vislex-runtime';
 import type { Task } from '../types';
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -28,6 +28,15 @@ describe('taskToMessages', () => {
   it('omits the assistant message while a turn is still starting', () => {
     expect(taskToMessages(task({ status: 'running', answer: '', error: '' }))).toHaveLength(1);
   });
+
+  it('mirrors a user Stop as cancelled, never as an error', () => {
+    const stopped = taskToMessages(task({ status: 'paused', answer: '', error: 'Stopped by user' }));
+    expect(stopped[1].status).toEqual({ type: 'incomplete', reason: 'cancelled' });
+    expect(turnStatus(task({ status: 'failed', answer: '', error: 'Provider stopped' }))).toEqual({ type: 'incomplete', reason: 'error', error: 'Provider stopped' });
+    expect(turnStatus(task())).toEqual({ type: 'complete', reason: 'stop' });
+    expect(turnStatus(task({ status: 'running' }))).toEqual({ type: 'running' });
+    expect(turnStatus(task({ status: 'paused', error: 'Provider response incomplete' }))).toEqual({ type: 'incomplete', reason: 'other' });
+  });
 });
 
 function Harness({ turns, onNew, onCancel }: { turns: Task[]; onNew: (text: string) => void; onCancel: () => void }) {
@@ -45,5 +54,16 @@ describe('useVisLexRuntime', () => {
       fireEvent.click(screen.getByRole('button', { name: 'append' }));
     });
     expect(onNew).toHaveBeenCalledWith('Runtime question');
+  });
+
+  it('routes a runtime cancel to onCancel while a turn runs', async () => {
+    const onCancel = vi.fn();
+    function Cancel() {
+      const runtime = useVisLexRuntime({ turns: [task({ status: 'running', answer: '' })], isRunning: true, onNew: vi.fn(), onCancel });
+      return <AssistantRuntimeProvider runtime={runtime}><button onClick={() => runtime.thread.cancelRun()}>cancel</button></AssistantRuntimeProvider>;
+    }
+    render(<Cancel />);
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'cancel' }).at(-1)!); });
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
