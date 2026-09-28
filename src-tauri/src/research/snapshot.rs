@@ -128,6 +128,8 @@ pub struct Session<D: Driver> {
     driver: D,
     context: Option<i64>,
     version: u64,
+    /// Snapshot version at the last navigation; refs from earlier snapshots are invalid.
+    page_base: u64,
     last_text: Option<String>,
     /// Selectors whose subtrees never appear in snapshots (editorial content on document
     /// and citator pages, from the site playbook).
@@ -138,7 +140,7 @@ pub struct Session<D: Driver> {
 
 impl<D: Driver> Session<D> {
     pub fn new(driver: D) -> Self {
-        Self { driver, context: None, version: 0, last_text: None, excluded: Vec::new(), last_action: None }
+        Self { driver, context: None, version: 0, page_base: 0, last_text: None, excluded: Vec::new(), last_action: None }
     }
 
     pub fn driver(&self) -> &D {
@@ -154,6 +156,7 @@ impl<D: Driver> Session<D> {
         self.context = None;
         self.last_text = None;
         self.version += 1;
+        self.page_base = self.version;
     }
 
     /// Calls a fixed function in the isolated world with JSON arguments.
@@ -246,10 +249,12 @@ impl<D: Driver> Session<D> {
         })
     }
 
-    /// Resolves a ref from the snapshot with `version` to a page object id.
+    /// Resolves a ref from a snapshot of the current page (any snapshot since the last
+    /// navigation) to a page object id. Refs are stable for unchanged elements; an element that
+    /// is gone fails as stale.
     pub async fn resolve(&mut self, reference: &str, version: u64) -> Result<String> {
         ensure!(valid_ref(reference), "Invalid element ref {reference:?}");
-        ensure!(version == self.version && self.context.is_some(), "The page changed since that snapshot; take a new snapshot first");
+        ensure!(self.context.is_some() && version > self.page_base && version <= self.version, "The page changed since that snapshot; take a new snapshot first");
         let element = self.call_in_world(RESOLVE_FN, &[json!(reference)], false).await.map_err(|error| {
             if error.to_string().contains("stale ref") { anyhow!("Element {reference} is no longer on the page; take a new snapshot") } else { error }
         })?;
@@ -326,7 +331,8 @@ mod tests {
             let second = session.snapshot(Scope::Full, None, true, None).await.unwrap();
             assert!(second.delta);
             assert_eq!(session.resolve("e3", second.version).await.unwrap(), "obj-3");
-            assert!(session.resolve("e3", first.version).await.unwrap_err().to_string().contains("new snapshot"));
+            assert_eq!(session.resolve("e3", first.version).await.unwrap(), "obj-3", "refs stay valid across snapshots of the same page");
+            assert!(session.resolve("e3", second.version + 1).await.unwrap_err().to_string().contains("new snapshot"), "future versions are refused");
             assert!(session.resolve("e9", second.version).await.unwrap_err().to_string().contains("no longer on the page"));
             assert!(session.resolve("e3 >> css=body", second.version).await.is_err());
             session.reset();

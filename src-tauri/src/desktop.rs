@@ -1695,6 +1695,21 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
                             c.set_meta(&format!("semantic_result:{task}"),&stored.to_string())?;Ok(())
                         })?;
                     }
+                    // Research browser: checked under the lock, run on the pane outside it,
+                    // raced with Stop, and stored for the tool arm.
+                    #[cfg(all(feature = "research", windows))]
+                    {
+                        let research=with_case_expected(&app,&case_id,Some(epoch),|c|{c.set_meta(&format!("research_result:{task}"),"")?;crate::research::tools::prepare_research(c,&task,&prepared.transmission,&value)});
+                        if let Ok(Some(job))=research {
+                            let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":{"activity":job.name}}));
+                            let outcome=tokio::select!{
+                                result=crate::research::runtime::execute(&app,&case_id,&job)=>result,
+                                _=cancelled(&app,&case_id,epoch,&task)=>Err(anyhow::anyhow!("Research stopped")),
+                            };
+                            if outcome.as_ref().is_err_and(|error| error.to_string()=="Research stopped") {crate::research::runtime::stop_loading(&app).await;}
+                            with_case_expected(&app,&case_id,Some(epoch),|c|crate::research::tools::stash(c,&job,outcome))?;
+                        }
+                    }
                     let handled=with_case_expected(&app,&case_id,Some(epoch),|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
                     for job in &media.cleanup {let _=crate::processing::cleanup_published_input(job);}
                     with_case_expected(&app,&case_id,Some(epoch),|c|{for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}Ok(())})?;

@@ -95,7 +95,17 @@ fn tool_schemas_satisfy_openai_strict_mode() {
             }
         }
     }
-    for tool in agent::tools("investigate") {
+    for tool in agent::tools("investigate").into_iter().chain(evidence_desk::research::tools::tool_definitions()) {
+        // Nullable values are expressed with a type array; a null inside an enum is rejected.
+        fn no_null_enum(schema: &Value) {
+            if let Some(values) = schema["enum"].as_array() {
+                assert!(!values.contains(&Value::Null), "enum must not contain null");
+            }
+            for sub in schema["properties"].as_object().into_iter().flat_map(|props| props.values()) {
+                no_null_enum(sub);
+            }
+        }
+        no_null_enum(&tool["parameters"]);
         assert_eq!(
             tool["strict"],
             json!(true),

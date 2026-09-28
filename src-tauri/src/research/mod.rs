@@ -14,8 +14,11 @@ pub mod cdp;
 pub mod actions;
 pub mod driver;
 pub mod snapshot;
+pub mod tools;
 #[cfg(feature = "research")]
 pub mod pane;
+#[cfg(all(feature = "research", windows))]
+pub mod runtime;
 #[cfg(all(feature = "research", windows, debug_assertions))]
 pub mod spike;
 
