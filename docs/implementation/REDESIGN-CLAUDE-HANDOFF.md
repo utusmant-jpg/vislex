@@ -73,8 +73,24 @@ Recorded per slice below, newest last.
 
 ## Agents that actually ran (2026-09-28 session)
 
-Workflow `vislex-surface-redesign` (run `wf_3fc12f9a-9d8`): four implementation writers, each in its own git worktree under `.claude/worktrees/`, never more than three writing at once — mocked-IPC harness + rich synthetic case; evidence viewer family; findings/investigation/settings; assistant chat (starts after the harness and merges it). Each writer is followed by an independent read-only adversarial reviewer and a fix pass in the same worktree. Results are recorded below once integrated.
+Workflow `vislex-surface-redesign` (run `wf_3fc12f9a-9d8`): four implementation writers, each in its own git worktree under `.claude/worktrees/`, never more than three writing at once — mocked-IPC harness + rich synthetic case; evidence viewer family; findings/investigation/settings; assistant chat (starts after the harness and merges it). Each writer is followed by an independent read-only adversarial reviewer and a fix pass in the same worktree. Merged into the branch at `628754d` (harness + chat, `worktree-wf_3fc12f9a-9d8-8`), `7cd2d4f` (viewer, `-2`) and `b2bcd85` (findings/settings, `-3`) without conflicts. Reviewer findings fixed in the worktrees before merge included: redaction stepper claiming unfinished steps, retry re-issuing the wrong request, transcript highlight offsets on case-changing characters, findings list unmounting on every refetch, harness `historical` flag and delta shapes diverging from Rust.
+
+Workflow `vislex-integrate-and-review` (run `wf_62db8cf5-34b`): one integration writer in the main checkout (commits `a44842d`..`36bda12`), then five review lenses (behaviour, honesty/evidence, accessibility, test integrity, state/performance) with a separate refuting verifier per finding; 26 findings survived and were fixed in `5c47cd9` by a single writer. 35 agents, none errored.
+
+Lead (this session): folded the desktop WIP into real commits, Playwright container support, dependency cleanup, palette/onboarding layout fix, screenshot review of every surface, and the root-cause fix for the App.test case-switch flake (`a9090e2`: tests clicked before the passive case-open effect reset the view).
+
+- 2026-09-28 `a9090e2` final state: tsc 0; vitest 29 files / 277 passed; Playwright 52/52 at `34a19f3` (a9090e2 changes only src/App.test.tsx); vite build contains no harness code. R21 recorded as `implemented` (not verified) in NEXT-STATUS.json.
 
 ## Unrun checks and open items
 
-Kept current at the end of each slice.
+Kept current at the end of each slice. State at `a9090e2`:
+
+- Not run: native Tauri/WebView2 build of this branch on Windows; `scripts/native-protocol-origin-test.ps1` for the merged CORS fix; `cargo test`; Windows 125/150/200 % scaling screenshots; NVDA/Narrator; performance on named hardware; Edge (only Chromium 1194 on Linux).
+- Open visual items: in chat at narrow widths punctuation after a citation chip can wrap alone (markdown.tsx); with a video open at 1366×768 the viewer transcript dock is cramped under the controls (viewer.css); Findings/Investigate take ~1–2 s to leave loading in the dev-server harness (unmeasured in production).
+- Open behaviour items: switching default vendor still has no one-step "keep grants for the new vendor" consent in the UI (backend accepts `grants_for_provider`); citation hover card is not Tab-reachable (Enter on the chip does the same); remaining legacy rules in src/styles.css are for classes still in use and mostly overridden.
+- Not done from the stack decision: `lucide-react` 1.x upgrade and `@tanstack/react-virtual` for long lists.
+- Local branches `worktree-wf_3fc12f9a-9d8-{1,2,3,8}` exist only in the cloud container; their commits are all contained in `claude/redesign-v14qbo`.
+
+## Next action
+
+Pull `claude/redesign-v14qbo` on the Windows machine, reconcile it with any newer local work (e.g. `claude/redesign`, `codex/vislex-redesign` and Codex worktrees), run the native gates above, then merge to `main` only after they pass.

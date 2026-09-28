@@ -382,7 +382,26 @@
       "subscription_saved_review_gate_repair": "Code commit 9f10e23. Live case task metadata showed list_source_artifacts, list_sources, read_conversation, read_coverage and read_dossier blocked by a pending quick-answer phase derived from a complete automatic report with zero citations. This prevented a new subscription turn from inspecting prepared sources. completed_review_context now rejects uncited reports, subscription tasks start with the full case-tool catalogue, and subscription_context expands the gate for legacy pending tasks before tool use. A production-path synthetic regression first failed, then passed; cargo test --locked --manifest-path src-tauri/Cargo.toml --test core passed 81/81; cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop --lib passed 22/22 non-ignored with 5 ignored. npm run desktop:build:x64 exited 0; release EXE SHA-256 37DC7F19A5EE04DB811691488FF867C6497885886121FE7A604903281EA1F18D, NSIS SHA-256 D6CD91B58787D566437152C37F81A965D982FBF5343C999E7B6D3EAE45C3811E. Self-review only. The running installed app has not been replaced or restarted with this fix; a live case retry, complete evidence review, support review, and legal accuracy remain unverified."
     },
     "R21": {
-      "state": "pending"
+      "state": "implemented",
+      "commit": "a9090e2",
+      "branch": "claude/redesign-v14qbo",
+      "environment": "Cloud Linux container; Node 22.22.2; Chromium 1194 headless via PW_CHROMIUM_PATH; no Windows, WebView2, Edge or Rust toolchain run",
+      "evidence": "Claude-led redesign per docs/CLAUDE-REDESIGN-PROMPT.md; decisions, agents and per-slice results in docs/implementation/REDESIGN-CLAUDE-HANDOFF.md and docs/implementation/REDESIGN-SPEC.md. Single token source src/tokens.css with contrast unit test (src/tokens.test.ts); shared primitives in src/ui.tsx and src/styles/primitives.css; redesigned shell/onboarding/library/jobs/palette, assistant chat, evidence viewer family, findings/workbench/dossier and settings. Mocked-IPC Playwright harness (harness.html, src/testing/harness/**, e2e/harness-*.spec.ts, e2e/HARNESS.md) drives the real app code paths with a 250-source synthetic case; excluded from the production bundle (vite build grep). Screenshots reviewed by the lead (vision) at 1366x768, 1440x900 and 1920x1080 in dark and light.",
+      "commands": [
+        "npx tsc -p tsconfig.json --noEmit -> exit 0 at a9090e2",
+        "npx vitest run -> 29 files, 277 passed at a9090e2",
+        "PW_CHROMIUM_PATH=/opt/pw-browsers/chromium CI=1 npx playwright test -> 52 passed at 34a19f3 (includes axe WCAG A/AA dark+light over harness scenes with an empty baseline, keyboard/focus, reduced motion, forced colors, overflow at target sizes); a9090e2 only changes src/App.test.tsx",
+        "npx vite build --outDir <scratch> -> ok; grep for __vislexHarness/SyntheticBackend in output -> 0 files"
+      ],
+      "reviewer": "Workflow wf_3fc12f9a-9d8: independent adversarial reviewer per surface branch, then fix pass. Workflow wf_62db8cf5-34b: five-lens review (behaviour, honesty/evidence, a11y, test integrity, state/perf) of c04c8c3..HEAD with a separate refuting verifier per finding; 26 confirmed findings fixed in 5c47cd9. Reviewers are agents, not a human; agreement is not evidence.",
+      "unrun_checks": [
+        "Native Tauri/WebView2 build of this branch on Windows, including scripts/native-protocol-origin-test.ps1 for the merged CORS fix",
+        "Native screenshot matrix at 125/150/200 percent Windows scaling and human review",
+        "Screen reader (NVDA/Narrator) session; touch-target audit",
+        "cargo test (no Rust changed in this redesign, but not run in this environment)",
+        "Performance measurement on named hardware (no performance claim is made)"
+      ],
+      "note": "Implemented, not verified. R21 depends on R14/R15/R16/R17, which are implemented but not verified, so R21 cannot be verified before them. Browser mocks do not establish packaged Tauri correctness."
     },
     "R22": {
       "state": "pending",
