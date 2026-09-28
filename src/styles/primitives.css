@@ -259,6 +259,8 @@ kbd, .kbd {
 
 /* ------------------------------------------------------------ evidence citation chip */
 .citation-host { display: inline-flex; vertical-align: baseline; }
+/* Punctuation touching a chip (see InlineMarkdown) never wraps away from it. */
+.citation-glue { white-space: nowrap; }
 .citation {
   display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; margin: 0 2px;
   border: 1px solid var(--evidence-border); border-radius: var(--radius-xs); background: var(--evidence-bg);

@@ -1,6 +1,7 @@
 // Block-level markdown renderer with VisLex citation chips inline. Hand-rolled so the
 // whole app stays dependency-free and offline; covers the constructs the investigator
 // actually emits: headings, lists, tables, fenced code, quotes, emphasis, citations.
+import { Fragment } from 'react';
 import { citationParts } from './bridge';
 import { CitationChip } from './ui';
 
@@ -91,17 +92,36 @@ export function parseBlocks(markdown: string): Block[] {
 }
 
 const emphasisPattern = /(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`\n]+`)/g;
+// A line may break after a chip (an atomic inline), so punctuation touching a
+// chip is kept with it: closing marks after, an opening bracket or quote before.
+const closingPunctuation = /^[.,;:!?)\]}’”»…%]+/;
+const openingPunctuation = /[(\[{‘“«]+$/;
+
+function InlineText({ text }: { text: string }) {
+  return <span>{text.split(emphasisPattern).map((segment, position) => {
+    if (segment.startsWith('**') && segment.endsWith('**') && segment.length > 4) return <strong key={position}>{segment.slice(2, -2)}</strong>;
+    if (segment.startsWith('*') && segment.endsWith('*') && segment.length > 2 && !segment.startsWith('**')) return <em key={position}>{segment.slice(1, -1)}</em>;
+    if (segment.startsWith('`') && segment.endsWith('`') && segment.length > 2) return <code key={position} className="inline-code">{segment.slice(1, -1)}</code>;
+    return segment;
+  })}</span>;
+}
 
 export function InlineMarkdown({ text, onSource }: { text: string; onSource: (id: string, locator?: string) => void }) {
+  const parts = splitCitations(text);
+  const chip = (index: number) => !!parts[index] && !!citationParts(parts[index]);
   return <>
-    {splitCitations(text).map((part, index) => {
-      if (citationParts(part)) return <CitationChip key={index} value={part} onOpen={(sourceId, locator) => onSource(sourceId, locator)} />;
-      return <span key={index}>{part.split(emphasisPattern).map((segment, position) => {
-        if (segment.startsWith('**') && segment.endsWith('**') && segment.length > 4) return <strong key={position}>{segment.slice(2, -2)}</strong>;
-        if (segment.startsWith('*') && segment.endsWith('*') && segment.length > 2 && !segment.startsWith('**')) return <em key={position}>{segment.slice(1, -1)}</em>;
-        if (segment.startsWith('`') && segment.endsWith('`') && segment.length > 2) return <code key={position} className="inline-code">{segment.slice(1, -1)}</code>;
-        return segment;
-      })}</span>;
+    {parts.map((part, index) => {
+      if (chip(index)) {
+        const before = chip(index - 1) ? '' : openingPunctuation.exec(parts[index - 1] ?? '')?.[0] ?? '';
+        const after = closingPunctuation.exec(parts[index + 1] ?? '')?.[0] ?? '';
+        const element = <CitationChip value={part} onOpen={(sourceId, locator) => onSource(sourceId, locator)} />;
+        return before || after ? <span key={index} className="citation-glue">{before}{element}{after}</span> : <Fragment key={index}>{element}</Fragment>;
+      }
+      // Punctuation already rendered inside a neighbouring chip's glue.
+      const start = chip(index - 1) ? closingPunctuation.exec(part)?.[0].length ?? 0 : 0;
+      const end = chip(index + 1) ? part.length - (openingPunctuation.exec(part)?.[0].length ?? 0) : part.length;
+      const rest = part.slice(start, Math.max(start, end));
+      return rest ? <InlineText key={index} text={rest} /> : null;
     })}
   </>;
 }

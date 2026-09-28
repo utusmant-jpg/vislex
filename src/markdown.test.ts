@@ -64,4 +64,19 @@ describe('Markdown', () => {
     expect(html).toContain('data-language="json"');
     expect(html).toContain('<code>{&quot;a&quot;:1}</code>');
   });
+
+  // A line may break after a chip (an atomic inline), which stranded the
+  // closing punctuation alone at the start of the next line.
+  it('keeps punctuation that touches a citation chip on the chip line', () => {
+    const html = renderToStaticMarkup(createElement(Markdown, { text: 'The van arrived (evidence:demo-statement#L5-L5), then left evidence:demo-statement#R2L7-L8.', onSource: noop }))
+      .replace(/<span class="citation-host"><button[^>]*>[^<]*<\/button><\/span>/g, '[chip]');
+    expect([...html.matchAll(/<span class="citation-glue">([^<]*)<\/span>/g)].map(match => match[1])).toEqual(['([chip]),', '[chip].']);
+    // Nothing is lost or doubled around the chips.
+    expect(html.replace(/<[^>]+>/g, '')).toBe('The van arrived ([chip]), then left [chip].');
+  });
+
+  it('leaves text that does not touch a chip unglued', () => {
+    const html = renderToStaticMarkup(createElement(Markdown, { text: 'See evidence:demo-statement#L5-L5 and (later) notes.', onSource: noop }));
+    expect(html).not.toContain('citation-glue');
+  });
 });
