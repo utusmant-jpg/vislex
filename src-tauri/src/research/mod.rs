@@ -180,6 +180,9 @@ pub fn ensure_profile_boundary(case_root: &Path, profile: &Path) -> Result<()> {
 
 const GRANT_KEY: &str = "research_browser_grant";
 const MAX_SSO_HOSTS: usize = 10;
+/// Routes a newly written grant covers: the Codex threads of the subscription route are
+/// ephemeral, and research page text is untrusted data there as on the API-key route.
+pub const GRANT_ROUTES: &[&str] = &["api_keys", "chatgpt_subscription"];
 
 /// Per-case research browser switch. A plain on/off toggle for the user; kept revisioned and
 /// audited like the other case grants. Never set by app-wide preferences, refused offline.
@@ -191,8 +194,9 @@ pub struct Grant {
     pub destination: String,
     pub sso_hosts: Vec<String>,
     pub caps: Caps,
-    /// Access routes the research tools may be used on; the subscription route stays off
-    /// until its no-persistence probe passes (R37).
+    /// Access routes the research tools may be used on. Grants written before R37/R49 hold only
+    /// `api_keys` and keep that meaning; grants written since also cover the ChatGPT
+    /// subscription route (see `docs/implementation/CODEX-SUBSCRIPTION-GATE.md`, R37).
     pub routes: Vec<String>,
     /// Reserved so a supervised mode can be added without a data migration.
     pub approval_mode: String,
@@ -247,7 +251,7 @@ pub fn set_grant(case: &mut crate::case::Case, enabled: bool, sso_hosts: &[Strin
         destination: "westlaw".into(),
         sso_hosts: hosts,
         caps: previous.as_ref().map_or_else(Caps::default, |grant| grant.caps),
-        routes: vec!["api_keys".into()],
+        routes: GRANT_ROUTES.iter().map(|route| route.to_string()).collect(),
         approval_mode: "autonomous".into(),
     };
     // The setting and its audit entry are written together or not at all.

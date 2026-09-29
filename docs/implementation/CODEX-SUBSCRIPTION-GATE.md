@@ -29,3 +29,23 @@ The pinned upstream commit is `985cf47a4eb6084b2ff6b30ebdb1216acda85bb4`. Its pa
 Frontend interaction tests passed 127/127, full non-ignored Rust tests passed, desktop library tests passed 22/22 with three ignored, and the production frontend and x64 Tauri/NSIS builds passed. The installer is 757,666,513 bytes (SHA-256 `8482BD68A85A7409473F5ADC3BE1E3B12D41226494CE81C122C68EC1B6820B05`). A portable staging folder with the exact release executable and resources passed a 442-file SHA-256 inventory and an offline six-source native journey through import, strong verification, extraction reuse, video discovery, citation, exports, redaction denial, playback, encrypted backup and restore, with zero provider calls. A native origin regression confirmed in-app image display and denied an opaque-origin read of synthetic evidence after removing the wildcard CORS header.
 
 **Remaining validation:** the isolated account is signed out, so no live ChatGPT model turn, signed-in model catalogue/rate-limit response, or real case dynamic-tool round trip has been run. The NSIS installed copy was not run because this machine already has a VisLex installation that a silent installer could replace. Confirm that ephemeral case turns leave no prompt/tool-result history in the persistent profile after a live authorized turn. These are release gates, not claims that the implementation is absent. The strict Clippy command with `-D warnings` fails on existing repository style lints; it is not counted as passing.
+
+## 2026-09-28 R37/R49 research browser tools on the subscription route
+
+Branch `claude/research-subscription` (from `7379459`) offers the `research_*` tools on the ChatGPT-subscription route. Research grants written from now on carry `routes: ["api_keys", "chatgpt_subscription"]` (`research::GRANT_ROUTES`). A grant written earlier keeps `["api_keys"]` and still deserialises, so its subscription tasks do not see the tools until the user switches the research browser off and on again. That also bumps the revision, so no running task changes settings mid-task. `research::tools::exposed` enforces the route on every advertisement (`agent::subscription_context`), every Codex call (`prepare_subscription_call` checks the call against that list), every job (`prepare_research`) and every tool arm (`consume_result`).
+
+**Reasoning for enabling it without a new live probe.**
+- Codex case threads are started with `ephemeral: true` (`codex_case::run`), as for every other case tool. Research results reach Codex exactly as other case tool results do: one `item/tool/call` response per call, text only, with no case path, credential, cookie or browser handle. The page text is no more sensitive than the evidence text that `read_text` and similar tools already return on this route.
+- Research page text is untrusted data from an outside site. Each result carries the untrusted-data note, and `AGENT_GUIDANCE` is appended to the subscription instructions as it is to the API-key instructions. The same Rust-enforced caps, allowlists, audit entries, pacing, credential refusals and capture pipeline apply, because both routes go through `prepare_research`, `research::runtime::execute`, `stash` and `consume_result`.
+- The browser job runs in the desktop process, outside the case lock, raced with Stop, the research switch and the subscription watchdog (`run_research_job` in `desktop.rs`). The sidecar never reaches the page or the WebView2 profile, and its AppContainer boundary is unchanged.
+
+**Probed in this change (synthetic, no account, no model call).** Tests show that:
+- the subscription context advertises the six research tools, with unchanged strict schemas, only when the grant covers the route;
+- an old `api_keys`-only grant hides them on this route, and the Codex call is refused;
+- a `prepare_subscription_call` → `prepare_research` → `stash` → `finish_subscription_call` round trip returns the stashed result with a receipt;
+- a closed pane or a refused call returns its reason as tool output text (`success: false`), not as a turn failure;
+- the research definitions convert to Codex dynamic tools with their schemas intact.
+
+The ignored `patched_server_accepts_ephemeral_case_tool_policy` probe now also sends the research tool definitions. It was **not run** here, because it needs the pinned sidecar binary.
+
+**Not probed.** No signed-in ChatGPT turn has called a research tool. The R37 no-persistence probe (an ephemeral thread leaves no tool text in the Codex home after a live authorized turn) has **not** been run. This is the same open release gate recorded above for all case tool results, not a new one. Run it with a signed-in synthetic account before R37/R49 are called verified.

@@ -36,7 +36,7 @@ fn research_toggle_is_revisioned_audited_and_validates_sign_in_hosts() {
     assert!(first.enabled && research::enabled(&case));
     assert_eq!(first.revision, 1);
     assert_eq!(first.sso_hosts, ["login.firm.example"]);
-    assert_eq!(first.routes, ["api_keys"]);
+    assert_eq!(first.routes, ["api_keys", "chatgpt_subscription"], "grants written since R37/R49 cover both access routes");
     assert_eq!(first.approval_mode, "autonomous");
     let second = research::set_grant(&mut case, false, &[]).unwrap();
     assert_eq!(second.revision, 2);
@@ -866,4 +866,118 @@ fn pages_a_job_opened_are_audited_whatever_its_outcome() {
     research::tools::audit_page_change(&mut case, &job, Some("https://1.next.westlaw.com/Home"), None, true).unwrap();
     assert_eq!(count(&case), 1);
     case.verify_audit().unwrap();
+}
+
+// ---- R37/R49: the ChatGPT-subscription route ----
+
+fn on_subscription_route(case: &Case, task: &str) {
+    case.set_meta(&format!("task_access_route:{task}"), "chatgpt_subscription").unwrap();
+}
+
+fn subscription_tool_names(case: &mut Case, task: &str) -> (Vec<String>, String) {
+    let (instructions, definitions, _) = evidence_desk::agent::subscription_context(case, task).unwrap();
+    (definitions.iter().filter_map(|tool| tool["name"].as_str().map(str::to_string)).collect(), instructions)
+}
+
+#[test]
+fn the_subscription_route_offers_research_tools_only_when_the_grant_covers_it() {
+    let (_dir, mut case, task) = case_with_task(false);
+    on_subscription_route(&case, &task);
+    let (names, instructions) = subscription_tool_names(&mut case, &task);
+    assert!(!names.iter().any(|name| name.starts_with("research_")) && !instructions.contains("RESEARCH BROWSER"));
+
+    let (_dir, mut case, task) = case_with_task(true);
+    on_subscription_route(&case, &task);
+    assert!(research::grant(&case).unwrap().unwrap().routes.iter().any(|route| route == "chatgpt_subscription"));
+    let (names, instructions) = subscription_tool_names(&mut case, &task);
+    for tool in research::tools::TOOL_NAMES {
+        assert!(names.iter().any(|name| name == tool), "{tool} not offered on the subscription route");
+    }
+    assert!(instructions.contains("RESEARCH BROWSER"));
+    // The advertised schemas are the strict API-route schemas, unchanged.
+    let (_, definitions, _) = evidence_desk::agent::subscription_context(&mut case, &task).unwrap();
+    for definition in research::tools::tool_definitions() {
+        assert!(definitions.contains(&definition), "{} schema changed", definition["name"]);
+    }
+
+    // A grant written before R37/R49 covers only the API-key route: the subscription route
+    // never sees the tools, while an API-key task still does.
+    let mut stored: serde_json::Value = serde_json::from_str(&case.meta("research_browser_grant").unwrap().unwrap()).unwrap();
+    stored["routes"] = json!(["api_keys"]);
+    case.set_meta("research_browser_grant", &stored.to_string()).unwrap();
+    assert!(!research::tools::exposed(&case, &task).unwrap());
+    let (names, instructions) = subscription_tool_names(&mut case, &task);
+    assert!(!names.iter().any(|name| name.starts_with("research_")) && !instructions.contains("RESEARCH BROWSER"));
+    let refused = evidence_desk::agent::prepare_subscription_call(&mut case, &task, "call-old-grant", "research_status", json!({}));
+    assert!(refused.is_err(), "a tool the route does not offer is refused");
+    case.set_meta(&format!("task_access_route:{task}"), "api_keys").unwrap();
+    assert!(research::tools::exposed(&case, &task).unwrap());
+}
+
+#[test]
+fn a_subscription_research_call_returns_its_stashed_result_with_a_receipt() {
+    let (_dir, mut case, task) = case_with_task(true);
+    on_subscription_route(&case, &task);
+    let args = json!({"scope": "interactive", "find": null, "delta": false, "max_chars": null});
+    let call = evidence_desk::agent::prepare_subscription_call(&mut case, &task, "codex-call-1", "research_snapshot", args.clone()).unwrap();
+    case.set_meta(&format!("research_result:{task}"), "").unwrap();
+    let job = research::tools::prepare_research(&mut case, &task, &call.transmission, &call.response).unwrap().expect("job");
+    assert_eq!((job.name.as_str(), &job.args), ("research_snapshot", &args));
+    research::tools::stash(&case, &job, Ok(json!({"snapshot": {"text": "- searchbox \"Search\" [ref=e2]"}}))).unwrap();
+    let result = evidence_desk::agent::finish_subscription_call(&mut case, &task, call, &mut Default::default()).unwrap();
+    assert!(result["snapshot"]["text"].as_str().unwrap().contains("searchbox"));
+    let receipt = last_action(&case, &task);
+    assert_eq!((receipt["name"].as_str(), receipt["status"].as_str()), (Some("research_snapshot"), Some("complete")));
+    assert!(receipt["output"].as_str().unwrap().contains("searchbox"));
+    // The arm consumed the page text.
+    assert_eq!(case.meta(&format!("research_result:{task}")).unwrap().as_deref(), Some(""));
+    let items = evidence_desk::agent::subscription_tool_items(&mut case, &task, "codex-call-1", result).unwrap();
+    assert_eq!(items["success"], true);
+    assert!(items["contentItems"][0]["text"].as_str().unwrap().contains("searchbox"));
+    // A replayed Codex call id is refused.
+    assert!(evidence_desk::agent::prepare_subscription_call(&mut case, &task, "codex-call-1", "research_snapshot", args).is_err());
+}
+
+#[test]
+fn a_closed_research_pane_reaches_codex_as_tool_output_text() {
+    let (_dir, mut case, task) = case_with_task(true);
+    on_subscription_route(&case, &task);
+    let call = evidence_desk::agent::prepare_subscription_call(&mut case, &task, "codex-call-closed", "research_status", json!({})).unwrap();
+    let job = research::tools::prepare_research(&mut case, &task, &call.transmission, &call.response).unwrap().expect("job");
+    // What research::runtime::execute reports when the pane is closed.
+    let closed = "The research browser is closed. Ask the user to open the Browser view and sign in, then try again.";
+    research::tools::stash(&case, &job, Err(anyhow::anyhow!(closed))).unwrap();
+    let result = evidence_desk::agent::finish_subscription_call(&mut case, &task, call, &mut Default::default()).expect("not a turn failure");
+    assert_eq!(result["error"], closed);
+    let items = evidence_desk::agent::subscription_tool_items(&mut case, &task, "codex-call-closed", result).unwrap();
+    assert_eq!(items["success"], false);
+    assert!(items["contentItems"][0]["text"].as_str().unwrap().contains("open the Browser view"));
+    let receipt = last_action(&case, &task);
+    assert_eq!((receipt["name"].as_str(), receipt["status"].as_str()), (Some("research_status"), Some("failed")));
+    // The task keeps running: Codex may answer or try again.
+    let status: String = case.db.query_row("SELECT status FROM tasks WHERE id=?", [&task], |row| row.get(0)).unwrap();
+    assert_eq!(status, "running");
+
+    // A call refused before any browser action also returns its reason as output.
+    let call = evidence_desk::agent::prepare_subscription_call(&mut case, &task, "codex-call-off-site", "research_navigate", json!({"url": "https://evil.example/"})).unwrap();
+    assert!(research::tools::prepare_research(&mut case, &task, &call.transmission, &call.response).unwrap().is_none());
+    let result = evidence_desk::agent::finish_subscription_call(&mut case, &task, call, &mut Default::default()).unwrap();
+    assert!(result["error"].as_str().unwrap().contains("only the research site"));
+}
+
+#[test]
+fn research_steps_carry_a_short_detail_for_the_chat() {
+    use research::tools::activity_detail;
+    let act = |action: &str, text: serde_json::Value, key: serde_json::Value| json!({"action": action, "ref": "e1", "snapshot_version": 1, "text": text, "key": key});
+    assert_eq!(activity_detail("research_act", &act("type", json!("duty of care /s negligence"), json!(null))).as_deref(), Some("duty of care /s negligence"));
+    assert_eq!(activity_detail("research_act", &act("click", json!(null), json!(null))).as_deref(), Some("click"));
+    assert_eq!(activity_detail("research_act", &act("press", json!(null), json!("Enter"))).as_deref(), Some("press Enter"));
+    assert_eq!(activity_detail("research_act", &act("scroll_down", json!(null), json!(null))).as_deref(), Some("scroll_down"));
+    assert_eq!(activity_detail("research_navigate", &json!({"url": "https://1.next.westlaw.com/Document/I1/View/FullText.html"})).as_deref(), Some("1.next.westlaw.com/Document/I1/View/FullText.html"));
+    assert_eq!(activity_detail("research_read_page", &json!({"offset": 40, "count": 60})).as_deref(), Some("lines 40\u{2013}100"));
+    assert_eq!(activity_detail("research_capture", &capture_args(1, 2)).as_deref(), Some("123 F.3d 456"));
+    assert_eq!(activity_detail("research_snapshot", &json!({"scope": "main", "find": null, "delta": false, "max_chars": null})).as_deref(), Some("main"));
+    assert_eq!(activity_detail("research_status", &json!({})), None);
+    let long = activity_detail("research_act", &act("type", json!("x".repeat(500)), json!(null))).unwrap();
+    assert_eq!(long.chars().count(), research::tools::MAX_DETAIL_CHARS);
 }

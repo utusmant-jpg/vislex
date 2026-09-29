@@ -118,13 +118,31 @@ mod tests {
     }
 
     #[test]
+    fn research_tools_keep_their_strict_schemas_as_dynamic_tools() {
+        let definitions = crate::research::tools::tool_definitions();
+        let value = dynamic_tools(&definitions).unwrap();
+        let tools = value[0]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), crate::research::tools::TOOL_NAMES.len());
+        for (tool, definition) in tools.iter().zip(&definitions) {
+            assert_eq!(tool["name"], definition["name"]);
+            assert_eq!(tool["inputSchema"], definition["parameters"]);
+            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        }
+    }
+
+    #[test]
     #[ignore = "Requires the patched Windows App Server; no login or model call is made"]
     fn patched_server_accepts_ephemeral_case_tool_policy() -> Result<()> {
         let binary = std::env::var_os("VISLEX_CODEX_BINARY").context("Set VISLEX_CODEX_BINARY")?;
         let directory = Path::new(&binary).parent().context("Codex binary has no directory")?;
         let mut connection = crate::codex_account::Connection::start_case(directory)?;
-        let tools = dynamic_tools(&[json!({"name":"read_text","description":"Read a permitted source",
-            "parameters":{"type":"object","properties":{},"additionalProperties":false}})])?;
+        // The research browser tools (R37/R49) are advertised with the case tools on this route.
+        let mut definitions = vec![json!({"name":"read_text","description":"Read a permitted source",
+            "parameters":{"type":"object","properties":{},"additionalProperties":false}})];
+        definitions.extend(crate::research::tools::tool_definitions());
+        let tools = dynamic_tools(&definitions)?;
+        let advertised: Vec<&str> = tools[0]["tools"].as_array().context("No tools")?.iter().filter_map(|tool| tool["name"].as_str()).collect();
+        for name in crate::research::tools::TOOL_NAMES { ensure!(advertised.contains(name), "{name} not advertised"); }
         let started = connection.call("thread/start",json!({"cwd":connection.home(),"ephemeral":true,
             "baseInstructions":"Synthetic tool schema probe; no case data or model turn", "dynamicTools":tools}))?;
         ensure!(started["thread"]["id"].as_str().is_some(),"Ephemeral thread ID missing");

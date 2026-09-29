@@ -266,6 +266,31 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
             }))
         })(),
         "close_research_pane" => close_research_pane(app, "user"),
+        // Toolbar Stop: pauses the chat whose research job holds the page, exactly as the chat's
+        // Stop does (its job is abandoned within one poll), then stops the page loading. The case
+        // lock covers only the pause, never the DevTools call.
+        "research_stop" => async {
+            #[cfg(windows)]
+            {
+                let owner = app.state::<pane::PaneState>().owner();
+                if let Some(owner) = &owner {
+                    anyhow::ensure!(args["case_id"].as_str().is_none_or(|case_id| case_id == owner.case_id), "The research browser is open for another case");
+                    anyhow::ensure!(args["session_epoch"].as_u64().is_none_or(|epoch| epoch == owner.session_epoch), "The research browser is open for another case session");
+                }
+                let task = owner.as_ref().and(crate::research::runtime::active_task());
+                if let (Some(owner), Some(task)) = (&owner, &task) {
+                    with_case_expected(app, &owner.case_id, Some(owner.session_epoch), |case| agent::pause(case, task, "Stopped by user"))?;
+                    emit_case_changed(app);
+                }
+                if let Some(webview) = pane::webview(app) {
+                    let _ = crate::research::cdp::CdpBridge::new(webview).call("Page.stopLoading", json!({}), std::time::Duration::from_secs(5)).await;
+                }
+                Ok(json!({"stopped": task.is_some(), "task_id": task}))
+            }
+            #[cfg(not(windows))]
+            Ok(json!({"stopped": false, "task_id": null}))
+        }
+        .await,
         "clear_research_session" => async {
             let handle = app.clone();
             tauri::async_runtime::spawn_blocking(move || pane::clear_session(&handle)).await.context("Research session task failed")??;
@@ -299,6 +324,44 @@ async fn research_revoked(app: &tauri::AppHandle, case_id: &str, epoch: u64, tas
 }
 
 /// Whether the open case session still allows the pane `owner` opened.
+/// Runs one checked research job on the pane, on either access route: announces the step in
+/// the chat (`stream` is the live-progress id of the turn), then runs the job outside the case
+/// lock, raced with Stop, the research switch and `interrupted` (the subscription watchdog). The
+/// page it left is audited and its outcome stashed for the tool arm, under the lock.
+#[cfg(all(feature = "research", windows))]
+async fn run_research_job(app: &tauri::AppHandle, case_id: &str, epoch: u64, task: &str, stream: &str, job: &crate::research::tools::Job, interrupted: Option<&std::sync::atomic::AtomicBool>) -> anyhow::Result<()> {
+    let mut delta = json!({"activity": job.name});
+    if let Some(detail) = crate::research::tools::activity_detail(&job.name, &job.args) {
+        delta["detail"] = json!(detail);
+    }
+    let _ = app.emit("agent-progress", json!({"case_id": case_id, "session_epoch": epoch, "task_id": task, "transmission_id": stream, "delta": delta}));
+    let pane_url = |app: &tauri::AppHandle| crate::research::pane::webview(app).and_then(|pane| pane.url().ok()).map(|url| url.to_string());
+    let before = pane_url(app);
+    let watchdog = async {
+        loop {
+            if interrupted.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+    };
+    let outcome = tokio::select! {
+        result = crate::research::runtime::execute(app, case_id, epoch, job) => result,
+        _ = cancelled(app, case_id, epoch, task) => Err(anyhow::anyhow!("Research stopped")),
+        _ = research_revoked(app, case_id, epoch, task, job.grant_revision) => Err(anyhow::anyhow!("The research browser was switched off or its settings changed")),
+        _ = watchdog => Err(anyhow::anyhow!("Research stopped")),
+    };
+    if outcome.is_err() {
+        crate::research::runtime::stop_if_active(app, job).await;
+    }
+    // Pages the job opened are audited whatever its outcome (stopped, failed or done).
+    let after = pane_url(app);
+    with_case_expected(app, case_id, Some(epoch), |c| {
+        crate::research::tools::audit_page_change(c, job, before.as_deref(), after.as_deref(), outcome.is_ok())?;
+        crate::research::tools::stash(c, job, outcome)
+    })
+}
+
 #[cfg(feature = "research")]
 fn research_allowed_for(app: &tauri::AppHandle, owner: &crate::research::pane::Owner) -> bool {
     let state = app.state::<AppState>();
@@ -1734,18 +1797,7 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
                     {
                         let research=with_case_expected(&app,&case_id,Some(epoch),|c|{c.set_meta(&format!("research_result:{task}"),"")?;crate::research::tools::prepare_research(c,&task,&prepared.transmission,&value)});
                         if let Ok(Some(job))=research {
-                            let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":{"activity":job.name}}));
-                            let pane_url=|app:&tauri::AppHandle|crate::research::pane::webview(app).and_then(|pane|pane.url().ok()).map(|url|url.to_string());
-                            let before=pane_url(&app);
-                            let outcome=tokio::select!{
-                                result=crate::research::runtime::execute(&app,&case_id,epoch,&job)=>result,
-                                _=cancelled(&app,&case_id,epoch,&task)=>Err(anyhow::anyhow!("Research stopped")),
-                                _=research_revoked(&app,&case_id,epoch,&task,job.grant_revision)=>Err(anyhow::anyhow!("The research browser was switched off or its settings changed")),
-                            };
-                            if outcome.is_err() {crate::research::runtime::stop_if_active(&app,&job).await;}
-                            // Pages the job opened are audited whatever its outcome (stopped, failed or done).
-                            let after=pane_url(&app);
-                            with_case_expected(&app,&case_id,Some(epoch),|c|{crate::research::tools::audit_page_change(c,&job,before.as_deref(),after.as_deref(),outcome.is_ok())?;crate::research::tools::stash(c,&job,outcome)})?;
+                            run_research_job(&app,&case_id,epoch,&task,&prepared.transmission,&job,None).await?;
                         }
                     }
                     let handled=with_case_expected(&app,&case_id,Some(epoch),|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
@@ -1861,7 +1913,7 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
                 // Live step name, as the API-key route streams it, then a case
                 // event once the receipt is saved so the chat refreshes steps.
                 let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":stream_id,"delta":{"activity":name}}));
-                let result=run_subscription_tool(&handle,&cid,epoch,&tid,call_id,name,args,&worker_jobs);
+                let result=run_subscription_tool(&handle,&cid,epoch,&tid,&stream_id,call_id,name,args,&worker_jobs,&worker_cancelled);
                 emit_case_changed(&handle);
                 *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
                 result
@@ -1924,7 +1976,11 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
     Ok(())
 }
 
-fn run_subscription_tool(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str,call_id:&str,name:&str,args:Value,active_jobs:&std::sync::Mutex<Vec<String>>)->anyhow::Result<Value> {
+/// One Codex dynamic-tool call, on the blocking thread that runs the Codex turn (never on an
+/// async runtime worker, so research jobs may `block_on`). `stream` is the turn's live-progress
+/// id and `interrupted` the watchdog flag.
+#[allow(clippy::too_many_arguments)]
+fn run_subscription_tool(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str,stream:&str,call_id:&str,name:&str,args:Value,active_jobs:&std::sync::Mutex<Vec<String>>,interrupted:&std::sync::atomic::AtomicBool)->anyhow::Result<Value> {
     let call=with_case_expected(app,case_id,Some(epoch),|c|agent::prepare_subscription_call(c,task,call_id,name,args.clone()))?;
     let registered=with_case_expected(app,case_id,Some(epoch),|c|agent::prepare_media(c,task,&call.transmission,&call.response));
     let (jobs,preparation_error)=match registered {Ok(j)=>(j,None),Err(e)=>(vec![],Some(e.to_string()))};
@@ -1947,10 +2003,27 @@ fn run_subscription_tool(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str,
             Ok(())
         })?;
     }
+    // Research browser: as on the API-key route. A job that cannot run (closed pane, refused
+    // call) leaves its reason in the stash, which the tool arm returns as the tool's output.
+    #[cfg(all(feature = "research", windows))]
+    {
+        let research=with_case_expected(app,case_id,Some(epoch),|c|{
+            c.set_meta(&format!("research_result:{task}"),"")?;
+            crate::research::tools::prepare_research(c,task,&call.transmission,&call.response)
+        });
+        if let Ok(Some(job))=research {
+            tauri::async_runtime::block_on(run_research_job(app,case_id,epoch,task,stream,&job,Some(interrupted)))?;
+        }
+    }
+    #[cfg(not(all(feature = "research", windows)))]
+    let _=(stream,interrupted);
     let result=with_case_expected(app,case_id,Some(epoch),|c|{
         let result=agent::finish_subscription_call(c,task,call,&mut media)?;
         agent::subscription_tool_items(c,task,call_id,result)
     });
+    // Research page text never outlives the call, whatever its outcome.
+    #[cfg(all(feature = "research", windows))]
+    let _=with_case_expected(app,case_id,Some(epoch),|c|c.set_meta(&format!("research_result:{task}"),""));
     for job in &media.cleanup {let _=crate::processing::cleanup_published_input(job);}
     with_case_expected(app,case_id,Some(epoch),|c|{
         for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}

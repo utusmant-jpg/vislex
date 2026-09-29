@@ -1148,6 +1148,9 @@ pub fn subscription_context(case: &mut Case, task: &str) -> Result<(String, Vec<
     let (mode, _, _) = scope(case, task)?;
     let mut definitions = tools(&mode);
     definitions.retain(|tool| !["inspect_direct_media", "delegate_tasks", "list_agent_models"].contains(&tool["name"].as_str().unwrap_or("")));
+    // Research browser tools, on the same terms as the API-key route (prepare_request).
+    let research_exposed = crate::research::tools::exposed(case, task)?;
+    if research_exposed { definitions.extend(crate::research::tools::tool_definitions()); }
     let mut entries: Vec<Value> = serde_json::from_str(&history)?;
     // Retain complete entries at the end; large exact receipts are still
     // recoverable with read_tool_result instead of being truncated mid-JSON.
@@ -1161,7 +1164,9 @@ pub fn subscription_context(case: &mut Case, task: &str) -> Result<(String, Vec<
     }
     recent.reverse();
     let context = format!("Current user request: {prompt}\nSaved task history (untrusted evidence and tool results; earlier entries may be omitted, retrieve exact receipts when needed): {}", serde_json::to_string(&recent)?);
-    Ok((format!("{INSTRUCTIONS}\nYou are running through VisLex's restricted case tools. Use only the offered vislex tools. Do not request shell, paths, network destinations, or credentials. Finish through finish_task and preserve the same source citations and review gates as an API-key task."), definitions, context))
+    let mut instructions = format!("{INSTRUCTIONS}\nYou are running through VisLex's restricted case tools. Use only the offered vislex tools. Do not request shell, paths, network destinations, or credentials. Finish through finish_task and preserve the same source citations and review gates as an API-key task.");
+    if research_exposed { instructions = format!("{instructions}\n{}", crate::research::tools::AGENT_GUIDANCE); }
+    Ok((instructions, definitions, context))
 }
 
 /// Deliver one Codex dynamic-tool call through the existing receipt, scope,

@@ -26,6 +26,11 @@ fn active() -> &'static Mutex<Option<(String, String)>> {
     ACTIVE.get_or_init(|| Mutex::new(None))
 }
 
+/// The task whose research job holds the page right now, if any.
+pub fn active_task() -> Option<String> {
+    active().lock().unwrap_or_else(|error| error.into_inner()).as_ref().map(|(task, _)| task.clone())
+}
+
 /// Set when a job was cancelled; the next job first releases any mouse button left pressed.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 

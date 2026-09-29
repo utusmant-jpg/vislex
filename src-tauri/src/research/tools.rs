@@ -140,6 +140,37 @@ pub fn exposed(case: &Case, task: &str) -> Result<bool> {
         && case.meta(&format!("automatic_task:{task}"))?.as_deref() != Some("true"))
 }
 
+/// Longest `detail` shown with a research step in the chat.
+pub const MAX_DETAIL_CHARS: usize = 200;
+
+/// What a research step is doing, for the step shown live in the chat turn (the same text the
+/// audit log records for the call): the typed query, the action and key, the page's host and
+/// path, the lines read, the citation captured or the snapshot scope. `None` for
+/// `research_status` and for arguments that do not say.
+pub fn activity_detail(name: &str, args: &Value) -> Option<String> {
+    let text = |key: &str| args[key].as_str().map(str::to_string);
+    let detail = match name {
+        "research_act" => match args["action"].as_str()? {
+            "type" => text("text")?,
+            "press" => format!("press {}", args["key"].as_str().unwrap_or_default()),
+            action => action.to_string(),
+        },
+        "research_navigate" => {
+            let url: reqwest::Url = args["url"].as_str()?.parse().ok()?;
+            format!("{}{}", url.host_str().unwrap_or_default(), url.path())
+        }
+        "research_read_page" => {
+            let (offset, count) = (args["offset"].as_u64()?, args["count"].as_u64()?);
+            format!("lines {offset}\u{2013}{}", offset.saturating_add(count))
+        }
+        "research_capture" => text("citation_text")?,
+        "research_snapshot" => text("scope")?,
+        _ => return None,
+    };
+    let detail = detail.trim();
+    (!detail.is_empty()).then(|| detail.chars().take(MAX_DETAIL_CHARS).collect())
+}
+
 /// A browser action checked and ready to run outside the case lock.
 #[derive(Clone, Debug)]
 pub struct Job {
