@@ -14,9 +14,10 @@ import { Markdown } from '../markdown';
 import { CitationChip } from '../ui';
 import { springs } from '../lib/motion';
 import {
-  groupLabel, groupSteps, isGroup, liveLabel, progressLabel, summarizeAction, traceRecap, workedFor,
+  groupLabel, groupSteps, isGroup, liveLabel, progressLabel, researchLines, summarizeAction, traceRecap, workedFor,
   type NameLookup, type StepGroup, type StepKind, type StepSummary,
 } from './activity-summary';
+import type { LiveStep } from './live-progress';
 
 type TeamMember = { id: string; role: string; phase: string; provider: string; model: string; status: string; step: number; answer: string; error: string };
 type SourceOpener = (id: string, locator?: string) => void;
@@ -91,8 +92,8 @@ function GroupRow({ group, actions, onSource }: { group: StepGroup; actions: Map
   </details>;
 }
 
-export default function ActivityTrace({ turn, liveActivity, nameOf, onSource, eager }: {
-  turn: Task & { updated_at?: string }; liveActivity?: string; nameOf: NameLookup; onSource: SourceOpener; eager: boolean;
+export default function ActivityTrace({ turn, liveActivity, liveDetail, liveSteps, nameOf, onSource, eager }: {
+  turn: Task & { updated_at?: string }; liveActivity?: string; liveDetail?: string; liveSteps?: LiveStep[]; nameOf: NameLookup; onSource: SourceOpener; eager: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [actions, setActions] = useState<Action[] | null>(null);
@@ -136,9 +137,12 @@ export default function ActivityTrace({ turn, liveActivity, nameOf, onSource, ea
   const items = useMemo(() => groupSteps(steps, running), [steps, running]);
   const failures = steps.filter(step => step.failed).length;
 
+  // Research browser steps, inline while the turn runs: receipts plus steps reported live.
+  const research = useMemo(() => running ? researchLines(steps, liveSteps ?? []) : [], [running, steps, liveSteps]);
+
   // Only real signals: the tool the provider just reported, else the newest recorded step.
   const label = running
-    ? (liveActivity ? liveLabel(liveActivity) : progressLabel(steps.at(-1)))
+    ? (liveActivity ? liveLabel(liveActivity, liveDetail) : progressLabel(steps.at(-1)))
     : actions
       ? traceRecap(steps)
       : turn.step ? `${turn.step} ${turn.step === 1 ? 'step' : 'steps'}` : 'Show activity';
@@ -160,6 +164,12 @@ export default function ActivityTrace({ turn, liveActivity, nameOf, onSource, ea
       {!running && failures && !label.includes('failed') ? <span className="trace-failures">{failures} failed</span> : null}
       <ChevronRight size={14} className="trace-chevron" aria-hidden="true" />
     </button>
+    {research.length && !open ? <ol className="trace-research" aria-label="Research steps" aria-live="polite" aria-relevant="additions">
+      {research.map(line => <li key={line.key} className="trace-research-step" data-pending={line.pending || undefined} data-failed={line.failed || undefined}>
+        <StepIcon kind={line.kind} />
+        <span className="trace-sentence">{line.label}{line.failed ? <span className="trace-result"> · failed</span> : null}</span>
+      </li>)}
+    </ol> : null}
     <AnimatePresence initial={false}>
       {open ? <motion.div
         key="trace-body"

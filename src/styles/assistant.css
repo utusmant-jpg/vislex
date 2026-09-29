@@ -124,6 +124,12 @@
 .trace-step.is-failed .trace-icon { color: var(--danger); }
 .trace-error { margin: -2px 0 4px 31px; font-size: var(--text-caption); line-height: 1.5; color: var(--danger); overflow-wrap: anywhere; }
 
+/* research browser steps, shown inline under the collapsed trace while a turn runs */
+.trace-research { position: relative; list-style: none; margin: 2px 0 4px; padding: 0; }
+.trace-research::before { content: ''; position: absolute; left: 10px; top: 13px; bottom: 13px; width: 1px; background: var(--border); }
+.trace-research-step { display: flex; align-items: center; gap: 10px; min-height: 26px; min-width: 0; font-size: var(--text-sm); line-height: 1.45; color: var(--text-2); }
+.trace-research-step[data-pending] .trace-icon { color: var(--accent-text); }
+
 .trace-step-body { margin: 2px 0 8px 31px; display: flex; flex-direction: column; gap: 8px; }
 .trace-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; font-size: var(--text-caption); }
 .trace-facts > div { display: contents; }

@@ -58,10 +58,10 @@ function LiveResponse({ live, onSource, scroll, following }: { live: LiveProgres
     if (following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [live.text, following, scroll]);
   return <>
-    {live.characters ? <div className="activity-live"><span>{liveLabel(live.activity)} · {live.characters.toLocaleString()} characters received</span></div> : null}
+    {live.characters ? <div className="activity-live"><span>{liveLabel(live.activity, live.detail)} · {live.characters.toLocaleString()} characters received</span></div> : null}
     {/* States only what was received: the backend may be running a tool, not
         waiting on the model, and a remount starts with nothing received. */}
-    {native && !live.text && !live.characters ? <div className="live-waiting"><span className="trace-live-dot" aria-hidden="true" /><span>{live.transmission && live.activity ? `${liveLabel(live.activity)} · no response text yet` : 'No response output received yet'}</span></div> : null}
+    {native && !live.text && !live.characters ? <div className="live-waiting"><span className="trace-live-dot" aria-hidden="true" /><span>{live.transmission && live.activity ? `${liveLabel(live.activity, live.detail)} · no response text yet` : 'No response output received yet'}</span></div> : null}
     {live.text ? <div className="live-answer">
       <p className="live-answer-caption"><CircleDashed size={14} aria-hidden="true" />Live draft — not yet citation-validated</p>
       <Markdown text={live.text} onSource={onSource} caret streaming />
@@ -594,7 +594,7 @@ function ConversationTurn({ turn, fresh, anchored, reducedMotion, latest, live, 
     </div>
     <div className="assistant-turn">
       {outcome.kind !== 'complete' ? <div className="assistant-status"><StatusPill state={outcome.pill} label={outcome.label} small />{time}</div> : null}
-      <ActivityTrace turn={turn} liveActivity={live ? liveState.activity : undefined} nameOf={nameOf} onSource={onSource} eager={latest} />
+      <ActivityTrace turn={turn} liveActivity={live ? liveState.activity : undefined} liveDetail={live ? liveState.detail : undefined} liveSteps={live ? liveState.steps : undefined} nameOf={nameOf} onSource={onSource} eager={latest} />
       {live && snapshot ? <CitationContext.Provider value={liveScope}><LiveResponse live={liveState} onSource={onSource} scroll={scroll} following={following} /></CitationContext.Provider> : null}
       {turn.status === 'running' ? <RunStatus turn={turn} /> : null}
       {turn.answer ? <CitationContext.Provider value={answerScope}>

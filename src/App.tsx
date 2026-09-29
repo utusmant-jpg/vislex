@@ -698,7 +698,9 @@ export default function App() {
   function beginRename(kind: string, id: string, name: string) { setRename({ kind, id, name }); }
   function chooseConversation(id: string | null) {
     setConversationId(id);
-    setView('chat');
+    // The Browser view holds the same chat beside the research browser, so a message sent
+    // there (or a chat picked while there) keeps the browser in view.
+    setView(current => current === 'browser' ? current : 'chat');
     if (snapshot) {
       if (id) localStorage.setItem(`vislex-conversation:${snapshot.id}`, id);
       else localStorage.removeItem(`vislex-conversation:${snapshot.id}`);

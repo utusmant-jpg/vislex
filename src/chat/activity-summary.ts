@@ -85,6 +85,111 @@ function firstLine(text: string): string {
   return line.length > 220 ? `${line.slice(0, 217)}…` : line;
 }
 
+/** Keys research_act may press (src-tauri/src/research/tools.rs). */
+const RESEARCH_KEYS = new Set(['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End']);
+
+export function isResearchTool(name: string | undefined): boolean {
+  return /^research_(status|navigate|snapshot|act|read_page|capture)$/.test(name ?? '');
+}
+
+/** Host and path of an address, without its query or fragment: "next.westlaw.com/Document/X". */
+export function hostAndPath(url: string | undefined): string | undefined {
+  try {
+    if (!url) return undefined;
+    const parsed = new URL(url);
+    return parsed.host ? `${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}` : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * The one-line detail of a research step, derived from a saved receipt's arguments (and, for a
+ * read, the line numbers actually returned). It follows what the backend sends live as the
+ * agent-progress `delta.detail`: the typed query, the action or key, host and path, the lines
+ * read, the citation captured, or the snapshot scope.
+ */
+export function researchDetail(name: string, args: Json, out?: Json | null): string | undefined {
+  switch (name) {
+    case 'research_navigate': return hostAndPath(str(args.url));
+    case 'research_snapshot': return str(args.scope);
+    case 'research_act': {
+      const action = str(args.action);
+      if (action === 'type') return str(args.text) ?? 'type';
+      if (action === 'press') return str(args.key) ? `press ${str(args.key)}` : 'press';
+      return action;
+    }
+    case 'research_read_page': {
+      const numbers = (arr(out?.lines) ?? []).map(line => num((line as Json | null)?.n)).filter((n): n is number => n !== undefined);
+      const offset = num(args.offset), count = num(args.count);
+      const first = numbers.length ? numbers[0] : offset;
+      const last = numbers.length ? numbers.at(-1) : offset !== undefined && count ? offset + count - 1 : undefined;
+      if (first === undefined || last === undefined) return undefined;
+      return first === last ? `line ${first}` : `lines ${first}–${last}`;
+    }
+    case 'research_capture': return str(args.citation_text) ?? str(args.citation);
+    default: return undefined;
+  }
+}
+
+export type ResearchStepText = { kind: StepKind; verb: string; object?: string };
+
+/**
+ * Plain words for a research step from its tool name and one-line detail: "Searched:" +
+ * "duty of care /s negligence", "Opened" + "next.westlaw.com/Document/X", "Read" + "lines 0–49",
+ * "Captured" + "123 F.3d 456". Without a detail the step still reads as a sentence.
+ */
+export function researchStep(name: string, detail?: string): ResearchStepText {
+  const text = detail?.trim() || undefined;
+  switch (name) {
+    case 'research_status': return { kind: 'check', verb: 'Checked the research browser' };
+    case 'research_navigate': return text ? { kind: 'browse', verb: 'Opened', object: text } : { kind: 'browse', verb: 'Opened a research page' };
+    case 'research_snapshot': return text ? { kind: 'browse', verb: 'Looked over the page', object: `(${text})` } : { kind: 'browse', verb: 'Looked over the page' };
+    case 'research_read_page': return text ? { kind: 'read', verb: 'Read', object: text } : { kind: 'read', verb: 'Read the research page' };
+    case 'research_capture': return text ? { kind: 'save', verb: 'Captured', object: text } : { kind: 'save', verb: 'Captured an authority' };
+    case 'research_act': {
+      if (!text) return { kind: 'browse', verb: 'Worked on the research page' };
+      if (/^click\b/.test(text)) return { kind: 'browse', verb: 'Clicked on the page' };
+      const scroll = /^scroll[_ ](down|up)$/.exec(text);
+      if (scroll) return { kind: 'browse', verb: `Scrolled ${scroll[1]}` };
+      const press = /^press(?:\s+(.+))?$/.exec(text);
+      if (press) return { kind: 'browse', verb: press[1] ? `Pressed ${press[1]}` : 'Pressed a key' };
+      if (RESEARCH_KEYS.has(text)) return { kind: 'browse', verb: `Pressed ${text}` };
+      if (text === 'type') return { kind: 'search', verb: 'Typed into the page' };
+      return { kind: 'search', verb: 'Searched:', object: text };
+    }
+    default: return { kind: 'other', verb: humanizeTool(name), object: text };
+  }
+}
+
+/** A research step as one line, e.g. "Searched: duty of care /s negligence". */
+export function researchStepLabel(name: string, detail?: string): string {
+  const step = researchStep(name, detail);
+  return step.object ? `${step.verb} ${step.object}` : step.verb;
+}
+
+export type ResearchLine = { key: string; kind: StepKind; label: string; failed: boolean; pending: boolean };
+
+/**
+ * The research steps to show inline in a running turn: recorded receipts first, then steps the
+ * backend reported live that have no receipt yet. A live step is matched to the first unmatched
+ * receipt of the same tool recorded at or after it was reported (a few seconds of slack), so a
+ * step is never listed twice once its receipt arrives. Only the last `limit` lines are kept.
+ */
+export function researchLines(recorded: StepSummary[], live: { activity: string; detail: string; at: number }[], limit = 6): ResearchLine[] {
+  const research = recorded.filter(step => isResearchTool(step.name));
+  const used = new Set<string>();
+  const pending: ResearchLine[] = [];
+  live.forEach((step, index) => {
+    const match = research.find(item => !used.has(item.id) && item.name === step.activity && !(Date.parse(item.createdAt) < step.at - 5000));
+    if (match) used.add(match.id);
+    else {
+      const text = researchStep(step.activity, step.detail);
+      pending.push({ key: `live-${index}-${step.at}`, kind: text.kind, label: researchStepLabel(step.activity, step.detail), failed: false, pending: true });
+    }
+  });
+  const done = research.map(step => ({ key: step.id, kind: step.kind, label: step.object ? `${step.verb} ${step.object}` : step.verb, failed: step.failed, pending: false }));
+  return [...done, ...pending].slice(-limit);
+}
+
 /** Summarise one recorded action. */
 export function summarizeAction(action: Action, nameOf: NameLookup = () => undefined): StepSummary {
   const args = parse(action.input) ?? {};
@@ -287,48 +392,35 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       else fact('Page', str(out?.title));
       return base;
     }
-    case 'research_navigate': {
-      const url = str(out?.url) ?? str(args.url);
-      const host = hostOf(url);
-      base.kind = 'browse'; base.verb = 'Opened a research page'; if (host) { base.verb = 'Opened a page on'; base.object = host; }
-      fact('Address', url);
+    // The sentence uses the same one-line detail the backend sends live (researchDetail), so a
+    // research step reads the same while it runs and after a refresh.
+    case 'research_navigate':
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args)));
+      fact('Address', str(out?.url) ?? str(args.url));
       return base;
-    }
-    case 'research_snapshot': base.kind = 'browse'; base.verb = 'Looked over the research page'; fact('Looking for', str(args.find)); return base;
+    case 'research_snapshot':
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args)));
+      fact('Looking for', str(args.find));
+      return base;
     case 'research_act': {
-      const kind = str(args.action);
-      base.kind = 'browse';
-      if (kind === 'type') {
-        const typed = str(args.text);
-        base.kind = 'search'; base.verb = typed ? 'Searched the research site for' : 'Typed into the research page';
-        if (typed) base.object = `“${typed}”`;
-        fact('Query', typed);
-      } else if (kind === 'click') base.verb = 'Clicked on the research page';
-      else if (kind === 'press') { const key = str(args.key); base.verb = key ? `Pressed ${key} on the research page` : 'Pressed a key on the research page'; }
-      else if (kind === 'scroll_down' || kind === 'scroll_up') base.verb = `Scrolled ${kind === 'scroll_down' ? 'down' : 'up'} the research page`;
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args)));
+      if (str(args.action) === 'type') fact('Query', str(args.text));
       // Results carry {performed, url, navigated, snapshot}; a click or key may open a new page.
       if (out?.navigated === true) { const host = hostOf(str(out.url)); base.result = host ? `opened a page on ${host}` : 'opened a new page'; fact('Address', str(out.url)); }
       return base;
     }
-    case 'research_read_page': {
-      const offset = num(args.offset), count = num(args.count);
-      const lines = arr(out?.lines);
-      const first = offset !== undefined ? offset + 1 : undefined;
-      const last = first !== undefined ? first + (lines ? lines.length : count ?? 1) - 1 : undefined;
-      base.kind = 'read'; base.verb = 'Read'; base.object = str(out?.title) ?? 'the research page';
-      if (first !== undefined && last !== undefined && last >= first) base.detail = first === last ? `line ${first}` : `lines ${first}–${last}`;
+    case 'research_read_page':
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args, out)));
+      fact('Page', str(out?.title));
       fact('Address', str(out?.url));
       fact('Total lines', num(out?.total_lines));
       return base;
-    }
-    case 'research_capture': {
-      const title = str(out?.title) ?? str(args.title);
-      base.kind = 'save'; base.verb = 'Saved an authority';
-      if (title) base.object = `“${title}”`;
-      fact('Citation', str(args.citation) ?? str((out?.citation as Json | undefined)?.raw));
+    case 'research_capture':
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args, out)));
+      fact('Title', str(out?.title) ?? str(args.title));
       fact('Proposition', str(args.proposition));
+      fact('Locator', str(out?.locator));
       return base;
-    }
     default:
       if (sourceName) { base.object = sourceName; base.sourceId = sourceId; fact('Source', sourceName); }
       return base;
@@ -336,9 +428,11 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
 }
 
 /** Present-tense label for a tool the model has just requested (live stream). */
-export function liveLabel(toolName: string | undefined): string {
+export function liveLabel(toolName: string | undefined, detail?: string): string {
   const name = (toolName ?? '').replaceAll(' ', '_');
   if (!name) return 'Working';
+  // A research step the backend is running, with its query, address, lines or citation.
+  if (detail?.trim() && isResearchTool(name)) return researchStepLabel(name, detail);
   if (name === 'research_navigate') return 'Opening a research page';
   if (name === 'research_read_page') return 'Reading the research page';
   if (name === 'research_capture') return 'Saving an authority';

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Action } from '../types';
-import { clock, groupLabel, groupSteps, humanizeTool, isGroup, liveLabel, progressLabel, summarizeAction, traceRecap, workedFor } from './activity-summary';
+import { clock, groupLabel, groupSteps, humanizeTool, isGroup, liveLabel, progressLabel, researchDetail, researchLines, researchStepLabel, summarizeAction, traceRecap, workedFor } from './activity-summary';
 
 const action = (name: string, input: unknown, output: unknown, status = 'complete'): Action => ({
   id: `${name}-id`, name, input: typeof input === 'string' ? input : JSON.stringify(input),
@@ -104,19 +104,68 @@ describe('trace helpers', () => {
 describe('research browser steps', () => {
   it('describes each research tool in a plain sentence', () => {
     expect(summarizeAction(action('research_status', {}, { open: true }))).toMatchObject({ kind: 'check', verb: 'Checked the research browser' });
-    expect(summarizeAction(action('research_navigate', { url: 'https://next.westlaw.com/Search/Home' }, { url: 'https://next.westlaw.com/Search/Home', snapshot: {} })))
-      .toMatchObject({ kind: 'browse', verb: 'Opened a page on', object: 'next.westlaw.com' });
-    expect(summarizeAction(action('research_snapshot', { scope: 'interactive', find: 'search box' }, { snapshot: {} })).verb).toBe('Looked over the research page');
-    const typed = summarizeAction(action('research_act', { action: 'type', ref: 'e12', snapshot_version: 3, text: 'notice period commercial lease', key: null }, { performed: 'type' }));
-    expect(typed).toMatchObject({ kind: 'search', verb: 'Searched the research site for', object: '“notice period commercial lease”' });
-    expect(typed.facts).toContainEqual({ label: 'Query', value: 'notice period commercial lease' });
-    expect(summarizeAction(action('research_act', { action: 'click', ref: 'e4', snapshot_version: 3, text: null, key: null }, {})).verb).toBe('Clicked on the research page');
-    expect(summarizeAction(action('research_act', { action: 'press', ref: null, snapshot_version: null, text: null, key: 'Enter' }, {})).verb).toBe('Pressed Enter on the research page');
-    expect(summarizeAction(action('research_act', { action: 'scroll_down', ref: null, snapshot_version: null, text: null, key: null }, {})).verb).toBe('Scrolled down the research page');
-    expect(summarizeAction(action('research_read_page', { offset: 0, count: 200 }, { title: 'Synthetic v. Example', lines: [{}, {}, {}], total_lines: 900 })))
-      .toMatchObject({ kind: 'read', verb: 'Read', object: 'Synthetic v. Example', detail: 'lines 1–3' });
-    expect(summarizeAction(action('research_capture', { citation: '1 F.4th 2' }, { title: 'Synthetic v. Example' })))
-      .toMatchObject({ kind: 'save', verb: 'Saved an authority', object: '“Synthetic v. Example”' });
+    expect(summarizeAction(action('research_navigate', { url: 'https://1.next.westlaw.com/Document/I0abc?transitionType=Default' }, { url: 'https://1.next.westlaw.com/Document/I0abc', snapshot: {} })))
+      .toMatchObject({ kind: 'browse', verb: 'Opened', object: '1.next.westlaw.com/Document/I0abc' });
+    expect(summarizeAction(action('research_navigate', { url: 'https://next.westlaw.com/' }, {})).object).toBe('next.westlaw.com');
+    expect(summarizeAction(action('research_snapshot', { scope: 'interactive', find: 'search box' }, { snapshot: {} }))).toMatchObject({ verb: 'Looked over the page', object: '(interactive)' });
+    const typed = summarizeAction(action('research_act', { action: 'type', ref: 'e12', snapshot_version: 3, text: 'duty of care /s negligence', key: null }, { performed: 'type' }));
+    expect(typed).toMatchObject({ kind: 'search', verb: 'Searched:', object: 'duty of care /s negligence' });
+    expect(typed.facts).toContainEqual({ label: 'Query', value: 'duty of care /s negligence' });
+    expect(summarizeAction(action('research_act', { action: 'click', ref: 'e4', snapshot_version: 3, text: null, key: null }, {})).verb).toBe('Clicked on the page');
+    expect(summarizeAction(action('research_act', { action: 'press', ref: null, snapshot_version: null, text: null, key: 'Enter' }, {})).verb).toBe('Pressed Enter');
+    expect(summarizeAction(action('research_act', { action: 'scroll_down', ref: null, snapshot_version: null, text: null, key: null }, {})).verb).toBe('Scrolled down');
+    // Line numbers are the n values research_read_page returned (from 0), which captures cite.
+    const read = summarizeAction(action('research_read_page', { offset: 0, count: 200 }, { title: 'Synthetic v. Example', lines: [{ n: 0 }, { n: 1 }, { n: 2 }], total_lines: 900 }));
+    expect(read).toMatchObject({ kind: 'read', verb: 'Read', object: 'lines 0–2' });
+    expect(read.facts).toContainEqual({ label: 'Page', value: 'Synthetic v. Example' });
+    expect(summarizeAction(action('research_read_page', { offset: 0, count: 50 }, 'Research result is not available')).object).toBe('lines 0–49');
+    const captured = summarizeAction(action('research_capture', { title: 'Synthetic v. Example', citation_text: '123 F.3d 456', proposition: 'A duty is owed.' }, { title: 'Synthetic v. Example', locator: 'evidence:s9#R1L4-L5' }));
+    expect(captured).toMatchObject({ kind: 'save', verb: 'Captured', object: '123 F.3d 456' });
+    expect(captured.facts).toEqual([{ label: 'Title', value: 'Synthetic v. Example' }, { label: 'Proposition', value: 'A duty is owed.' }, { label: 'Locator', value: 'evidence:s9#R1L4-L5' }]);
+  });
+
+  it('derives the same one-line detail from a receipt that the backend sends live', () => {
+    expect(researchDetail('research_act', { action: 'type', text: 'duty of care /s negligence' })).toBe('duty of care /s negligence');
+    expect(researchDetail('research_act', { action: 'press', key: 'Enter' })).toBe('press Enter');
+    expect(researchDetail('research_act', { action: 'click', ref: 'e4' })).toBe('click');
+    expect(researchDetail('research_navigate', { url: 'https://1.next.westlaw.com/Document/I0abc?x=1#frag' })).toBe('1.next.westlaw.com/Document/I0abc');
+    expect(researchDetail('research_read_page', { offset: 10, count: 5 })).toBe('lines 10–14');
+    expect(researchDetail('research_read_page', { offset: 3, count: 1 })).toBe('line 3');
+    expect(researchDetail('research_capture', { citation_text: '123 F.3d 456' })).toBe('123 F.3d 456');
+    expect(researchDetail('research_snapshot', { scope: 'main' })).toBe('main');
+    expect(researchDetail('research_status', {})).toBeUndefined();
+    // Live details as the backend sends them read as the same sentences.
+    expect(researchStepLabel('research_act', 'duty of care /s negligence')).toBe('Searched: duty of care /s negligence');
+    expect(researchStepLabel('research_act', 'click')).toBe('Clicked on the page');
+    expect(researchStepLabel('research_act', 'press Enter')).toBe('Pressed Enter');
+    expect(researchStepLabel('research_act', 'Enter')).toBe('Pressed Enter');
+    expect(researchStepLabel('research_act', 'scroll_up')).toBe('Scrolled up');
+    expect(researchStepLabel('research_navigate', '1.next.westlaw.com/Document/I0abc')).toBe('Opened 1.next.westlaw.com/Document/I0abc');
+    expect(researchStepLabel('research_read_page', 'lines 0–50')).toBe('Read lines 0–50');
+    expect(researchStepLabel('research_capture', '123 F.3d 456')).toBe('Captured 123 F.3d 456');
+    // A missing detail shows just the label.
+    expect(researchStepLabel('research_capture')).toBe('Captured an authority');
+    expect(researchStepLabel('research_act', '')).toBe('Worked on the research page');
+  });
+
+  it('lists research steps once: receipts first, then live steps without a receipt yet', () => {
+    const at = Date.parse('2026-09-28T10:00:00Z');
+    const receipt = summarizeAction({ ...action('research_act', { action: 'type', text: 'duty of care /s negligence' }, { performed: 'type' }), id: 'r1', created_at: '2026-09-28T10:00:01Z' });
+    const other = summarizeAction(action('search_passages', { terms: ['x'] }, { matches: [], total: 0 }));
+    const live = [
+      { activity: 'research_act', detail: 'duty of care /s negligence', at },
+      { activity: 'research_navigate', detail: '1.next.westlaw.com/Document/I0abc', at: at + 2000 },
+    ];
+    const lines = researchLines([other, receipt], live);
+    expect(lines.map(line => [line.label, line.pending])).toEqual([
+      ['Searched: duty of care /s negligence', false],
+      ['Opened 1.next.westlaw.com/Document/I0abc', true],
+    ]);
+    // A receipt recorded well before the live step is an earlier, separate step.
+    const earlier = summarizeAction({ ...action('research_act', { action: 'type', text: 'duty of care /s negligence' }, {}), id: 'r0', created_at: '2026-09-28T09:50:00Z' });
+    expect(researchLines([earlier], live.slice(0, 1)).map(line => line.pending)).toEqual([false, true]);
+    expect(researchLines([], [], 6)).toEqual([]);
+    expect(researchLines([], Array.from({ length: 9 }, (_, index) => ({ activity: 'research_read_page', detail: `line ${index}`, at: at + index })), 6).map(line => line.label).at(0)).toBe('Read line 3');
   });
 
   it('says when a sign-in page is showing and when an action opened a new page', () => {
@@ -125,7 +174,7 @@ describe('research browser steps', () => {
     expect(status.facts).toEqual([{ label: 'Page', value: 'signon.thomsonreuters.com' }, { label: 'Next', value: 'Ask the user to sign in.' }]);
     expect(summarizeAction(action('research_status', {}, { open: true, on_research_site: true, url: 'https://next.westlaw.com/x', title: 'Search results' })).facts).toEqual([{ label: 'Page', value: 'Search results' }]);
     const click = summarizeAction(action('research_act', { action: 'click', ref: 'e4', snapshot_version: 3, text: null, key: null }, { performed: 'click', url: 'https://next.westlaw.com/Document/X', navigated: true, snapshot: {} }));
-    expect(click).toMatchObject({ verb: 'Clicked on the research page', result: 'opened a page on next.westlaw.com' });
+    expect(click).toMatchObject({ verb: 'Clicked on the page', result: 'opened a page on next.westlaw.com' });
     expect(summarizeAction(action('research_act', { action: 'scroll_down', ref: null, snapshot_version: null, text: null, key: null }, { performed: 'scroll_down', url: 'https://next.westlaw.com/Document/X', navigated: false, snapshot: {} })).result).toBeUndefined();
   });
 
@@ -135,5 +184,12 @@ describe('research browser steps', () => {
     expect(liveLabel('research_read_page')).toBe('Reading the research page');
     expect(liveLabel('research_capture')).toBe('Saving an authority');
     expect(liveLabel('request_more_research')).toBe('Briefing the team');
+  });
+
+  it('adds the backend detail to a running research step, and only to research steps', () => {
+    expect(liveLabel('research_act', 'duty of care /s negligence')).toBe('Searched: duty of care /s negligence');
+    expect(liveLabel('research_navigate', '1.next.westlaw.com/Document/I0abc')).toBe('Opened 1.next.westlaw.com/Document/I0abc');
+    expect(liveLabel('research_act', '')).toBe('Working in the research browser');
+    expect(liveLabel('search_passages', 'ignored')).toBe('Searching the evidence');
   });
 });

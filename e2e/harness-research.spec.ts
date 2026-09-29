@@ -109,3 +109,88 @@ test('a captured authority is accepted only after the four-item cite-check', asy
   expect(review.args).toMatchObject({ case_id: fx.caseA.id, session_epoch: 1, id, revision: 1, review: 'accepted', checks: ['exists', 'quote', 'citator', 'support'] });
   expect(String(review.args.note)).toContain('supports the proposition');
 });
+
+test('research steps appear in the chat turn as they run, and the toolbar Stop pauses the task, by keyboard', async ({ page }, testInfo) => {
+  await openHarness(page);
+  await page.evaluate(() => window.__vislexHarness!.setScenario({ autoStream: false }));
+  // Keyboard only: the Browser view, turning the case on, and sending a question.
+  await page.keyboard.press('Control+6');
+  await page.getByRole('button', { name: 'Turn on for this case' }).press('Enter');
+  await lastCall(page, 'open_research_pane');
+  await expect(page.getByRole('textbox', { name: 'Address' })).toHaveValue('next.westlaw.com');
+  await page.getByRole('textbox', { name: 'Agent task' }).focus();
+  await page.keyboard.type('Find authority on the duty of care');
+  await page.keyboard.press('Enter');
+  const taskId = ((await lastCall(page, 'start_task')).result as { task_id: string }).task_id;
+  const turn = page.locator('.conversation-turn').filter({ hasText: 'Find authority on the duty of care' });
+  const steps = turn.getByRole('list', { name: 'Research steps' });
+  // Sending from the Browser view keeps the research browser beside the chat.
+  await expect(turn).toBeVisible();
+  await expect(page.getByRole('separator', { name: 'Resize research browser' })).toBeVisible();
+
+  // Each step shows within a second of the backend's event, with its query, address, lines or citation.
+  const script: { name: string; detail: string; args: Record<string, unknown>; output: unknown; label: string; object: string }[] = [
+    { name: 'research_act', detail: 'duty of care /s negligence', args: { action: 'type', ref: 'e3', snapshot_version: 1, text: 'duty of care /s negligence', key: null }, output: { performed: 'type' }, label: 'Searched: duty of care /s negligence', object: 'duty of care /s negligence' },
+    { name: 'research_navigate', detail: '1.next.westlaw.com/Document/I0SYNTHETIC', args: { url: 'https://1.next.westlaw.com/Document/I0SYNTHETIC' }, output: { url: 'https://1.next.westlaw.com/Document/I0SYNTHETIC' }, label: 'Opened 1.next.westlaw.com/Document/I0SYNTHETIC', object: '1.next.westlaw.com/Document/I0SYNTHETIC' },
+    { name: 'research_read_page', detail: 'lines 0–49', args: { offset: 0, count: 50 }, output: { title: 'Harbor Freight v. Synthetic Depot (SYNTHETIC)', lines: Array.from({ length: 50 }, (_, n) => ({ n, text: 'SYNTHETIC' })), total_lines: 80 }, label: 'Read lines 0–49', object: 'lines 0–49' },
+    { name: 'research_capture', detail: '123 F.3d 456', args: { title: 'Harbor Freight v. Synthetic Depot (SYNTHETIC)', jurisdiction: '9th Cir.', relevant_date: null, citation_text: '123 F.3d 456', proposition: 'SYNTHETIC proposition', quote_start_line: 3, quote_end_line: 4 }, output: { locator: 'evidence:synthetic#R1L3-L4' }, label: 'Captured 123 F.3d 456', object: '123 F.3d 456' },
+  ];
+  for (const step of script) {
+    await page.evaluate(([id, item]) => window.__vislexHarness!.researchStep(id, { name: item.name, detail: item.detail, args: item.args, output: item.output, recordAfterMs: 300 }), [taskId, step] as const);
+    await expect(steps.getByText(step.label, { exact: true })).toBeVisible({ timeout: 1000 });
+  }
+  await expect(turn.locator('.trace-label')).toHaveText('Captured 123 F.3d 456…');
+  // Once the receipts are polled (every 2.5 s), each step is still listed exactly once.
+  await expect.poll(async () => (await calls(page, 'actions')).some(call => call.args.task_id === taskId && Array.isArray(call.result) && call.result.length >= 5), { timeout: 6000 }).toBe(true);
+  await expect(steps.getByRole('listitem')).toHaveCount(4);
+  await scan(page, 'research-steps', testInfo);
+  expect(await steps.innerText()).not.toMatch(FORBIDDEN);
+
+  // The toolbar Stop is reached with Tab from the page history buttons and pressed with Enter.
+  await page.getByRole('button', { name: 'Reload' }).focus();
+  const stop = page.getByRole('button', { name: 'Stop', exact: true });
+  for (let presses = 0; presses < 6 && !(await stop.evaluate(element => element === document.activeElement)); presses += 1) await page.keyboard.press('Tab');
+  await expect(stop).toBeFocused();
+  await page.keyboard.press('Enter');
+  const stopped = await lastCall(page, 'research_stop');
+  expect(stopped.args ?? {}).toEqual({});
+  expect(stopped.result).toEqual({ stopped: true, task_id: taskId });
+  await expect(turn.getByText('Stopped', { exact: true })).toBeVisible();
+  expect(await page.evaluate(id => window.__vislexHarness!.task(id)?.status, taskId)).toBe('paused');
+  await expect(stop).toBeFocused();
+  // The toolbar Stop is its own command; the chat's stop_task was not sent.
+  expect((await calls(page, 'stop_task')).filter(call => call.args.task_id === taskId)).toHaveLength(0);
+
+  // After the run, the saved receipts read as the same sentences (Enter opens the activity).
+  await expect(steps).toHaveCount(0);
+  await turn.getByRole('button', { name: /^Activity:/ }).press('Enter');
+  const recorded = turn.getByRole('list', { name: 'Recorded actions' });
+  for (const step of script) await expect(recorded.locator('.trace-sentence strong').getByText(step.object, { exact: true })).toBeVisible();
+  await expect(recorded).toContainText('Searched: duty of care /s negligence');
+  await expect(recorded).toContainText('Captured 123 F.3d 456');
+  await scan(page, 'research-steps-recorded', testInfo);
+
+  // A failed research_stop is reported through the notification helper; the pane stays open.
+  await page.evaluate(() => window.__vislexHarness!.fail('research_stop', 'The research browser is closed'));
+  await stop.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('Could not stop the research browser')).toBeVisible();
+  await expect(stop).toBeVisible();
+});
+
+test('the chat Stop still stops a research turn on its own', async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => window.__vislexHarness!.setScenario({ autoStream: false }));
+  await page.keyboard.press('Control+6');
+  await page.getByRole('button', { name: 'Turn on for this case' }).press('Enter');
+  await lastCall(page, 'open_research_pane');
+  await page.getByRole('textbox', { name: 'Agent task' }).fill('Chat stop during research');
+  await page.getByRole('textbox', { name: 'Agent task' }).press('Enter');
+  const taskId = ((await lastCall(page, 'start_task')).result as { task_id: string }).task_id;
+  await page.evaluate(id => window.__vislexHarness!.researchStep(id, { name: 'research_act', detail: 'negligence', args: { action: 'type', text: 'negligence' }, recordAfterMs: null }), taskId);
+  await expect(page.getByRole('list', { name: 'Research steps' })).toContainText('Searched: negligence');
+  await page.getByRole('button', { name: 'Stop response' }).press('Enter');
+  expect((await lastCall(page, 'stop_task')).args).toMatchObject({ task_id: taskId });
+  expect(await calls(page, 'research_stop')).toHaveLength(0);
+  await expect(page.locator('.conversation-turn').filter({ hasText: 'Chat stop during research' }).getByText('Stopped', { exact: true })).toBeVisible();
+});
