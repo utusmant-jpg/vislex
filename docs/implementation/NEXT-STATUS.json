@@ -998,5 +998,40 @@
       "4 ignored Rust tests outside sandbox.rs and worker_video_e2e.rs (2 + 1 + 1) were not run",
       "Windows 125/150/200 percent scaling screenshots, Edge, NVDA/Narrator, performance on named hardware"
     ]
+  },
+  "windows_final_build_2026_09_28": {
+    "date": "2026-09-28",
+    "branch": "integrate/redesign-final",
+    "base": "merge of main 4818598 (claude/flagship-chat) at a409a27, plus the sidecar re-pin and the native-acceptance selector fix in the commit that records this entry",
+    "environment": "Windows 11 Home 10.0.26200, ARM64 machine, x86_64-pc-windows-msvc toolchain (rustc 1.98.1), node 24.14.1",
+    "user_decisions": [
+      "Desktop npm scripts (desktop, desktop:build, desktop:build:x64) build with --features subscription so dev and app builds include the ChatGPT-subscription route; headless cargo test still builds without Tauri",
+      "Re-pin the Codex sidecar SHA-256 to the build made today from the pinned source and patch"
+    ],
+    "commands": [
+      "scripts/build-codex-sidecar.ps1 -> exit 0 after a PS 5.1 fix (787c3c4); openai/codex 985cf47a + patches/codex-appcontainer-windows.patch; cargo release build 91 min under x64 emulation; codex-app-server.exe SHA-256 DFD16FFD16F89920234740FC4F5D3A6B892364C804C915BD932A75B91E855577 (previous pin D44A2857... was not reproduced)",
+      "scripts/test-codex-boundary.ps1 -BinaryPath <new sidecar> -> 'Boundary held: permitted profile readable; out-of-scope read/write denied; account/read available'; with -PersistentProfile also 'Persistent AppContainer profile reused across Codex launches'",
+      "npm ci -> exit 0 (lockfile consistent after the lucide-react upgrade)",
+      "npx tsc -p tsconfig.json --noEmit -> exit 0; npm test -- --run -> 32 files, 314 passed",
+      "npx playwright test -> 59 passed in one idle-machine run; runs during the release build had 6 then 5 first-page-load timeouts (page.goto) that passed on rerun",
+      "cargo test --locked -> 246 passed, 0 failed, 31 ignored; cargo clippy --locked --all-targets --features subscription -> exit 0",
+      "npm run desktop:build (--features subscription) -> exit 0; release exe plus NSIS VisLex_0.3.0_arm64-setup.exe (723 MB); bundled resources/codex/codex-app-server.exe matches the new pin",
+      "scripts/native-codex-account-test.ps1 on the release exe -> {subscription_ready:true, account_protocol:true, connected:true} (the app's persistent Codex profile already held a ChatGPT sign-in)",
+      "scripts/native-protocol-origin-test.ps1 on the release exe -> foreign_read_blocked true",
+      "Debug build (--features subscription) with npm run dev: native-acceptance (after the selector fix; 0 provider calls, cross-case and unreviewed-redaction denials), native-integrity-acceptance (256 MiB verify 885 ms, 28 stale-case actions denied), native-large-session (1 GiB import 16.5 s, verify 3.8 s, late verify denied), native-provider-race (old paused, continuation complete), native-concurrent-chats -> all exit 0",
+      "Dev run of npm run desktop with VISLEX_CODEX_BINARY (scripts/desktop-dev-codex.ps1) -> account check subscription_ready and connected true; the app no longer restarts once the sidecar runs from artifacts/codex-dev"
+    ],
+    "fixes": [
+      "scripts/build-codex-sidecar.ps1: PS 5.1 aborted on the expected-failing patch probe (787c3c4)",
+      "scripts/desktop-dev-codex.ps1: run the sidecar outside src-tauri; the app's AppContainer ACL grant on the sidecar folder made tauri dev restart the app mid-request (840853f)",
+      "scripts/native-acceptance.js: the redesigned chat list capitalises the first letter of the title; compare case-insensitively"
+    ],
+    "unrun_checks": [
+      "No chat turn through the subscription route (it would send a live request to OpenAI); only the account/status protocol was exercised",
+      "Independent review of the re-pin by a second provider",
+      "native-consent-acceptance.ps1 and native-app-ai-acceptance.ps1 (they would touch the user's real AI settings)",
+      "Scaling screenshots, Edge, NVDA/Narrator, performance on named hardware"
+    ],
+    "note": "No task state changed. Implemented is not verified."
   }
 }

@@ -88,8 +88,9 @@
   const proxy=await invoke('playback_proxy',{case_id:snapshot.id,session_epoch:snapshot.session_epoch,source_id:video.id});const info=await invoke('artifact_info',{artifact_id:proxy.artifact_id});
   if(info.metadata.player_origin_seconds!==0)throw new Error('Playback lacks explicit origin');
   const waitFor=async(predicate,label)=>{for(let i=0;i<100;i++){const found=predicate();if(found)return found;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('UI did not show '+label);};
-  // Chat rows append a relative-time label inside the button, so match the exact tooltip title instead of concatenated text.
-  const chat=await waitFor(()=>[...document.querySelectorAll('button.chat-open')].find(b=>b.title==='how many files we have?'),'inventory conversation');chat.click();
+  // Chat rows append a relative-time label inside the button, so match the tooltip title instead of concatenated text.
+  // The chat list capitalises the first letter of a title derived from the prompt, so compare case-insensitively.
+  const chat=await waitFor(()=>[...document.querySelectorAll('button.chat-open')].find(b=>b.title.toLowerCase()==='how many files we have?'),'inventory conversation');chat.click();
   await waitFor(()=>document.querySelector('.answer')?.textContent.includes('You have 6 original files in this case.'),'direct inventory answer');
   const evidence=await waitFor(()=>[...document.querySelectorAll('button.rail-button')].find(b=>b.getAttribute('aria-label')==='Evidence'),'evidence workspace');evidence.click();
   const doc=await waitFor(()=>[...document.querySelectorAll('button.library-row')].find(b=>b.querySelector('.library-name')?.textContent==='notes.docx'),'DOCX library entry');doc.click();
