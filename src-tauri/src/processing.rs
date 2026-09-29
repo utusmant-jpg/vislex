@@ -91,7 +91,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
-    let kind = if options["operation"]=="media_clip" {"media_clip"} else if source.kind=="video" && options["operation"]=="video_ocr" {"video_ocr"} else if source.kind=="video" && options["operation"]=="video_overview" {"video_overview"} else if options["operation"]=="diarize" && ["audio","video"].contains(&source.kind.as_str()) {"diarization"} else if options["operation"]=="redact" && ["image","pdf"].contains(&source.kind.as_str()) {"redaction"} else if ["video","audio"].contains(&source.kind.as_str()) && options["operation"]=="automatic" { "media_inventory" } else if ["video","audio"].contains(&source.kind.as_str()) && options["operation"]=="sound_events" { "sound_events" } else if source.kind == "video" && options["operation"] == "playback" { "playback" } else if source.kind == "audio"
+    let kind = if options["operation"]=="office_image" && ["docx","pptx","xlsx","odt"].contains(&ext.as_str()) {"office_image"} else if options["operation"]=="media_clip" {"media_clip"} else if source.kind=="video" && options["operation"]=="video_ocr" {"video_ocr"} else if source.kind=="video" && options["operation"]=="video_overview" {"video_overview"} else if options["operation"]=="diarize" && ["audio","video"].contains(&source.kind.as_str()) {"diarization"} else if options["operation"]=="redact" && ["image","pdf"].contains(&source.kind.as_str()) {"redaction"} else if ["video","audio"].contains(&source.kind.as_str()) && options["operation"]=="automatic" { "media_inventory" } else if ["video","audio"].contains(&source.kind.as_str()) && options["operation"]=="sound_events" { "sound_events" } else if source.kind == "video" && options["operation"] == "playback" { "playback" } else if source.kind == "audio"
         || (source.kind == "video" && options["operation"] == "transcribe")
     {
         "audio"
@@ -135,7 +135,7 @@ pub fn prepare_request(case:&mut Case,source_id:&str,options:Value)->Result<Prep
     request["asr_model"] = json!(case.meta("asr_profile")?.unwrap_or_else(||"tiny".into()));
     request["version"] = json!(1);
     request["kind"] = json!(kind);
-    if ["video_ocr","video_overview","pdf_probe","pdf_page","media_clip"].contains(&kind) || request["operation"]=="frame_at" {
+    if ["video","video_ocr","video_overview","pdf_probe","pdf_page","media_clip","sound_events","office_image"].contains(&kind) || request["operation"]=="frame_at" {
         let epoch=case.meta(&format!("source_policy_epoch:{}",source.id))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
         request["source_lease_epoch"]=json!(epoch);
         request["source_lease"]=json!(case.root.join("staging/source-leases").join(&source.id).join(&source.sha256).join(epoch.to_string()).join("input").to_string_lossy());
@@ -172,7 +172,7 @@ pub fn run_prepared(job:&PreparedJob)->Result<Value> {
         let result:Value=serde_json::from_slice(&fs::read(path)?)?;
         if result["version"]==1 && result["status"]=="complete" {ensure!(file_hash_strong(&job.source_path)?==job.source.sha256,"Source changed before recovery"); return Ok(result); }
     }
-    let lease=if ["video_ocr","video_overview","pdf_probe","pdf_page","media_clip"].contains(&job.kind.as_str()) || job.request["operation"]=="frame_at" {
+    let lease=if ["video","video_ocr","video_overview","pdf_probe","pdf_page","media_clip","sound_events","office_image"].contains(&job.kind.as_str()) || job.request["operation"]=="frame_at" {
         Some(acquire_source_lease(job)?)
     } else {copy_input(&job.source_path,job.staging.path(),&job.source.sha256)?;None};
     if let Some(lease)=lease.as_ref() {
@@ -486,7 +486,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
         let current=case.source(source_id)?;
         ensure!(current.sha256==source.sha256,"Source changed before publication");
         if request["operation"]=="automatic" || ["video_ocr","video_overview","media_clip"].contains(&kind) || request["operation"]=="frame_at" {ensure!(!current.restricted,"Source was restricted before publication");}
-        if ["video_ocr","video_overview","pdf_probe","pdf_page","media_clip"].contains(&kind) || request["operation"]=="frame_at" {
+        if ["video","video_ocr","video_overview","pdf_probe","pdf_page","media_clip","sound_events","office_image"].contains(&kind) || request["operation"]=="frame_at" {
             let epoch=case.meta(&format!("source_policy_epoch:{source_id}"))?.and_then(|raw|raw.parse::<u64>().ok()).unwrap_or(0);
             ensure!(request["source_lease_epoch"].as_u64()==Some(epoch),"Source policy changed before discovery publication");
         }
@@ -583,7 +583,7 @@ fn publish_core(case:&mut Case,job:&PreparedJob,output:Result<Value>,staged:Opti
         result["extraction_locator"] = json!(format!(
             "evidence:{source_id}#artifact:{extraction_artifact}"
         ));
-        if !combined.is_empty() && !["sound_events","redaction","diarization","video_ocr","video_overview","pdf_probe","pdf_page","media_clip"].contains(&kind) {
+        if !combined.is_empty() && !["sound_events","redaction","diarization","video_ocr","video_overview","pdf_probe","pdf_page","media_clip","office_image"].contains(&kind) {
             // Every extraction appends an immutable revision; it becomes the
             // active searchable text only when no extraction is active yet
             // (full-recording transcription supersedes partials separately).
@@ -920,12 +920,15 @@ mod publication_tests {
         let first=prepare_request(&mut case,&source_id,json!({"operation":"video_ocr","start":0.,"end":60.,"interval":5.})).unwrap();
         let second=prepare_request(&mut case,&source_id,json!({"operation":"video_overview","start":60.,"end":120.,"interval":5.})).unwrap();
         let a=acquire_source_lease(&first).unwrap();let b=acquire_source_lease(&second).unwrap();
+        let interval=prepare_request(&mut case,&source_id,json!({"start":0.,"end":5.,"interval":0.5})).unwrap();
+        let c=acquire_source_lease(&interval).unwrap();
+        assert!(Arc::ptr_eq(&a,&c));assert!(!interval.staging.path().join("input").exists());
         assert!(Arc::ptr_eq(&a,&b));assert!(!first.staging.path().join("input").exists());assert!(!second.staging.path().join("input").exists());
         assert_eq!(file_hash(&a.path).unwrap(),first.source.sha256);
         let path=a.path.clone();case.set_restricted(&source_id,true).unwrap();
         assert!(first.staging.path().join("cancel.request").exists());
         assert_eq!(case.meta(&format!("source_policy_epoch:{source_id}")).unwrap().as_deref(),Some("1"));
-        drop(a);drop(b);
+        drop(a);drop(b);drop(c);
         assert!(!path.exists());
     }
     #[test]

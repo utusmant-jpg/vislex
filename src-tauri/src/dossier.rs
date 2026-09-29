@@ -67,26 +67,7 @@ pub fn valid_block_kind(kind: &str) -> bool {
 /// Accessible plain text derived from the same structured document, so the
 /// published wording and the certified structure cannot diverge.
 pub fn render_blocks(blocks: &[Block]) -> String {
-    const LABELS: [(&str, &str); 6] = [
-        ("observation", "Observation"),
-        ("attributed_statement", "Attributed statement"),
-        ("inference", "Inference"),
-        ("hypothesis", "Hypothesis"),
-        ("limitation", "Limitation"),
-        ("next_action", "Next action"),
-    ];
-    blocks
-        .iter()
-        .map(|block| {
-            let label = LABELS
-                .iter()
-                .find(|(kind, _)| *kind == block.kind)
-                .map(|(_, label)| *label)
-                .unwrap_or("Statement");
-            format!("[{label}] {}", block.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    blocks.iter().map(|block|block.text.clone()).collect::<Vec<_>>().join("\n\n")
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

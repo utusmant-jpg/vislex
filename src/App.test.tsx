@@ -445,3 +445,23 @@ it('shows an informational findings preview with no empty-page pagination', asyn
   expect(screen.getAllByText(/Structured evidence storage/)).toHaveLength(1);
   expect(screen.queryByRole('button', { name: 'Previous' })).toBeNull();
 });
+
+
+it('controls persisted analysis with the captured case session and keeps it out of chats', async () => {
+  const current=snapshot();current.session_epoch=9;
+  current.analysis_status={run_id:'analysis',state:'running',current:true,total:12,complete:4,running:1,blocked:0,findings:8,model_manifest:'synthetic/high',blockers:[],version:'v1',human_review:'separate'};
+  render(<JobsCenter snapshot={current} run={fn=>{void fn();}} refresh={async()=>undefined}/>);
+  expect(screen.getByText('4 of 12 analysis units · 8 saved findings')).toBeTruthy();
+  expect(screen.getByRole('progressbar',{name:'Analysis coverage'}).getAttribute('value')).toBe('4');
+  fireEvent.click(screen.getByRole('button',{name:'Pause analysis'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('control_analysis',{case_id:'synthetic-case',session_epoch:9,operation:'pause'}));
+  expect(screen.queryByRole('button',{name:'Continue saved review'})).toBeNull();
+});
+
+it('shows blocked analysis separately from extraction completion and offers a retry', async () => {
+  const current=snapshot();current.analysis_status={run_id:'analysis',state:'blocked',current:true,total:12,complete:4,running:0,blocked:8,findings:8,model_manifest:'synthetic/high',blockers:[{unit_id:'missing',source_id:null,kind:'video',reason:'Image permission is disabled'}],version:'v1',human_review:'separate'};
+  render(<JobsCenter snapshot={current} run={fn=>{void fn();}} refresh={async()=>undefined}/>);
+  expect(screen.getByText('8 blocked analysis units')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Retry blocked analysis'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('control_analysis',{case_id:'synthetic-case',operation:'retry_failed'}));
+});

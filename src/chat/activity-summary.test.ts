@@ -206,3 +206,8 @@ describe('research step actions', () => {
     expect(`${summary.verb} ${summary.object}`).toBe('Searched: click-wrap enforceability');
   });
 });
+
+it('counts distinct original sources rather than receipt IDs or working notes', () => {
+  const steps=[summarizeAction(action('read_record',{}, {title:'Derived note'})),summarizeAction(action('read_receipt',{},{})),summarizeAction(action('inspect_artifact_image',{source_id:'s1'},{})),summarizeAction(action('inspect_automatic_video_batch',{}, {frames:[{source_id:'s1'},{source_id:'v1'},{source_id:'v1'}]}))];
+  expect(traceRecap(steps)).toBe('consulted 2 sources');
+});

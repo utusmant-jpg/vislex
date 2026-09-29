@@ -18,7 +18,7 @@ def transcribe(job: Path, source: Path, model_name: str = "tiny") -> dict:
     with av.open(str(source)) as container:
         container_origin_seconds = (container.start_time or 0) / av.time_base
         tracks = [{'index': t.index, 'time_base': str(t.time_base), 'start_time': t.start_time,
-                   'origin_seconds': float((t.start_time or 0) * t.time_base),
+                   'origin_seconds': float((t.start_time or 0) * t.time_base), 'channels': len(t.codec_context.layout.channels),
                    'estimated_seconds': float(t.duration * t.time_base) if t.duration else (container.duration or 0) / av.time_base}
                   for t in container.streams if t.type == 'audio']
     pages, coverage = [], []
