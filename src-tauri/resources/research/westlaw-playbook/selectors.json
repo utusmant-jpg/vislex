@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "note": "Per-host capture selectors for research_capture. content_root is the CSS selector of the document (opinion or statute) container; it must be the page's main region (main, [role=main] or article, which research_read_page reads) or contain it, so captured lines keep the line numbers the agent read. editorial lists the publisher's editorial regions (headnotes, synopsis, key numbers, notes of decisions, citator treatment prose) removed before capture and hidden from snapshots. An entry with an empty content_root refuses capture. Selectors are data passed to fixed page functions, never spliced into JavaScript.",
+  "entries": [
+    {
+      "id": "westlaw",
+      "hosts": ["1.next.westlaw.com", "next.westlaw.com", "www.westlaw.com"],
+      "content_root": "",
+      "editorial": [],
+      "test_only": false,
+      "status": "unsurveyed: the live document layout has not been surveyed (R36), so capture is refused until verified selectors are recorded here"
+    },
+    {
+      "id": "loopback-test-fixture",
+      "hosts": ["127.0.0.1", "localhost", "[::1]"],
+      "content_root": "main#opinion",
+      "editorial": [".headnote", ".synopsis", ".key-number", ".notes-of-decisions", ".citator-treatment"],
+      "test_only": true,
+      "status": "synthetic loopback fixture (scripts/research-fixture-server.mjs /opinion.html); usable only in debug test mode"
+    }
+  ]
+}

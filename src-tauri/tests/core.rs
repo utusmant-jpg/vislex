@@ -977,6 +977,43 @@ fn agent_can_open_viewer_but_cannot_expand_source_scope() {
     assert!(agent::execute_tool(&mut c,&task,"open_source",&json!({"source_id":sid,"time_seconds":5,"page":null})).is_err());
 }
 #[test]
+fn publish_import_and_extract_nest_inside_an_outer_savepoint() {
+    let (_dir,mut c,_sid)=setup();
+    let staging=c.root.join("staging");
+    let staged=|c:&Case|fs::read_dir(c.root.join("staging")).unwrap().count();
+    let before=staged(&c);
+    // Committed with the outer savepoint.
+    c.db.execute_batch("SAVEPOINT agent_action").unwrap();
+    let prepared=evidence_desk::case::PreparedImport::from_verified_bytes(&c.root,b"<main><p>Nested import one.</p></main>","Nested.html","test:nested-one").unwrap();
+    let imported=c.publish_import(prepared,"Nested",&evidence_desk::case::id()).unwrap();
+    let source=imported["source_id"].as_str().unwrap().to_string();
+    assert_eq!(c.publish_extract(&source,"Nested import one.","Test extract",true).unwrap(),1);
+    c.db.execute_batch("RELEASE agent_action").unwrap();
+    assert!(c.source(&source).is_ok());
+    assert_eq!(c.search("Nested",0).unwrap()["results"].as_array().unwrap().len(),1);
+    // Rolled back with the outer savepoint: no rows remain (the caller owns file cleanup).
+    c.db.execute_batch("SAVEPOINT agent_action").unwrap();
+    let prepared=evidence_desk::case::PreparedImport::from_verified_bytes(&c.root,b"<main><p>Nested import two.</p></main>","Nested two.html","test:nested-two").unwrap();
+    let second=c.publish_import(prepared,"Nested",&evidence_desk::case::id()).unwrap()["source_id"].as_str().unwrap().to_string();
+    c.publish_extract(&second,"Nested import two.","Test extract",true).unwrap();
+    c.db.execute_batch("ROLLBACK TO agent_action; RELEASE agent_action").unwrap();
+    assert!(c.source(&second).is_err());
+    assert!(c.sources().unwrap().iter().all(|s|s.id!=second));
+    // A failed publish removes its staged copy (here: a corrupt file already sits at the
+    // content address) and leaves the pre-existing file alone.
+    let bytes=b"<main><p>Nested import three.</p></main>";
+    let occupied=c.root.join("originals").join(evidence_desk::case::digest(bytes));
+    fs::write(&occupied,b"corrupt").unwrap();
+    c.db.execute_batch("SAVEPOINT agent_action").unwrap();
+    let prepared=evidence_desk::case::PreparedImport::from_verified_bytes(&c.root,bytes,"Nested three.html","test:nested-three").unwrap();
+    assert_eq!(staged(&c),before+1);
+    assert!(c.publish_import(prepared,"Nested",&evidence_desk::case::id()).unwrap_err().to_string().contains("integrity"));
+    c.db.execute_batch("ROLLBACK TO agent_action; RELEASE agent_action").unwrap();
+    assert_eq!(staged(&c),before,"no staged file is left in {}",staging.display());
+    assert_eq!(fs::read(&occupied).unwrap(),b"corrupt");
+    c.verify_audit().unwrap();
+}
+#[test]
 fn current_view_is_visible_to_agent_without_expanding_scope() {
     let (_dir,mut c,sid)=setup();enable(&mut c);
     let task=agent::start(&mut c,"What is on my right?","investigate",vec![sid.clone()],vec![],0.).unwrap();

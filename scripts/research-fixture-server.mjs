@@ -19,6 +19,26 @@ const pages = {
       });
     </script>`),
   '/second.html': page('second', '<main><h1>Second page</h1><p>Synthetic opinion text.</p></main>'),
+  // A synthetic opinion page for research_capture (R46). The loopback playbook entry names
+  // main#opinion as the document and .headnote as editorial; the capture must leave out the
+  // headnote, the script, the hidden input and the unrendered paragraph, and the account chrome
+  // outside the main region.
+  '/opinion.html': page('Smith v. Synthetic Holdings', `
+    <nav>Signed in as Synthetic User (client SYNTH-CLIENT)</nav>
+    <main id="opinion">
+      <h1>Smith v. Synthetic Holdings</h1>
+      <p class="cite">123 F.3d 456 (9th Cir. 2001)</p>
+      <div class="headnote">HEADNOTE EDITORIAL: negligence key number 272k1 synopsis</div>
+      <section class="opinion-body">
+        <p>OPINION</p>
+        <p>A person owes a duty of reasonable care to foreseeable plaintiffs.</p>
+        <p>The duty extends to conduct that creates a foreseeable risk of harm.</p>
+      </section>
+      <input type="hidden" name="session" value="SYNTHETIC-HIDDEN-TOKEN">
+      <p style="display:none">HIDDEN PARAGRAPH MARKER</p>
+      <p onclick="window.__clickedOpinion = true">Affirmed.</p>
+      <script>window.__opinionMarker = 'SCRIPT MARKER 7731';</script>
+    </main>`),
   // A page showing a sign-in field: the agent must refuse to type anywhere on it.
   '/signin.html': page('signin', '<main><label for="q">Search</label><input id="q" type="search"><label for="pw">Password</label><input id="pw" type="password"></main>'),
   // Attack probe: a research page framing the VisLex UI to reach its commands from a local origin.

@@ -619,22 +619,37 @@ impl Case {
     /// Activation bumps the case generation and marks dependent records stale so
     /// downstream work cannot silently rely on the previous wording. Returns the
     /// new revision number; callers decide supersession policy.
+    ///
+    /// Nest-safe: the revision and its activation are written in one SQLite
+    /// SAVEPOINT, so this may run inside a caller's transaction or savepoint
+    /// (for example the agent's `SAVEPOINT agent_action`) and rolls back with it.
     pub fn publish_extract(&mut self, source_id: &str, text: &str, method: &str, activate: bool) -> Result<i64> {
         let name = self.source(source_id)?.name;
-        let revision = self.record_extract_revision(source_id, text, method)?;
-        if activate {
-            let tx = self.db.savepoint()?;
-            tx.execute(
-                "INSERT INTO extracts(source_id,text,revision,method) VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET text=excluded.text,revision=excluded.revision,method=excluded.method",
-                params![source_id, text, revision, method],
-            )?;
-            tx.execute("DELETE FROM source_fts WHERE source_id=?", [source_id])?;
-            tx.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)", params![source_id, name, text])?;
-            tx.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'", [])?;
-            tx.execute(STALE_DEPENDENTS_OF_SOURCE, params![source_id, ""])?;
-            tx.commit()?;
+        self.db.execute_batch("SAVEPOINT publish_extract")?;
+        let written = (|| -> Result<i64> {
+            let revision = self.record_extract_revision(source_id, text, method)?;
+            if activate {
+                self.db.execute(
+                    "INSERT INTO extracts(source_id,text,revision,method) VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET text=excluded.text,revision=excluded.revision,method=excluded.method",
+                    params![source_id, text, revision, method],
+                )?;
+                self.db.execute("DELETE FROM source_fts WHERE source_id=?", [source_id])?;
+                self.db.execute("INSERT INTO source_fts(source_id,name,text) VALUES(?,?,?)", params![source_id, name, text])?;
+                self.db.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='generation'", [])?;
+                self.db.execute(STALE_DEPENDENTS_OF_SOURCE, params![source_id, ""])?;
+            }
+            Ok(revision)
+        })();
+        match written {
+            Ok(revision) => {
+                self.db.execute_batch("RELEASE publish_extract")?;
+                Ok(revision)
+            }
+            Err(error) => {
+                let _ = self.db.execute_batch("ROLLBACK TO publish_extract; RELEASE publish_extract");
+                Err(error)
+            }
         }
-        Ok(revision)
     }
     /// Immutable extraction history for a source, newest first.
     pub fn extract_history(&self, source_id: &str) -> Result<Value> {
@@ -696,7 +711,32 @@ impl Case {
         let prepared=prepare_import(&self.root,path)?;
         self.publish_import(prepared,production,batch)
     }
+    /// Publishes a staged import. Nest-safe: the database rows are written in one
+    /// SQLite SAVEPOINT (never `BEGIN`), so this may run inside a caller's
+    /// transaction or savepoint and rolls back with it. On any error the staged
+    /// copy is removed, and an original this call moved into place is removed
+    /// again when its rows could not be written.
     pub fn publish_import(&mut self,prepared:PreparedImport,production:&str,batch:&str)->Result<Value> {
+        let stage=prepared.stage.clone();
+        let target=self.root.join("originals").join(&prepared.sha);
+        let target_existed=target.exists();
+        let published=self.publish_import_staged(prepared,production,batch);
+        if published.is_err() {
+            if stage.parent()==Some(self.root.join("staging").as_path()) {let _=fs::remove_file(&stage);}
+            let sha=target.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let registered:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM sources WHERE sha256=?)",[sha],|r|r.get(0)).unwrap_or(true);
+            if !target_existed && !registered && target.exists() {
+                if let Ok(metadata)=fs::metadata(&target) {
+                    let mut permissions=metadata.permissions();
+                    permissions.set_readonly(false);
+                    let _=fs::set_permissions(&target,permissions);
+                }
+                let _=fs::remove_file(&target);
+            }
+        }
+        published
+    }
+    fn publish_import_staged(&mut self,prepared:PreparedImport,production:&str,batch:&str)->Result<Value> {
         let PreparedImport {path,stage,size,name,sha}=prepared;
         ensure!(stage.parent()==Some(self.root.join("staging").as_path()),"Import belongs to a different case");
         let existing: Option<String> = self
@@ -707,6 +747,7 @@ impl Case {
             .optional()?;
         let duplicate = existing.is_some();
         let source_id = existing.unwrap_or_else(id);
+        let tx = self.db.savepoint()?;
         if !duplicate {
             let mut head = [0u8; 8192];
             let mut f = File::open(&stage)?;
@@ -765,7 +806,6 @@ impl Case {
             let mut permissions = fs::metadata(&target)?.permissions();
             permissions.set_readonly(true);
             fs::set_permissions(&target, permissions)?;
-            let tx = self.db.transaction()?;
             tx.execute("INSERT INTO sources(id,name,sha256,size,mime,kind,status,created_at) VALUES(?,?,?,?,?,?,?,?)",params![source_id,name,sha,size,mime,kind,status,now()])?;
             if let Some(text) = &text {
                 tx.execute(
@@ -786,11 +826,10 @@ impl Case {
                 [],
             )?;
             tx.execute("UPDATE records SET stale=1 WHERE actor<>'processor' OR kind<>'transcript'", [])?;
-            tx.commit()?;
         } else {
             fs::remove_file(&stage)?;
         }
-        self.db.execute(
+        tx.execute(
             "INSERT INTO occurrences VALUES(?,?,?,?,?,?)",
             params![
                 id(),
@@ -801,6 +840,7 @@ impl Case {
                 now()
             ],
         )?;
+        tx.commit()?;
         Ok(json!({"source_id":source_id,"duplicate":duplicate,"sha256":sha}))
     }
     pub fn set_restricted(&mut self, source_id: &str, restricted: bool) -> Result<()> {

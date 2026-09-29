@@ -33,11 +33,40 @@
   const actions = await invoke('actions', { case_id: session.case_id, task_id: started.task_id });
   const research = actions.filter(action => action.name.startsWith('research_')).map(action => ({ name: action.name, status: action.status, output: action.output.slice(0, 400) }));
   const failures = research.filter(action => action.status !== 'complete' && action.status !== 'ok');
+
+  // R46: the capture is citable evidence, and no editorial text, script or hidden content from
+  // the opinion page reached the model, the extract or the authority.
+  const editorial = ['HEADNOTE EDITORIAL', 'SCRIPT MARKER', 'SYNTHETIC-HIDDEN-TOKEN', 'HIDDEN PARAGRAPH MARKER', 'Signed in as'];
+  const leaks = (text, label) => editorial.filter(marker => String(text).includes(marker)).map(marker => label + ': ' + marker);
+  const outputs = actions.filter(action => action.name.startsWith('research_'));
+  const captureAction = outputs.find(action => action.name === 'research_capture' && action.status === 'complete');
+  let capture = null;
+  // Account chrome may appear in navigation snapshots; editorial, script and hidden content may not.
+  const leaked = outputs.flatMap(action => leaks(action.output, action.name).filter(found => !found.endsWith('Signed in as')));
+  if (captureAction) {
+    capture = JSON.parse(captureAction.output);
+    const extract = await invoke('read_text', { ...session, source_id: capture.source_id, start: 1, count: 50 });
+    const authority = await invoke('evidence_read', { ...session, id: capture.authority_id });
+    const detail = await invoke('source_detail', { ...session, source_id: capture.source_id });
+    leaked.push(...leaks(extract.text, 'extract'), ...leaks(authority.content, 'authority'));
+    capture = {
+      locator: capture.locator,
+      citation_mismatch: capture.citation_mismatch,
+      extract_has_opinion: String(extract.text).includes('duty of reasonable care'),
+      authority_kind: authority.kind,
+      authority_review: authority.review,
+      authority_locators: authority.locators,
+      source_size: detail.size,
+    };
+  }
+  const captured = Boolean(capture && /^evidence:[^#]+#R\d+L\d+-L\d+$/.test(capture.locator) && capture.extract_has_opinion && capture.authority_kind === 'authority' && capture.authority_review === 'unreviewed');
   return {
-    ok: task.status === 'complete' && (task.answer ?? '').includes('Synthetic research answer: the page begins') && research.length >= 4 && failures.length === 0,
+    ok: task.status === 'complete' && (task.answer ?? '').includes('Synthetic research answer: the page begins') && research.length >= 7 && failures.length === 0 && captured && leaked.length === 0,
     task_status: task.status,
     answer: task.answer,
     research,
     failures,
+    capture,
+    leaked,
   };
 })().catch(error => ({ ok: false, error: String(error.message ?? error) }))

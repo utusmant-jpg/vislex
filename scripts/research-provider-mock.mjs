@@ -23,6 +23,9 @@ function nextStep(input) {
   const navigate = results.find(result => result.name === 'research_navigate');
   const ref = pattern => navigate?.output.match(pattern)?.[1];
   const version = Number(navigate?.output.match(/\\?"version\\?"\s*:\s*(\d+)/)?.[1]);
+  // R46: open the synthetic opinion, read it, and capture the lines holding the opinion's words.
+  const opinion = `${fixture}/opinion.html`;
+  if (last.name === 'research_navigate' && last.args.url === opinion) return call('research_read_page', { offset: 0, count: 50 });
   if (last.name === 'research_navigate') {
     return call('research_act', { action: 'type', ref: ref(/searchbox \\?"Search\\?" \[ref=(e\d+)\]/), snapshot_version: version, text: 'duty of care /s negligence', key: null });
   }
@@ -30,8 +33,38 @@ function nextStep(input) {
     return call('research_act', { action: 'click', ref: ref(/button \\?"Search\\?" \[ref=(e\d+)\]/), snapshot_version: version, text: null, key: null });
   }
   if (last.name === 'research_act') return call('research_read_page', { offset: 0, count: 20 });
-  const firstLine = last.output.match(/\\?"text\\?"\s*:\s*\\?"([^"\\]+)/)?.[1] ?? 'nothing';
-  return message(`Synthetic research answer: the page begins "${firstLine}".`);
+  if (last.name === 'research_read_page' && !results.some(result => result.name === 'research_navigate' && result.args.url === opinion)) {
+    return call('research_navigate', { url: opinion });
+  }
+  if (last.name === 'research_read_page') {
+    const lines = parse(last.output)?.lines ?? [];
+    const start = lines.find(line => line.text.includes('duty of reasonable care'));
+    const end = lines.find(line => line.text.includes('foreseeable risk of harm'));
+    if (!start || !end) return message(`Synthetic research stopped: the opinion lines were not found in ${last.output.slice(0, 300)}`);
+    return call('research_capture', {
+      title: 'Smith v. Synthetic Holdings',
+      jurisdiction: '9th Cir.',
+      relevant_date: null,
+      citation_text: '123 F.3d 456',
+      proposition: 'A duty of reasonable care is owed to foreseeable plaintiffs.',
+      quote_start_line: start.n,
+      quote_end_line: end.n,
+    });
+  }
+  const firstRead = results.find(result => result.name === 'research_read_page');
+  const firstLine = firstRead?.output.match(/\\?"text\\?"\s*:\s*\\?"([^"\\]+)/)?.[1] ?? 'nothing';
+  const locator = parse(last.output)?.locator ?? 'none';
+  return message(`Synthetic research answer: the page begins "${firstLine}". Captured authority at ${locator}.`);
+}
+
+// Tool outputs are JSON text; tolerate one extra level of string encoding.
+function parse(text) {
+  try {
+    const value = JSON.parse(text);
+    return typeof value === 'string' ? JSON.parse(value) : value;
+  } catch {
+    return null;
+  }
 }
 
 http.createServer((request, response) => {
