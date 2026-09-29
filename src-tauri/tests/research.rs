@@ -981,3 +981,19 @@ fn research_steps_carry_a_short_detail_for_the_chat() {
     let long = activity_detail("research_act", &act("type", json!("x".repeat(500)), json!(null))).unwrap();
     assert_eq!(long.chars().count(), research::tools::MAX_DETAIL_CHARS);
 }
+
+#[test]
+fn records_citing_uncaptured_reporter_citations_are_refused_after_research() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let record = |title: &str| call("write_record", json!({"record_id": null, "base_revision": 0, "title": title, "kind": "note", "content": "Duty is owed to foreseeable plaintiffs. See Smith v. Jones, 123 F.3d 456 (9th Cir. 2001).", "reason": "research note", "source_ids": []}));
+    // Without research in this task, the guard never applies.
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    evidence_desk::agent::receive(&mut case, &task, &request.transmission, record("Before research")).unwrap();
+    assert!(!last_action(&case, &task)["output"].to_string().contains("research_capture"));
+    // Once the task has used the research browser, an uncaptured reporter citation is refused.
+    case.set_meta(&format!("research_grant_revision:{task}"), "1").unwrap();
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    evidence_desk::agent::receive(&mut case, &task, &request.transmission, record("After research")).unwrap();
+    let output = last_action(&case, &task)["output"].to_string();
+    assert!(output.contains("research_capture") && output.contains("123 F.3d 456"), "{output}");
+}

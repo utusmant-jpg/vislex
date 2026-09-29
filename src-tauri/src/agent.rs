@@ -462,7 +462,7 @@ fn execute_tool_prepared(case: &mut Case, task: &str, name: &str, args: &Value, 
             ensure!(value["error"].is_null(),"{}",value["error"].as_str().unwrap_or("Semantic search failed"));
             value["result"].clone()
         },
-        "save_work_product" => {ensure!(mode=="investigate"&&!crate::teams::is_child(case,task)?,"Only the investigator may publish work products");crate::work_products::save(case,task,args)?},
+        "save_work_product" => {ensure!(mode=="investigate"&&!crate::teams::is_child(case,task)?,"Only the investigator may publish work products");crate::research::citations::guard(case,task,&[args["title"].as_str().unwrap_or_default(),args["items_json"].as_str().unwrap_or_default()],&[])?;crate::work_products::save(case,task,args)?},
         "diarize_audio_interval" => {ensure!(mode!="ask","Ask cannot process evidence");let source=str_arg(args,"source_id")?;assert_source(case,source,&ids)?;process_media(case,source,json!({"operation":"diarize","start":args["start"],"end":args["end"],"track":args["track"]}),prepared)?},
         "save_observation_track" => {ensure!(mode=="investigate"&&!crate::teams::is_child(case,task)?,"Only the investigator may publish tracks");crate::workbench::save_track(case,task,args)?},
         "save_hypotheses" => crate::workbench::hypotheses(case,task,args)?,
@@ -924,6 +924,7 @@ fn execute_tool_prepared(case: &mut Case, task: &str, name: &str, args: &Value, 
         "write_record" => {
             ensure!(mode != "ask", "Ask mode cannot change case records");
             validate_inline_citations(case, str_arg(args, "content")?, &ids)?;
+            crate::research::citations::guard(case, task, &[str_arg(args, "title")?, str_arg(args, "content")?, str_arg(args, "reason")?], &[])?;
             let record = args["record_id"].as_str();
             if let Some(r) = record {
                 ensure!(mode != "edit" || records.iter().any(|id| id == r), "Edit mode can only update selected records");
@@ -1016,6 +1017,9 @@ fn execute_tool_prepared(case: &mut Case, task: &str, name: &str, args: &Value, 
                 crate::dossier::render_blocks(&blocks)
             };
             validate_inline_citations(case, &answer, &ids)?;
+            // Reporter citations from research must be captured (or listed as gaps) before they are cited.
+            let stated_gaps: Vec<String> = serde_json::from_value(args["gaps"].clone()).unwrap_or_default();
+            crate::research::citations::guard(case, task, &[&answer], &stated_gaps.iter().map(String::as_str).collect::<Vec<_>>())?;
             ensure!(answer.len() <= 64000, "Answer is too long");
             let citations: Vec<String> = serde_json::from_value(args["citations"].clone())?;
             let mut gaps: Vec<String> = serde_json::from_value(args["gaps"].clone())?;
