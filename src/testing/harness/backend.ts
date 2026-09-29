@@ -55,6 +55,8 @@ const NO_EMIT = new Set([
   'set_ai_access_route', 'save_codex_selection', 'codex_account_login', 'codex_account_cancel_login',
   // Research pane commands run in research_pane_command, before dispatch, and never emit.
   'open_research_pane', 'research_pane_layout', 'research_pane_history', 'close_research_pane', 'clear_research_session',
+  // research_stop is app-level too; it emits itself only when it paused a task.
+  'research_stop',
 ]);
 
 // src-tauri/src/research/mod.rs: hosts the research browser always allows, and the sign-in limit.
@@ -113,6 +115,8 @@ export class SyntheticBackend {
   // desktop.rs (one pane, owned by a case session, closed when that session no longer allows it).
   researchGrants = new Map<string, ResearchGrant>();
   researchPane: ResearchPane = { open: false, caseId: null, epoch: 0, grantRevision: 0, host: null, rect: null, visible: false };
+  /** The task holding the research page (the last one given a scripted research step). */
+  researchTask: string | null = null;
 
   /** Every event the backend emitted, for asserting delivery (or its absence). */
   emitted: { event: string; payload: unknown; at: number }[] = [];
@@ -231,6 +235,37 @@ export class SyntheticBackend {
       if (owner.tasks.find(item => item.id === taskId)?.status !== 'running') return;
       this.emit('agent-progress', { case_id: owner.id, session_epoch: epoch, task_id: taskId, transmission_id: transmission, delta });
     }, intervalMs * (index + 1)));
+  }
+
+  /** Script one research browser step the way desktop.rs reports a research job: an
+   *  `{ activity, detail }` agent-progress delta when it starts, then (after `recordAfterMs`,
+   *  unless null) its receipt in the task's actions with the tool arguments and result. The
+   *  task becomes the one holding the research page, for research_stop. */
+  researchStep(taskId: string, options: { name: string; detail?: string | null; args?: Record<string, unknown>; output?: unknown; recordAfterMs?: number | null; status?: string }) {
+    const owner = this.findTaskCase(taskId);
+    if (!owner) throw new Error(`Unknown task ${taskId}`);
+    const { name, detail, args = {}, output = {}, recordAfterMs = 400, status = 'complete' } = options;
+    this.researchTask = taskId;
+    const epoch = this.sessionEpoch;
+    const delta: Record<string, unknown> = { activity: name };
+    if (detail !== null && detail !== undefined) delta.detail = detail;
+    this.emit('agent-progress', { case_id: owner.id, session_epoch: epoch, task_id: taskId, transmission_id: this.transmissionFor(taskId), delta });
+    if (recordAfterMs === null) return;
+    setTimeout(() => {
+      const task = owner.tasks.find(item => item.id === taskId);
+      if (!task) return;
+      const list = (owner.actions[taskId] ??= []);
+      list.push({ id: syntheticId('research-action', hashTask(taskId) + list.length + 11), name, input: JSON.stringify(args), output: typeof output === 'string' ? output : JSON.stringify(output), status, created_at: new Date().toISOString() });
+      task.step += 1;
+    }, recordAfterMs);
+  }
+
+  /** agent::pause for a user stop: the task keeps its work and says it was stopped. */
+  private pauseTask(task: Task) {
+    task.status = 'paused'; task.error = 'Stopped by user';
+    const stream = this.streams.get(task.id);
+    if (stream) { clearTimeout(stream.timer); this.emitLateDeltas(task.id, stream); }
+    this.streams.delete(task.id); this.liveText.delete(task.id);
   }
 
   private transmissionFor(taskId: string) { return syntheticId('transmission', hashTask(taskId)); }
@@ -412,6 +447,17 @@ export class SyntheticBackend {
         return null;
       case 'close_research_pane': this.closeResearchPane(); return null;
       case 'clear_research_session': this.closeResearchPane(); if (this.active) this.touch(this.active); return null;
+      // App-level: pauses the task holding the research page (the last one given a research
+      // step) as stop_task does, and stops the page loading. Takes no arguments.
+      case 'research_stop': {
+        const id = this.researchTask;
+        const owner = id ? this.findTaskCase(id) : undefined;
+        const task = owner?.tasks.find(item => item.id === id);
+        if (!owner || !task || task.status !== 'running') return { stopped: false, task_id: null };
+        this.pauseTask(task);
+        if (owner === this.active) { this.touch(owner); this.caseChanged(); }
+        return { stopped: true, task_id: task.id };
+      }
     }
 
     // ---- case lifecycle ----
@@ -608,7 +654,7 @@ export class SyntheticBackend {
       case 'stop_task': {
         this.requireCase(args, 'chat stopped', true);
         const task = c.tasks.find(item => item.id === args.task_id);
-        if (task && task.status === 'running') { task.status = 'paused'; task.error = 'Stopped by user'; const stream = this.streams.get(task.id); if (stream) { clearTimeout(stream.timer); this.emitLateDeltas(task.id, stream); } this.streams.delete(task.id); this.liveText.delete(task.id); }
+        if (task && task.status === 'running') this.pauseTask(task);
         return null;
       }
       case 'resume_task': {

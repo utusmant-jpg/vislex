@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Globe, Lock, LogOut, Power, RefreshCw, RotateCw, WifiOff, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Globe, Lock, LogOut, Power, RefreshCw, RotateCw, Square, WifiOff, X } from 'lucide-react';
 import { native } from '../../bridge';
 import { notify } from '../../ui';
 import {
   RESEARCH_GRANT_CHANGED, clearResearchSession, closeResearchPane, errorText, layoutResearchPane, openResearchPane,
-  rectOf, researchGrant, researchPaneHistory, researchPaneState, setResearchGrant, type PaneRect, type ResearchGrant, type ResearchPaneState,
+  rectOf, researchGrant, researchPaneHistory, researchPaneState, researchStop, setResearchGrant, type PaneRect, type ResearchGrant, type ResearchPaneState,
 } from './api';
 import './research.css';
 
@@ -159,6 +159,17 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
   function history(action: 'back' | 'forward' | 'reload') {
     researchPaneHistory(action).catch(error => notify.fromError('The research browser could not do that', error));
   }
+  // Stops the agent's work in the page: the backend pauses the task holding the research page
+  // and stops the page loading. The chat's own Stop is unchanged.
+  const [stopping, setStopping] = useState(false);
+  async function stop() {
+    // aria-disabled rather than disabled while a stop is in flight, so keyboard focus stays here.
+    if (stopping) return;
+    setStopping(true);
+    try { await researchStop(); }
+    catch (error) { notify.fromError('Could not stop the research browser', error); }
+    finally { if (live.current) setStopping(false); }
+  }
   async function close() {
     setBusy(true);
     try { await closeResearchPane(); if (live.current) setPhase('closed'); }
@@ -231,6 +242,7 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
       </div>
       <span className={`research-status research-status-${phase}`} role="status"><span className="research-status-dot" aria-hidden="true" />{statusLabel}</span>
       {native && enabled && !isOffline ? <div className="research-toolbar-actions">
+        {phase === 'open' ? <button type="button" className="quiet" data-size="sm" aria-disabled={stopping || undefined} title="Stop the agent's work in this page" onClick={() => void stop()}><Square size={12} aria-hidden="true" />Stop</button> : null}
         {phase === 'open' ? <button type="button" className="quiet" data-size="sm" disabled={busy} onClick={() => void close()}><X size={14} aria-hidden="true" />Close</button> : null}
         <button type="button" className="quiet" data-size="sm" disabled={busy} onClick={() => void signOut()}><LogOut size={14} aria-hidden="true" />Sign out</button>
       </div> : null}

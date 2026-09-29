@@ -62,6 +62,7 @@ declare global {
       emitCaseEvent: () => void;
       streamTask: (taskId: string, options?: { chunks?: string[]; intervalMs?: number; complete?: boolean }) => void;
       toolCall: (taskId: string, options?: { name?: string; argumentChunks?: string[]; intervalMs?: number }) => void;
+      researchStep: (taskId: string, options: { name: string; detail?: string | null; args?: Record<string, unknown>; output?: unknown; recordAfterMs?: number | null; status?: string }) => void;
       completeTask: (taskId: string, answer?: string) => void;
       setJobProgress: (jobId: string, progress: unknown, status?: string) => void;
       setChatPause: (reason: string | null) => void;

@@ -167,6 +167,41 @@ it('closes and signs out from the toolbar', async () => {
   await screen.findByText('The research browser is closed.');
 });
 
+it('offers Stop while the pane is open and calls research_stop with no arguments', async () => {
+  const state = backend(grant(true));
+  const answer = api.getMockImplementation()!;
+  api.mockImplementation(async (action: string, args?: Record<string, unknown>) => action === 'research_stop' ? { stopped: true, task_id: 'synthetic-task' } : answer(action, args));
+  const spy = vi.spyOn(notify, 'fromError');
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  const stop = await screen.findByRole('button', { name: 'Stop' });
+  // A real button in the toolbar's tab order, not a styled div.
+  expect(stop.tagName).toBe('BUTTON');
+  expect(stop.getAttribute('tabindex')).toBeNull();
+  fireEvent.click(stop);
+  await waitFor(() => expect(api).toHaveBeenCalledWith('research_stop'));
+  expect(api.mock.calls.find(([action]) => action === 'research_stop')).toEqual(['research_stop']);
+  expect(spy).not.toHaveBeenCalled();
+  // Stop stays focusable (aria-disabled, not disabled) while the request is in flight.
+  expect(stop.hasAttribute('disabled')).toBe(false);
+
+  // Closed pane: no Stop.
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(state.open).toBe(false));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull());
+});
+
+it('reports a failed research_stop through the notification helper and keeps the pane', async () => {
+  backend(grant(true));
+  const answer = api.getMockImplementation()!;
+  api.mockImplementation(async (action: string, args?: Record<string, unknown>) => { if (action === 'research_stop') throw 'Unknown action research_stop'; return answer(action, args); });
+  const spy = vi.spyOn(notify, 'fromError');
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+  await waitFor(() => expect(spy).toHaveBeenCalledWith('Could not stop the research browser', 'Unknown action research_stop'));
+  expect(api).not.toHaveBeenCalledWith('close_research_pane');
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+});
+
 it('splits chat and browser with a keyboard-resizable, remembered divider', async () => {
   backend(grant(true));
   render(<BrowserView chat={<div>Synthetic chat column</div>} caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
