@@ -3,6 +3,34 @@ use crate::{case::Case,evidence::{self,ObjectInput,Dependency}};
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
 
+/// The fields of an authority a work product may carry. Only this whitelist is copied, so
+/// anything else an adapter recorded (page hashes, retrieval internals, or any publisher
+/// editorial text) never reaches a work product or its exports.
+pub fn authority_projection(object:&Value)->Value {
+    let content:Value=object["content"].as_str().and_then(|raw|serde_json::from_str(raw).ok()).unwrap_or(Value::Null);
+    let title=content["title"].as_str().map(|_|content["title"].clone()).unwrap_or_else(||object["title"].clone());
+    let plain=|value:&Value|match value {Value::String(_)|Value::Bool(_)=>value.clone(),_=>Value::Null};
+    let citation=match &content["citation"] {
+        Value::Object(_)=>json!({"raw":plain(&content["citation"]["raw"]),"claimed":plain(&content["citation"]["claimed"]),"mismatch":plain(&content["citation"]["mismatch"])}),
+        Value::String(text)=>json!(text),
+        _=>Value::Null,
+    };
+    let scalar=|key:&str|match &content[key] {value@Value::String(_)=>value.clone(),_=>Value::Null};
+    let limitations:Vec<Value>=content["limitations"].as_array().into_iter().flatten().filter(|item|item.is_string()).cloned().collect();
+    json!({
+        "url":scalar("url"),
+        "title":title,
+        "citation":citation,
+        "jurisdiction":scalar("jurisdiction"),
+        "relevant_date":scalar("relevant_date"),
+        "retrieved_at":scalar("retrieved_at"),
+        "treatment_status":scalar("treatment_status"),
+        "proposition_support":scalar("proposition_support"),
+        "quote":{"exact":content["quote"]["exact"].as_str(),"locator":content["quote"]["locator"].as_str()},
+        "limitations":limitations,
+    })
+}
+
 pub fn save(case:&mut Case,task:&str,args:&Value)->Result<Value> {
     ensure!(args.to_string().len()<=128000,"Work product too large");
     let raw:String=case.db.query_row("SELECT scope FROM tasks WHERE id=?",[task],|r|r.get(0))?;
@@ -41,7 +69,7 @@ pub fn save(case:&mut Case,task:&str,args:&Value)->Result<Value> {
             for source in object["source_ids"].as_array().context("Missing authority provenance")? {ensure!(sources.iter().any(|s|Some(s.as_str())==source.as_str()),"Authority outside task scope");}
             let revision=object["revision"].as_i64().context("Authority revision missing")?;
             dependencies.push(Dependency{id:id.into(),revision});
-            authority_limits.push(json!({"id":id,"revision":revision,"status":"Treatment and proposition support require independent checking","authority":object["content"]}));
+            authority_limits.push(json!({"id":id,"revision":revision,"status":"Treatment and proposition support require independent checking","authority":authority_projection(&object)}));
         }
     }
     citations.sort();citations.dedup();dependencies.sort_by(|a,b|a.id.cmp(&b.id));dependencies.dedup_by(|a,b|a.id==b.id);

@@ -397,3 +397,405 @@ fn switching_research_off_mid_job_discards_its_result() {
     research::set_grant(&mut case, true, &[]).unwrap();
     assert!(!research::tools::exposed(&case, &task).unwrap());
 }
+
+// ---- R46/R47: research_capture, citable evidence and task-created sources ----
+
+/// A document page on the research host. Outside debug test mode the agent acts only on research
+/// hosts, so these tests give that host a synthetic playbook entry; the shipped loopback fixture
+/// entry is exercised by the native journey against scripts/research-fixture-server.mjs.
+const DOCUMENT_URL: &str = "https://1.next.westlaw.com/Document/Ifixture/View/FullText.html";
+const RESULTS_URL: &str = "https://1.next.westlaw.com/Search/Results.html";
+const HEADNOTE: &str = "HEADNOTE EDITORIAL: negligence key number 272k1 synopsis";
+const SCRIPT_MARKER: &str = "SCRIPT MARKER 7731";
+/// What the page's capture function returns for the fixture: the opinion region with the
+/// headnote block, script and hidden input removed.
+const SANITIZED: &str = "<main id=\"opinion\"><h1>Smith v. Synthetic Holdings</h1><p class=\"cite\">123 F.3d 456 (9th Cir. 2001)</p><section><p>OPINION</p><p>A person owes a duty of reasonable care to foreseeable plaintiffs.</p><p>The duty extends to conduct that creates a foreseeable risk of harm.</p></section></main>";
+const LINES: &[&str] = &[
+    "Smith v. Synthetic Holdings",
+    "123 F.3d 456 (9th Cir. 2001)",
+    "OPINION",
+    "A person owes a duty of reasonable care to foreseeable plaintiffs.",
+    "The duty extends to conduct that creates a foreseeable risk of harm.",
+];
+
+fn full_page() -> String {
+    format!("<html><head><title>Smith</title></head><body><nav>Signed in as Synthetic User</nav><main id=\"opinion\"><h1>Smith v. Synthetic Holdings</h1><div class=\"headnote\">{HEADNOTE}</div><p>OPINION</p><script>window.x='{SCRIPT_MARKER}'</script></main></body></html>")
+}
+
+fn document_playbook() -> research::playbook::Playbook {
+    research::playbook::Playbook::with_entries(vec![research::playbook::Entry {
+        id: "synthetic-document".into(),
+        hosts: vec!["1.next.westlaw.com".into()],
+        content_root: "main#opinion".into(),
+        editorial: vec![".headnote".into(), ".synopsis".into()],
+        test_only: true,
+        status: "test".into(),
+    }])
+}
+
+/// A scripted research page at `url`. The capture and read functions answer from the selectors
+/// they receive as data: editorial text is left out only when `.headnote` was passed.
+fn fixture_respond(url: &str, method: &str, params: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    let function = params["functionDeclaration"].as_str().unwrap_or_default();
+    let document = url.contains("/Document/");
+    let hides = |index: usize| params["arguments"][index]["value"].as_array().is_some_and(|selectors| selectors.contains(&json!(".headnote")));
+    Ok(match method {
+        "Page.getFrameTree" => json!({"frameTree": {"frame": {"id": "F1"}}}),
+        "Page.createIsolatedWorld" => json!({"executionContextId": 3}),
+        "Runtime.evaluate" if params["expression"].as_str().unwrap_or_default().starts_with("({url: location.href") => json!({"result": {"value": {"url": url, "title": "Smith", "ready": "complete"}}}),
+        "Runtime.evaluate" => json!({"result": {"value": true}}),
+        "Runtime.callFunctionOn" if function.contains("Boolean(globalThis.__vislex)") => json!({"result": {"value": true}}),
+        "Runtime.callFunctionOn" if function.contains("ariaSnapshot") => {
+            json!({"result": {"value": {"text": if hides(1) { "- heading \"Smith\" [ref=e1]".to_string() } else { format!("- text: {HEADNOTE}") }, "url": url, "title": "Smith"}}})
+        }
+        "Runtime.callFunctionOn" if function.contains("content_root") => {
+            let entries = params["arguments"][0]["value"].as_array().cloned().unwrap_or_default();
+            let host = url.parse::<reqwest::Url>().unwrap().host_str().unwrap().to_string();
+            let entry = entries.iter().find(|entry| entry["hosts"].as_array().unwrap().iter().any(|allowed| allowed == &json!(host)));
+            match entry {
+                Some(entry) if document => {
+                    let mut lines: Vec<String> = LINES.iter().map(|line| line.to_string()).collect();
+                    if !hides(1) {
+                        lines.insert(1, HEADNOTE.into());
+                    }
+                    json!({"result": {"value": {"url": url, "title": "Smith", "entry": entry["id"], "document_text": true, "lines": lines, "html": SANITIZED, "page_html": full_page()}}})
+                }
+                _ => json!({"result": {"value": {"url": url, "title": "Smith", "entry": entry.map(|entry| entry["id"].clone()), "document_text": false}}}),
+            }
+        }
+        "Runtime.callFunctionOn" if function.contains("innerText") => {
+            let mut lines: Vec<String> = LINES.iter().map(|line| line.to_string()).collect();
+            if !hides(0) {
+                lines.insert(1, HEADNOTE.into());
+            }
+            json!({"result": {"value": {"url": url, "title": "Smith", "lines": lines}}})
+        }
+        other => anyhow::bail!("unexpected {other}"),
+    })
+}
+
+fn fixture_page(url: &'static str) -> research::driver::FakeDriver {
+    research::driver::FakeDriver::new(move |method, params| fixture_respond(url, method, params))
+}
+
+fn capture_args(start: u64, end: u64) -> serde_json::Value {
+    json!({"title": "Smith v. Synthetic Holdings", "jurisdiction": "9th Cir.", "relevant_date": "2001-05-01", "citation_text": "123 F.3d 456", "proposition": "A duty of reasonable care is owed to foreseeable plaintiffs.", "quote_start_line": start, "quote_end_line": end})
+}
+
+/// Runs one research call the way the desktop does: checks under the lock, the job against the
+/// page, the stash, then the agent loop's tool arm. Returns the receipt.
+fn run_research(case: &mut Case, task: &str, page: research::driver::FakeDriver, playbook: &research::playbook::Playbook, name: &str, args: serde_json::Value) -> serde_json::Value {
+    let request = evidence_desk::agent::prepare_request(case, task).unwrap();
+    let response = call(name, args);
+    case.set_meta(&format!("research_result:{task}"), "").unwrap();
+    if let Some(job) = research::tools::prepare_research(case, task, &request.transmission, &response).unwrap() {
+        let mut session = research::snapshot::Session::new(page);
+        let outcome = block_on(research::tools::run_job_with(&mut session, &job, playbook));
+        // No model-controlled string ever becomes page code.
+        for (_, params) in session.driver().calls() {
+            let code = format!("{}{}", params["functionDeclaration"].as_str().unwrap_or_default(), params["expression"].as_str().unwrap_or_default());
+            assert!(!code.contains("Synthetic Holdings") && !code.contains("foreseeable plaintiffs"));
+        }
+        research::tools::stash(case, &job, outcome).unwrap();
+    }
+    evidence_desk::agent::receive(case, task, &request.transmission, response).unwrap();
+    last_action(case, task)
+}
+
+fn staged_files(case: &Case) -> usize {
+    std::fs::read_dir(case.root.join("staging")).unwrap().count()
+}
+
+fn task_scope(case: &Case, task: &str) -> Vec<String> {
+    serde_json::from_str(&case.db.query_row::<String, _, _>("SELECT scope FROM tasks WHERE id=?", [task], |row| row.get(0)).unwrap()).unwrap()
+}
+
+#[test]
+fn research_capture_publishes_citable_evidence_without_editorial_content() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let original = case.sources().unwrap()[0].id.clone();
+    // A task started before the capture keeps its own scope.
+    let other = evidence_desk::agent::start(&mut case, "Another question", "investigate", vec![original.clone()], vec![], 0.).unwrap();
+    let staged_before = staged_files(&case);
+
+    let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &document_playbook(), "research_capture", capture_args(3, 4));
+    assert_eq!(receipt["status"], "complete", "{receipt}");
+    let output: serde_json::Value = serde_json::from_str(receipt["output"].as_str().unwrap()).unwrap();
+    let source = output["source_id"].as_str().unwrap().to_string();
+    let locator = output["locator"].as_str().unwrap().to_string();
+    assert_eq!(locator, format!("evidence:{source}#R1L4-L5"));
+    assert_eq!(output["citation_mismatch"], false);
+    assert!(output["next"].as_str().unwrap().contains("stale"));
+    assert!(!receipt["output"].as_str().unwrap().contains(HEADNOTE) && !receipt["output"].as_str().unwrap().contains("<main"), "the document itself never returns to the model");
+
+    // The original is exactly the sanitised document, content-addressed and immutable.
+    let stored = std::fs::read(case.source_path(&source).unwrap()).unwrap();
+    assert_eq!(stored, SANITIZED.as_bytes());
+    assert_eq!(case.source(&source).unwrap().sha256, evidence_desk::case::digest(SANITIZED.as_bytes()));
+    let stored = String::from_utf8(stored).unwrap();
+    assert!(!stored.contains(HEADNOTE) && !stored.contains(SCRIPT_MARKER) && !stored.contains("Signed in as"));
+    assert_eq!(staged_files(&case), staged_before, "no staged copy remains");
+
+    // Searchable extract with the quoted lines, without editorial text; the locator validates
+    // against its immutable revision.
+    let found = case.search("foreseeable", 0).unwrap();
+    assert!(found["results"].as_array().unwrap().iter().any(|hit| hit["source_id"] == source), "{found}");
+    let text = case.read_text(&source, 1, 20).unwrap();
+    assert!(text["text"].as_str().unwrap().contains("reasonable care") && !text["text"].as_str().unwrap().contains(HEADNOTE));
+    assert_eq!(case.validate_citation(&locator).unwrap()["revision_binding"], "pinned");
+
+    // Authority provenance, unreviewed.
+    let authority = evidence_desk::evidence::read(&case, output["authority_id"].as_str().unwrap(), None).unwrap();
+    assert_eq!(authority["kind"], "authority");
+    assert_eq!(authority["actor"], "research_browser_adapter");
+    assert_eq!(authority["review"], "unreviewed");
+    assert_eq!(authority["source_ids"], json!([source]));
+    assert_eq!(authority["locators"], json!([locator]));
+    let content: serde_json::Value = serde_json::from_str(authority["content"].as_str().unwrap()).unwrap();
+    assert_eq!(content["url"], DOCUMENT_URL);
+    assert_eq!(content["citation"], json!({"raw": "123 F.3d 456", "claimed": "123 F.3d 456", "mismatch": false}));
+    assert_eq!(content["jurisdiction"], "9th Cir.");
+    assert_eq!(content["relevant_date"], "2001-05-01");
+    assert_eq!(content["retrieved_by"]["task"], task);
+    assert_eq!(content["retrieved_by"]["tool"], "research_capture");
+    assert_eq!(content["retrieved_by"]["grant_revision"], 1);
+    assert_eq!(content["tr_editorial"], "excluded");
+    assert_eq!(content["quote"]["exact"], format!("{}\n{}", LINES[3], LINES[4]));
+    assert_eq!(content["quote"]["locator"], locator);
+    assert_eq!(content["full_page_sha256"], evidence_desk::case::digest(full_page().as_bytes()));
+    assert_eq!(content["treatment_status"], "not_checked");
+    assert_eq!(content["proposition_support"], "not_assessed");
+    assert!(!content["limitations"].as_array().unwrap().is_empty() && content["retrieved_at"].is_string());
+    assert!(!authority["content"].as_str().unwrap().contains(HEADNOTE) && !authority["content"].as_str().unwrap().contains("Signed in as"));
+
+    // D2: the capturing task, and only it, may read the source it created.
+    assert_eq!(task_scope(&case, &task), [original.clone(), source.clone()]);
+    assert_eq!(task_scope(&case, &other), [original.clone()]);
+    let read = json!({"source_id": source, "start": 1, "count": 5});
+    assert!(evidence_desk::agent::execute_tool(&mut case, &task, "read_text", &read).is_ok());
+    assert!(evidence_desk::agent::execute_tool(&mut case, &other, "read_text", &read).unwrap_err().to_string().contains("outside task scope"));
+    assert_eq!(case.meta(&format!("task_created_sources:{task}")).unwrap().unwrap(), json!([source]).to_string());
+    for event in ["research_capture_requested", "task_scope_expanded", "research_capture_published"] {
+        let count: i64 = case.db.query_row("SELECT count(*) FROM audit WHERE event=?", [event], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1, "{event}");
+    }
+    let published: String = case.db.query_row("SELECT data FROM audit WHERE event='research_capture_published'", [], |row| row.get(0)).unwrap();
+    assert!(published.contains(&source) && published.contains(&locator) && !published.contains(HEADNOTE));
+    case.verify_audit().unwrap();
+
+    // Capturing the same document again reuses the source and its extract revision.
+    let again = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &document_playbook(), "research_capture", capture_args(0, 1));
+    let again: serde_json::Value = serde_json::from_str(again["output"].as_str().unwrap()).unwrap();
+    assert_eq!(again["source_id"], json!(source));
+    assert_eq!(again["locator"], json!(format!("evidence:{source}#R1L1-L2")));
+    assert_eq!(again["scope_expanded"], false);
+    assert_eq!(task_scope(&case, &task).len(), 2);
+}
+
+#[test]
+fn review_tasks_created_after_a_capture_can_read_it() {
+    research::tools::mark_runtime_available();
+    let (dir, mut case) = setup();
+    let note = dir.path().join("note.txt");
+    std::fs::write(&note, "A synthetic note.\n").unwrap();
+    case.import_files(&[note.to_string_lossy().into()], "Synthetic").unwrap();
+    let original = case.sources().unwrap()[0].id.clone();
+    go_online(&mut case);
+    research::set_grant(&mut case, true, &[]).unwrap();
+    evidence_desk::providers::save(&mut case, evidence_desk::providers::Config { review: evidence_desk::providers::Review::Challenge, ..Default::default() }).unwrap();
+    let task = evidence_desk::agent::start(&mut case, "Research the duty of care", "investigate", vec![original], vec![], 0.).unwrap();
+    let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &document_playbook(), "research_capture", capture_args(3, 3));
+    assert_eq!(receipt["status"], "complete", "{receipt}");
+    let source = serde_json::from_str::<serde_json::Value>(receipt["output"].as_str().unwrap()).unwrap()["source_id"].as_str().unwrap().to_string();
+    assert!(evidence_desk::teams::request_review(&case, &task, "Draft relying on the capture").unwrap());
+    let children = evidence_desk::teams::prepare(&mut case, &task, "review").unwrap();
+    assert!(!children.is_empty());
+    for child in children {
+        assert!(task_scope(&case, &child).contains(&source));
+        let read = evidence_desk::agent::execute_tool(&mut case, &child, "read_text", &json!({"source_id": source, "start": 1, "count": 2})).unwrap();
+        assert!(read["text"].as_str().unwrap().contains("Smith v. Synthetic Holdings"));
+    }
+}
+
+#[test]
+fn a_failed_capture_rolls_back_and_leaves_no_files() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let sources_before = case.sources().unwrap().len();
+    let staged_before = staged_files(&case);
+    let original = case.root.join("originals").join(evidence_desk::case::digest(SANITIZED.as_bytes()));
+    // Run the job, then stop the task before the tool arm publishes.
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    let args = capture_args(3, 4);
+    let job = research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_capture", args.clone())).unwrap().expect("job");
+    let mut session = research::snapshot::Session::new(fixture_page(DOCUMENT_URL));
+    let bundle = block_on(research::tools::run_job_with(&mut session, &job, &document_playbook())).unwrap();
+    evidence_desk::agent::pause(&mut case, &task, "Stopped").unwrap();
+    let error = research::publish(&mut case, &task, &bundle, &args).unwrap_err().to_string();
+    assert!(error.contains("no longer running"), "{error}");
+    assert_eq!(case.sources().unwrap().len(), sources_before);
+    assert_eq!(staged_files(&case), staged_before);
+    assert!(!original.exists(), "the original moved into place is removed with its rows");
+    let objects: i64 = case.db.query_row("SELECT count(*) FROM evidence_objects", [], |row| row.get(0)).unwrap();
+    assert_eq!(objects, 0);
+    let published: i64 = case.db.query_row("SELECT count(*) FROM audit WHERE event IN ('research_capture_published','task_scope_expanded')", [], |row| row.get(0)).unwrap();
+    assert_eq!(published, 0);
+    assert!(case.meta(&format!("task_created_sources:{task}")).unwrap().is_none());
+    case.verify_audit().unwrap();
+
+    // An identical restricted source is refused and nothing is added.
+    let (dir, mut case, task) = case_with_task(true);
+    let restricted = dir.path().join("opinion.html");
+    std::fs::write(&restricted, SANITIZED).unwrap();
+    case.import_files(&[restricted.to_string_lossy().into()], "Synthetic").unwrap();
+    let hidden = case.sources().unwrap().into_iter().find(|source| source.sha256 == evidence_desk::case::digest(SANITIZED.as_bytes())).unwrap().id;
+    case.set_restricted(&hidden, true).unwrap();
+    let count = case.sources().unwrap().len();
+    let staged = staged_files(&case);
+    let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &document_playbook(), "research_capture", capture_args(3, 4));
+    assert_eq!(receipt["status"], "failed");
+    assert!(receipt["output"].as_str().unwrap().contains("restricted"), "{receipt}");
+    assert_eq!(case.sources().unwrap().len(), count);
+    assert_eq!(staged_files(&case), staged);
+    assert!(!task_scope(&case, &task).contains(&hidden));
+}
+
+#[test]
+fn capture_is_refused_without_a_playbook_entry_off_the_document_or_outside_its_text() {
+    // The shipped Westlaw entry has no verified selectors yet (R36), so capture refuses there.
+    for playbook in [research::playbook::Playbook::with_test_entries(), research::playbook::Playbook::production()] {
+        let (_dir, mut case, task) = case_with_task(true);
+        let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &playbook, "research_capture", capture_args(0, 0));
+        assert_eq!(receipt["status"], "failed");
+        assert!(receipt["output"].as_str().unwrap().contains(research::playbook::CAPTURE_UNAVAILABLE), "{receipt}");
+        assert_eq!(case.sources().unwrap().len(), 1);
+    }
+    let (_dir, mut case, task) = case_with_task(true);
+    // Outside debug test mode a loopback page is off the research site, whatever the playbook.
+    let receipt = run_research(&mut case, &task, fixture_page("http://127.0.0.1:9471/opinion.html"), &research::playbook::Playbook::with_test_entries(), "research_capture", capture_args(0, 0));
+    assert!(receipt["output"].as_str().unwrap().contains("sign-in or outside page"), "{receipt}");
+    // A results page is not a document, and lines outside the document text are refused.
+    let receipt = run_research(&mut case, &task, fixture_page(RESULTS_URL), &document_playbook(), "research_capture", capture_args(0, 0));
+    assert!(receipt["output"].as_str().unwrap().contains("no document text"), "{receipt}");
+    let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &document_playbook(), "research_capture", capture_args(4, 5));
+    assert!(receipt["output"].as_str().unwrap().contains("outside this document"), "{receipt}");
+    assert_eq!(case.sources().unwrap().len(), 1);
+}
+
+#[test]
+fn capture_arguments_and_limits_are_checked_before_the_page_is_touched() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    let with = |key: &str, value: serde_json::Value| {
+        let mut args = capture_args(3, 4);
+        args[key] = value;
+        args
+    };
+    let mut refused = |args: serde_json::Value, reason: &str| {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_capture", args)).unwrap().is_none());
+        let stored = case.meta(&format!("research_result:{task}")).unwrap().unwrap();
+        assert!(stored.contains(reason), "{stored}");
+    };
+    refused(with("relevant_date", json!("May 1, 2001")), "YYYY-MM-DD");
+    refused(with("title", json!("x".repeat(251))), "title");
+    refused(with("title", json!("  ")), "title");
+    refused(with("proposition", json!("p".repeat(1001))), "proposition");
+    refused(with("quote_end_line", json!(203)), "consecutive lines");
+    refused(with("quote_end_line", json!(2)), "consecutive lines");
+    refused(with("quote_start_line", json!(-1)), "quote_start_line");
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_capture", with("relevant_date", json!(null)))).unwrap().is_some());
+    for _ in 1..research::Caps::default().captures {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_capture", capture_args(3, 4))).unwrap().is_some());
+    }
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_capture", capture_args(3, 4))).unwrap().is_none());
+    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("limit of 25 research captures"));
+    let requested: i64 = case.db.query_row("SELECT count(*) FROM audit WHERE event='research_capture_requested'", [], |row| row.get(0)).unwrap();
+    assert_eq!(requested, 25);
+}
+
+#[test]
+fn snapshots_reads_and_captures_share_the_playbook_editorial_selectors() {
+    use research::{snapshot::Session, tools::run_job_with};
+    let mut session = Session::new(fixture_page(DOCUMENT_URL));
+    let playbook = document_playbook();
+    let snapshot = block_on(run_job_with(&mut session, &research_job("research_snapshot", json!({"scope": "full", "find": null, "delta": false, "max_chars": null})), &playbook)).unwrap();
+    assert!(!snapshot.to_string().contains(HEADNOTE));
+    let read = block_on(run_job_with(&mut session, &research_job("research_read_page", json!({"offset": 0, "count": 10})), &playbook)).unwrap();
+    assert!(!read.to_string().contains(HEADNOTE));
+    let capture = block_on(run_job_with(&mut session, &research_job("research_capture", capture_args(3, 4)), &playbook)).unwrap();
+    // The capture's lines are the lines research_read_page showed, so quoted line numbers agree.
+    let read_lines: Vec<&str> = read["lines"].as_array().unwrap().iter().map(|line| line["text"].as_str().unwrap()).collect();
+    assert_eq!(capture["lines"], json!(read_lines));
+    assert_eq!(capture["citation_raw"], "123 F.3d 456");
+    // Without the selectors (a playbook with no editorial list) the fixture would show it.
+    let bare = research::playbook::Playbook::production();
+    let exposed = block_on(run_job_with(&mut Session::new(fixture_page(DOCUMENT_URL)), &research_job("research_read_page", json!({"offset": 0, "count": 10})), &bare)).unwrap();
+    assert!(exposed.to_string().contains(HEADNOTE), "the fixture honours only the selectors it is given");
+}
+
+#[test]
+fn work_products_copy_only_the_whitelisted_authority_fields() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &document_playbook(), "research_capture", capture_args(3, 4));
+    let output: serde_json::Value = serde_json::from_str(receipt["output"].as_str().unwrap()).unwrap();
+    let (source, authority, locator) = (output["source_id"].as_str().unwrap().to_string(), output["authority_id"].as_str().unwrap().to_string(), output["locator"].as_str().unwrap().to_string());
+    // A later revision carrying editorial text in fields outside the whitelist (as an older or
+    // faulty adapter might record) must not reach a work product either.
+    let current = evidence_desk::evidence::read(&case, &authority, None).unwrap();
+    let mut content: serde_json::Value = serde_json::from_str(current["content"].as_str().unwrap()).unwrap();
+    content["headnotes"] = json!([HEADNOTE]);
+    content["synopsis"] = json!(format!("Synopsis: {HEADNOTE}"));
+    content["citation"]["keycite_text"] = json!(HEADNOTE);
+    content["quote"]["context"] = json!(HEADNOTE);
+    content["jurisdiction"] = json!({"text": HEADNOTE});
+    evidence_desk::evidence::write(&mut case, evidence_desk::evidence::ObjectInput { id: Some(authority.clone()), base_revision: 1, kind: "authority".into(), title: "Smith v. Synthetic Holdings".into(), content: content.to_string(), source_ids: vec![source.clone()], locators: vec![locator.clone()], dependencies: vec![], start_seconds: None, end_seconds: None }, "research_browser_adapter").unwrap();
+    let rows = json!([{"paragraph": "1", "text": "A duty of reasonable care is owed to foreseeable plaintiffs.", "citations": [locator], "authority_ids": [authority]}]);
+    let saved = evidence_desk::work_products::save(&mut case, &task, &json!({"id": null, "base_revision": 0, "kind": "draft", "title": "Duty of care paragraph", "jurisdiction": "9th Cir.", "relevant_date": "2001-05-01", "items_json": rows.to_string()})).unwrap();
+    let product = saved["content"].as_str().unwrap();
+    assert!(!product.contains(HEADNOTE) && !product.contains("Synopsis") && !product.contains("full_page_sha256") && !product.contains("retrieved_by"), "{product}");
+    let product: serde_json::Value = serde_json::from_str(product).unwrap();
+    let copied = &product["authority_limits"][0]["authority"];
+    assert_eq!(copied["url"], DOCUMENT_URL);
+    assert_eq!(copied["citation"]["raw"], "123 F.3d 456");
+    assert_eq!(copied["quote"]["locator"], json!(locator));
+    assert_eq!(copied["quote"]["exact"], format!("{}\n{}", LINES[3], LINES[4]));
+    assert_eq!(copied["treatment_status"], "not_checked");
+    assert_eq!(copied["jurisdiction"], serde_json::Value::Null, "only plain strings are copied");
+    let keys: Vec<&String> = copied.as_object().unwrap().keys().collect();
+    assert_eq!(keys.len(), 10, "{keys:?}");
+}
+
+#[test]
+fn backups_hold_captures_but_never_the_research_profile() {
+    let (dir, mut case, task) = case_with_task(true);
+    // A synthetic profile beside the app data: outside every case folder by construction.
+    let profile = dir.path().join("AppData").join("Local").join("org.localevidencedesk.app.research");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(profile.join("Cookies-synthetic-marker"), "session").unwrap();
+    research::ensure_profile_boundary(&case.root, &profile).unwrap();
+    assert!(research::ensure_profile_boundary(&case.root, &case.root.join("EBWebView")).is_err());
+    let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &document_playbook(), "research_capture", capture_args(3, 4));
+    let source = serde_json::from_str::<serde_json::Value>(receipt["output"].as_str().unwrap()).unwrap()["source_id"].as_str().unwrap().to_string();
+    evidence_desk::agent::pause(&mut case, &task, "Finished").unwrap();
+    let archive = dir.path().join("backup.age");
+    backup::backup(&mut case, &archive, "test-only-passphrase-long").unwrap();
+    let restored_root = dir.path().join("restored");
+    let restored = backup::restore(&archive, &restored_root, "test-only-passphrase-long").unwrap();
+    restored.verify_audit().unwrap();
+    assert_eq!(std::fs::read(restored.source_path(&source).unwrap()).unwrap(), SANITIZED.as_bytes());
+    drop(restored);
+    let profile_text = profile.to_string_lossy().to_string();
+    let mut stack = vec![restored_root];
+    while let Some(path) = stack.pop() {
+        for entry in std::fs::read_dir(&path).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            assert!(!name.contains("Cookies-synthetic-marker") && name != "EBWebView", "{name}");
+            if entry.file_type().unwrap().is_dir() {
+                stack.push(entry.path());
+            } else {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                assert!(!String::from_utf8_lossy(&bytes).contains(&profile_text), "{name} mentions the profile path");
+            }
+        }
+    }
+}

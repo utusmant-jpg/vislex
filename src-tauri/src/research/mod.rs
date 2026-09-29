@@ -12,7 +12,9 @@ use anyhow::{ensure, Result};
 #[cfg(all(feature = "research", windows))]
 pub mod cdp;
 pub mod actions;
+pub mod capture;
 pub mod driver;
+pub mod playbook;
 pub mod snapshot;
 pub mod tools;
 #[cfg(feature = "research")]
@@ -23,6 +25,8 @@ pub mod runtime;
 pub mod spike;
 #[cfg(all(feature = "research", windows, debug_assertions))]
 pub mod survey;
+
+pub use capture::publish;
 
 /// Label of the research child webview. No capability may name it.
 pub const WEBVIEW_LABEL: &str = "research";
