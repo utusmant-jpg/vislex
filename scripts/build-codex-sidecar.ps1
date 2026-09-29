@@ -12,8 +12,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $Checkout '.git'))) {
 $head = (git -C $Checkout rev-parse HEAD).Trim()
 if ($head -ne $commit) { throw "Codex checkout must be at pinned commit $commit; found $head" }
 $patch = Join-Path $root 'patches/codex-appcontainer-windows.patch'
+# The reverse check is expected to fail on a fresh checkout. Windows PowerShell 5.1
+# turns redirected native stderr into a terminating error under 'Stop', so relax it here.
+$ErrorActionPreference = 'Continue'
 git -C $Checkout apply --reverse --check $patch 2>$null
-if ($LASTEXITCODE -ne 0) {
+$alreadyApplied = $LASTEXITCODE -eq 0
+$ErrorActionPreference = 'Stop'
+if (-not $alreadyApplied) {
     git -C $Checkout apply --check $patch
     if ($LASTEXITCODE -ne 0) { throw 'Pinned Codex patch does not apply cleanly' }
     git -C $Checkout apply $patch

@@ -57,13 +57,33 @@ python3 scripts/vislex_plan.py check
 
 ## Optional ChatGPT-subscription route
 
-The Codex-sidecar subscription route is off by default. Build with `--features subscription` (it implies `desktop`) to include it, for example before running `scripts/native-codex-account-test.ps1`. Without the feature, saved subscription preferences stay readable, and every path that would use the route stops with an explicit reason. It never falls back to API keys.
+The Codex-sidecar subscription route is a Cargo feature that stays off for headless `cargo test` and the Linux checks, so they do not compile Tauri. The desktop npm scripts (`npm run desktop`, `desktop:build`, `desktop:build:x64`) pass `--features subscription` (it implies `desktop`), so app builds and dev runs on Windows include the route, for example before running `scripts/native-codex-account-test.ps1`. Without the feature, saved subscription preferences stay readable, and every path that would use the route stops with an explicit reason. It never falls back to API keys.
 
 ## Windows
 
 Follow `README.md` → Verification for the full Windows sequence. Tier 1 is `cargo test --locked`, clippy and `cargo check --features desktop`. Tier 2 adds the packaged worker (`scripts/build-worker.ps1`), the ignored sandbox tests and the native CDP journeys.
 
-## Latest Windows run (2026-09-28)
+## Final Windows build (2026-09-28, evening)
+
+Tested tree: `integrate/redesign-final` after merging `main` 4818598 (flagship chat redesign) plus the Codex sidecar re-pin and the native-acceptance selector fix; recorded in `windows_final_build_2026_09_28` in `docs/implementation/NEXT-STATUS.json`.
+
+| Check | Result |
+|---|---|
+| `npm ci`, `tsc --noEmit` | exit 0 |
+| Vitest | 32 files, 314 passed |
+| Playwright (Chromium) | 59 passed in one run on an idle machine; a run during the release build had 5–6 first-page-load timeouts that passed on rerun |
+| `cargo test --locked` | 246 passed, 0 failed, 31 ignored |
+| `cargo clippy --all-targets --features subscription` | exit 0 |
+| Codex sidecar (`scripts/build-codex-sidecar.ps1`, pinned commit + patch) | built; SHA-256 `DFD16FFD…5577`, now the pinned hash |
+| `scripts/test-codex-boundary.ps1`, default and `-PersistentProfile` | boundary held: out-of-scope read/write denied |
+| `npm run desktop:build` (now `--features subscription`) | exit 0; installer `VisLex_0.3.0_arm64-setup.exe` |
+| `native-codex-account-test.ps1` on the release exe | `subscription_ready`, `account_protocol`, `connected` all true |
+| `native-protocol-origin-test.ps1` on the release exe | foreign read blocked |
+| Debug-build journeys: acceptance, integrity, large session, provider race, concurrent chats | exit 0; acceptance with 0 provider calls |
+
+No chat turn was sent through the subscription route: that would send a live request to OpenAI. Still unrun: `native-consent-acceptance.ps1`, `native-app-ai-acceptance.ps1`, scaling screenshots, Edge, screen readers.
+
+## Earlier Windows run (2026-09-28)
 
 Tested commit: `8b2fbee` on `integrate/redesign-final` (the cloud branch's Linux-verified `3b8bb88` plus its docs commit, merged with the local Codex/GLM worker setup). Windows 11 on an ARM64 machine running the x86_64-pc-windows-msvc toolchain; details and the unrun list are in `windows_verification_2026_09_28` in `docs/implementation/NEXT-STATUS.json`.
 
@@ -84,9 +104,7 @@ Tested commit: `8b2fbee` on `integrate/redesign-final` (the cloud branch's Linux
 | Native journeys on the debug build: acceptance, integrity, large session, provider race, concurrent chats | exit 0 |
 | Native protocol-origin test on the release exe | exit 0, foreign read blocked |
 
-Not run: `native-consent-acceptance.ps1`, `native-app-ai-acceptance.ps1` and `native-codex-account-test.ps1` (they need the packaged app, real user settings or a `subscription` build), manual video scrubbing and PDF paging through `evidence://`, any live provider request, 125/150/200 % scaling screenshots, Edge and screen readers.
-
-The release build refuses chat while the saved AI route is `chatgpt_subscription`, because that route is compiled out by default; the journeys run on the debug build, which isolates that preference in test mode.
+Not run at that commit: `native-consent-acceptance.ps1`, `native-app-ai-acceptance.ps1` and `native-codex-account-test.ps1`, manual video scrubbing and PDF paging through `evidence://`, any live provider request, 125/150/200 % scaling screenshots, Edge and screen readers. At that commit the release build still compiled the subscription route out; the final build above includes it.
 
 ## Latest Linux run (cloud container, 2026-09-28)
 

@@ -148,6 +148,17 @@ User brief: make the chat and agent workflow feel best-in-class, remove the bran
   - NVDA/Narrator.
   - Performance on named hardware.
 
+## Final build (2026-09-28, evening)
+
+`main` 4818598 (this flagship slice) was merged into `integrate/redesign-final` together with the ChatGPT-subscription changes. Two decisions came from the user:
+- Desktop npm scripts build with `--features subscription`. Headless `cargo test` still builds without Tauri.
+- The Codex sidecar was rebuilt from the pinned commit and patch, and its SHA-256 re-pinned to `DFD16FFD…5577`. The rebuild differed from the old pin; the boundary probe held in both modes before the re-pin.
+
+Dev runs use `scripts/desktop-dev-codex.ps1`. It copies the sidecar outside `src-tauri`, because the app's sandbox grant on that folder otherwise makes `tauri dev` restart the app.
+
+`scripts/native-acceptance.js` now matches the chat title case-insensitively, because the redesigned list capitalises the title. Results are in `docs/TESTING.md` → Final Windows build.
+
 ## Next action
 
-On Windows, check out `integrate/redesign-final-cora77`, run `npm run desktop:build`, the packaged-app smoke journeys and `scripts/native-protocol-origin-test.ps1`, and record results. Then merge into `main` with a merge commit (main is an ancestor, so it can also fast-forward) and tag, after the user approves.
+- Optional: have the other provider review the sidecar re-pin, and the patch diff against the pinned Codex commit.
+- Still unrun: live subscription chat (needs the user's explicit go-ahead for a synthetic probe), consent and app-AI native journeys, scaling screenshots, NVDA/Narrator.
