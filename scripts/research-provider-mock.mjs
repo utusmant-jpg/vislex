@@ -7,14 +7,21 @@ import http from 'node:http';
 const port = Number(process.argv[2] ?? 9363);
 const fixture = process.argv[3] ?? 'http://127.0.0.1:9471';
 const transcript = [];
+// Research results seen so far, in order. The app compacts its input after a checkpoint, so the
+// synthetic model remembers earlier results itself (one journey per process).
+const seen = new Map();
 
 const call = (name, args) => ({ type: 'function_call', call_id: `call-${transcript.length}-${name}`, name, arguments: JSON.stringify(args) });
 const message = text => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
 
 function nextStep(input) {
   const calls = new Map(input.filter(item => item.type === 'function_call').map(item => [item.call_id, item]));
-  const results = input.filter(item => item.type === 'function_call_output' && calls.get(item.call_id)?.name?.startsWith('research_'))
-    .map(item => ({ name: calls.get(item.call_id).name, args: JSON.parse(calls.get(item.call_id).arguments || '{}'), output: String(item.output) }));
+  for (const item of input) {
+    if (item.type === 'function_call_output' && calls.get(item.call_id)?.name?.startsWith('research_') && !seen.has(item.call_id)) {
+      seen.set(item.call_id, { name: calls.get(item.call_id).name, args: JSON.parse(calls.get(item.call_id).arguments || '{}'), output: String(item.output) });
+    }
+  }
+  const results = [...seen.values()];
   const last = results.at(-1);
   if (!last) return call('research_navigate', { url: `${fixture}/index.html` });
   if (/error|refused|not allowed|may not/i.test(last.output) && !last.output.includes('"snapshot"') && !last.output.includes('"lines"')) {
@@ -83,7 +90,11 @@ http.createServer((request, response) => {
   request.on('end', () => {
     const payload = JSON.parse(body);
     const offered = (payload.tools ?? []).map(tool => tool.name);
-    const step = offered.includes('research_navigate') ? nextStep(payload.input ?? []) : message('Synthetic research answer: research tools were not offered.');
+    // The app periodically requires a progress checkpoint and offers only that tool.
+    const checkpoint = payload.tool_choice?.name === 'checkpoint_review'
+      ? call('checkpoint_review', { summary: 'Synthetic checkpoint: research in progress on the fixture site.', citations: [], gaps: [], next_steps: ['Continue the research journey.'] })
+      : null;
+    const step = checkpoint ?? (offered.includes('research_navigate') ? nextStep(payload.input ?? []) : message('Synthetic research answer: research tools were not offered.'));
     transcript.push({ offered_research: offered.filter(name => name.startsWith('research_')), step: step.name ?? 'message', arguments: step.arguments ?? step.content?.[0]?.text });
     const value = { status: 'completed', usage: { input_tokens: 10, output_tokens: 5 }, output: [step] };
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });

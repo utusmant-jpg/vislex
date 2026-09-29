@@ -110,6 +110,8 @@ jobs:
 
       - name: Rust desktop check
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop
+      - name: Rust shipped desktop check (subscription + research browser)
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features subscription,research
       - name: Rust tests
         shell: pwsh
         run: |

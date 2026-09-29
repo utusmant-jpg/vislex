@@ -4,7 +4,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputName) -or $OutputName.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $OutputName -in @('.', '..')) { throw 'OutputName must be one folder name.' }
 $destination = Join-Path (Join-Path $repo 'artifacts') $OutputName
 $binary = Join-Path $repo 'src-tauri\target\x86_64-pc-windows-msvc\debug\local-evidence-desk.exe'
-if (-not (Test-Path -LiteralPath $binary)) { throw 'Build with npm exec tauri build -- --debug --features desktop --no-bundle first.' }
+if (-not (Test-Path -LiteralPath $binary)) { throw 'Build with npm exec tauri build -- --debug --features subscription,research --no-bundle first.' }
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 Copy-Item -LiteralPath $binary -Destination (Join-Path $destination 'VisLex.exe')
 $resources = Join-Path $destination 'resources\worker'
