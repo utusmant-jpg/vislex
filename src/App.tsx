@@ -342,7 +342,8 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
     finally{if(currentCaseId.current===sessionKey)setLoadingJobs(false);}
   }
   const review = snapshot.automatic_analysis;
-  const reviewOpen = !!review?.review_task && ['running', 'paused', 'failed'].includes(review.review_state);
+  const analysis = snapshot.analysis_status;
+  const reviewOpen = !analysis && !!review?.review_task && ['running', 'paused', 'failed'].includes(review.review_state);
   const storageTotal = storage ? Object.values(storage).reduce((sum, bytes) => sum + bytes, 0) : 0;
   const firstRender = !seenJobs.current.size;
   return <section className="workspace-view jobs-center" aria-label="Jobs and issues">
@@ -363,6 +364,16 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
     {currentJobs.length ? <div className="chip-row job-filters" role="group" aria-label="Filter jobs by status">
       {([['all', 'All'], ['working', 'Working'], ['attention', 'Needs attention'], ['completed', 'Completed & cancelled']] as const).map(([value, label]) => <button key={value} className={`chip ${jobFilter === value ? 'selected' : ''}`} aria-pressed={jobFilter === value} onClick={() => setJobFilter(value)}>{label}</button>)}
     </div> : null}
+    {analysis ? <article className="card job-card" aria-label="Automatic case analysis">
+      <div className="card-header"><span className="icon-tile" aria-hidden="true"><Sparkles size={16} /></span><div className="job-card-title"><strong className="card-title">Automatic case analysis</strong><span className="job-kind">{analysis.complete} of {analysis.total} analysis units · {analysis.findings} saved findings</span></div><StatusPill state={analysis.state === 'ready' ? 'complete' : analysis.state === 'blocked' || analysis.state === 'stale' ? 'needs-attention' : analysis.state === 'paused' || analysis.state === 'cancelled' ? 'paused' : 'running'} label={analysis.state === 'ready' ? 'Analysis ready' : analysis.state.replaceAll('_', ' ')} small /></div>
+      <p className="small muted">Documents, transcript segments and overlapping video windows have separate coverage. Saved findings retain their original evidence. Human review remains separate.</p>
+      {analysis.usage ? <p className="small muted">{(analysis.usage.input_tokens + analysis.usage.output_tokens).toLocaleString()} reported tokens{analysis.usage.unreported ? ' · some usage not reported' : ''}{analysis.usage.cost !== null ? ` · $${analysis.usage.cost.toFixed(4)} reported cost` : ''}</p> : null}
+      <progress aria-label="Analysis coverage" max={Math.max(1, analysis.total)} value={analysis.complete} />
+      {analysis.blockers.length ? <details><summary>{analysis.blocked} blocked analysis units</summary>{analysis.blockers.map(blocker => <p key={blocker.unit_id} className="small">{snapshot.sources.find(source => source.id === blocker.source_id)?.name ?? blocker.kind}: {blocker.reason}</p>)}</details> : null}
+      <div className="job-card-footer"><span>{analysis.running ? 'Analyzing prepared evidence' : analysis.state === 'ready' ? 'Current evidence analyzed' : 'Progress saved'}</span><div className="job-actions">
+        {(['running','queued','stale'].includes(analysis.state) ? [['pause','Pause analysis'],['cancel','Cancel analysis']] : analysis.state === 'blocked' ? [['retry_failed','Retry blocked analysis']] : ['paused','cancelled'].includes(analysis.state) ? [['resume','Resume analysis']] : []).map(([operation,label]) => <button key={operation} className="secondary" disabled={pending('analysis-control')} onClick={() => jobAction('analysis-control', async () => { await api('control_analysis', {...caseGuard(snapshot), operation}); await refresh(); })}>{pending('analysis-control') ? 'Saving…' : label}</button>)}
+      </div></div>
+    </article> : null}
     {reviewOpen ? <article className={`card job-card ${review?.review_state === 'failed' ? 'is-attention' : ''}`}>
       <div className="card-header"><span className="icon-tile" aria-hidden="true"><Sparkles size={16} /></span><div className="job-card-title"><strong className="card-title">Automatic case analysis</strong><span className="job-kind">AI review of prepared sources</span></div><div className="card-actions"><StatusPill state={review?.review_state === 'running' ? 'running' : review?.review_state === 'failed' ? 'failed' : 'paused'} label={review!.review_state} small /></div></div>
       {review?.review_state === 'failed' ? <p className="small danger-text">Saved progress is available. Continue in a new task to keep uncertain requests untouched.</p> : null}
@@ -415,7 +426,7 @@ export function JobsCenter({ snapshot, run, refresh, onConversation, pollProgres
           </div>
         </div>
       </motion.article>;
-    })}</div> : currentJobs.length ? <div className="empty-state"><ListChecks size={20} /><h3>No {jobFilter === 'working' ? 'working jobs' : jobFilter === 'attention' ? 'jobs needing attention' : 'completed jobs'} in this page</h3><p>Choose another status or load older jobs.</p></div> : !reviewOpen ? <div className="empty-state"><ListChecks size={20} /><h3>{jobCursor!==null?'No jobs in this page':'No processing jobs yet'}</h3><p>Queued work, completed jobs, and failures will appear here with their receipts.</p></div> : null}
+    })}</div> : currentJobs.length ? <div className="empty-state"><ListChecks size={20} /><h3>No {jobFilter === 'working' ? 'working jobs' : jobFilter === 'attention' ? 'jobs needing attention' : 'completed jobs'} in this page</h3><p>Choose another status or load older jobs.</p></div> : !reviewOpen && !analysis ? <div className="empty-state"><ListChecks size={20} /><h3>{jobCursor!==null?'No jobs in this page':'No processing jobs yet'}</h3><p>Queued work, completed jobs, and failures will appear here with their receipts.</p></div> : null}
     {jobError?<p role="alert" className="notice error">Could not load older jobs: {jobError}</p>:null}
     <div className="library-more">
       {attentionCursor!==null?<button className="secondary" disabled={loadingJobs} onClick={()=>void loadOlderAttention()}>{loadingJobs?'Loading…':'Load more current problems'}</button>:null}
@@ -896,9 +907,9 @@ export default function App() {
   const totalStorage = storage ? Object.values(storage).reduce((total, bytes) => total + bytes, 0) : 0;
   const recordCount = snapshot?.counts?.record_count ?? snapshot?.records.length ?? 0;
   // Offline is changed under Privacy & offline; the text and image grants under Case permissions.
-  const aiState: { label: string; tone: 'on' | 'off'; section: SettingsSection } | null = !snapshot ? null : snapshot.settings.offline ? { label: 'AI off for this case', tone: 'off', section: 'Privacy & offline' } : !snapshot.settings.allow_text ? { label: 'AI may not read case text', tone: 'off', section: 'Case permissions' } : { label: snapshot.settings.model ? `AI permitted · ${snapshot.settings.model}` : 'AI permitted', tone: 'on', section: 'Case permissions' };
+  const aiState: { label: string; tone: 'on' | 'off'; section: SettingsSection } | null = !snapshot ? null : snapshot.settings.offline ? { label: 'AI off for this case', tone: 'off', section: 'Privacy & offline' } : !snapshot.settings.allow_text ? { label: 'AI may not read case text', tone: 'off', section: 'Case permissions' } : { label: (snapshot.effective_ai?.model || snapshot.settings.model) ? `AI permitted · ${snapshot.effective_ai?.model || snapshot.settings.model}` : 'AI permitted', tone: 'on', section: 'Case permissions' };
   const sourceCount = snapshot ? snapshot.counts?.source_count ?? snapshot.sources.length : 0;
-  const caseStatus: { state: PillState; label: string } | null = !snapshot ? null : pendingCount ? { state: 'running', label: `${pendingCount} job${pendingCount === 1 ? '' : 's'} in progress` } : needsAttention ? { state: 'needs-attention', label: `${needsAttention} need${needsAttention === 1 ? 's' : ''} attention` } : { state: 'complete', label: 'Processing up to date' };
+  const caseStatus: { state: PillState; label: string } | null = !snapshot ? null : pendingCount ? { state: 'running', label: `${pendingCount} job${pendingCount === 1 ? '' : 's'} in progress` } : needsAttention ? { state: 'needs-attention', label: `${needsAttention} need${needsAttention === 1 ? 's' : ''} attention` } : snapshot.analysis_status && snapshot.analysis_status.state !== 'ready' ? {state: ['blocked','stale'].includes(snapshot.analysis_status.state) ? 'needs-attention' : ['paused','cancelled'].includes(snapshot.analysis_status.state) ? 'paused' : 'running', label: `Case analysis ${snapshot.analysis_status.state}`} : { state: 'complete', label: snapshot.analysis_status?.state === 'ready' ? 'Case analysis ready' : 'Extraction up to date' };
   const otherCases = projects.filter(project => project.id !== snapshot?.id);
   const caseMenuItems: MenuItem[] = [
     ...otherCases.slice(0, 8).map(project => ({ label: project.name || 'Untitled case', icon: <FolderOpen size={16} />, onSelect: () => openRecent(project) }) as MenuItem),

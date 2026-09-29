@@ -50,3 +50,5 @@ pub mod automatic;
 pub mod discovery;
 
 pub mod speaker_annotations;
+
+pub mod intelligence;

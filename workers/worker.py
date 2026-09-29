@@ -31,12 +31,33 @@ def is_appcontainer() -> bool:
         kernel.CloseHandle(token)
 
 def process(job: Path, request: dict) -> dict:
-    source = job / 'input'
+    source = Path(request['source_lease']) if request.get('source_lease') else job / 'input'
     kind = request['kind']
     pages: list[dict] = []
     notes: list[str] = []
     metadata: dict = {}
     previews: list[dict] = []
+    if kind == 'office_image':
+        import zipfile
+        from io import BytesIO
+        from PIL import Image, ImageOps
+        Image.MAX_IMAGE_PIXELS = 60_000_000
+        with zipfile.ZipFile(source) as package:
+            names = sorted(n for n in package.namelist() if n.startswith(('word/media/', 'ppt/media/', 'xl/media/', 'Pictures/')) and not n.endswith('/'))
+            index = request.get('image_index')
+            if not isinstance(index, int) or not 0 <= index < len(names):
+                raise ValueError('Image index is outside the Office package')
+            entry = package.getinfo(names[index])
+            if entry.file_size > 30 * 1024 * 1024:
+                raise ValueError('Office image exceeds bounded decode limit')
+            with Image.open(BytesIO(package.read(entry))) as image:
+                if getattr(image, 'n_frames', 1) > 1:
+                    raise ValueError('Embedded multipage image requires a separate frame path')
+                oriented = ImageOps.exif_transpose(image)
+                oriented.thumbnail((2400, 2400))
+                oriented.convert('RGB').save(job / 'office-image.jpg', quality=92)
+                metadata = {'package_part': names[index], 'image_index': index, 'original_size': list(image.size), 'output_size': list(oriented.size)}
+        return {'version': 1, 'status': 'complete', 'pages': [], 'metadata': metadata, 'limitations': ['Immutable derivative of an embedded Office image; page placement and surrounding layout are not established.'], 'previews': [{'path': 'office-image.jpg', **metadata}]}
     if kind in ('video_ocr', 'video_overview'):
         from video_discovery import discover
         return discover(job, request)
@@ -314,9 +335,15 @@ def process(job: Path, request: dict) -> dict:
             raise ValueError('Password-protected PDF: extraction unavailable')
         if len(reader.pages) > 2000:
             raise ValueError('More than 2,000 PDF pages; split processing is required')
+        metadata['embedded_objects'] = len(reader.attachments)
         for number, page in enumerate(reader.pages, 1):
             text = page.extract_text() or ''
             pages.append({'locator': f'page:{number}', 'text': text, 'method': 'pypdf native text'})
+            for index, annotation in enumerate(page.get('/Annots', [])):
+                annotation = annotation.get_object()
+                content = str(annotation.get('/Contents', ''))
+                if content:
+                    pages.append({'locator': f'page:{number}:annotation:{index}', 'text': content, 'method': 'PDF annotation contents; declared authors are not authenticated'})
             if sum(len(p['text']) for p in pages) > MAX_TEXT:
                 raise ValueError('Extracted text limit reached; no complete extraction published')
         if request.get('operation') == 'automatic':
@@ -334,6 +361,12 @@ def process(job: Path, request: dict) -> dict:
         Image.MAX_IMAGE_PIXELS = 60_000_000
         with Image.open(source) as image:
             metadata = {'format': image.format, 'width': image.width, 'height': image.height, 'frames': getattr(image, 'n_frames', 1), 'exif_raw': {str(k): str(v)[:2048] for k, v in image.getexif().items()}}
+            if request.get('operation') == 'render_image_frame':
+                frame = request.get('frame')
+                if not isinstance(frame, int) or not 0 <= frame < metadata['frames']:
+                    raise ValueError('Image frame is outside the original')
+                image.seek(frame)
+                metadata['frame_index'] = frame
             oriented = ImageOps.exif_transpose(image)
             if request.get('crop'):
                 x, y, width, height = request['crop']
@@ -409,6 +442,12 @@ def process(job: Path, request: dict) -> dict:
         raise ValueError('Unsupported processor kind')
     if sum(len(p['text']) for p in pages) > MAX_TEXT:
         raise ValueError('Extracted text exceeds the allowed limit')
+    if kind in ('docx', 'pptx', 'xlsx', 'odt'):
+        import zipfile
+        with zipfile.ZipFile(source) as package:
+            names = package.namelist()
+            metadata['image_parts'] = sum(n.startswith(('word/media/', 'ppt/media/', 'xl/media/', 'Pictures/')) and not n.endswith('/') for n in names)
+            metadata['chart_parts'] = sum(n.startswith(('word/charts/', 'ppt/charts/', 'xl/charts/')) and n.endswith('.xml') for n in names)
     return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': metadata, 'limitations': notes, 'previews': previews}
 
 def json_safe(value):

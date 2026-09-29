@@ -136,7 +136,7 @@ pub fn next(case:&mut Case)->Result<Option<Job>> {
 }
 pub fn publish(case:&mut Case,job:&Job,result:Result<Value>)->Result<()> {
     match processing::publish_prepared(case,&job.processor,result) {
-        Ok(value)=>{case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![json!({"extraction_locator":value["extraction_locator"],"coverage":value["metadata"]["coverage"],"limitations":value["limitations"],"model_inspected":false}).to_string(),job.queue_id])?;},
+        Ok(value)=>{case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![json!({"extraction_locator":value["extraction_locator"],"coverage":value["metadata"]["coverage"],"metadata":value["metadata"],"limitations":value["limitations"],"model_inspected":false}).to_string(),job.queue_id])?;},
         Err(e)=>{case.db.execute("UPDATE processing_jobs SET status='failed',error=? WHERE id=?",params![e.to_string(),job.queue_id])?;}
     }
     Ok(())
@@ -153,7 +153,7 @@ impl PauseKind {
 }
 pub fn publish_staged(case:&mut Case,job:&Job,result:Result<processing::StagedPublication>)->Result<()> {
     match processing::publish_staged(case,&job.processor,result) {
-        Ok(value)=>{case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![json!({"extraction_locator":value["extraction_locator"],"coverage":value["metadata"]["coverage"],"limitations":value["limitations"],"model_inspected":false}).to_string(),job.queue_id])?;},
+        Ok(value)=>{case.db.execute("UPDATE processing_jobs SET status='complete',result=? WHERE id=?",params![json!({"extraction_locator":value["extraction_locator"],"coverage":value["metadata"]["coverage"],"metadata":value["metadata"],"limitations":value["limitations"],"model_inspected":false}).to_string(),job.queue_id])?;},
         Err(e)=>{case.db.execute("UPDATE processing_jobs SET status='failed',error=? WHERE id=?",params![e.to_string(),job.queue_id])?;}
     }
     Ok(())
@@ -307,6 +307,9 @@ pub fn preempt_for_chat(case:&mut Case)->Result<()> {
 }
 pub fn status(case:&Case)->Result<Value> {
     let counts=case.db.query_row("SELECT count(*),COALESCE(sum(status='complete'),0),COALESCE(sum(status IN ('queued','running')),0),COALESCE(sum(status IN ('failed','interrupted')),0) FROM processing_jobs WHERE kind='auto_prepare'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?)))?;
+    if let Some(analysis)=crate::intelligence::status(case)? {
+        return Ok(json!({"files":counts.0,"prepared":counts.1,"pending":counts.2,"failed":counts.3,"review_task":case.meta("auto_review_task")?,"review_state":match analysis["state"].as_str().unwrap_or("queued") {"ready"=>"complete","blocked"=>"failed",state=>state},"units":analysis,"note":"Extraction and AI analysis have separate progress. Human review is separate."}));
+    }
     let task=case.meta("auto_review_task")?;
     // Derived live state; the persisted auto_review_state mirrors it at transitions.
     let live=match &task {

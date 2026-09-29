@@ -41,3 +41,17 @@ with av.open(str(root / 'variable-timing.mp4'), 'w') as container:
         frame.pts, frame.time_base = timestamp, Fraction(1, 1000)
         for packet in stream.encode(frame): container.mux(packet)
     for packet in stream.encode(): container.mux(packet)
+
+# Analysis coverage fixtures: every physical image and embedded package image.
+image.save(root / 'single-frame.tiff', compression='tiff_deflate')
+image.save(root / 'multipage.tiff', compression='tiff_deflate', save_all=True, append_images=[Image.new('RGB', (900, 600), '#253c34')])
+doc_images = Document(); doc_images.add_paragraph('SYNTHETIC document with an embedded photograph')
+doc_images.add_picture(str(root / 'photograph.png')); doc_images.save(root / 'embedded-image.docx')
+with av.open(str(root / 'dense-timing.mp4'), 'w') as container:
+    stream = container.add_stream('mpeg4', rate=10); stream.width, stream.height = 320, 180; stream.pix_fmt = 'yuv420p'
+    for index in range(30):
+        frame_image = Image.new('RGB', (320, 180), '#253c34')
+        ImageDraw.Draw(frame_image).text((20, 60), f'SYNTHETIC DENSE FRAME {index}', fill='white')
+        frame = av.VideoFrame.from_image(frame_image)
+        for packet in stream.encode(frame): container.mux(packet)
+    for packet in stream.encode(): container.mux(packet)

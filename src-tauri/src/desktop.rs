@@ -477,6 +477,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         }
         state.pending_app_ai.store(!current_case_updated,std::sync::atomic::Ordering::SeqCst);
         drop(guard);
+        if current_case_updated{wake_current_analysis(app);}
         emit_case_changed(app);
         return Ok(json!({"saved":true,"current_case_updated":current_case_updated}));
     }
@@ -496,6 +497,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 let route:crate::ai_access::AccessRoute=serde_json::from_value(args["route"].clone())?;
                 if route == crate::ai_access::AccessRoute::ChatgptSubscription { crate::ai_access::ensure_subscription_enabled()?; }
                 crate::ai_access::write(&directory,route)?;
+                wake_current_analysis(app);
                 return Ok(json!({"route":route}));
             }
             crate::ai_access::ensure_subscription_enabled()?;
@@ -514,6 +516,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 anyhow::ensure!(crate::ai_access::read_settings(&directory)?.subscription.is_some(),"Select a subscription model first");
             }
             crate::ai_access::write(&directory,route)?;
+            wake_current_analysis(app);
             return Ok(json!({"route":route}));
         }
         if action == "save_codex_selection" {
@@ -526,6 +529,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
             let mut settings=crate::ai_access::read_settings(&directory)?;
             settings.subscription=Some(crate::ai_access::SubscriptionSelection{model:model.into(),effort:effort.into()});
             crate::ai_access::write_settings(&directory,settings)?;
+            wake_current_analysis(app);
             return Ok(Value::Null);
         }
         return match action {
@@ -584,14 +588,14 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         let (case_id,epoch,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before transcription resume");require_session_epoch(&state,&args)?;(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::transcription::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::transcription::run(&job).and_then(|value|crate::transcription::stage_transcript(&job,value));
         let value=with_case_expected(app,&case_id,Some(epoch),|case|match staged {Ok(v)=>crate::transcription::publish_staged_transcript(case,&job,v),Err(e)=>{crate::transcription::fail(case,&job,&e.to_string())?;Err(e)}});
-        if value.is_ok(){kick_semantic(app.clone(),case_id.clone());}
+        if value.is_ok(){kick_semantic(app.clone(),case_id.clone());kick_automatic(app.clone(),case_id.clone());}
         emit_case_changed(&app);return value;
     }
     if action=="resume_processing" {
         let (case_id,epoch,job)={let state=app.state::<AppState>();let mut guard=state.case.lock().unwrap_or_else(|e|e.into_inner());let case=guard.as_mut().context("Open a case first")?;ensure_session_epoch(&state,&args)?;anyhow::ensure!(case.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before processing resume");require_session_epoch(&state,&args)?;(case.meta("id")?.unwrap_or_default(),state.session_epoch.load(std::sync::atomic::Ordering::SeqCst),crate::processing::resume(case,text(&args,"job_id")?)?)};
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
         let result=with_case_expected(app,&case_id,Some(epoch),|case|crate::processing::publish_staged(case,&job,staged));
-        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
+        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());kick_automatic(app.clone(),case_id.clone());}
         emit_case_changed(&app);return result;
     }
     if ["save_provider_key","provider_key_status","delete_provider_key"].contains(&action) {
@@ -606,11 +610,14 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         provider_key_case_fence(open_case.as_deref(),&args)?;
         if open_case.is_some() {require_session_epoch(&state,&args)?;}
         let entry=provider_key_entry(provider)?;
-        return match action {
+        let result=match action {
             "save_provider_key"=>{let key=text(&args,"key")?;anyhow::ensure!(!key.trim().is_empty(),"Enter a key");entry.set_password(key.trim())?;Ok(json!({"saved":true}))},
             "delete_provider_key"=>{entry.delete_credential()?;Ok(json!({"deleted":true}))},
             _=>anyhow::bail!("Unknown provider key action")
         };
+        drop(guard);
+        if result.is_ok() && action=="save_provider_key"{wake_current_analysis(app);}
+        return result;
     }
     if ["import_files","import_folder"].contains(&action) {return import_background(app,action,args);}
     if action=="prepare_second_opinion" {
@@ -659,7 +666,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         emit_case_changed(&app);
         let staged=crate::processing::stage_prepared(&job,crate::processing::run_prepared(&job));
         let result=with_case_expected(app,&case_id,Some(epoch),|case|crate::processing::publish_staged(case,&job,staged));
-        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());}
+        if result.is_ok() {let _=crate::processing::cleanup_published_input(&job);kick_semantic(app.clone(),case_id.clone());kick_automatic(app.clone(),case_id.clone());}
         emit_case_changed(&app);
         return result;
     }
@@ -882,7 +889,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         crate::automatic::enqueue(&mut c)?;
         let case_id=c.meta("id")?.unwrap_or_default();
-        let snapshot = c.snapshot()?;
+        let snapshot = effective_snapshot(&c,app)?;
 
         let old_root=guard.as_ref().map(|case|case.root.clone());
         *guard = Some(c);
@@ -919,7 +926,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
                 sync_inherited_ai(app,c)?;
                 state.pending_app_ai.store(false,std::sync::atomic::Ordering::SeqCst);
             }
-            stamp_session(c.snapshot()?,&state)
+            stamp_session(effective_snapshot(c,app)?,&state)
         },
         "case_summary" => {
             anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before summary");
@@ -996,6 +1003,19 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
         )?,
 
+        "analysis_status" => { anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before analysis status"); require_session_epoch(&state,&args)?; serde_json::to_value(crate::intelligence::status(c)?)? },
+        "control_analysis" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before analysis control");
+            require_session_epoch(&state,&args)?;
+            let result=crate::intelligence::control(c,text(&args,"operation")?)?;
+            result
+        },
+        "query_case_knowledge" => {
+            anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before knowledge query");
+            require_session_epoch(&state,&args)?;
+            let (scope,_)=agent::case_scope(c)?;
+            crate::intelligence::query_knowledge(c,&scope,args["query"].as_str().unwrap_or(""),args["offset"].as_u64().unwrap_or(0))?
+        },
         "read_text" => c.read_text(
 
             text(&args, "source_id")?,
@@ -1526,14 +1546,14 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
 
     };
 
-    if ["import_files","import_folder","save_ai_settings"].contains(&action) {
+    if ["import_files","import_folder","save_ai_settings","save_settings","set_restricted","control_analysis","set_case_ai_access_route","save_case_codex_selection","evidence_write","propose_transcript_correction","review_transcript_correction"].contains(&action) {
         crate::automatic::enqueue(c)?;
         let case_id=c.meta("id")?.unwrap_or_default();
         kick_automatic(app.clone(),case_id.clone());kick_transcriptions(app.clone(),case_id);
     }
     if ![
 
-        "snapshot",
+        "snapshot", "analysis_status", "query_case_knowledge",
         "ai_config", "direct_media_permission", "research_grant", "investigation_workbench", "coverage_map", "incident_replay", "processing_recovery", "team_status", "read_dossier", "read_coverage", "evidence_list", "evidence_read", "evidence_search", "fit_clock",
 
         "full_transcription_status",
@@ -1667,9 +1687,7 @@ async fn cancelled(app: &tauri::AppHandle, case_id: &str, epoch:u64, task: &str)
 
                 c.db.query_row("SELECT status FROM tasks WHERE id=?", [task], |r| r.get(0))?;
 
-            let s = c.settings()?;
-
-            Ok(status == "running" && crate::teams::active(c,task)? && !s.offline && s.allow_text)
+            Ok(status == "running" && crate::teams::active(c,task)? && agent::task_authorized(c,task)?)
 
         })
 
@@ -1746,6 +1764,7 @@ async fn run_agent(app: tauri::AppHandle, case_id: String, epoch:u64, task: Stri
     if state.session_epoch.load(std::sync::atomic::Ordering::SeqCst)==epoch {kick_automatic(app,case_id);}
 }
 async fn run_team_phase(app:&tauri::AppHandle,case_id:&str,epoch:u64,parent:&str,phase:&str)->anyhow::Result<()> {
+    if with_case_expected(app,case_id,Some(epoch),|c|Ok(c.meta(&format!("internal_analysis:{parent}"))?.as_deref()==Some("true")))?{return Ok(());}
     let children=with_case_expected(app,case_id,Some(epoch),|c|crate::teams::prepare(c,parent,phase))?;
     let mut runs=tokio::task::JoinSet::new();
     for child in children {
@@ -1866,15 +1885,25 @@ fn case_subscription_selection(case:&Case,app:&tauri::AppHandle)->anyhow::Result
     Ok(crate::ai_access::read_settings(&ai_access_dir(app)?)?.subscription)
 }
 
+fn effective_snapshot(case:&Case,app:&tauri::AppHandle)->anyhow::Result<Value>{
+    let mut snapshot=case.snapshot()?;
+    let route=case_access_route(case,app)?;
+    snapshot["effective_ai"]=if route==crate::ai_access::AccessRoute::ChatgptSubscription {
+        let selection=case_subscription_selection(case,app)?;
+        json!({"route":route,"model":selection.as_ref().map(|s|s.model.clone()),"effort":selection.as_ref().map(|s|s.effort.clone())})
+    }else{json!({"route":route,"model":case.settings()?.model,"effort":"high"})};
+    Ok(snapshot)
+}
+
+fn wake_current_analysis(app:&tauri::AppHandle) {
+    let case_id={let state=app.state::<AppState>();let guard=state.case.lock().unwrap_or_else(|e|e.into_inner());guard.as_ref().and_then(|c|c.meta("id").ok().flatten())};
+    if let Some(case_id)=case_id{kick_automatic(app.clone(),case_id);}
+}
+
 fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<Option<String>> {
     let route=case_access_route(case,app)?;
     let subscription=route==crate::ai_access::AccessRoute::ChatgptSubscription;
     let previous_task=case.meta("auto_review_task")?;
-    if let Some(previous)=&previous_task {
-        let paused=case.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[previous],|r|r.get(0)).ok().as_deref()==Some("paused");
-        let prior_subscription=case.meta(&format!("task_access_route:{previous}"))?.as_deref()==Some("chatgpt_subscription");
-        if paused && prior_subscription!=subscription {return Ok(None);}
-    }
     if subscription {
         // Disabled route: automatic review waits rather than switching vendor.
         if !crate::ai_access::SUBSCRIPTION_ROUTE_ENABLED {return Ok(None);}
@@ -1883,8 +1912,14 @@ fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<
         let provider=crate::providers::load(case)?.provider;
         if provider_key_for_case(provider).is_err() {return Ok(None);}
     }
-    let task=crate::automatic::start_review_with_access(case,subscription)?;
+    let model_manifest=if subscription {
+        format!("chatgpt_subscription:{}",serde_json::to_string(&case_subscription_selection(case,app)?)?)
+    } else {
+        format!("api_keys:{}:{}",serde_json::to_string(&crate::providers::load(case)?)?,case.settings()?.model)
+    };
+    let task=crate::intelligence::next_task(case,subscription,&model_manifest)?;
     if let Some(task)=&task {
+        if subscription && case.meta(&format!("task_subscription_selection:{task}"))?.is_none(){case.set_meta(&format!("task_subscription_selection:{task}"),&serde_json::to_string(&case_subscription_selection(case,app)?.context("Missing subscription selection")?)?)?;}
         if case.meta(&format!("task_access_route:{task}"))?.is_none() {
             let new_task=previous_task.as_deref()!=Some(task);
             case.set_meta(&format!("task_access_route:{task}"),if subscription && new_task {"chatgpt_subscription"} else {"api_keys"})?;
@@ -1901,7 +1936,12 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
         emit_case_changed(app);
         return Ok(());
     }
-    let selection=with_case_expected(app,case_id,Some(epoch),|c|case_subscription_selection(c,app))?.context("Select a ChatGPT subscription model")?;
+    let selection=with_case_expected(app,case_id,Some(epoch),|c|{
+        let key=format!("task_subscription_selection:{task}");
+        if let Some(raw)=c.meta(&key)?{return Ok(serde_json::from_str::<crate::ai_access::SubscriptionSelection>(&raw)?);}
+        let selection=case_subscription_selection(c,app)?.context("Select a ChatGPT subscription model")?;
+        c.set_meta(&key,&serde_json::to_string(&selection)?)?;Ok(selection)
+    })?;
     let runtime=std::env::current_exe()?.parent().context("Executable directory missing")?.join("resources/codex");
     anyhow::ensure!(crate::codex_account::available(&runtime),"Verified Codex sidecar is unavailable");
     let status=crate::codex_account::status(&runtime)?;
@@ -1945,8 +1985,8 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
                 *worker_activity.lock().unwrap_or_else(|e|e.into_inner())=std::time::Instant::now();
                 let _=handle.emit("agent-progress",json!({"case_id":cid,"session_epoch":epoch,"task_id":tid,"transmission_id":stream_id,"delta":{"text":delta}}));
             },
-            || worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) || with_case_expected(&handle,&cid,Some(epoch),|c|Ok(c.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[&tid],|r|r.get(0))?))
-                .map(|status| status=="paused" || status=="cancelled").unwrap_or(true),
+            || worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) || with_case_expected(&handle,&cid,Some(epoch),|c|{let status=c.db.query_row::<String,_,_>("SELECT status FROM tasks WHERE id=?",[&tid],|r|r.get(0))?;Ok(status=="paused" || status=="cancelled" || !agent::task_authorized(c,&tid)?)})
+                .unwrap_or(true),
         )
     });
     let mut check=tokio::time::interval(std::time::Duration::from_secs(10));
@@ -1993,7 +2033,8 @@ async fn run_subscription_session(app:&tauri::AppHandle,case_id:&str,epoch:u64,t
         // particular, it must not turn an uninspected case into a completed
         // task just because the model says its tools were unavailable.
         let _ = result;
-        anyhow::bail!("ChatGPT subscription ended without calling VisLex finish_task. Case inspection and support review were not completed; retry after the case tools are available.");
+        let internal=with_case_expected(app,case_id,Some(epoch),|c|Ok(c.meta(&format!("internal_analysis:{task}"))?.as_deref()==Some("true")))?;
+        anyhow::bail!("ChatGPT subscription ended without calling VisLex {}. Case inspection and support review were not completed.",if internal{"finish_analysis_unit"}else{"finish_task"});
     }
     emit_case_changed(app);
     Ok(())
@@ -2479,7 +2520,7 @@ fn run_discovery_lane(app:&tauri::AppHandle,case_id:&str,epoch:u64) {
 }
 fn kick_automatic(app:tauri::AppHandle,case_id:String) {
     #[cfg(debug_assertions)]
-    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {return;}
+    if std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") && (std::env::var("VISLEX_TEST_ANALYSIS_AUTORUN").as_deref()!=Ok("1") || crate::providers::synthetic_provider_url().ok().flatten().is_none()) {return;}
     let epoch=app.state::<AppState>().session_epoch.load(std::sync::atomic::Ordering::SeqCst);
     kick_semantic(app.clone(),case_id.clone());
     kick_discovery(app.clone(),case_id.clone());

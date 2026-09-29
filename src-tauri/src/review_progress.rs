@@ -29,7 +29,7 @@ pub fn is_retrieval(name: &str) -> bool {
 pub fn observe(case: &Case, task: &str, name: &str, args: &Value, output: &Value, status: &str) -> Result<bool> {
     if (name == "checkpoint_review" || name == "finish_task") && status=="complete" { return Ok(false); }
     let mut progress = load(case,task)?;
-    let same: bool = case.db.query_row("SELECT EXISTS(SELECT 1 FROM actions WHERE task_id=? AND name=? AND (input=? OR ?=1) AND output=? AND status=?)",params![task,name,args.to_string(),is_retrieval(name),output.to_string(),status],|r|r.get(0))?;
+    let same: bool = case.db.query_row("SELECT EXISTS(SELECT 1 FROM actions WHERE task_id=? AND name=? AND (input=? OR ?=1) AND (CASE WHEN json_valid(output) THEN json_remove(output,'$.receipt_id','$.repeat_notice') ELSE output END)=json_remove(?,'$.receipt_id','$.repeat_notice') AND status=?)",params![task,name,args.to_string(),is_retrieval(name),output.to_string(),status],|r|r.get(0))?;
     let duplicate = same && (is_retrieval(name) || status == "failed");
     if duplicate { progress.duplicate_reads += 1; }
     else if status == "complete" && !["list_sources","list_records","recording_status","open_source","validate_citation"].contains(&name) {

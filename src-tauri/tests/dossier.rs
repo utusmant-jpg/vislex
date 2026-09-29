@@ -42,7 +42,7 @@ fn candidate(source: &str) -> Value {
 /// A structured final candidate: factual block bound to the assessed claim.
 fn structured_candidate(source: &str) -> Value {
     json!({
-        "answer":"[Attributed statement] The witness reports three knocks.",
+        "answer":"The witness reports three knocks.",
         "citations":[format!("evidence:{source}#L1-L1")],
         "gaps":[],
         "blocks":[{"id":"b1","kind":"attributed_statement","text":"The witness reports three knocks.","claims":["claim-knocks"]}]
@@ -51,7 +51,7 @@ fn structured_candidate(source: &str) -> Value {
 fn structured_review(source: &str, revision: u64, text: &str) -> Value {
     json!({
         "revision":revision,
-        "candidate":{"answer":format!("[Attributed statement] {text}"),"citations":[format!("evidence:{source}#L1-L1")],"gaps":[],
+        "candidate":{"answer":text,"citations":[format!("evidence:{source}#L1-L1")],"gaps":[],
             "blocks":[{"id":"b1","kind":"attributed_statement","text":text,"claims":["claim-knocks"]}]},
         "assessments":[{"claim_index":0,"state":"supported","reason":"The cited first line attributes the statement to the witness."}],
         "block_reviews":[{"block_id":"b1","state":"supported","reason":"This exact wording restates the assessed claim per the cited line."}]
@@ -532,7 +532,7 @@ fn paraphrased_factual_blocks_certify_through_structured_review() {
     dossier::save(&mut c,&t,&plan(&s)).unwrap();
     let paraphrase="Per the account given, three knocking sounds were reported by the witness.";
     let a=json!({
-        "answer":format!("[Attributed statement] {paraphrase}"),
+        "answer":paraphrase,
         "citations":[format!("evidence:{s}#L1-L1")],
         "gaps":[],
         "blocks":[{"id":"b1","kind":"attributed_statement","text":paraphrase,"claims":["claim-knocks"]}]
@@ -574,7 +574,7 @@ fn edited_wording_never_inherits_the_bound_review() {
         "The witness reports three knocks at 14.5 seconds.",
     ] {
         let edited=json!({
-            "answer":format!("[Attributed statement] {altered}"),
+            "answer":altered,
             "citations":[format!("evidence:{s}#L1-L1")],
             "gaps":[],
             "blocks":[{"id":"b1","kind":"attributed_statement","text":altered,"claims":["claim-knocks"]}]
@@ -602,7 +602,7 @@ fn unsupported_factual_blocks_block_certification() {
     p["claims"].as_array_mut().unwrap().push(json!({"id":"claim-sedan","proposition":"A red sedan was parked outside.","assessment":"supported_within_scope","supporting":[format!("evidence:{s}#L1-L1")],"contrary":[],"uncertainty":"None noted.","next_check":"Check again."}));
     dossier::save(&mut c,&t,&p).unwrap();
     let a=json!({
-        "answer":"[Attributed statement] The witness reports three knocks.\n\n[Observation] A red sedan was parked outside.",
+        "answer":"The witness reports three knocks.\n\nA red sedan was parked outside.",
         "citations":[format!("evidence:{s}#L1-L1")],
         "gaps":[],
         "blocks":[
@@ -687,7 +687,7 @@ fn legacy_claimless_id_dossiers_stay_readable_but_unaddressable() {
     c.set_meta(&format!("dossier:{t}"),&legacy.to_string()).unwrap();
     assert!(dossier::load(&c,&t).unwrap().is_some(), "legacy dossier remains readable");
     let a=json!({
-        "answer":"[Attributed statement] The witness reports three knocks.",
+        "answer":"The witness reports three knocks.",
         "citations":[format!("evidence:{s}#L1-L1")],
         "gaps":[],
         "blocks":[{"id":"b1","kind":"attributed_statement","text":"The witness reports three knocks.","claims":[""]}]

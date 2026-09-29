@@ -58,6 +58,8 @@ describe('summarizeAction', () => {
   it('reports what finish_task returned, never more', () => {
     expect(summarizeAction(action('finish_task', { answer: 'x', citations: ['a', 'b'] }, { status: 'review_required' })).verb).toBe('Sent the answer for review');
     expect(summarizeAction(action('finish_task', { answer: 'x' }, { status: 'complete', citation_count: 3 })).result).toBe('3 citations');
+    expect(summarizeAction(action('publish_saved_candidate', { candidate_id: 'c1' }, { status: 'complete', citation_count: 2 }))).toMatchObject({ kind: 'finish', verb: 'Prepared the answer', result: '2 citations' });
+    expect(liveLabel('publish_saved_candidate')).toBe('Preparing the answer');
   });
 });
 
@@ -229,4 +231,9 @@ describe('research step actions', () => {
     const summary = summarizeAction({ id: 'a1', name: 'research_act', input: JSON.stringify({ action: 'type', ref: 'e4', snapshot_version: 2, text: 'click-wrap enforceability', key: null }), output: '{}', status: 'complete', created_at: '2026-09-28T00:00:00Z' } as never);
     expect(`${summary.verb} ${summary.object}`).toBe('Searched: click-wrap enforceability');
   });
+});
+
+it('counts distinct original sources rather than receipt IDs or working notes', () => {
+  const steps=[summarizeAction(action('read_record',{}, {title:'Derived note'})),summarizeAction(action('read_receipt',{},{})),summarizeAction(action('inspect_artifact_image',{source_id:'s1'},{})),summarizeAction(action('inspect_automatic_video_batch',{}, {frames:[{source_id:'s1'},{source_id:'v1'},{source_id:'v1'}]}))];
+  expect(traceRecap(steps)).toBe('consulted 2 sources');
 });
