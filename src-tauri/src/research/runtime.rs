@@ -31,6 +31,18 @@ pub fn active_task() -> Option<String> {
     active().lock().unwrap_or_else(|error| error.into_inner()).as_ref().map(|(task, _)| task.clone())
 }
 
+/// The last task that researched on the pane, with its case: the toolbar Stop pauses it even
+/// between its steps (while its model is thinking).
+fn last() -> &'static Mutex<Option<(String, String)>> {
+    static LAST: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(None))
+}
+
+/// The task researching on the pane for `case_id`: the one holding the page, else the last one.
+pub fn research_task(case_id: &str) -> Option<String> {
+    active_task().or_else(|| last().lock().unwrap_or_else(|error| error.into_inner()).as_ref().filter(|(case, _)| case == case_id).map(|(_, task)| task.clone()))
+}
+
 /// Set when a job was cancelled; the next job first releases any mouse button left pressed.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -71,6 +83,7 @@ pub async fn execute(app: &AppHandle<Wry>, case_id: &str, session_epoch: u64, jo
         state.owner().is_some_and(|owner| owner.case_id == case_id && owner.session_epoch == session_epoch && owner.grant_revision == job.grant_revision),
         "The research browser is open for another case or with other settings; ask the user to reopen it"
     );
+    *last().lock().unwrap_or_else(|error| error.into_inner()) = Some((case_id.to_string(), job.task.clone()));
     let generation = state.generation();
     if !matches!(&*guard, Some((current, _)) if *current == generation) {
         *guard = Some((generation, Session::new(CdpBridge::new(webview))));

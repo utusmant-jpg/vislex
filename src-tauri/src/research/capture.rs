@@ -91,6 +91,12 @@ pub fn publish(case: &mut Case, task: &str, bundle: &Value, args: &Value) -> Res
     ensure!(exact.chars().count() <= MAX_QUOTE_CHARS, "Quote at most {MAX_QUOTE_CHARS} characters; quote a narrower span");
     let raw = bundle["citation_raw"].as_str().map(str::to_string);
     let mismatch = raw.as_ref().map(|raw| citation_mismatch(raw, &claimed, &lines));
+    // With no printed citation found, the claim is confirmed only if the document text prints it.
+    let claimed_in_text = raw.is_none() && {
+        let claims = citations::normalized_all(&claimed);
+        let printed: std::collections::HashSet<String> = citations::normalized_all(&lines.join("\n")).into_iter().collect();
+        !claims.is_empty() && claims.iter().all(|claim| printed.contains(claim))
+    };
 
     let bytes = html.as_bytes();
     let sha = digest(bytes);
@@ -125,7 +131,7 @@ pub fn publish(case: &mut Case, task: &str, bundle: &Value, args: &Value) -> Res
         let content = json!({
             "url": url,
             "title": title,
-            "citation": {"raw": raw, "claimed": claimed, "mismatch": mismatch},
+            "citation": {"raw": raw, "claimed": claimed, "mismatch": mismatch, "claimed_in_text": claimed_in_text},
             "jurisdiction": jurisdiction,
             "relevant_date": relevant_date,
             "retrieved_at": now(),

@@ -553,7 +553,7 @@ fn research_capture_publishes_citable_evidence_without_editorial_content() {
     assert_eq!(authority["locators"], json!([locator]));
     let content: serde_json::Value = serde_json::from_str(authority["content"].as_str().unwrap()).unwrap();
     assert_eq!(content["url"], DOCUMENT_URL);
-    assert_eq!(content["citation"], json!({"raw": "123 F.3d 456", "claimed": "123 F.3d 456", "mismatch": false}));
+    assert_eq!(content["citation"], json!({"raw": "123 F.3d 456", "claimed": "123 F.3d 456", "mismatch": false, "claimed_in_text": false}));
     assert_eq!(content["jurisdiction"], "9th Cir.");
     assert_eq!(content["relevant_date"], "2001-05-01");
     assert_eq!(content["retrieved_by"]["task"], task);
@@ -974,7 +974,7 @@ fn research_steps_carry_a_short_detail_for_the_chat() {
     assert_eq!(activity_detail("research_act", &act("press", json!(null), json!("Enter"))).as_deref(), Some("press Enter"));
     assert_eq!(activity_detail("research_act", &act("scroll_down", json!(null), json!(null))).as_deref(), Some("scroll_down"));
     assert_eq!(activity_detail("research_navigate", &json!({"url": "https://1.next.westlaw.com/Document/I1/View/FullText.html"})).as_deref(), Some("1.next.westlaw.com/Document/I1/View/FullText.html"));
-    assert_eq!(activity_detail("research_read_page", &json!({"offset": 40, "count": 60})).as_deref(), Some("lines 40\u{2013}100"));
+    assert_eq!(activity_detail("research_read_page", &json!({"offset": 40, "count": 60})).as_deref(), Some("lines 40\u{2013}99"), "inclusive, as the saved receipt shows");
     assert_eq!(activity_detail("research_capture", &capture_args(1, 2)).as_deref(), Some("123 F.3d 456"));
     assert_eq!(activity_detail("research_snapshot", &json!({"scope": "main", "find": null, "delta": false, "max_chars": null})).as_deref(), Some("main"));
     assert_eq!(activity_detail("research_status", &json!({})), None);
@@ -992,6 +992,12 @@ fn records_citing_uncaptured_reporter_citations_are_refused_after_research() {
     assert!(!last_action(&case, &task)["output"].to_string().contains("research_capture"));
     // Once the task has used the research browser, an uncaptured reporter citation is refused.
     case.set_meta(&format!("research_grant_revision:{task}"), "1").unwrap();
+    // Only asking for the browser's status does not switch the guard on.
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    evidence_desk::agent::receive(&mut case, &task, &request.transmission, record("Status only")).unwrap();
+    assert!(!last_action(&case, &task)["output"].to_string().contains("research_capture"));
+    // Once the task has browsed, an uncaptured reporter citation is refused.
+    case.set_meta(&format!("research_usage:{task}"), r#"{"navigations":1}"#).unwrap();
     let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
     evidence_desk::agent::receive(&mut case, &task, &request.transmission, record("After research")).unwrap();
     let output = last_action(&case, &task)["output"].to_string();

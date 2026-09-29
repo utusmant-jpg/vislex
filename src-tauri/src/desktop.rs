@@ -277,10 +277,21 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
                     anyhow::ensure!(args["case_id"].as_str().is_none_or(|case_id| case_id == owner.case_id), "The research browser is open for another case");
                     anyhow::ensure!(args["session_epoch"].as_u64().is_none_or(|epoch| epoch == owner.session_epoch), "The research browser is open for another case session");
                 }
-                let task = owner.as_ref().and(crate::research::runtime::active_task());
-                if let (Some(owner), Some(task)) = (&owner, &task) {
-                    with_case_expected(app, &owner.case_id, Some(owner.session_epoch), |case| agent::pause(case, task, "Stopped by user"))?;
-                    emit_case_changed(app);
+                // The task researching on the pane: holding the page now, or between its steps.
+                let candidate = owner.as_ref().and_then(|owner| crate::research::runtime::research_task(&owner.case_id));
+                let mut task = None;
+                if let (Some(owner), Some(candidate)) = (&owner, candidate) {
+                    let paused = with_case_expected(app, &owner.case_id, Some(owner.session_epoch), |case| {
+                        let running = case.db.query_row("SELECT status FROM tasks WHERE id=?", [&candidate], |row| row.get::<_, String>(0)).map(|status| status == "running").unwrap_or(false);
+                        if running {
+                            agent::pause(case, &candidate, "Stopped by user")?;
+                        }
+                        Ok(running)
+                    })?;
+                    if paused {
+                        emit_case_changed(app);
+                        task = Some(candidate);
+                    }
                 }
                 if let Some(webview) = pane::webview(app) {
                     let _ = crate::research::cdp::CdpBridge::new(webview).call("Page.stopLoading", json!({}), std::time::Duration::from_secs(5)).await;
@@ -330,6 +341,10 @@ async fn research_revoked(app: &tauri::AppHandle, case_id: &str, epoch: u64, tas
 #[cfg(all(feature = "research", windows))]
 async fn run_research_job(app: &tauri::AppHandle, case_id: &str, epoch: u64, task: &str, stream: &str, job: &crate::research::tools::Job, interrupted: Option<&std::sync::atomic::AtomicBool>) -> anyhow::Result<()> {
     let mut delta = json!({"activity": job.name});
+    // The kind of page action travels apart from its detail, so a typed query is never read as an action.
+    if job.name == "research_act" {
+        delta["action"] = job.args["action"].clone();
+    }
     if let Some(detail) = crate::research::tools::activity_detail(&job.name, &job.args) {
         delta["detail"] = json!(detail);
     }
@@ -2012,7 +2027,12 @@ fn run_subscription_tool(app:&tauri::AppHandle,case_id:&str,epoch:u64,task:&str,
             crate::research::tools::prepare_research(c,task,&call.transmission,&call.response)
         });
         if let Ok(Some(job))=research {
-            tauri::async_runtime::block_on(run_research_job(app,case_id,epoch,task,stream,&job,Some(interrupted)))?;
+            if let Err(error)=tauri::async_runtime::block_on(run_research_job(app,case_id,epoch,task,stream,&job,Some(interrupted))) {
+                // The call's transmission is not left pending for resume to trip over.
+                let _=with_case_expected(app,case_id,Some(epoch),|c|{c.db.execute("UPDATE transmissions SET status='uncertain' WHERE id=? AND status='pending'",[&call.transmission])?;Ok(())});
+                active_jobs.lock().unwrap_or_else(|e|e.into_inner()).clear();
+                return Err(error);
+            }
         }
     }
     #[cfg(not(all(feature = "research", windows)))]

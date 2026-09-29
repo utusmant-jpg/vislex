@@ -24,6 +24,7 @@ fn start(case: &mut Case, source: &str, research_used: bool) -> String {
         // What the first research tool call records: the grant revision the task uses.
         let revision = research::grant(case).unwrap().unwrap().revision;
         case.set_meta(&format!("research_grant_revision:{task}"), &revision.to_string()).unwrap();
+        case.set_meta(&format!("research_usage:{task}"), r#"{"navigations":1}"#).unwrap();
     }
     task
 }
@@ -120,5 +121,40 @@ fn another_tasks_capture_outside_scope_is_flagged() {
     // A later task whose scope includes the captured source may cite it.
     let later = evidence_desk::agent::start(&mut case, "Review the authority", "investigate", vec![source, captured_source], vec![], 0.).unwrap();
     case.set_meta(&format!("research_grant_revision:{later}"), "1").unwrap();
+    case.set_meta(&format!("research_usage:{later}"), r#"{"captures":1}"#).unwrap();
     citations::guard(&case, &later, &["123 F.3d 456"], &[]).unwrap();
+}
+
+#[test]
+fn a_capture_without_a_printed_citation_confirms_only_claims_its_text_prints() {
+    let (_dir, mut case, source) = setup();
+    research::set_grant(&mut case, true, &[]).unwrap();
+    let task = start(&mut case, &source, true);
+    // The page prints no reporter citation; the agent claims one the text never shows.
+    let output = capture(&mut case, &task, "Slip opinion No. 21-1234", "999 F.3d 1");
+    assert!(output["citation_raw"].is_null(), "{output}");
+    let error = citations::guard(&case, &task, &["See 999 F.3d 1."], &[]).unwrap_err().to_string();
+    assert!(error.contains("999 F.3d 1"), "{error}");
+}
+
+#[test]
+fn records_keep_citations_they_already_had_and_case_sources_vouch_for_their_own() {
+    let (dir, mut case, source) = setup();
+    research::set_grant(&mut case, true, &[]).unwrap();
+    // A brief imported into the case cites a precedent.
+    let brief = dir.path().join("brief.txt");
+    std::fs::write(&brief, "Plaintiff relies on Roe v. Wade, 410 U.S. 113 (1973).\n").unwrap();
+    case.import_files(&[brief.to_string_lossy().into()], "Synthetic").unwrap();
+    let brief_id = case.sources().unwrap().into_iter().find(|s| s.name.contains("brief")).unwrap().id;
+    let task = evidence_desk::agent::start(&mut case, "Research", "investigate", vec![source, brief_id], vec![], 0.).unwrap();
+    case.set_meta(&format!("research_usage:{task}"), r#"{"navigations":1}"#).unwrap();
+    citations::guard_revision(&case, &task, &["The brief cites 410 U.S. 113."], &[]).unwrap();
+    // A citation already in the revision being updated is kept; a new uncaptured one is not.
+    citations::guard_revision(&case, &task, &["Memo: 555 U.S. 1 and more."], &["Memo: 555 U.S. 1."]).unwrap();
+    let error = citations::guard_revision(&case, &task, &["Memo: 556 U.S. 2."], &["Memo: 555 U.S. 1."]).unwrap_err().to_string();
+    assert!(error.contains("556 U.S. 2") && error.contains("leave them out"), "{error}");
+    // A gap naming a different citation does not cover this one.
+    assert!(citations::guard(&case, &task, &["See 410 U.S. 1130."], &["410 U.S. 113 is unverified."]).is_err());
+    // Record citations are not reporters.
+    assert!(citations::normalized_all("See 2 R. 45 and 1 App. 12.").is_empty());
 }

@@ -161,7 +161,7 @@ pub fn activity_detail(name: &str, args: &Value) -> Option<String> {
         }
         "research_read_page" => {
             let (offset, count) = (args["offset"].as_u64()?, args["count"].as_u64()?);
-            format!("lines {offset}\u{2013}{}", offset.saturating_add(count))
+            format!("lines {offset}\u{2013}{}", offset.saturating_add(count.max(1) - 1))
         }
         "research_capture" => text("citation_text")?,
         "research_snapshot" => text("scope")?,

@@ -118,7 +118,10 @@ fn table() -> &'static Table {
         for edition in data.editions.keys() {
             canonical.insert(key(edition), edition.clone());
         }
-        let all: Vec<&String> = data.editions.keys().chain(data.variations.keys()).filter(|a| searchable(a)).collect();
+        // A short one-word variation ("R.", "App.") names too many things (record cites, other
+        // courts) to stand for a reporter; editions themselves are always searched.
+        let distinctive_variation = |a: &&String| a.contains(char::is_whitespace) || a.chars().any(|c| c.is_ascii_digit()) || a.chars().filter(|c| c.is_alphabetic()).count() > 4;
+        let all: Vec<&String> = data.editions.keys().chain(data.variations.keys().filter(distinctive_variation)).filter(|a| searchable(a)).collect();
         let neutral: Vec<&String> = all
             .iter()
             .copied()
@@ -191,10 +194,6 @@ pub fn normalized_all(text: &str) -> Vec<String> {
     extract(text).iter().map(normalized).collect()
 }
 
-fn squashed(text: &str) -> String {
-    text.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).map(|c| if c == '\u{2019}' { '\'' } else { c }).collect()
-}
-
 /// Sources the task may cite: its scope plus the sources its own captures created.
 fn task_sources(case: &Case, task: &str) -> Result<HashSet<String>> {
     let scope: String = case.db.query_row("SELECT scope FROM tasks WHERE id=?", [task], |row| row.get(0))?;
@@ -226,7 +225,9 @@ fn captured(case: &Case, task: &str) -> Result<HashSet<String>> {
         if let Some(raw) = citation["raw"].as_str() {
             citations.extend(normalized_all(raw));
         }
-        if citation["mismatch"] != Value::Bool(true) {
+        // The agent's claimed citation counts when the document confirmed it: it matched the
+        // printed citation, or (with no printed citation found) it appears in the document text.
+        if citation["mismatch"] == Value::Bool(false) || citation["claimed_in_text"] == Value::Bool(true) {
             if let Some(claimed) = citation["claimed"].as_str() {
                 citations.extend(normalized_all(claimed));
             }
@@ -238,37 +239,96 @@ fn captured(case: &Case, task: &str) -> Result<HashSet<String>> {
 /// Reporter citations in `texts` that are neither a research authority captured in the task's
 /// scope nor mentioned in `gaps`, normalized and de-duplicated, in order of appearance.
 pub fn uncaptured(case: &Case, task: &str, texts: &[&str], gaps: &[&str]) -> Result<Vec<String>> {
+    uncaptured_since(case, task, texts, &[], gaps)
+}
+
+/// As `uncaptured`, ignoring citations already present in `prior` (the revision being updated)
+/// and citations printed in the task's own non-research sources (the case's briefs and filings
+/// are evidence of what they cite; research captures are not evidence of what *they* cite).
+pub fn uncaptured_since(case: &Case, task: &str, texts: &[&str], prior: &[&str], gaps: &[&str]) -> Result<Vec<String>> {
     let cited: Vec<Citation> = texts.iter().flat_map(|text| extract(text)).collect();
     if cited.is_empty() {
         return Ok(Vec::new());
     }
     let captured = captured(case, task)?;
-    let declared: HashSet<String> = gaps.iter().flat_map(|gap| normalized_all(gap)).collect();
-    let gap_text: Vec<String> = gaps.iter().map(|gap| squashed(gap)).collect();
+    let known: HashSet<String> = gaps.iter().chain(prior).flat_map(|text| normalized_all(text)).collect();
     let mut seen = HashSet::new();
     let mut missing = Vec::new();
     for citation in cited {
         let normal = normalized(&citation);
-        let in_gaps = declared.contains(&normal) || gap_text.iter().any(|gap| gap.contains(&squashed(&citation.raw)) || gap.contains(&squashed(&normal)));
-        if !captured.contains(&normal) && !in_gaps && seen.insert(normal.clone()) {
+        if !captured.contains(&normal) && !known.contains(&normal) && seen.insert(normal.clone()) {
             missing.push(normal);
         }
+    }
+    if !missing.is_empty() {
+        let printed = in_case_sources(case, task, &missing)?;
+        missing.retain(|citation| !printed.contains(citation));
     }
     Ok(missing)
 }
 
-/// Refuses text that cites reporter citations the task did not capture, when the task has used
-/// the research browser (its grant revision is pinned). Tasks without research are unaffected.
+/// Sources created by research captures (anywhere in the case).
+fn research_sources(case: &Case) -> Result<HashSet<String>> {
+    let mut statement = case.db.prepare("SELECT v.content,v.source_ids FROM evidence_versions v JOIN evidence_objects o ON o.id=v.object_id WHERE o.kind='authority' AND v.actor=?")?;
+    let rows = statement.query_map([super::capture::ACTOR], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut sources = HashSet::new();
+    for row in rows {
+        let (content, source_ids) = row?;
+        sources.extend(serde_json::from_str::<Vec<String>>(&source_ids).unwrap_or_default());
+        let content: Value = serde_json::from_str(&content).unwrap_or(Value::Null);
+        sources.extend(content["original_source_id"].as_str().map(str::to_string));
+    }
+    Ok(sources)
+}
+
+/// Which of `wanted` are printed in the active text of the task's non-research sources.
+fn in_case_sources(case: &Case, task: &str, wanted: &[String]) -> Result<HashSet<String>> {
+    use rusqlite::OptionalExtension;
+    let research = research_sources(case)?;
+    let mut found = HashSet::new();
+    for source in task_sources(case, task)?.difference(&research) {
+        let text: Option<String> = case.db.query_row("SELECT text FROM extracts WHERE source_id=?", [source], |row| row.get(0)).optional()?;
+        let Some(text) = text else { continue };
+        found.extend(normalized_all(&text).into_iter().filter(|citation| wanted.contains(citation)));
+        if found.len() == wanted.len() {
+            break;
+        }
+    }
+    Ok(found)
+}
+
+/// Whether the task has actually browsed with the research browser (opened a page, acted,
+/// searched or captured), not merely asked for its status.
+fn browsed(case: &Case, task: &str) -> Result<bool> {
+    let Some(raw) = case.meta(&format!("research_usage:{task}"))? else { return Ok(false) };
+    let usage: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    Ok(["navigations", "actions", "queries", "captures"].iter().any(|field| usage[*field].as_u64().unwrap_or(0) > 0))
+}
+
+/// Refuses a final answer that cites reporter citations the task did not capture, when the task
+/// has browsed with the research browser. Tasks without research are unaffected. Citations the
+/// answer lists in its gaps are allowed.
 pub fn guard(case: &Case, task: &str, texts: &[&str], gaps: &[&str]) -> Result<()> {
-    if case.meta(&format!("research_grant_revision:{task}"))?.is_none() {
+    check(case, task, texts, &[], gaps, true)
+}
+
+/// The guard for records and work products, which have no gaps: citations already in the
+/// revision being updated (`prior`) are allowed.
+pub fn guard_revision(case: &Case, task: &str, texts: &[&str], prior: &[&str]) -> Result<()> {
+    check(case, task, texts, prior, &[], false)
+}
+
+fn check(case: &Case, task: &str, texts: &[&str], prior: &[&str], gaps: &[&str], has_gaps: bool) -> Result<()> {
+    if !browsed(case, task)? {
         return Ok(());
     }
-    let missing = uncaptured(case, task, texts, gaps)?;
+    let missing = uncaptured_since(case, task, texts, prior, gaps)?;
     const SHOWN: usize = 20;
     let more = missing.len().saturating_sub(SHOWN);
     ensure!(
         missing.is_empty(),
-        "Capture these authorities with research_capture before citing them, or list them in gaps: {}{}",
+        "Capture these authorities with research_capture before citing them{}: {}{}",
+        if has_gaps { ", or list them in gaps as not verified" } else { ", or leave them out" },
         missing.iter().take(SHOWN).cloned().collect::<Vec<_>>().join("; "),
         if more > 0 { format!("; and {more} more") } else { String::new() }
     );
