@@ -33,12 +33,14 @@ pub use capture::publish;
 pub const WEBVIEW_LABEL: &str = "research";
 pub const WESTLAW_HOME: &str = "https://1.next.westlaw.com/";
 
-/// Research hosts the agent may navigate to.
+/// The research site the pane opens on and the agent's primary tool.
 pub const RESEARCH_HOSTS: &[&str] = &["1.next.westlaw.com", "next.westlaw.com", "www.westlaw.com"];
-/// Sign-in hosts the user may pass through; the agent never acts on them.
+/// Thomson Reuters sign-in hosts (informational: the pane and the agent may use them).
 pub const SIGN_ON_HOSTS: &[&str] = &["signon.thomsonreuters.com"];
 
-/// Where a navigation starts. The agent is held to a narrower list than the user.
+/// Where a navigation starts. The pane is a general web browser for both; the agent alone is
+/// kept off local and private-network addresses, so a web page cannot steer it at services on
+/// the user's own machine or network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Initiator {
     User,
@@ -50,7 +52,6 @@ pub enum Initiator {
 /// test mode.
 #[derive(Clone, Debug)]
 pub struct NavigationPolicy {
-    sso_hosts: Vec<String>,
     mock_origin: Option<String>,
 }
 
@@ -64,7 +65,7 @@ impl NavigationPolicy {
             // Test mode fails closed: only the loopback mock, never the real service.
             let mock = std::env::var("VISLEX_RESEARCH_MOCK_URL").map_err(|_| anyhow::anyhow!("Test mode opens the research pane only against VISLEX_RESEARCH_MOCK_URL"))?;
             let _ = &arguments;
-            return Ok(Self { sso_hosts: Vec::new(), mock_origin: Some(mock_origin(&mock)?) });
+            return Ok(Self { mock_origin: Some(mock_origin(&mock)?) });
         }
         ensure!(!debugging_port_requested(arguments.as_deref()), "The research browser does not open while a WebView2 debugging switch is configured");
         ensure!(
@@ -76,15 +77,18 @@ impl NavigationPolicy {
         for variable in ["WEBVIEW2_USER_DATA_FOLDER", "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER", "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"] {
             ensure!(std::env::var_os(variable).is_none(), "The research browser does not open while {variable} is set");
         }
-        Ok(Self { sso_hosts, mock_origin: None })
+        // Sign-in hosts no longer need listing: the pane browses the open web.
+        let _ = sso_hosts;
+        Ok(Self { mock_origin: None })
     }
 
     pub fn is_mock(&self) -> bool {
         self.mock_origin.is_some()
     }
 
-    /// Whether a top-level navigation may proceed. Exact hosts only, https only, default port,
-    /// no credentials in the URL. With a mock origin, only that loopback origin is allowed.
+    /// Whether a top-level navigation may proceed: any web (http or https) address, without
+    /// credentials in the URL. The agent may not open local or private-network addresses. With a
+    /// mock origin (debug test mode), only that loopback origin is allowed.
     pub fn allows(&self, url: &str, initiator: Initiator) -> bool {
         let Ok(parsed) = url.parse::<reqwest::Url>() else { return false };
         if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -93,17 +97,30 @@ impl NavigationPolicy {
         if let Some(origin) = &self.mock_origin {
             return parsed.origin().ascii_serialization() == *origin;
         }
-        if parsed.scheme() != "https" || parsed.port().is_some() {
+        if !matches!(parsed.scheme(), "https" | "http") || parsed.host().is_none() {
             return false;
         }
-        let Some(host) = parsed.host_str() else { return false };
-        let host = host.to_ascii_lowercase();
-        if RESEARCH_HOSTS.contains(&host.as_str()) {
-            return true;
-        }
-        initiator == Initiator::User
-            && (SIGN_ON_HOSTS.contains(&host.as_str()) || self.sso_hosts.iter().any(|allowed| allowed.eq_ignore_ascii_case(&host)))
+        initiator == Initiator::User || public_host(&parsed)
     }
+}
+
+/// Whether a URL's host is on the public internet: not loopback, private, link-local or
+/// otherwise local, and not a single-label or local-only name.
+pub fn public_host(url: &reqwest::Url) -> bool {
+    use std::net::IpAddr;
+    let local_ip = |ip: IpAddr| match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast() || v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]) || v4.octets()[0] == 0,
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80
+                || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified())
+        }
+    };
+    let Some(host) = url.host_str() else { return false };
+    if let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
+        return !local_ip(ip);
+    }
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    name.contains('.') && !["localhost", ".localhost", ".local", ".internal", ".lan", ".home.arpa", ".intranet", ".corp"].iter().any(|suffix| if suffix.starts_with('.') { name.ends_with(suffix) } else { name == *suffix })
 }
 
 /// A mock origin is accepted only for plain-http loopback addresses, so test mode can never
@@ -296,47 +313,55 @@ mod tests {
     use super::*;
 
     fn policy() -> NavigationPolicy {
-        NavigationPolicy { sso_hosts: vec!["login.firm.example".into()], mock_origin: None }
+        NavigationPolicy { mock_origin: None }
     }
 
     #[test]
-    fn agent_reaches_only_research_hosts_over_default_https() {
+    fn the_pane_browses_the_open_web() {
         let policy = policy();
-        assert!(policy.allows("https://1.next.westlaw.com/Search/Results.html?query=x", Initiator::Agent));
-        assert!(policy.allows("https://1.NEXT.Westlaw.COM:443/", Initiator::Agent));
         for url in [
-            "https://1.next.westlaw.com./",
-            "https://1.next.westlaw.com%2eevil.example/",
-            "https://1.nеxt.westlaw.com/",
-            "http://1.next.westlaw.com/",
-            "https://1.next.westlaw.com:8443/",
-            "https://1.next.westlaw.com.evil.example/",
-            "https://evil.example/1.next.westlaw.com",
-            "https://user:pass@1.next.westlaw.com/",
-            "https://signon.thomsonreuters.com/",
-            "https://login.firm.example/",
-            "data:text/html,<p>x</p>",
-            "blob:https://1.next.westlaw.com/abc",
-            "javascript:alert(1)",
-            "file:///C:/Windows/win.ini",
-            "not a url",
+            "https://1.next.westlaw.com/Search/Results.html?query=x",
+            "https://www.google.com/search?q=duty+of+care",
+            "https://signon.thomsonreuters.com/?productid=CBT",
+            "https://login.microsoftonline.com/common/oauth2/authorize",
+            "http://www.courts.state.example.us/opinions",
+            "https://www.courtlistener.com:443/",
         ] {
-            assert!(!policy.allows(url, Initiator::Agent), "{url}");
+            assert!(policy.allows(url, Initiator::Agent), "{url}");
+            assert!(policy.allows(url, Initiator::User), "{url}");
         }
     }
 
     #[test]
-    fn user_may_also_pass_sign_on_and_listed_sso_hosts() {
+    fn the_agent_stays_off_local_and_private_addresses() {
         let policy = policy();
-        assert!(policy.allows("https://signon.thomsonreuters.com/?productid=CBT", Initiator::User));
-        assert!(policy.allows("https://LOGIN.firm.example/saml", Initiator::User));
-        assert!(!policy.allows("https://other.firm.example/", Initiator::User));
-        assert!(!policy.allows("http://signon.thomsonreuters.com/", Initiator::User));
+        for url in [
+            "http://localhost:1420/",
+            "http://127.0.0.1/",
+            "http://10.0.0.5/admin",
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/",
+            "http://[fd00::1]/",
+            "http://router/",
+            "https://intranet.corp/",
+            "https://printer.local/",
+            "https://app.localhost/",
+            "http://100.64.0.1/",
+        ] {
+            assert!(!policy.allows(url, Initiator::Agent), "{url}");
+            assert!(policy.allows(url, Initiator::User), "the user may open {url}");
+        }
+        for url in ["https://user:pass@1.next.westlaw.com/", "data:text/html,<p>x</p>", "blob:https://1.next.westlaw.com/abc", "javascript:alert(1)", "file:///C:/Windows/win.ini", "not a url"] {
+            assert!(!policy.allows(url, Initiator::Agent), "{url}");
+            assert!(!policy.allows(url, Initiator::User), "{url}");
+        }
     }
 
     #[test]
     fn mock_origin_replaces_every_real_host() {
-        let policy = NavigationPolicy { sso_hosts: vec![], mock_origin: Some(mock_origin("http://127.0.0.1:9471/start").unwrap()) };
+        let policy = NavigationPolicy { mock_origin: Some(mock_origin("http://127.0.0.1:9471/start").unwrap()) };
         assert!(policy.allows("http://127.0.0.1:9471/results.html", Initiator::Agent));
         assert!(!policy.allows("http://127.0.0.1:9472/", Initiator::Agent));
         assert!(!policy.allows("https://1.next.westlaw.com/", Initiator::User));

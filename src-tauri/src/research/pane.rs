@@ -206,19 +206,25 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, start: &str, profile: PathBuf, case_
         .incognito(false)
         .devtools(false)
         .on_navigation(move |url| allowed(&navigation, url.as_str()))
-        // Pop-ups never open new windows; an allowed target opens in the pane itself.
-        .on_new_window(move |url, _| {
-            if allowed(&popups, url.as_str()) {
-                if let Some(pane) = webview(&popup_app) {
-                    tauri::async_runtime::spawn(async move {
-                        let _ = pane.navigate(url);
-                    });
-                }
+        // A sized pop-up (window.open with a size: sign-in and SSO dialogs that report back to
+        // their opener) opens as its own window in the same browser session. Links that ask
+        // for a new tab open in the pane itself.
+        .on_new_window(move |url, features| {
+            if !allowed(&popups, url.as_str()) {
+                return NewWindowResponse::Deny;
+            }
+            if features.size().is_some() && !allow_debugging {
+                return NewWindowResponse::Allow;
+            }
+            if let Some(pane) = webview(&popup_app) {
+                tauri::async_runtime::spawn(async move {
+                    let _ = pane.navigate(url);
+                });
             }
             NewWindowResponse::Deny
         })
-        // Downloads are refused; captures are the only way research content enters a case.
-        .on_download(|_, _| false);
+        // Downloads go to the user's Downloads folder as in any browser (never in test mode).
+        .on_download(move |_, _| !allow_debugging);
     let window = app.get_window("main").context("Main window unavailable")?;
     let pane = window.add_child(builder, LogicalPosition::new(rect.x, rect.y), LogicalSize::new(rect.width.max(1.0), rect.height.max(1.0)))?;
     if let Err(error) = verify_isolation(&pane, &profile, allow_debugging) {
@@ -245,6 +251,15 @@ pub fn layout<R: Runtime>(app: &AppHandle<R>, rect: Rect, visible: bool) -> Resu
 
 /// Back, forward or reload from the toolbar. The resulting navigation still passes the
 /// pane's navigation policy, like any other navigation the user starts in the page.
+/// Opens an address the user typed in the toolbar (any web address the pane allows).
+pub fn navigate<R: Runtime>(app: &AppHandle<R>, address: &str) -> Result<()> {
+    let pane = webview(app).context("The research browser is closed")?;
+    let url: Url = address.trim().parse().context("That is not a web address")?;
+    ensure!(matches!(url.scheme(), "http" | "https"), "Only web (http and https) addresses open in the research browser");
+    pane.navigate(url)?;
+    Ok(())
+}
+
 pub fn history<R: Runtime>(app: &AppHandle<R>, action: &str) -> Result<()> {
     let pane = webview(app).context("The research browser is closed")?;
     match action {

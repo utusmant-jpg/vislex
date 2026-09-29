@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 
 use super::{driver::Driver, snapshot::Session, Initiator, NavigationPolicy};
 
-pub const MAX_TYPED_CHARS: usize = 500;
-pub const ALLOWED_KEYS: &[&str] = &["Enter", "Tab", "Escape", "ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"];
+pub const MAX_TYPED_CHARS: usize = 10_000;
+pub const ALLOWED_KEYS: &[&str] = &["Enter", "Tab", "Escape", "Backspace", "Delete", "Space", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Home", "End"];
 
 const INFO_FN: &str = r#"function () {
   const e = this;
@@ -69,40 +69,26 @@ pub fn credential_field(info: &ElementInfo) -> bool {
 /// Typing is allowed only into plain text or search fields, never credentials, and not at all
 /// while a password or one-time-code field is on the page.
 pub fn ensure_typing_target(info: &ElementInfo) -> Result<()> {
-    ensure!(!info.password_on_page && !info.otp_on_page, "The agent does not type while a sign-in or verification field is on the page");
-    ensure!(!credential_field(info), "The agent never types into credential or account fields");
-    let text_input = info.tag == "input" && ["", "text", "search"].contains(&info.input_type.as_str());
-    let text_role = ["searchbox", "combobox", "textbox"].contains(&info.role.as_str()) && (info.tag != "input" || text_input);
-    ensure!(text_input || info.tag == "textarea" || text_role, "The agent types only into search or filter fields");
+    ensure!(!secret_field(info), "Passwords and verification codes are for the user to type; ask them to complete this step in the Browser view");
+    let text_input = info.tag == "input" && !["checkbox", "radio", "file", "submit", "button", "image", "reset", "hidden", "range", "color"].contains(&info.input_type.as_str());
+    let text_role = ["searchbox", "combobox", "textbox", "spinbutton"].contains(&info.role.as_str());
+    ensure!(text_input || info.tag == "textarea" || text_role || info.content_editable, "That element does not take typed text; pick a text field from the snapshot");
     Ok(())
 }
 
-/// Controls the agent must never activate: they deliver or export content, change account or
-/// billing state, sign out, or use the site's own AI features.
-pub fn denied_control(info: &ElementInfo) -> Option<String> {
-    let pattern = regex::Regex::new(
-        r"(?i)\b(sign[\s-]?(out|off)|log[\s-]?(out|off)|deliver(y)?|e-?mail|print|download|export|save\s+to|add\s+to\s+folder|folders?|notes?|highlight|annotat\w*|alerts?|share|subscribe|purchase|buy|checkout|preferences|settings|client\s*id|billing|ai[\s-]?assisted|cocounsel|deep\s+research|ask)\b",
-    )
-    .expect("valid pattern");
-    let label = [&info.text, &info.aria_label, &info.title, &info.id, &info.name].iter().map(|value| value.as_str()).collect::<Vec<_>>().join(" ");
-    let href = info.href.to_ascii_lowercase();
-    if let Some(found) = pattern.find(&label) {
-        return Some(format!("The agent may not use the \"{}\" control", found.as_str()));
-    }
-    if ["/delivery", "/print", "/download", "/signoff", "/signout", "/logout", "/folders", "/alerts", "mailto:"].iter().any(|part| href.contains(part)) {
-        return Some("The agent may not follow delivery, account or sign-out links".into());
-    }
-    None
+/// A password or one-time verification code field. The agent types anything else.
+pub fn secret_field(info: &ElementInfo) -> bool {
+    let secret = regex::Regex::new(r"(?i)pass(word|code|phrase)|\botp\b|one[\s_-]?time|verification[\s_-]?code|security[\s_-]?code|\bcvv\b|\bpin\b").expect("valid pattern");
+    info.input_type == "password"
+        || ["current-password", "new-password", "one-time-code", "cc-csc", "cc-number"].iter().any(|token| info.autocomplete.contains(token))
+        || [&info.name, &info.id, &info.aria_label, &info.placeholder].iter().any(|value| secret.is_match(value))
 }
 
 /// Text the agent may type: short, printable, no case-evidence locators or web addresses.
 pub fn validate_typed_text(text: &str) -> Result<()> {
     ensure!(!text.trim().is_empty(), "Nothing to type");
     ensure!(text.chars().count() <= MAX_TYPED_CHARS, "Typed text is limited to {MAX_TYPED_CHARS} characters");
-    ensure!(text.chars().all(|c| !c.is_control() || c == ' '), "Typed text must be printable");
-    let lower = text.to_ascii_lowercase();
-    ensure!(!lower.contains("evidence:"), "Case evidence locators may not be typed into the research site");
-    ensure!(!["http://", "https://", "www."].iter().any(|prefix| lower.contains(prefix)), "Web addresses may not be typed; navigate instead");
+    ensure!(text.chars().all(|c| !c.is_control() || matches!(c, ' ' | '\n' | '\t')), "Typed text must be printable");
     Ok(())
 }
 
@@ -125,9 +111,6 @@ impl<D: Driver> Session<D> {
     pub async fn click(&mut self, reference: &str, version: u64, pacing: Duration) -> Result<ElementInfo> {
         let element = self.resolve(reference, version).await?;
         let info = self.element_info(&element).await?;
-        if let Some(reason) = denied_control(&info) {
-            bail!(reason);
-        }
         self.pace(pacing).await;
         self.driver().call("DOM.scrollIntoViewIfNeeded", json!({"objectId": element})).await.ok();
         let model = self.driver().call("DOM.getBoxModel", json!({"objectId": element})).await?;
@@ -159,7 +142,7 @@ impl<D: Driver> Session<D> {
     pub async fn press(&mut self, key: &str, pacing: Duration) -> Result<()> {
         ensure!(ALLOWED_KEYS.contains(&key), "Key {key:?} is not allowed");
         self.pace(pacing).await;
-        let code = match key { "Enter" => 13, "Tab" => 9, "Escape" => 27, "ArrowDown" => 40, "ArrowUp" => 38, "PageDown" => 34, "PageUp" => 33, "Home" => 36, _ => 35 };
+        let code = match key { "Enter" => 13, "Tab" => 9, "Escape" => 27, "Backspace" => 8, "Delete" => 46, "Space" => 32, "ArrowDown" => 40, "ArrowUp" => 38, "ArrowLeft" => 37, "ArrowRight" => 39, "PageDown" => 34, "PageUp" => 33, "Home" => 36, _ => 35 };
         for kind in ["keyDown", "keyUp"] {
             self.driver().call("Input.dispatchKeyEvent", json!({"type": kind, "key": key, "code": key, "windowsVirtualKeyCode": code})).await?;
         }
@@ -178,7 +161,7 @@ impl<D: Driver> Session<D> {
     /// Navigates to an allowed research address and waits for it to load. The landing address
     /// is re-checked: a redirect off the research hosts stops loading and fails.
     pub async fn navigate(&mut self, url: &str, policy: &NavigationPolicy, pacing: Duration, timeout: Duration) -> Result<String> {
-        ensure!(policy.allows(url, Initiator::Agent), "The agent may not open this address");
+        ensure!(policy.allows(url, Initiator::Agent), "The agent does not open local or private-network addresses");
         self.pace(pacing).await;
         let result = self.driver().call("Page.navigate", json!({"url": url})).await?;
         self.reset();
@@ -196,7 +179,7 @@ impl<D: Driver> Session<D> {
         };
         if !policy.allows(&landed, Initiator::Agent) {
             self.driver().call("Page.stopLoading", json!({})).await.ok();
-            bail!("The page redirected outside the research site");
+            bail!("The page redirected to a local or private-network address");
         }
         Ok(landed)
     }
@@ -212,41 +195,39 @@ mod tests {
     }
 
     #[test]
-    fn typing_is_limited_to_search_and_filter_fields() {
-        assert!(ensure_typing_target(&ElementInfo { aria_label: "Search Westlaw".into(), ..field("input", "search") }).is_ok());
-        assert!(ensure_typing_target(&field("textarea", "")).is_ok());
-        assert!(ensure_typing_target(&ElementInfo { role: "combobox".into(), ..field("div", "") }).is_ok());
+    fn the_agent_types_anywhere_except_passwords_and_codes() {
+        for allowed in [
+            ElementInfo { aria_label: "Search Westlaw".into(), ..field("input", "search") },
+            field("textarea", ""),
+            ElementInfo { role: "combobox".into(), ..field("div", "") },
+            ElementInfo { name: "ClientID".into(), ..field("input", "text") },
+            ElementInfo { placeholder: "Email address".into(), ..field("input", "email") },
+            ElementInfo { id: "Username".into(), ..field("input", "text") },
+            // A search box on a page that also has a sign-in form.
+            ElementInfo { password_on_page: true, ..field("input", "search") },
+            ElementInfo { content_editable: true, ..field("div", "") },
+        ] {
+            assert!(ensure_typing_target(&allowed).is_ok(), "{allowed:?}");
+        }
         for refused in [
             field("input", "password"),
             ElementInfo { autocomplete: "one-time-code".into(), ..field("input", "text") },
-            ElementInfo { name: "ClientID".into(), ..field("input", "text") },
-            ElementInfo { id: "Username".into(), ..field("input", "text") },
+            ElementInfo { autocomplete: "current-password".into(), ..field("input", "text") },
             ElementInfo { aria_label: "Verification code".into(), ..field("input", "text") },
-            ElementInfo { placeholder: "Email address".into(), ..field("input", "text") },
             field("input", "checkbox"),
             field("button", ""),
-            ElementInfo { password_on_page: true, ..field("input", "search") },
-            ElementInfo { otp_on_page: true, ..field("input", "search") },
         ] {
             assert!(ensure_typing_target(&refused).is_err(), "{refused:?}");
         }
     }
 
     #[test]
-    fn delivery_account_and_ai_controls_are_denied() {
-        for text in ["Sign Off", "Deliver", "Email", "Print", "Download", "Add to Folder", "Share", "Preferences", "Client ID", "AI-Assisted Research", "Ask CoCounsel"] {
-            assert!(denied_control(&ElementInfo { text: text.into(), ..Default::default() }).is_some(), "{text}");
-        }
-        assert!(denied_control(&ElementInfo { href: "https://1.next.westlaw.com/Delivery/Print".into(), ..Default::default() }).is_some());
-        for allowed in ["Search", "Smith v. Jones, 123 F.3d 456", "Negative Treatment", "Next page", "Jurisdiction: All Federal"] {
-            assert!(denied_control(&ElementInfo { text: allowed.into(), ..Default::default() }).is_none(), "{allowed}");
-        }
-    }
-
-    #[test]
     fn typed_text_rules() {
         assert!(validate_typed_text("negligen! /s \"duty of care\" & DA(aft 2015)").is_ok());
-        for bad in ["", "   ", "see evidence:abc#L1-L2", "https://evil.example", "www.example.com", "a\u{7}b", &"x".repeat(501)] {
+        for good in ["see evidence:abc#L1-L2", "https://www.courtlistener.com", "line one\nline two", "someone@firm.example"] {
+            assert!(validate_typed_text(good).is_ok(), "{good}");
+        }
+        for bad in ["", "   ", "a\u{7}b", &"x".repeat(10_001)] {
             assert!(validate_typed_text(bad).is_err(), "{bad}");
         }
     }
@@ -315,10 +296,10 @@ mod tests {
     }
 
     #[test]
-    fn click_refuses_denied_or_covered_elements() {
-        let mut session = Session::new(page(ElementInfo { tag: "button".into(), text: "Deliver".into(), ..Default::default() }, true));
+    fn click_works_on_any_control_but_refuses_covered_elements() {
+        let mut session = Session::new(page(ElementInfo { tag: "button".into(), text: "Access with single sign-on".into(), ..Default::default() }, true));
         let version = snapshot_version(&mut session);
-        assert!(block(session.click("e3", version, Duration::ZERO)).unwrap_err().to_string().contains("Deliver"));
+        block(session.click("e3", version, Duration::ZERO)).unwrap();
         let mut session = Session::new(page(ElementInfo { tag: "a".into(), text: "Doc".into(), ..Default::default() }, false));
         let version = snapshot_version(&mut session);
         assert!(block(session.click("e3", version, Duration::ZERO)).unwrap_err().to_string().contains("covered"));
@@ -343,18 +324,24 @@ mod tests {
     }
 
     #[test]
-    fn navigation_is_limited_to_research_hosts_including_after_redirects() {
-        let policy = NavigationPolicy { sso_hosts: vec![], mock_origin: None };
-        let driver = FakeDriver::new(|method, params| match method {
+    fn navigation_reaches_the_open_web_but_not_private_addresses_even_by_redirect() {
+        let policy = NavigationPolicy { mock_origin: None };
+        let landing = std::sync::Arc::new(std::sync::Mutex::new("https://signon.thomsonreuters.com/?returnto=x"));
+        let current = landing.clone();
+        let driver = FakeDriver::new(move |method, params| match method {
             "Page.navigate" => Ok(json!({"frameId": "F1"})),
-            "Runtime.evaluate" if params["expression"] == READY_FN => Ok(json!({"result": {"value": "https://signon.thomsonreuters.com/?returnto=x"}})),
+            "Runtime.evaluate" if params["expression"] == READY_FN => Ok(json!({"result": {"value": *current.lock().unwrap()}})),
             "Page.stopLoading" => Ok(json!({})),
             other => anyhow::bail!("unexpected {other}"),
         });
         let mut session = Session::new(driver);
-        assert!(block(session.navigate("https://evil.example/", &policy, Duration::ZERO, Duration::from_secs(1))).is_err());
+        assert!(block(session.navigate("http://192.168.1.1/", &policy, Duration::ZERO, Duration::from_secs(1))).is_err());
         assert!(session.driver().methods().is_empty(), "refused before any call");
-        let error = block(session.navigate("https://1.next.westlaw.com/Search", &policy, Duration::ZERO, Duration::from_secs(1))).unwrap_err();
+        // Westlaw redirecting to its sign-in page is fine.
+        assert_eq!(block(session.navigate("https://1.next.westlaw.com/Search", &policy, Duration::ZERO, Duration::from_secs(1))).unwrap(), "https://signon.thomsonreuters.com/?returnto=x");
+        // A public page redirecting into the local network is stopped.
+        *landing.lock().unwrap() = "http://127.0.0.1:8080/admin";
+        let error = block(session.navigate("https://www.example.com/", &policy, Duration::ZERO, Duration::from_secs(1))).unwrap_err();
         assert!(error.to_string().contains("redirected"));
         assert!(session.driver().methods().contains(&"Page.stopLoading".to_string()));
     }

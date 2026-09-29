@@ -255,12 +255,14 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
             Ok(Value::Null)
         })(),
         "research_pane_history" => text(args, "action").and_then(|action| pane::history(app, action)).map(|_| Value::Null),
+        "research_pane_navigate" => text(args, "url").and_then(|url| pane::navigate(app, url)).map(|_| Value::Null),
         "research_pane_state" => (|| {
             let pane = pane::webview(app);
             let url = pane.as_ref().and_then(|pane| pane.url().ok());
             Ok(json!({
                 "open": pane.is_some(),
                 "case_id": app.state::<pane::PaneState>().owner().map(|owner| owner.case_id),
+                "url": url.as_ref().map(|url| url.to_string()),
                 "host": url.as_ref().and_then(|url| url.host_str().map(str::to_string)),
                 "secure": url.as_ref().map(|url| url.scheme() == "https"),
             }))

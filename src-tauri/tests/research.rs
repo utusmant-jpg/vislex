@@ -137,18 +137,18 @@ fn research_tools_are_offered_only_when_the_case_switch_is_on() {
 }
 
 #[test]
-fn research_calls_are_checked_audited_and_limited_before_any_browser_action() {
+fn research_calls_are_checked_and_audited_before_any_browser_action() {
     let (_dir, mut case, task) = case_with_task(true);
     let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
 
-    // Off-site address: refused, reason stored for the tool result, no job.
-    let off_site = call("research_navigate", json!({"url": "https://evil.example/"}));
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &off_site).unwrap().is_none());
-    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("only the research site"));
+    // A private-network address: refused, reason stored for the tool result, no job.
+    let private = call("research_navigate", json!({"url": "http://192.168.0.10/"}));
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &private).unwrap().is_none());
+    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("private-network"));
 
-    // Credential-looking or locator text is refused before typing.
-    let leak = call("research_act", json!({"action": "type", "ref": "e1", "snapshot_version": 1, "text": "evidence:abc#L1-L2", "key": null}));
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &leak).unwrap().is_none());
+    // Unprintable text is refused before typing.
+    let bell = call("research_act", json!({"action": "type", "ref": "e1", "snapshot_version": 1, "text": "a\u{7}b", "key": null}));
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &bell).unwrap().is_none());
 
     // A query is audited with its text before it is sent.
     let query = call("research_act", json!({"action": "type", "ref": "e1", "snapshot_version": 1, "text": "duty of care /s negligence", "key": null}));
@@ -157,22 +157,6 @@ fn research_calls_are_checked_audited_and_limited_before_any_browser_action() {
     let audited: String = case.db.query_row("SELECT data FROM audit WHERE event='research_query_requested' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).unwrap();
     assert!(audited.contains("duty of care /s negligence"));
 
-    // Page limit and per-minute rate from the grant's caps.
-    let mut stored: serde_json::Value = serde_json::from_str(&case.meta("research_browser_grant").unwrap().unwrap()).unwrap();
-    stored["caps"]["documents"] = json!(3);
-    stored["caps"]["navigations_per_minute"] = json!(100);
-    case.set_meta("research_browser_grant", &stored.to_string()).unwrap();
-    let navigate = call("research_navigate", json!({"url": "https://1.next.westlaw.com/Search/Home.html"}));
-    for _ in 0..3 {
-        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &navigate).unwrap().is_some());
-    }
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &navigate).unwrap().is_none());
-    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("research pages"));
-    stored["caps"]["documents"] = json!(100);
-    stored["caps"]["navigations_per_minute"] = json!(3);
-    case.set_meta("research_browser_grant", &stored.to_string()).unwrap();
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &navigate).unwrap().is_none(), "the fourth page change within a minute is refused");
-    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("a minute"));
 
     // A settings change during the task stops further research in it.
     research::set_grant(&mut case, true, &["login.firm.example".into()]).unwrap();
@@ -299,26 +283,37 @@ fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 }
 
 #[test]
-fn the_agent_never_acts_on_sign_in_or_outside_pages() {
+fn the_agent_works_on_sign_in_pages_but_not_on_private_addresses() {
     use research::{snapshot::Session, tools::run_job};
+    // Sign-in pages are ordinary pages for the agent (it may click "Access with single sign-on").
     let mut session = Session::new(page_at("https://signon.thomsonreuters.com/?returnto=x", "https://signon.thomsonreuters.com/"));
+    let snapshot = block_on(run_job(&mut session, &research_job("research_snapshot", json!({"scope": "full", "find": null, "delta": false, "max_chars": null})))).unwrap();
+    assert!(snapshot["snapshot"]["text"].as_str().unwrap().contains("ref=e2"));
+    let status = block_on(run_job(&mut session, &research_job("research_status", json!({})))).unwrap();
+    assert_eq!((status["usable"].as_bool(), status["host"].as_str()), (Some(true), Some("signon.thomsonreuters.com")));
+    // A page on the local network is not read or acted on.
+    let mut session = Session::new(page_at("http://192.168.1.1/admin", "http://192.168.1.1/admin"));
     for name in ["research_snapshot", "research_read_page"] {
         let args = if name == "research_snapshot" { json!({"scope": "full", "find": null, "delta": false, "max_chars": null}) } else { json!({"offset": 0, "count": 10}) };
-        assert!(block_on(run_job(&mut session, &research_job(name, args))).unwrap_err().to_string().contains("sign-in"), "{name}");
+        assert!(block_on(run_job(&mut session, &research_job(name, args))).unwrap_err().to_string().contains("private-network"), "{name}");
     }
-    let status = block_on(run_job(&mut session, &research_job("research_status", json!({})))).unwrap();
-    assert_eq!(status["on_research_site"], false);
-    assert!(status.get("title").is_none(), "no page content from a sign-in page");
-    assert!(!session.driver().methods().iter().any(|method| method == "Runtime.callFunctionOn"), "nothing read from the sign-in page");
+    assert!(!session.driver().methods().iter().any(|method| method == "Runtime.callFunctionOn"), "nothing read from the local page");
 }
 
 #[test]
-fn a_click_that_lands_on_a_sign_in_page_stops_and_hands_back() {
+fn a_click_that_lands_on_a_private_address_stops() {
     use research::{snapshot::{Scope, Session}, tools::run_job};
+    // Landing on a sign-in page is fine.
     let mut session = Session::new(page_at("https://1.next.westlaw.com/Search/Results.html", "https://signon.thomsonreuters.com/?expired=1"));
     let version = block_on(session.snapshot(Scope::Full, None, false, None)).unwrap().version;
     let click = research_job("research_act", json!({"action": "click", "ref": "e2", "snapshot_version": version, "text": null, "key": null}));
-    assert!(block_on(run_job(&mut session, &click)).unwrap_err().to_string().contains("sign-in"));
+    let result = block_on(run_job(&mut session, &click)).unwrap();
+    assert_eq!((result["navigated"].as_bool(), result["url"].as_str()), (Some(true), Some("https://signon.thomsonreuters.com/?expired=1")));
+    // Landing inside the local network stops the page.
+    let mut session = Session::new(page_at("https://www.example.com/", "http://127.0.0.1:8080/admin"));
+    let version = block_on(session.snapshot(Scope::Full, None, false, None)).unwrap().version;
+    let click = research_job("research_act", json!({"action": "click", "ref": "e2", "snapshot_version": version, "text": null, "key": null}));
+    assert!(block_on(run_job(&mut session, &click)).unwrap_err().to_string().contains("private-network"));
     assert!(session.driver().methods().contains(&"Page.stopLoading".to_string()));
 }
 
@@ -355,21 +350,33 @@ fn stop_abandons_a_running_research_job_promptly() {
 }
 
 #[test]
-fn addresses_with_queries_are_refused_and_clicks_are_limited() {
+fn any_web_address_opens_and_nothing_is_capped() {
     let (_dir, mut case, task) = case_with_task(true);
     let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
-    for url in ["https://1.next.westlaw.com/Search/Results.html?query=client+name", "https://1.next.westlaw.com/Document#facts", &format!("https://1.next.westlaw.com/{}", "a".repeat(2_100))] {
-        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_navigate", json!({"url": url}))).unwrap().is_none(), "{url}");
+    for url in ["https://1.next.westlaw.com/Search/Results.html?query=duty+of+care", "https://www.google.com/search?q=negligent+hiring", "https://www.courtlistener.com/opinion/1/x/#facts"] {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_navigate", json!({"url": url}))).unwrap().is_some(), "{url}");
     }
-    // A small action limit in the stored grant binds clicks and key presses.
+    let audited: String = case.db.query_row("SELECT data FROM audit WHERE event='research_navigation_requested' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    assert!(audited.contains("courtlistener"), "{audited}");
+    // Old per-task limits in a stored grant no longer bind.
     let mut grant: serde_json::Value = serde_json::from_str(&case.meta("research_browser_grant").unwrap().unwrap()).unwrap();
     grant["caps"]["actions"] = json!(2);
+    grant["caps"]["documents"] = json!(1);
+    grant["caps"]["navigations_per_minute"] = json!(1);
     case.set_meta("research_browser_grant", &grant.to_string()).unwrap();
     let click = call("research_act", json!({"action": "click", "ref": "e2", "snapshot_version": 1, "text": null, "key": null}));
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &click).unwrap().is_some());
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &click).unwrap().is_some());
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &click).unwrap().is_none());
-    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("research actions"));
+    for _ in 0..200 {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &click).unwrap().is_some());
+    }
+    let navigate = call("research_navigate", json!({"url": "https://1.next.westlaw.com/Home"}));
+    for _ in 0..100 {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &navigate).unwrap().is_some());
+    }
+    // Local and private-network addresses are refused with a reason.
+    for url in ["http://localhost:1420/", "http://10.0.0.1/", "file:///C:/Windows/win.ini"] {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_navigate", json!({"url": url}))).unwrap().is_none(), "{url}");
+        assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("private-network"), "{url}");
+    }
 }
 
 #[test]
@@ -460,7 +467,13 @@ fn fixture_respond(url: &str, method: &str, params: &serde_json::Value) -> anyho
                     }
                     json!({"result": {"value": {"url": url, "title": "Smith", "entry": entry["id"], "document_text": true, "lines": lines, "html": SANITIZED, "page_html": full_page()}}})
                 }
-                _ => json!({"result": {"value": {"url": url, "title": "Smith", "entry": entry.map(|entry| entry["id"].clone()), "document_text": false}}}),
+                        None if document => {
+                    // No surveyed entry: the main region as shown, editorial content included.
+                    let mut lines: Vec<String> = LINES.iter().map(|line| line.to_string()).collect();
+                    lines.insert(1, HEADNOTE.into());
+                    json!({"result": {"value": {"url": url, "title": "Smith", "entry": "generic", "document_text": true, "lines": lines, "html": SANITIZED, "page_html": full_page()}}})
+                }
+                _ => json!({"result": {"value": {"url": url, "title": "Smith", "entry": entry.map(|entry| entry["id"].clone()).unwrap_or(json!("generic")), "document_text": false}}}),
             }
         }
         "Runtime.callFunctionOn" if function.contains("innerText") => {
@@ -660,19 +673,19 @@ fn a_failed_capture_rolls_back_and_leaves_no_files() {
 }
 
 #[test]
-fn capture_is_refused_without_a_playbook_entry_off_the_document_or_outside_its_text() {
-    // The shipped Westlaw entry has no verified selectors yet (R36), so capture refuses there.
-    for playbook in [research::playbook::Playbook::with_test_entries(), research::playbook::Playbook::production()] {
-        let (_dir, mut case, task) = case_with_task(true);
-        let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &playbook, "research_capture", capture_args(0, 0));
-        assert_eq!(receipt["status"], "failed");
-        assert!(receipt["output"].as_str().unwrap().contains(research::playbook::CAPTURE_UNAVAILABLE), "{receipt}");
-        assert_eq!(case.sources().unwrap().len(), 1);
-    }
+fn capture_works_on_any_page_labelling_unfiltered_captures() {
+    // Westlaw has no surveyed selectors yet (R36): the page is captured as shown and labelled.
     let (_dir, mut case, task) = case_with_task(true);
-    // Outside debug test mode a loopback page is off the research site, whatever the playbook.
+    let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &research::playbook::Playbook::production(), "research_capture", capture_args(0, 0));
+    assert_eq!(receipt["status"], "complete", "{receipt}");
+    let output: serde_json::Value = serde_json::from_str(receipt["output"].as_str().unwrap()).unwrap();
+    let object = evidence_desk::evidence::read(&case, output["authority_id"].as_str().unwrap(), None).unwrap();
+    let content: serde_json::Value = serde_json::from_str(object["content"].as_str().unwrap()).unwrap();
+    assert_eq!((content["playbook"].as_str(), content["tr_editorial"].as_str()), (Some("generic"), Some("not_filtered")));
+    let (_dir, mut case, task) = case_with_task(true);
+    // Outside debug test mode a loopback page is a private address, whatever the playbook.
     let receipt = run_research(&mut case, &task, fixture_page("http://127.0.0.1:9471/opinion.html"), &research::playbook::Playbook::with_test_entries(), "research_capture", capture_args(0, 0));
-    assert!(receipt["output"].as_str().unwrap().contains("sign-in or outside page"), "{receipt}");
+    assert!(receipt["output"].as_str().unwrap().contains("private-network"), "{receipt}");
     // A results page is not a document, and lines outside the document text are refused.
     let receipt = run_research(&mut case, &task, fixture_page(RESULTS_URL), &document_playbook(), "research_capture", capture_args(0, 0));
     assert!(receipt["output"].as_str().unwrap().contains("no document text"), "{receipt}");
@@ -682,7 +695,7 @@ fn capture_is_refused_without_a_playbook_entry_off_the_document_or_outside_its_t
 }
 
 #[test]
-fn capture_arguments_and_limits_are_checked_before_the_page_is_touched() {
+fn capture_arguments_are_checked_before_the_page_is_touched() {
     let (_dir, mut case, task) = case_with_task(true);
     let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
     let with = |key: &str, value: serde_json::Value| {
@@ -703,13 +716,12 @@ fn capture_arguments_and_limits_are_checked_before_the_page_is_touched() {
     refused(with("quote_end_line", json!(2)), "consecutive lines");
     refused(with("quote_start_line", json!(-1)), "quote_start_line");
     assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_capture", with("relevant_date", json!(null)))).unwrap().is_some());
-    for _ in 1..research::Caps::default().captures {
+    // No capture limit: every request is audited.
+    for _ in 1..40 {
         assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_capture", capture_args(3, 4))).unwrap().is_some());
     }
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_capture", capture_args(3, 4))).unwrap().is_none());
-    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("limit of 25 research captures"));
     let requested: i64 = case.db.query_row("SELECT count(*) FROM audit WHERE event='research_capture_requested'", [], |row| row.get(0)).unwrap();
-    assert_eq!(requested, 25);
+    assert_eq!(requested, 40);
 }
 
 #[test]
@@ -802,31 +814,12 @@ fn backups_hold_captures_but_never_the_research_profile() {
 
 // ---- 171e176 re-review fixes ----
 
-#[test]
-fn navigation_addresses_carrying_search_text_are_refused() {
-    let (_dir, mut case, task) = case_with_task(true);
-    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
-    let long = format!("https://1.next.westlaw.com/Document/{}", "a".repeat(300));
-    for url in ["https://1.next.westlaw.com/Search/negligent%20hiring%20smith", "https://1.next.westlaw.com/x/evidence%3Asrc1", "https://1.next.westlaw.com/a%0Ab", long.as_str()] {
-        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_navigate", json!({"url": url}))).unwrap().is_none(), "{url}");
-    }
-    let document = call("research_navigate", json!({"url": "https://1.next.westlaw.com/Document/I0a1b2c3d4/View/FullText.html"}));
-    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &document).unwrap().is_some());
-    // Page changes also count against a case-wide pace shared by every chat.
-    assert!(case.meta("research_recent_page_changes").unwrap().is_some_and(|raw| raw.starts_with('[') && raw.len() > 2));
-}
+
+
+
 
 #[test]
-fn the_agent_never_navigates_away_from_a_sign_in_page() {
-    use research::{snapshot::Session, tools::run_job};
-    let mut session = Session::new(page_at("https://signon.thomsonreuters.com/?returnto=x", "https://signon.thomsonreuters.com/"));
-    let navigate = research_job("research_navigate", json!({"url": "https://1.next.westlaw.com/Home"}));
-    assert!(block_on(run_job(&mut session, &navigate)).unwrap_err().to_string().contains("sign-in"));
-    assert!(!session.driver().methods().iter().any(|method| method == "Page.navigate"));
-}
-
-#[test]
-fn page_content_is_dropped_when_the_page_moved_off_site_meanwhile() {
+fn page_content_is_dropped_when_the_page_moved_to_a_private_address_meanwhile() {
     use research::{snapshot::Session, tools::run_job};
     // The address check sees the research site; by the time of the snapshot the page is a sign-in page.
     let driver = research::driver::FakeDriver::new(|method, params| {
@@ -837,18 +830,18 @@ fn page_content_is_dropped_when_the_page_moved_off_site_meanwhile() {
             "Runtime.evaluate" if params["expression"].as_str().unwrap_or_default().starts_with("({url: location.href") => json!({"result": {"value": {"url": "https://1.next.westlaw.com/Search/Results.html", "title": "t", "ready": "complete"}}}),
             "Runtime.evaluate" => json!({"result": {"value": true}}),
             "Runtime.callFunctionOn" if function.contains("Boolean(globalThis.__vislex)") => json!({"result": {"value": true}}),
-            "Runtime.callFunctionOn" if function.contains("ariaSnapshot") => json!({"result": {"value": {"text": "- textbox \"Username\" [ref=e1]: someone@example.com", "url": "https://signon.thomsonreuters.com/", "title": "Sign in"}}}),
-            "Runtime.callFunctionOn" if function.contains("innerText") => json!({"result": {"value": {"lines": ["someone@example.com"], "url": "https://signon.thomsonreuters.com/", "title": "Sign in"}}}),
+            "Runtime.callFunctionOn" if function.contains("ariaSnapshot") => json!({"result": {"value": {"text": "- textbox \"Username\" [ref=e1]: someone@example.com", "url": "http://192.168.1.1/login", "title": "Router"}}}),
+            "Runtime.callFunctionOn" if function.contains("innerText") => json!({"result": {"value": {"lines": ["someone@example.com"], "url": "http://192.168.1.1/login", "title": "Router"}}}),
             other => anyhow::bail!("unexpected {other}"),
         })
     });
     let mut session = Session::new(driver);
     let snapshot = research_job("research_snapshot", json!({"scope": "interactive", "find": null, "delta": false, "max_chars": null}));
     let error = block_on(run_job(&mut session, &snapshot)).unwrap_err().to_string();
-    assert!(error.contains("sign-in") && !error.contains("someone@"), "{error}");
+    assert!(error.contains("private-network") && !error.contains("someone@"), "{error}");
     let read = research_job("research_read_page", json!({"offset": 0, "count": 5}));
     let error = block_on(run_job(&mut session, &read)).unwrap_err().to_string();
-    assert!(error.contains("sign-in") && !error.contains("someone@"), "{error}");
+    assert!(error.contains("private-network") && !error.contains("someone@"), "{error}");
 }
 
 #[test]
@@ -959,10 +952,10 @@ fn a_closed_research_pane_reaches_codex_as_tool_output_text() {
     assert_eq!(status, "running");
 
     // A call refused before any browser action also returns its reason as output.
-    let call = evidence_desk::agent::prepare_subscription_call(&mut case, &task, "codex-call-off-site", "research_navigate", json!({"url": "https://evil.example/"})).unwrap();
+    let call = evidence_desk::agent::prepare_subscription_call(&mut case, &task, "codex-call-private", "research_navigate", json!({"url": "http://192.168.1.1/"})).unwrap();
     assert!(research::tools::prepare_research(&mut case, &task, &call.transmission, &call.response).unwrap().is_none());
     let result = evidence_desk::agent::finish_subscription_call(&mut case, &task, call, &mut Default::default()).unwrap();
-    assert!(result["error"].as_str().unwrap().contains("only the research site"));
+    assert!(result["error"].as_str().unwrap().contains("private-network"));
 }
 
 #[test]

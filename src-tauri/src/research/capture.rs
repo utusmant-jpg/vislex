@@ -17,6 +17,10 @@ use super::tools::{quote_span, relevant_date_arg, text_arg, MAX_CAPTURE_BYTES};
 use crate::case::{digest, id, now, Case, PreparedImport};
 
 pub const EXTRACT_METHOD: &str = "Research page capture; publisher editorial regions excluded";
+/// The playbook id of a capture from a page without a surveyed selector map.
+pub const GENERIC_PLAYBOOK: &str = "generic";
+/// Extract method of a capture from a site without a surveyed selector map.
+pub const GENERIC_EXTRACT_METHOD: &str = "Research page capture; main content region as shown";
 pub const ACTOR: &str = "research_browser_adapter";
 /// Upper bound on a quote stored in the authority object.
 pub const MAX_QUOTE_CHARS: usize = 20_000;
@@ -98,6 +102,10 @@ pub fn publish(case: &mut Case, task: &str, bundle: &Value, args: &Value) -> Res
         !claims.is_empty() && claims.iter().all(|claim| printed.contains(claim))
     };
 
+    // Surveyed sites have their editorial regions removed; other pages keep their main region.
+    let filtered = bundle["playbook"].as_str().is_some_and(|playbook| playbook != GENERIC_PLAYBOOK);
+    let method = if filtered { EXTRACT_METHOD } else { GENERIC_EXTRACT_METHOD };
+    let origin = if filtered { format!("westlaw-research:{url}") } else { format!("web-research:{url}") };
     let bytes = html.as_bytes();
     let sha = digest(bytes);
     let target = case.root.join("originals").join(&sha);
@@ -105,11 +113,11 @@ pub fn publish(case: &mut Case, task: &str, bundle: &Value, args: &Value) -> Res
     case.db.execute_batch("SAVEPOINT research_capture")?;
     let published = (|| -> Result<Value> {
         // 1. Import the sanitised document bytes (content-addressed, immutable).
-        let prepared = PreparedImport::from_verified_bytes(&case.root, bytes, &source_name(&title), &format!("westlaw-research:{url}"))?;
+        let prepared = PreparedImport::from_verified_bytes(&case.root, bytes, &source_name(&title), &origin)?;
         let batch = id();
         let imported = case.publish_import(prepared, "Research browser capture", &batch)?;
         case.db.execute("INSERT INTO imports VALUES(?,?,?,?,?,?)", params![id(), url, batch, "imported", imported.to_string(), now()])?;
-        case.audit("import_batch", json!({"batch": batch, "items": [json!({"path": format!("westlaw-research:{url}"), "status": "imported", "detail": imported.to_string()})]}))?;
+        case.audit("import_batch", json!({"batch": batch, "items": [json!({"path": origin, "status": "imported", "detail": imported.to_string()})]}))?;
         let source: String = imported["source_id"].as_str().context("Import returned no source")?.to_string();
         let duplicate = imported["duplicate"] == true;
         // 2. Identity comes from the bytes: an identical restricted source is refused.
@@ -121,9 +129,9 @@ pub fn publish(case: &mut Case, task: &str, bundle: &Value, args: &Value) -> Res
         let active: Option<String> = case.db.query_row("SELECT text FROM extracts WHERE source_id=?", [&source], |row| row.get(0)).optional()?;
         let revision = match (same, active) {
             (Some(revision), _) => revision,
-            (None, None) => case.publish_extract(&source, &text, EXTRACT_METHOD, true)?,
-            (None, Some(current)) if current.is_empty() => case.publish_extract(&source, &text, EXTRACT_METHOD, true)?,
-            (None, Some(_)) => case.publish_extract(&source, &text, EXTRACT_METHOD, false)?,
+            (None, None) => case.publish_extract(&source, &text, method, true)?,
+            (None, Some(current)) if current.is_empty() => case.publish_extract(&source, &text, method, true)?,
+            (None, Some(_)) => case.publish_extract(&source, &text, method, false)?,
         };
         let locator = format!("evidence:{source}#R{revision}L{}-L{}", start + 1, end + 1);
         case.validate_citation(&locator)?;
@@ -137,7 +145,7 @@ pub fn publish(case: &mut Case, task: &str, bundle: &Value, args: &Value) -> Res
             "retrieved_at": now(),
             "retrieved_by": {"task": task, "grant_revision": grant.revision, "tool": "research_capture"},
             "playbook": bundle["playbook"],
-            "tr_editorial": "excluded",
+            "tr_editorial": if filtered { "excluded" } else { "not_filtered" },
             "quote": {"exact": exact, "start_line": start + 1, "end_line": end + 1, "locator": locator},
             "proposition": proposition,
             "full_page_sha256": full_page_sha256,
@@ -146,7 +154,7 @@ pub fn publish(case: &mut Case, task: &str, bundle: &Value, args: &Value) -> Res
             "treatment_status": "not_checked",
             "proposition_support": "not_assessed",
             "limitations": [
-                "Captured from the user's research session; the publisher's editorial content (headnotes, synopsis, key numbers, citator treatment) was excluded.",
+                if filtered { "Captured from the user's research session; the publisher's editorial content (headnotes, synopsis, key numbers, citator treatment) was excluded." } else { "Captured from the user's research session as shown; publisher editorial content, if any, was not filtered and is not the court's words." },
                 "Capture does not verify current validity, subsequent treatment or support for the proposition.",
                 "The citation was supplied by the agent; compare it with the citation printed in the document.",
                 "Relevant date is the requested research date, not proof this document was in force then."
