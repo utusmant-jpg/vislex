@@ -380,16 +380,37 @@ pub fn search(case: &Case, query: &str, offset: usize) -> Result<Value> {
         json!({"results":hits,"next_offset":if more{Some(offset+50)}else{None},"coverage":"Lexical index of extracts, current working records and structured objects. Search hits are leads; inspect originals before making claims."}),
     )
 }
+/// The cite-check a reviewer completes before accepting an authority captured from the
+/// research browser: it exists at the cited page, the quote matches the opinion text, its
+/// citator status was checked, and it supports the proposition.
+pub const RESEARCH_CITE_CHECKS: [&str; 4] = ["exists", "quote", "citator", "support"];
+
 pub fn review(case: &mut Case, object: &str, revision: i64, state: &str) -> Result<()> {
+    review_checked(case, object, revision, state, &[])
+}
+
+/// Records a human review. Accepting a research-browser authority requires every cite-check,
+/// and the checks are kept in the audit record.
+pub fn review_checked(case: &mut Case, object: &str, revision: i64, state: &str, checks: &[String]) -> Result<()> {
     ensure!(
         ["accepted", "rejected", "unreviewed"].contains(&state),
         "Invalid review state"
     );
+    ensure!(checks.iter().all(|check| RESEARCH_CITE_CHECKS.contains(&check.as_str())), "Unknown cite-check");
     let v = read(case, object, None)?;
     ensure!(
         v["revision"] == revision && v["stale"] == false,
         "Review requires a current, non-stale revision"
     );
+    let research_authority = v["kind"] == "authority" && v["actor"] == "research_browser_adapter";
+    ensure!(
+        !research_authority || state != "accepted" || RESEARCH_CITE_CHECKS.iter().all(|check| checks.iter().any(|done| done == check)),
+        "Complete the cite-check before accepting this authority"
+    );
+    let mut record = json!({"id":object,"revision":revision,"state":state,"actor":"human"});
+    if research_authority && state == "accepted" {
+        record["cite_check"] = json!(RESEARCH_CITE_CHECKS);
+    }
     case.db.execute_batch("SAVEPOINT evidence_review")?;
     let result = (|| -> Result<()> {
         case.db.execute(
@@ -397,10 +418,7 @@ pub fn review(case: &mut Case, object: &str, revision: i64, state: &str) -> Resu
             params![state, object, revision],
         )?;
         case.db.execute("INSERT INTO case_outbox(kind,object_id,revision,payload,created_at) VALUES('ReviewChanged',?,?,?,?)",params![object,revision,json!({"review":state}).to_string(),now()])?;
-        case.audit(
-            "evidence_review",
-            json!({"id":object,"revision":revision,"state":state,"actor":"human"}),
-        )
+        case.audit("evidence_review", record)
     })();
     if let Err(e) = result {
         case.db

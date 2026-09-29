@@ -375,6 +375,25 @@ fn each_provider_can_complete_a_synthetic_single_provider_task() {
     }
 }
 #[test]
+fn research_authorities_are_accepted_only_after_the_full_cite_check() {
+    let (_dir, mut c, sid) = setup();
+    let captured = evidence::write(&mut c, object(&sid, "authority"), "research_browser_adapter").unwrap();
+    let id = captured["id"].as_str().unwrap().to_string();
+    let checks = |list: &[&str]| list.iter().map(|check| check.to_string()).collect::<Vec<_>>();
+    assert!(evidence::review(&mut c, &id, 1, "accepted").is_err());
+    assert!(evidence::review_checked(&mut c, &id, 1, "accepted", &checks(&["exists", "quote", "citator"])).is_err());
+    assert!(evidence::review_checked(&mut c, &id, 1, "accepted", &checks(&["exists", "quote", "citator", "support", "other"])).is_err());
+    evidence::review(&mut c, &id, 1, "rejected").unwrap();
+    evidence::review_checked(&mut c, &id, 1, "accepted", &checks(&["support", "citator", "quote", "exists"])).unwrap();
+    assert_eq!(evidence::read(&c, &id, None).unwrap()["review"], "accepted");
+    let audited: String = c.db.query_row("SELECT data FROM audit WHERE event='evidence_review' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    assert!(audited.contains("cite_check"), "{audited}");
+    // Other authorities keep the ordinary review.
+    let other = evidence::write(&mut c, object(&sid, "observation"), "human").unwrap();
+    evidence::review(&mut c, other["id"].as_str().unwrap(), 1, "accepted").unwrap();
+    c.verify_audit().unwrap();
+}
+#[test]
 fn revision_changes_invalidate_only_dependants_and_preserve_review_history() {
     let (_dir, mut c, sid) = setup();
     let a = evidence::write(&mut c, object(&sid, "statement"), "human").unwrap();

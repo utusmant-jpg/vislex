@@ -243,6 +243,19 @@ pub fn layout<R: Runtime>(app: &AppHandle<R>, rect: Rect, visible: bool) -> Resu
     Ok(())
 }
 
+/// Back, forward or reload from the toolbar. The resulting navigation still passes the
+/// pane's navigation policy, like any other navigation the user starts in the page.
+pub fn history<R: Runtime>(app: &AppHandle<R>, action: &str) -> Result<()> {
+    let pane = webview(app).context("The research browser is closed")?;
+    match action {
+        "back" => pane.eval("history.back()")?,
+        "forward" => pane.eval("history.forward()")?,
+        "reload" => pane.reload()?,
+        other => anyhow::bail!("Unknown browser action {other:?}"),
+    }
+    Ok(())
+}
+
 /// Signs out by deleting the research profile (cookies and site data). Closes the pane first
 /// and retries while the WebView2 browser process releases its files. Blocks; never call it
 /// on the UI thread.

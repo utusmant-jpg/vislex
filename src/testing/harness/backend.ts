@@ -54,7 +54,7 @@ const NO_EMIT = new Set([
   'save_provider_key', 'delete_provider_key', 'save_api_key', 'delete_api_key', 'key_status',
   'set_ai_access_route', 'save_codex_selection', 'codex_account_login', 'codex_account_cancel_login',
   // Research pane commands run in research_pane_command, before dispatch, and never emit.
-  'open_research_pane', 'research_pane_layout', 'close_research_pane', 'clear_research_session',
+  'open_research_pane', 'research_pane_layout', 'research_pane_history', 'close_research_pane', 'clear_research_session',
 ]);
 
 // src-tauri/src/research/mod.rs: hosts the research browser always allows, and the sign-in limit.
@@ -406,6 +406,10 @@ export class SyntheticBackend {
         return null;
       }
       case 'research_pane_state': return { open: this.researchPane.open, case_id: this.researchPane.open ? this.researchPane.caseId : null, host: this.researchPane.open ? this.researchPane.host : null, secure: this.researchPane.open ? true : null };
+      case 'research_pane_history':
+        if (!this.researchPane.open) throw new Error('The research browser is closed');
+        if (!['back', 'forward', 'reload'].includes(String(args.action))) throw new Error('Unknown browser action');
+        return null;
       case 'close_research_pane': this.closeResearchPane(); return null;
       case 'clear_research_session': this.closeResearchPane(); if (this.active) this.touch(this.active); return null;
     }
@@ -759,7 +763,7 @@ export class SyntheticBackend {
         const next = { id: existing?.id ?? syntheticId('object', 5000 + c.evidence.length), revision: (existing?.revision ?? 0) + 1, kind: String(object.kind ?? existing?.kind), title: String(object.title), content: String(object.content), source_ids: (object.source_ids as string[]) ?? [], locators: (object.locators as string[]) ?? [], review: 'unreviewed', stale: false, actor: 'human', start_seconds: null, end_seconds: null, dependencies: (object.dependencies as { id: string; revision: number }[]) ?? [] };
         c.evidence = [next, ...c.evidence.filter(item => item.id !== next.id)]; this.touch(c); return next;
       }
-      case 'evidence_review': { this.requireCase(args, 'evidence review', true); const found = c.evidence.find(item => item.id === args.id); if (!found || found.revision !== args.revision) throw new Error('Object revision changed'); if (found.stale) throw new Error('Recheck dependencies first'); found.review = String(args.review); this.touch(c); return null; }
+      case 'evidence_review': { this.requireCase(args, 'evidence review', true); const found = c.evidence.find(item => item.id === args.id); if (!found || found.revision !== args.revision) throw new Error('Object revision changed'); if (found.stale) throw new Error('Recheck dependencies first'); if (found.kind === 'authority' && found.actor === 'research_browser_adapter' && args.review === 'accepted' && !['exists', 'quote', 'citator', 'support'].every(check => Array.isArray(args.checks) && args.checks.includes(check))) throw new Error('Complete the cite-check before accepting this authority'); found.review = String(args.review); this.touch(c); return null; }
       case 'fit_clock': return { status: 'held_out_checks_passed', scale: 1.0000021, offset_seconds: 100.004, uncertainty_seconds: 0.041, drift_estimated: true, held_out_checks_passed: true, valid_source_range: [0, 60], residuals: ((args.anchors as { held_out: boolean }[]) ?? []).map((anchor, index) => ({ residual_seconds: 0.01 * (index + 1), held_out: anchor.held_out, within_tolerance: true })), limitations: ['Synthetic fit; anchors were not independently checked.'] };
       case 'investigation_workbench': this.requireCase(args, 'workbench'); return { investigations: c.investigations, affected_objects: c.evidence.filter(item => item.stale).map(item => ({ id: item.id, title: item.title, kind: item.kind, revision: item.revision })), next_offset: null };
       case 'coverage_map': {

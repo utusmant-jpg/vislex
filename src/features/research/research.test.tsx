@@ -32,7 +32,7 @@ function backend(initial: ReturnType<typeof grant> | null) {
       case 'open_research_pane': state.open = true; return { open: true };
       case 'research_pane_state': return state.open ? { open: true, case_id: 'synthetic-case', host: 'next.westlaw.com', secure: true } : { open: false, case_id: null, host: null, secure: null };
       case 'close_research_pane': case 'clear_research_session': state.open = false; return null;
-      case 'research_pane_layout': return null;
+      case 'research_pane_layout': case 'research_pane_history': return null;
       case 'app_ai_settings': return { configured: true, config: snapshot.ai_config, settings: snapshot.settings };
       case 'case_ai_scope': return { scope: 'app' };
       case 'provider_key_status': return { configured: true };
@@ -83,6 +83,16 @@ it('opens the pane over the slot, follows resizes, and hides it on unmount', asy
 
   view.unmount();
   expect(layouts().at(-1)).toEqual({ rect: { x: 380, y: 64, width: 700, height: 720 }, visible: false });
+});
+
+it('offers back, forward and reload once the pane is open', async () => {
+  backend(grant(true));
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  const history = await screen.findByRole('group', { name: 'Page history' });
+  for (const [name, action] of [['Back', 'back'], ['Forward', 'forward'], ['Reload', 'reload']] as const) {
+    fireEvent.click(within(history).getByRole('button', { name }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('research_pane_history', { action }));
+  }
 });
 
 it('hides the pane while a modal dialog is open and shows it again afterwards', async () => {

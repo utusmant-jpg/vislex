@@ -45,6 +45,11 @@ export function layoutResearchPane(rect: PaneRect, visible: boolean) {
   return api<null>('research_pane_layout', { rect, visible });
 }
 
+/** Toolbar history buttons; the navigation still passes the pane's allowlist. */
+export function researchPaneHistory(action: 'back' | 'forward' | 'reload') {
+  return api<null>('research_pane_history', { action });
+}
+
 export function researchPaneState() {
   return api<ResearchPaneState>('research_pane_state');
 }

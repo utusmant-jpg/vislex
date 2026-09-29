@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Globe, Lock, LogOut, Power, RefreshCw, WifiOff, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Globe, Lock, LogOut, Power, RefreshCw, RotateCw, WifiOff, X } from 'lucide-react';
 import { native } from '../../bridge';
 import { notify } from '../../ui';
 import {
   RESEARCH_GRANT_CHANGED, clearResearchSession, closeResearchPane, errorText, layoutResearchPane, openResearchPane,
-  rectOf, researchGrant, researchPaneState, setResearchGrant, type PaneRect, type ResearchGrant, type ResearchPaneState,
+  rectOf, researchGrant, researchPaneHistory, researchPaneState, setResearchGrant, type PaneRect, type ResearchGrant, type ResearchPaneState,
 } from './api';
 import './research.css';
 
@@ -152,6 +152,9 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
       if (live.current) setBusy(false);
     }
   }
+  function history(action: 'back' | 'forward' | 'reload') {
+    researchPaneHistory(action).catch(error => notify.fromError('The research browser could not do that', error));
+  }
   async function close() {
     setBusy(true);
     try { await closeResearchPane(); if (live.current) setPhase('closed'); }
@@ -213,6 +216,11 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
 
   return <section className="research-pane" aria-label="Research">
     <div className="research-toolbar">
+      {native && enabled && !isOffline && phase === 'open' ? <div className="research-toolbar-actions" role="group" aria-label="Page history">
+        <button type="button" className="quiet" data-size="sm" aria-label="Back" title="Back" onClick={() => history('back')}><ArrowLeft size={14} aria-hidden="true" /></button>
+        <button type="button" className="quiet" data-size="sm" aria-label="Forward" title="Forward" onClick={() => history('forward')}><ArrowRight size={14} aria-hidden="true" /></button>
+        <button type="button" className="quiet" data-size="sm" aria-label="Reload" title="Reload" onClick={() => history('reload')}><RotateCw size={14} aria-hidden="true" /></button>
+      </div> : null}
       <div className="research-address" role="group" aria-label="Current site">
         {secure ? <Lock size={13} className="research-lock" aria-label="Secure connection" role="img" /> : <Globe size={13} aria-hidden="true" />}
         <input className="research-address-input" readOnly tabIndex={-1} aria-label="Address" value={host ?? ''} placeholder={phase === 'open' ? 'Loading…' : 'Not open'} />

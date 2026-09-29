@@ -238,6 +238,7 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
             pane::layout(app, rect, args["visible"].as_bool().unwrap_or(false))?;
             Ok(Value::Null)
         })(),
+        "research_pane_history" => text(args, "action").and_then(|action| pane::history(app, action)).map(|_| Value::Null),
         "research_pane_state" => (|| {
             let pane = pane::webview(app);
             let url = pane.as_ref().and_then(|pane| pane.url().ok());
@@ -1160,7 +1161,7 @@ fn dispatch(app: &tauri::AppHandle, action: &str, args: Value) -> anyhow::Result
         "evidence_list" => crate::evidence::list(c,args["source_id"].as_str(),args["kind"].as_str(),args["offset"].as_u64().unwrap_or(0) as usize)?,
         "evidence_read" => crate::evidence::read(c,text(&args,"id")?,args["revision"].as_i64())?,
         "evidence_write" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding update");require_session_epoch(&state,&args)?;crate::evidence::write(c,serde_json::from_value(args["object"].clone())?,"human")?},
-        "evidence_review" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding review");require_session_epoch(&state,&args)?;crate::evidence::review(c,text(&args,"id")?,args["revision"].as_i64().context("Missing revision")?,text(&args,"review")?)?;Value::Null},
+        "evidence_review" => {anyhow::ensure!(c.meta("id")?.as_deref()==Some(text(&args,"case_id")?),"Case changed before finding review");require_session_epoch(&state,&args)?;let checks=serde_json::from_value::<Option<Vec<String>>>(args["checks"].clone()).context("Invalid cite-check list")?.unwrap_or_default();crate::evidence::review_checked(c,text(&args,"id")?,args["revision"].as_i64().context("Missing revision")?,text(&args,"review")?,&checks)?;Value::Null},
         "evidence_search" => crate::evidence::search(c,text(&args,"query")?,args["offset"].as_u64().unwrap_or(0) as usize)?,
         "fit_clock" => crate::evidence::fit_clock(&serde_json::from_value::<Vec<crate::evidence::Anchor>>(args["anchors"].clone())?)?,
         "team_status" => crate::teams::status(c,text(&args,"task_id")?)?,
