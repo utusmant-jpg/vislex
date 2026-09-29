@@ -13,6 +13,7 @@ use anyhow::{ensure, Result};
 pub mod cdp;
 pub mod actions;
 pub mod capture;
+pub mod citations;
 pub mod driver;
 pub mod playbook;
 pub mod snapshot;
