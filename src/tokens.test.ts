@@ -126,8 +126,8 @@ describe('token hygiene', () => {
     // A stylesheet imported from a component is bundled before theme.css (main.tsx imports App
     // first), so any layer it names would be declared ahead of the app's layer order.
     const root = fileURLToPath(new URL('.', import.meta.url));
-    const components = (readdirSync(root, { recursive: true }) as string[]).filter(file => file.endsWith('.tsx') && file !== 'main.tsx');
-    const offenders = components.filter(file => /^import\s+['"][^'"]+\.css['"]/m.test(readFileSync(join(root, file), 'utf8')));
+    const components = (readdirSync(root, { recursive: true }) as string[]).filter(file => /\.tsx?$/.test(file) && file !== 'main.tsx' && !/\.test\.tsx?$/.test(file));
+    const offenders = components.filter(file => /^import\s+(?:[\w{}\s,*]+\s+from\s+)?['"][^'"]+\.css(?:\?[^'"]*)?['"]/m.test(readFileSync(join(root, file), 'utf8')));
     expect(offenders).toEqual([]);
   });
 });

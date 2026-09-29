@@ -193,3 +193,16 @@ describe('research browser steps', () => {
     expect(liveLabel('search_passages', 'ignored')).toBe('Searching the evidence');
   });
 });
+
+describe('research step actions', () => {
+  it('reads a typed query that starts with "click" as a search, not a click', () => {
+    expect(researchStepLabel('research_act', 'click-wrap enforceability', 'type')).toBe('Searched: click-wrap enforceability');
+    expect(researchStepLabel('research_act', 'click', 'click')).toBe('Clicked on the page');
+    expect(researchStepLabel('research_act', 'press Enter', 'press')).toBe('Pressed Enter');
+    expect(researchStepLabel('research_act', 'scroll_down', 'scroll_down')).toBe('Scrolled down');
+  });
+  it('labels saved receipts from their arguments, so a click-like query stays a search after refresh', () => {
+    const summary = summarizeAction({ id: 'a1', name: 'research_act', input: JSON.stringify({ action: 'type', ref: 'e4', snapshot_version: 2, text: 'click-wrap enforceability', key: null }), output: '{}', status: 'complete', created_at: '2026-09-28T00:00:00Z' } as never);
+    expect(`${summary.verb} ${summary.object}`).toBe('Searched: click-wrap enforceability');
+  });
+});

@@ -137,7 +137,7 @@ export type ResearchStepText = { kind: StepKind; verb: string; object?: string }
  * "duty of care /s negligence", "Opened" + "next.westlaw.com/Document/X", "Read" + "lines 0–49",
  * "Captured" + "123 F.3d 456". Without a detail the step still reads as a sentence.
  */
-export function researchStep(name: string, detail?: string): ResearchStepText {
+export function researchStep(name: string, detail?: string, action?: string): ResearchStepText {
   const text = detail?.trim() || undefined;
   switch (name) {
     case 'research_status': return { kind: 'check', verb: 'Checked the research browser' };
@@ -146,6 +146,15 @@ export function researchStep(name: string, detail?: string): ResearchStepText {
     case 'research_read_page': return text ? { kind: 'read', verb: 'Read', object: text } : { kind: 'read', verb: 'Read the research page' };
     case 'research_capture': return text ? { kind: 'save', verb: 'Captured', object: text } : { kind: 'save', verb: 'Captured an authority' };
     case 'research_act': {
+      // The backend names the page action apart from its detail, so a typed query such as
+      // "click-wrap enforceability" is never read as a click.
+      if (action === 'type') return text && text !== 'type' ? { kind: 'search', verb: 'Searched:', object: text } : { kind: 'search', verb: 'Typed into the page' };
+      if (action === 'click') return { kind: 'browse', verb: 'Clicked on the page' };
+      if (action === 'scroll_down' || action === 'scroll_up') return { kind: 'browse', verb: `Scrolled ${action.slice(7)}` };
+      if (action === 'press') {
+        const key = text?.replace(/^press\s*/, '');
+        return { kind: 'browse', verb: key ? `Pressed ${key}` : 'Pressed a key' };
+      }
       if (!text) return { kind: 'browse', verb: 'Worked on the research page' };
       if (/^click\b/.test(text)) return { kind: 'browse', verb: 'Clicked on the page' };
       const scroll = /^scroll[_ ](down|up)$/.exec(text);
@@ -161,8 +170,8 @@ export function researchStep(name: string, detail?: string): ResearchStepText {
 }
 
 /** A research step as one line, e.g. "Searched: duty of care /s negligence". */
-export function researchStepLabel(name: string, detail?: string): string {
-  const step = researchStep(name, detail);
+export function researchStepLabel(name: string, detail?: string, action?: string): string {
+  const step = researchStep(name, detail, action);
   return step.object ? `${step.verb} ${step.object}` : step.verb;
 }
 
@@ -174,7 +183,7 @@ export type ResearchLine = { key: string; kind: StepKind; label: string; failed:
  * receipt of the same tool recorded at or after it was reported (a few seconds of slack), so a
  * step is never listed twice once its receipt arrives. Only the last `limit` lines are kept.
  */
-export function researchLines(recorded: StepSummary[], live: { activity: string; detail: string; at: number }[], limit = 6): ResearchLine[] {
+export function researchLines(recorded: StepSummary[], live: { activity: string; detail: string; action?: string; at: number }[], limit = 6): ResearchLine[] {
   const research = recorded.filter(step => isResearchTool(step.name));
   const used = new Set<string>();
   const pending: ResearchLine[] = [];
@@ -182,8 +191,8 @@ export function researchLines(recorded: StepSummary[], live: { activity: string;
     const match = research.find(item => !used.has(item.id) && item.name === step.activity && !(Date.parse(item.createdAt) < step.at - 5000));
     if (match) used.add(match.id);
     else {
-      const text = researchStep(step.activity, step.detail);
-      pending.push({ key: `live-${index}-${step.at}`, kind: text.kind, label: researchStepLabel(step.activity, step.detail), failed: false, pending: true });
+      const text = researchStep(step.activity, step.detail, step.action);
+      pending.push({ key: `live-${index}-${step.at}`, kind: text.kind, label: researchStepLabel(step.activity, step.detail, step.action), failed: false, pending: true });
     }
   });
   const done = research.map(step => ({ key: step.id, kind: step.kind, label: step.object ? `${step.verb} ${step.object}` : step.verb, failed: step.failed, pending: false }));
@@ -395,28 +404,28 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
     // The sentence uses the same one-line detail the backend sends live (researchDetail), so a
     // research step reads the same while it runs and after a refresh.
     case 'research_navigate':
-      Object.assign(base, researchStep(action.name, researchDetail(action.name, args)));
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args), str(args.action)));
       fact('Address', str(out?.url) ?? str(args.url));
       return base;
     case 'research_snapshot':
-      Object.assign(base, researchStep(action.name, researchDetail(action.name, args)));
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args), str(args.action)));
       fact('Looking for', str(args.find));
       return base;
     case 'research_act': {
-      Object.assign(base, researchStep(action.name, researchDetail(action.name, args)));
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args), str(args.action)));
       if (str(args.action) === 'type') fact('Query', str(args.text));
       // Results carry {performed, url, navigated, snapshot}; a click or key may open a new page.
       if (out?.navigated === true) { const host = hostOf(str(out.url)); base.result = host ? `opened a page on ${host}` : 'opened a new page'; fact('Address', str(out.url)); }
       return base;
     }
     case 'research_read_page':
-      Object.assign(base, researchStep(action.name, researchDetail(action.name, args, out)));
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args, out), str(args.action)));
       fact('Page', str(out?.title));
       fact('Address', str(out?.url));
       fact('Total lines', num(out?.total_lines));
       return base;
     case 'research_capture':
-      Object.assign(base, researchStep(action.name, researchDetail(action.name, args, out)));
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args, out), str(args.action)));
       fact('Title', str(out?.title) ?? str(args.title));
       fact('Proposition', str(args.proposition));
       fact('Locator', str(out?.locator));
@@ -428,11 +437,11 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
 }
 
 /** Present-tense label for a tool the model has just requested (live stream). */
-export function liveLabel(toolName: string | undefined, detail?: string): string {
+export function liveLabel(toolName: string | undefined, detail?: string, action?: string): string {
   const name = (toolName ?? '').replaceAll(' ', '_');
   if (!name) return 'Working';
   // A research step the backend is running, with its query, address, lines or citation.
-  if (detail?.trim() && isResearchTool(name)) return researchStepLabel(name, detail);
+  if ((detail?.trim() || action) && isResearchTool(name)) return researchStepLabel(name, detail, action);
   if (name === 'research_navigate') return 'Opening a research page';
   if (name === 'research_read_page') return 'Reading the research page';
   if (name === 'research_capture') return 'Saving an authority';

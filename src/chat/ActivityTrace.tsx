@@ -92,8 +92,8 @@ function GroupRow({ group, actions, onSource }: { group: StepGroup; actions: Map
   </details>;
 }
 
-export default function ActivityTrace({ turn, liveActivity, liveDetail, liveSteps, nameOf, onSource, eager }: {
-  turn: Task & { updated_at?: string }; liveActivity?: string; liveDetail?: string; liveSteps?: LiveStep[]; nameOf: NameLookup; onSource: SourceOpener; eager: boolean;
+export default function ActivityTrace({ turn, liveActivity, liveDetail, liveAction, liveSteps, nameOf, onSource, eager }: {
+  turn: Task & { updated_at?: string }; liveActivity?: string; liveDetail?: string; liveAction?: string; liveSteps?: LiveStep[]; nameOf: NameLookup; onSource: SourceOpener; eager: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [actions, setActions] = useState<Action[] | null>(null);
@@ -142,7 +142,7 @@ export default function ActivityTrace({ turn, liveActivity, liveDetail, liveStep
 
   // Only real signals: the tool the provider just reported, else the newest recorded step.
   const label = running
-    ? (liveActivity ? liveLabel(liveActivity, liveDetail) : progressLabel(steps.at(-1)))
+    ? (liveActivity ? liveLabel(liveActivity, liveDetail, liveAction) : progressLabel(steps.at(-1)))
     : actions
       ? traceRecap(steps)
       : turn.step ? `${turn.step} ${turn.step === 1 ? 'step' : 'steps'}` : 'Show activity';

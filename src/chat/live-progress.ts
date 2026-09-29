@@ -7,7 +7,7 @@ import { listen } from '@tauri-apps/api/event';
 import { native } from '../bridge';
 
 /** A research browser step the backend reported while running it (activity plus its detail). */
-export type LiveStep = { activity: string; detail: string; at: number };
+export type LiveStep = { activity: string; detail: string; action?: string; at: number };
 
 export type LiveProgress = {
   transmission: string;
@@ -16,6 +16,8 @@ export type LiveProgress = {
   activity: string;
   /** One-line detail the backend sent with that activity (research tools), or ''. */
   detail: string;
+  /** The page action of a research_act step (type, click, press, scroll_*), when sent. */
+  action?: string;
   characters: number;
   /** Research steps reported during this run, oldest first. Kept across transmissions. */
   steps: LiveStep[];
@@ -24,7 +26,7 @@ export type LiveProgress = {
 export const EMPTY_PROGRESS: LiveProgress = { transmission: '', text: '', activity: '', detail: '', characters: 0, steps: [] };
 const MAX_STEPS = 50;
 
-export type ProgressDelta = { text?: string; activity?: string; detail?: string; characters?: number };
+export type ProgressDelta = { text?: string; activity?: string; detail?: string; action?: string; characters?: number };
 export type ProgressEvent = { case_id: string; session_epoch?: number; task_id: string; transmission_id: string; delta: ProgressDelta };
 
 /** Folds one accepted agent-progress delta into the live state. */
@@ -33,14 +35,16 @@ export function applyProgress(state: LiveProgress, event: Pick<ProgressEvent, 't
   const current = state.transmission === event.transmission_id ? state : { ...EMPTY_PROGRESS, transmission: event.transmission_id, steps: state.steps };
   const activity = typeof delta.activity === 'string' && delta.activity ? delta.activity : undefined;
   const detail = typeof delta.detail === 'string' ? delta.detail.trim() : undefined;
+  const action = typeof delta.action === 'string' && delta.action ? delta.action : undefined;
   // Only a delta that carries a detail is a step the backend is running; the provider's own
   // tool-call deltas name the tool alone, so they never add a step twice.
-  const steps = activity && detail !== undefined ? [...current.steps, { activity, detail, at: now }].slice(-MAX_STEPS) : current.steps;
+  const steps = activity && (detail !== undefined || action) ? [...current.steps, { activity, detail: detail ?? '', ...(action ? { action } : {}), at: now }].slice(-MAX_STEPS) : current.steps;
   return {
     ...current,
     text: current.text + (delta.text ?? ''),
     activity: activity ?? current.activity,
     detail: activity ? detail ?? '' : current.detail,
+    action: activity ? action : current.action,
     characters: current.characters + (delta.characters ?? 0),
     steps,
   };

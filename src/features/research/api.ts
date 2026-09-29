@@ -50,11 +50,12 @@ export function researchPaneHistory(action: 'back' | 'forward' | 'reload') {
   return api<null>('research_pane_history', { action });
 }
 
-/** research_stop: pauses the task holding the research page and stops the page loading. */
+/** research_stop: pauses the task researching on the pane (holding the page, or between its
+ *  steps) and stops the page loading. `stopped` is false when no research task was running. */
 export type ResearchStopResult = { stopped: boolean; task_id: string | null };
 
-export function researchStop() {
-  return api<ResearchStopResult>('research_stop');
+export function researchStop(caseId: string, sessionEpoch?: number) {
+  return api<ResearchStopResult>('research_stop', caseSessionArgs(caseId, sessionEpoch));
 }
 
 export function researchPaneState() {

@@ -165,7 +165,10 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
     // aria-disabled rather than disabled while a stop is in flight, so keyboard focus stays here.
     if (stopping) return;
     setStopping(true);
-    try { await researchStop(); }
+    try {
+      const result = await researchStop(caseId, sessionEpoch);
+      if (!result?.stopped) notify.info('No research task is running', 'The page stopped loading; nothing else was running.');
+    }
     catch (error) { notify.fromError('Could not stop the research browser', error); }
     finally { if (live.current) setStopping(false); }
   }

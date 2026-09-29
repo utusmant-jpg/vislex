@@ -249,6 +249,8 @@ export class SyntheticBackend {
     const epoch = this.sessionEpoch;
     const delta: Record<string, unknown> = { activity: name };
     if (detail !== null && detail !== undefined) delta.detail = detail;
+    // desktop.rs run_research_job: a page action travels apart from its detail.
+    if (name === 'research_act' && typeof args.action === 'string') delta.action = args.action;
     this.emit('agent-progress', { case_id: owner.id, session_epoch: epoch, task_id: taskId, transmission_id: this.transmissionFor(taskId), delta });
     if (recordAfterMs === null) return;
     setTimeout(() => {
@@ -450,6 +452,8 @@ export class SyntheticBackend {
       // App-level: pauses the task holding the research page (the last one given a research
       // step) as stop_task does, and stops the page loading. Takes no arguments.
       case 'research_stop': {
+        // desktop.rs: optional case_id / session_epoch must match the pane's owner.
+        if (typeof args.case_id === 'string' && this.researchPane.open && args.case_id !== this.researchPane.caseId) throw new Error('The research browser is open for another case');
         const id = this.researchTask;
         const owner = id ? this.findTaskCase(id) : undefined;
         const task = owner?.tasks.find(item => item.id === id);

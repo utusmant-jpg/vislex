@@ -153,7 +153,7 @@ test('research steps appear in the chat turn as they run, and the toolbar Stop p
   await expect(stop).toBeFocused();
   await page.keyboard.press('Enter');
   const stopped = await lastCall(page, 'research_stop');
-  expect(stopped.args ?? {}).toEqual({});
+  expect(stopped.args).toEqual(expect.objectContaining({ case_id: expect.any(String) }));
   expect(stopped.result).toEqual({ stopped: true, task_id: taskId });
   await expect(turn.getByText('Stopped', { exact: true })).toBeVisible();
   expect(await page.evaluate(id => window.__vislexHarness!.task(id)?.status, taskId)).toBe('paused');

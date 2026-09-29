@@ -178,8 +178,7 @@ it('offers Stop while the pane is open and calls research_stop with no arguments
   expect(stop.tagName).toBe('BUTTON');
   expect(stop.getAttribute('tabindex')).toBeNull();
   fireEvent.click(stop);
-  await waitFor(() => expect(api).toHaveBeenCalledWith('research_stop'));
-  expect(api.mock.calls.find(([action]) => action === 'research_stop')).toEqual(['research_stop']);
+  await waitFor(() => expect(api).toHaveBeenCalledWith('research_stop', { case_id: 'synthetic-case', session_epoch: 4 }));
   expect(spy).not.toHaveBeenCalled();
   // Stop stays focusable (aria-disabled, not disabled) while the request is in flight.
   expect(stop.hasAttribute('disabled')).toBe(false);
