@@ -267,13 +267,226 @@
       "acceptance": ["All mandatory gates have evidence; blocked/not-run remains blocked/not-run. Independent review signs off actual tested scope, not claims of perfection.", "No data loss, silent citation retargeting, unauthorized transmission or false human approval in the protected journey. Performance/quality outcomes meet predeclared measured thresholds."],
       "tests": ["Full frontend, Rust, Python, packaged sandbox/native, migration, export, backup/restore, accessibility and held-out evaluation suites", "Final diff, documentation, coverage-register and secret/license review on the exact candidate commit."]
     },
-    {"id": "CAI-01", "title": "Tool availability and recoverable publication failures", "depends_on": [], "files": ["docs/implementation/CASE-INTELLIGENCE.md"], "problem": "See approved case-intelligence contract and acceptance matrix.", "changes": ["Implement the corresponding packet in CASE-INTELLIGENCE.md. Preserve provenance, grants, immutable revisions and human review."], "acceptance": ["Record production-path regressions, tested commit, exact commands, review and unavailable checks."], "tests": ["cargo test --locked --manifest-path src-tauri/Cargo.toml", "npm test", "npm run build"]},
-    {"id": "CAI-02", "title": "Durable analysis units and canonical evidence references", "depends_on": ["CAI-01"], "files": ["docs/implementation/CASE-INTELLIGENCE.md"], "problem": "See approved case-intelligence contract and acceptance matrix.", "changes": ["Implement the corresponding packet in CASE-INTELLIGENCE.md. Preserve provenance, grants, immutable revisions and human review."], "acceptance": ["Record production-path regressions, tested commit, exact commands, review and unavailable checks."], "tests": ["cargo test --locked --manifest-path src-tauri/Cargo.toml", "npm test", "npm run build"]},
-    {"id": "CAI-03", "title": "Automatic resumable analysis coordinator", "depends_on": ["CAI-02"], "files": ["docs/implementation/CASE-INTELLIGENCE.md"], "problem": "See approved case-intelligence contract and acceptance matrix.", "changes": ["Implement the corresponding packet in CASE-INTELLIGENCE.md. Preserve provenance, grants, immutable revisions and human review."], "acceptance": ["Record production-path regressions, tested commit, exact commands, review and unavailable checks."], "tests": ["cargo test --locked --manifest-path src-tauri/Cargo.toml", "npm test", "npm run build"]},
-    {"id": "CAI-04", "title": "Complete modality coverage and bounded inspection", "depends_on": ["CAI-03"], "files": ["docs/implementation/CASE-INTELLIGENCE.md"], "problem": "See approved case-intelligence contract and acceptance matrix.", "changes": ["Implement the corresponding packet in CASE-INTELLIGENCE.md. Preserve provenance, grants, immutable revisions and human review."], "acceptance": ["Record production-path regressions, tested commit, exact commands, review and unavailable checks."], "tests": ["cargo test --locked --manifest-path src-tauri/Cargo.toml", "npm test", "npm run build"]},
-    {"id": "CAI-05", "title": "Structured source-linked knowledge and synthesis", "depends_on": ["CAI-04"], "files": ["docs/implementation/CASE-INTELLIGENCE.md"], "problem": "See approved case-intelligence contract and acceptance matrix.", "changes": ["Implement the corresponding packet in CASE-INTELLIGENCE.md. Preserve provenance, grants, immutable revisions and human review."], "acceptance": ["Record production-path regressions, tested commit, exact commands, review and unavailable checks."], "tests": ["cargo test --locked --manifest-path src-tauri/Cargo.toml", "npm test", "npm run build"]},
-    {"id": "CAI-06", "title": "Knowledge-first answers and immutable publication candidates", "depends_on": ["CAI-05"], "files": ["docs/implementation/CASE-INTELLIGENCE.md"], "problem": "See approved case-intelligence contract and acceptance matrix.", "changes": ["Implement the corresponding packet in CASE-INTELLIGENCE.md. Preserve provenance, grants, immutable revisions and human review."], "acceptance": ["Record production-path regressions, tested commit, exact commands, review and unavailable checks."], "tests": ["cargo test --locked --manifest-path src-tauri/Cargo.toml", "npm test", "npm run build"]},
-    {"id": "CAI-07", "title": "Analysis interface and truthful activity reporting", "depends_on": ["CAI-06"], "files": ["docs/implementation/CASE-INTELLIGENCE.md"], "problem": "See approved case-intelligence contract and acceptance matrix.", "changes": ["Implement the corresponding packet in CASE-INTELLIGENCE.md. Preserve provenance, grants, immutable revisions and human review."], "acceptance": ["Record production-path regressions, tested commit, exact commands, review and unavailable checks."], "tests": ["cargo test --locked --manifest-path src-tauri/Cargo.toml", "npm test", "npm run build"]},
-    {"id": "CAI-08", "title": "Protected journey, migration and measured release verification", "depends_on": ["CAI-07"], "files": ["docs/implementation/CASE-INTELLIGENCE.md"], "problem": "See approved case-intelligence contract and acceptance matrix.", "changes": ["Implement the corresponding packet in CASE-INTELLIGENCE.md. Preserve provenance, grants, immutable revisions and human review."], "acceptance": ["Record production-path regressions, tested commit, exact commands, review and unavailable checks."], "tests": ["cargo test --locked --manifest-path src-tauri/Cargo.toml", "npm test", "npm run build"]}
+    {
+      "id": "CAI-01",
+      "title": "Tool availability and recoverable publication failures",
+      "depends_on": [],
+      "files": [
+        "docs/implementation/CASE-INTELLIGENCE.md",
+        "src-tauri/src/agent.rs",
+        "src-tauri/src/desktop.rs",
+        "src-tauri/tests/case_intelligence.rs"
+      ],
+      "problem": "See approved case-intelligence contract and acceptance matrix.",
+      "changes": [
+        "Filter advertised and executable tools using the same live source scope, mode, modality grant and internal task purpose.",
+        "Keep complete private error causes and stable error codes in receipts; do not send tool diagnostics as answer prose."
+      ],
+      "acceptance": [
+        "Record production-path regressions, tested commit, exact commands, review and unavailable checks."
+      ],
+      "tests": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+        "npm test",
+        "npm run build"
+      ]
+    },
+    {
+      "id": "CAI-02",
+      "title": "Durable analysis units and canonical evidence references",
+      "depends_on": [
+        "CAI-01"
+      ],
+      "files": [
+        "docs/implementation/CASE-INTELLIGENCE.md",
+        "src-tauri/src/intelligence.rs",
+        "src-tauri/src/case.rs",
+        "src-tauri/tests/case_intelligence.rs"
+      ],
+      "problem": "See approved case-intelligence contract and acceptance matrix.",
+      "changes": [
+        "Add namespaced SQLite tables for runs, units, attempts, proof references, typed payloads and exact answer candidates without changing shared numbered migrations.",
+        "Use existing immutable evidence revisions/dependencies/FTS and backup; resolve full references against immutable text/artifact owners and current restrictions."
+      ],
+      "acceptance": [
+        "Record production-path regressions, tested commit, exact commands, review and unavailable checks."
+      ],
+      "tests": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+        "npm test",
+        "npm run build"
+      ]
+    },
+    {
+      "id": "CAI-03",
+      "title": "Automatic resumable analysis coordinator",
+      "depends_on": [
+        "CAI-02"
+      ],
+      "files": [
+        "docs/implementation/CASE-INTELLIGENCE.md",
+        "src-tauri/src/intelligence.rs",
+        "src-tauri/src/automatic.rs",
+        "src-tauri/src/desktop.rs",
+        "src-tauri/tests/case_intelligence.rs"
+      ],
+      "problem": "See approved case-intelligence contract and acceptance matrix.",
+      "changes": [
+        "Wait for required extraction/discovery/transcription parents to settle, then dispatch one persisted internal unit at a time.",
+        "Foreground chat yields automatic work; resume only safe application-stop/preemption states with current inputs/model. Never replay uncertain delivery or override user cancellation.",
+        "Wake analysis after source, transcript, finding, grant, route or model changes; preserve human edits and retry attempt usage."
+      ],
+      "acceptance": [
+        "Record production-path regressions, tested commit, exact commands, review and unavailable checks."
+      ],
+      "tests": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+        "npm test",
+        "npm run build"
+      ]
+    },
+    {
+      "id": "CAI-04",
+      "title": "Complete modality coverage and bounded inspection",
+      "depends_on": [
+        "CAI-03"
+      ],
+      "files": [
+        "docs/implementation/CASE-INTELLIGENCE.md",
+        "src-tauri/src/intelligence.rs",
+        "src-tauri/src/processing.rs",
+        "workers/worker.py",
+        "workers/full_audio.py",
+        "src-tauri/tests/sandbox.rs"
+      ],
+      "problem": "See approved case-intelligence contract and acceptance matrix.",
+      "changes": [
+        "Enumerate exact text fragments, physical document pages/image frames, embedded images, transcript ordinal pages, verified audio channels and overlapping video windows in host code.",
+        "Require real inspection receipts, actual decoder PTS and observations of every supplied visual input; reuse immutable derivatives/read-only leases.",
+        "Persist unsupported structures, channel/extent uncertainty and decode gaps as blockers. Never mark their coverage ready until a supported provenance-preserving extractor/inspection path exists."
+      ],
+      "acceptance": [
+        "Record production-path regressions, tested commit, exact commands, review and unavailable checks."
+      ],
+      "tests": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+        "npm test",
+        "npm run build"
+      ]
+    },
+    {
+      "id": "CAI-05",
+      "title": "Structured source-linked knowledge and synthesis",
+      "depends_on": [
+        "CAI-04"
+      ],
+      "files": [
+        "docs/implementation/CASE-INTELLIGENCE.md",
+        "src-tauri/src/intelligence.rs",
+        "src-tauri/src/evidence.rs",
+        "src-tauri/tests/case_intelligence.rs"
+      ],
+      "problem": "See approved case-intelligence contract and acceptance matrix.",
+      "changes": [
+        "Publish typed, proof-linked findings with epistemic state, contrary evidence and structured data into immutable existing evidence objects.",
+        "Reconcile source/case findings through at most five-child synthesis groups without dropping original findings or their dependencies.",
+        "Invalidate affected transcript ordinal pages and dependent synthesis; reuse unchanged visual/signal/other transcript units. Legal issues retain jurisdiction/date/authority fields and existing review gates."
+      ],
+      "acceptance": [
+        "Record production-path regressions, tested commit, exact commands, review and unavailable checks."
+      ],
+      "tests": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+        "npm test",
+        "npm run build"
+      ]
+    },
+    {
+      "id": "CAI-06",
+      "title": "Knowledge-first answers and immutable publication candidates",
+      "depends_on": [
+        "CAI-05"
+      ],
+      "files": [
+        "docs/implementation/CASE-INTELLIGENCE.md",
+        "src-tauri/src/agent.rs",
+        "src-tauri/src/intelligence.rs",
+        "src-tauri/src/dossier.rs",
+        "src-tauri/tests/dossier.rs"
+      ],
+      "problem": "See approved case-intelligence contract and acceptance matrix.",
+      "changes": [
+        "Retrieve current permitted knowledge and bounded proof first on both API and subscription routes; inspect sources only for missing, stale, disputed or requested material.",
+        "Use host-issued reference IDs and saved immutable candidate IDs, preserving exact-wording support assessment and separate human review.",
+        "Answer directly with relevant detail and citations; remove bracketed internal labels and unsolicited confidence/next-action boilerplate while preserving material factual ambiguity."
+      ],
+      "acceptance": [
+        "Record production-path regressions, tested commit, exact commands, review and unavailable checks."
+      ],
+      "tests": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+        "npm test",
+        "npm run build"
+      ]
+    },
+    {
+      "id": "CAI-07",
+      "title": "Analysis interface and truthful activity reporting",
+      "depends_on": [
+        "CAI-06"
+      ],
+      "files": [
+        "docs/implementation/CASE-INTELLIGENCE.md",
+        "src/App.tsx",
+        "src/types.ts",
+        "src/chat/activity-summary.ts",
+        "src/App.test.tsx",
+        "src/chat/activity-summary.test.ts"
+      ],
+      "problem": "See approved case-intelligence contract and acceptance matrix.",
+      "changes": [
+        "Hide new internal analysis tasks from chats; expose persisted analysis counts, findings, usage, blockers and fenced controls in Jobs.",
+        "Distinguish extraction completion from analysis readiness and human review; display the effective selected route/model.",
+        "Count distinct original source IDs rather than receipts, and verify control interactions with captured case/session guards."
+      ],
+      "acceptance": [
+        "Record production-path regressions, tested commit, exact commands, review and unavailable checks."
+      ],
+      "tests": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+        "npm test",
+        "npm run build"
+      ]
+    },
+    {
+      "id": "CAI-08",
+      "title": "Protected journey, migration and measured release verification",
+      "depends_on": [
+        "CAI-07"
+      ],
+      "files": [
+        "docs/implementation/CASE-INTELLIGENCE.md",
+        "scripts/native-intelligence-acceptance.ps1",
+        "scripts/native-intelligence-acceptance.js",
+        "scripts/native-intelligence-cdp.mjs",
+        "scripts/native-intelligence-mock.mjs",
+        "src-tauri/tests/case_intelligence.rs",
+        "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md"
+      ],
+      "problem": "See approved case-intelligence contract and acceptance matrix.",
+      "changes": [
+        "Run synthetic protected journeys, source/grant/model races, migration/backup, cancellation and exact-proof regressions against real native/worker builds.",
+        "Separately verify real API/subscription model protocols and the verified-sidecar installer journey when a permitted test account/runtime is available; unavailable gates stay NOT RUN.",
+        "Measure cold analysis, warm retrieval, staged bytes, memory and actual model usage on small/medium/40-60 GB synthetic cases. Record hardware and inputs; do not infer legal accuracy or release certification from counts."
+      ],
+      "acceptance": [
+        "Record production-path regressions, tested commit, exact commands, review and unavailable checks."
+      ],
+      "tests": [
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+        "npm test",
+        "npm run build"
+      ]
+    }
   ]
 }

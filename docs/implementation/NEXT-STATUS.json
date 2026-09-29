@@ -509,36 +509,84 @@
       "state": "pending"
     },
     "CAI-01": {
-      "state": "in_progress",
-      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+      "state": "implemented",
+      "branch": "codex/case-intelligence",
+      "commit": "e4179e4ef250b7d3df063da809dc33a7276b2771 (tested code head); slices 2edea28, ac8b492, 207d13c, e4179e4",
+      "environment": "Windows isolated x86_64-pc-windows-msvc worktree; synthetic sources, native Tauri debug and real packaged worker AppContainer; no client/live-provider data.",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; docs/implementation/CASE-INTELLIGENCE.md; additional_work.CAI-IMPLEMENTATION-2026-09-28",
+      "note": "Both route catalogues and execution filter live grants/scope/mode/purpose; failures retain exact private causes and receipt IDs.",
+      "reviewer": "Separate read-only case_intelligence_review agent; concrete findings patched and final bounded re-review found no remaining concrete blocker in that scope. Owner ran tests.",
+      "unrun_checks": "Real provider/subscription case turns, verified-sidecar installer acceptance, 40-60 GB cold analysis/memory/usage benchmarks and unsupported extractor paths remain open. No verified/release/legal-accuracy claim."
     },
     "CAI-02": {
-      "state": "pending",
-      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+      "state": "implemented",
+      "branch": "codex/case-intelligence",
+      "commit": "e4179e4ef250b7d3df063da809dc33a7276b2771 (tested code head); slices 2edea28, ac8b492, 207d13c, e4179e4",
+      "environment": "Windows isolated x86_64-pc-windows-msvc worktree; synthetic sources, native Tauri debug and real packaged worker AppContainer; no client/live-provider data.",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; docs/implementation/CASE-INTELLIGENCE.md; additional_work.CAI-IMPLEMENTATION-2026-09-28",
+      "note": "Namespaced additive schema, immutable host-issued refs/candidates, proof ownership guards and backup/reopen regressions.",
+      "reviewer": "Separate read-only case_intelligence_review agent; concrete findings patched and final bounded re-review found no remaining concrete blocker in that scope. Owner ran tests.",
+      "unrun_checks": "Real provider/subscription case turns, verified-sidecar installer acceptance, 40-60 GB cold analysis/memory/usage benchmarks and unsupported extractor paths remain open. No verified/release/legal-accuracy claim."
     },
     "CAI-03": {
-      "state": "pending",
-      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+      "state": "implemented",
+      "branch": "codex/case-intelligence",
+      "commit": "e4179e4ef250b7d3df063da809dc33a7276b2771 (tested code head); slices 2edea28, ac8b492, 207d13c, e4179e4",
+      "environment": "Windows isolated x86_64-pc-windows-msvc worktree; synthetic sources, native Tauri debug and real packaged worker AppContainer; no client/live-provider data.",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; docs/implementation/CASE-INTELLIGENCE.md; additional_work.CAI-IMPLEMENTATION-2026-09-28",
+      "note": "Persisted hidden unit dispatcher, foreground preemption, no uncertain replay, human-edit/source/model/grant wake-ups, frozen subscription selection and usage attempts.",
+      "reviewer": "Separate read-only case_intelligence_review agent; concrete findings patched and final bounded re-review found no remaining concrete blocker in that scope. Owner ran tests.",
+      "unrun_checks": "Real provider/subscription case turns, verified-sidecar installer acceptance, 40-60 GB cold analysis/memory/usage benchmarks and unsupported extractor paths remain open. No verified/release/legal-accuracy claim."
     },
     "CAI-04": {
-      "state": "pending",
-      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+      "state": "implemented",
+      "branch": "codex/case-intelligence",
+      "commit": "e4179e4ef250b7d3df063da809dc33a7276b2771 (tested code head); slices 2edea28, ac8b492, 207d13c, e4179e4",
+      "environment": "Windows isolated x86_64-pc-windows-msvc worktree; synthetic sources, native Tauri debug and real packaged worker AppContainer; no client/live-provider data.",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; docs/implementation/CASE-INTELLIGENCE.md; additional_work.CAI-IMPLEMENTATION-2026-09-28",
+      "note": "Host modality inventory and actual-input completion gates; packaged worker image/Office/video/audio paths and lease reuse. Unsupported structure/channel/extent/decode units remain explicit coverage blockers.",
+      "reviewer": "Separate read-only case_intelligence_review agent; concrete findings patched and final bounded re-review found no remaining concrete blocker in that scope. Owner ran tests.",
+      "unrun_checks": "Real provider/subscription case turns, verified-sidecar installer acceptance, 40-60 GB cold analysis/memory/usage benchmarks and unsupported extractor paths remain open. No verified/release/legal-accuracy claim."
     },
     "CAI-05": {
-      "state": "pending",
-      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+      "state": "implemented",
+      "branch": "codex/case-intelligence",
+      "commit": "e4179e4ef250b7d3df063da809dc33a7276b2771 (tested code head); slices 2edea28, ac8b492, 207d13c, e4179e4",
+      "environment": "Windows isolated x86_64-pc-windows-msvc worktree; synthetic sources, native Tauri debug and real packaged worker AppContainer; no client/live-provider data.",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; docs/implementation/CASE-INTELLIGENCE.md; additional_work.CAI-IMPLEMENTATION-2026-09-28",
+      "note": "Typed proof-linked current findings and bounded synthesis tree; relevant correction invalidation reuses unchanged modality units; human edits/review are preserved.",
+      "reviewer": "Separate read-only case_intelligence_review agent; concrete findings patched and final bounded re-review found no remaining concrete blocker in that scope. Owner ran tests.",
+      "unrun_checks": "Real provider/subscription case turns, verified-sidecar installer acceptance, 40-60 GB cold analysis/memory/usage benchmarks and unsupported extractor paths remain open. No verified/release/legal-accuracy claim."
     },
     "CAI-06": {
-      "state": "pending",
-      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+      "state": "implemented",
+      "branch": "codex/case-intelligence",
+      "commit": "e4179e4ef250b7d3df063da809dc33a7276b2771 (tested code head); slices 2edea28, ac8b492, 207d13c, e4179e4",
+      "environment": "Windows isolated x86_64-pc-windows-msvc worktree; synthetic sources, native Tauri debug and real packaged worker AppContainer; no client/live-provider data.",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; docs/implementation/CASE-INTELLIGENCE.md; additional_work.CAI-IMPLEMENTATION-2026-09-28",
+      "note": "Common knowledge-first route context, exact candidate publication, grounded prose without internal bracket labels or unsolicited confidence/next actions.",
+      "reviewer": "Separate read-only case_intelligence_review agent; concrete findings patched and final bounded re-review found no remaining concrete blocker in that scope. Owner ran tests.",
+      "unrun_checks": "Real provider/subscription case turns, verified-sidecar installer acceptance, 40-60 GB cold analysis/memory/usage benchmarks and unsupported extractor paths remain open. No verified/release/legal-accuracy claim."
     },
     "CAI-07": {
-      "state": "pending",
-      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+      "state": "implemented",
+      "branch": "codex/case-intelligence",
+      "commit": "e4179e4ef250b7d3df063da809dc33a7276b2771 (tested code head); slices 2edea28, ac8b492, 207d13c, e4179e4",
+      "environment": "Windows isolated x86_64-pc-windows-msvc worktree; synthetic sources, native Tauri debug and real packaged worker AppContainer; no client/live-provider data.",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; docs/implementation/CASE-INTELLIGENCE.md; additional_work.CAI-IMPLEMENTATION-2026-09-28",
+      "note": "Jobs analysis controls/progress/usage, hidden automatic tasks, effective model display and unique original-source activity counts.",
+      "reviewer": "Separate read-only case_intelligence_review agent; concrete findings patched and final bounded re-review found no remaining concrete blocker in that scope. Owner ran tests.",
+      "unrun_checks": "Real provider/subscription case turns, verified-sidecar installer acceptance, 40-60 GB cold analysis/memory/usage benchmarks and unsupported extractor paths remain open. No verified/release/legal-accuracy claim."
     },
     "CAI-08": {
-      "state": "pending",
-      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+      "state": "in_progress",
+      "branch": "codex/case-intelligence",
+      "commit": "e4179e4ef250b7d3df063da809dc33a7276b2771 (tested code head); slices 2edea28, ac8b492, 207d13c, e4179e4",
+      "environment": "Windows isolated x86_64-pc-windows-msvc worktree; synthetic sources, native Tauri debug and real packaged worker AppContainer; no client/live-provider data.",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; docs/implementation/CASE-INTELLIGENCE.md; additional_work.CAI-IMPLEMENTATION-2026-09-28",
+      "note": "Synthetic native journey, real packaged AppContainer worker gates, protected Rust/frontend journeys and small warm retrieval measurement implemented; remaining release/performance acceptance is open.",
+      "reviewer": "Separate read-only case_intelligence_review agent; concrete findings patched and final bounded re-review found no remaining concrete blocker in that scope. Owner ran tests.",
+      "unrun_checks": "Real provider/subscription case turns, verified-sidecar installer acceptance, 40-60 GB cold analysis/memory/usage benchmarks and unsupported extractor paths remain open. No verified/release/legal-accuracy claim."
     }
   },
   "packaged_worker_and_acceptance_evidence": {
@@ -918,6 +966,43 @@
       ],
       "unrun_checks": "No Windows cargo test --locked, clippy, desktop feature build on Windows, packaged worker, sandbox include-ignored or native CDP journeys were run for these commits.",
       "note": "Plan: docs/implementation/FUNCTIONAL-PLAN.md. No case data was used; all fixtures are synthetic."
+    },
+    "CAI-IMPLEMENTATION-2026-09-28": {
+      "state": "implemented",
+      "branch": "codex/case-intelligence",
+      "base": "2ebc7addc4531caccfecadfd63525b08b56a0a02",
+      "commit_under_test": "e4179e4ef250b7d3df063da809dc33a7276b2771",
+      "backend_commit": "207d13c2a4d3daadeb6c958b644c928c58aeed53",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md; ignored local artifacts/case-intelligence-rust-final.log, case-intelligence-clippy.log and native-intelligence-acceptance.json",
+      "commands": [
+        "npm ci -> exit 0, 232 packages, 0 audit vulnerabilities",
+        "npm run test -> exit 0, 317 passed in 32 files",
+        "npm run build -> exit 0; Vite chunk-size warning remains",
+        "npx playwright test (PW_PORT=4178, CI=1) -> 54 passed, 5 initial page.goto/load timeouts during simultaneous cold native compile",
+        "npx playwright test --last-failed --workers=1 (same port/config) -> exit 0, 5 passed; all 59 covered without weakened tests/timeouts",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test case_intelligence -> exit 0, 25 passed, including 1100 findings through production agent publication and bounded synthesis",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --skip synthesis_tree_publishes_over_one_thousand_findings_without_dropping_dependencies -> exit 0, 271 passed, 33 ignored; stress test separately passed",
+        "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features subscription (TAURI_CONFIG bundle.resources=[]) -> exit 0 with warnings",
+        "Pinned local worker venv PyInstaller onedir rebuild using worktree workers and existing models -> exit 0",
+        "cargo test --locked --manifest-path src-tauri/Cargo.toml --test sandbox -- --ignored --nocapture --test-threads=1 -> exit 0, 28 passed against actual packaged worker in AppContainer",
+        "Dense video lease fixture -> 20237 source bytes, 20237 total staged bytes across two interval inspections, original unchanged; not a large-case benchmark",
+        "cargo build --locked --manifest-path src-tauri/Cargo.toml --features subscription,tauri/custom-protocol (TAURI_CONFIG worker-only resources) -> exit 0",
+        "scripts/native-intelligence-acceptance.ps1 -> exit 0, ready/hidden tasks/exact proof/human revision preserved/edit reconciled/pause-resume; 3 units, 3 findings",
+        "Warm native synthetic retrieval -> five reads 22.6-28.5 ms during Rust test activity, no extra mock provider requests; no general performance claim",
+        "scripts/native-app-ai-acceptance.ps1 on preceding branch debug build -> exit 0, app defaults/override/reopen inheritance, 0 provider calls; defaults paths unchanged by final review fixes",
+        "python scripts/vislex_plan.py check -> exit 0, 41 tasks valid; git diff --check -> exit 0"
+      ],
+      "reviewer": "Separate read-only agent reviewed adversarial contracts. Findings fixed: synthesis dependency overflow, live revocation, human-edit wake-up, single/multipage image support, tool parity, historical scoped metadata, unknown audio channels and overbroad correction invalidation. Final bounded re-review found no concrete blocker in those fixes; reviewer ran no tests.",
+      "unrun_checks": [
+        "No real API/subscription model turn or live client case was used; synthetic loopback protocol is not real-provider semantic compatibility or legal-accuracy certification.",
+        "Debug native app bundles worker only. Verified Codex sidecar installer/package journey remains unrun for these changes.",
+        "40-60 GB case analysis, comparable cold analysis/memory/usage baselines, two-hour lease/32-MiB publication benchmarks, scaling and screen reader matrix remain unrun.",
+        "Ignored discovery, semantic baseline and worker_video_e2e suites outside sandbox were not re-run here.",
+        "Unsupported charts/embedded objects/PPTX-ODT structures/additional video tracks/unknown extents/decode gaps/legacy channel inventory remain explicit blockers until supported extraction paths are available."
+      ],
+      "native_exe_sha256": "2CFE9662FC7EFCC0C7F66212C6D6A0554F7802D9C489E445B8A43543DE96371A",
+      "worker_exe_sha256": "9DBC14D7CEF0E188BA29A12F8B7E87E44D856552DAE4D02AFA0DF44FEC0BCFE5",
+      "note": "CAI namespace avoids R-number collisions; namespaced additive schema preserves shared migration numbering. Implementation is committed locally for Claude to merge later; primary checkout/live app untouched. Implemented is not verified."
     }
   },
   "redesign_worktree_progress": {

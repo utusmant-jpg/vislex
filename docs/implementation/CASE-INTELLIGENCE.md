@@ -27,3 +27,20 @@ A separate diff-review pass is required; report whether it was a separate agent 
 
 ## Slice evidence
 Tool availability slice: cargo test --locked --manifest-path src-tauri/Cargo.toml --test case_intelligence: exit 0, 2/2. Single-owner separate diff review checked both routes, live image revocation and task-purpose denial. Remaining reported-failure regressions belong to reference/candidate and coverage slices. No client case or provider was used.
+
+## Implemented contracts
+
+- `intelligence.rs` owns persisted runs, modality units, retry attempts, exact proof references, revisioned knowledge and immutable answer candidates. Schema additions use `meta.case_intelligence_schema=1`; they do not consume a numbered `PRAGMA user_version` migration slot.
+- The desktop dispatcher schedules one hidden analysis unit after required preparation settles. Foreground chat wins; safe app-stop/preemption resumes retain task delivery state. Uncertain transmissions are blocked from replay. Pause/cancel remain stopped until explicit resume.
+- Text ranges cover all extracted lines, including exact Unicode fragments for long lines. Physical PDF pages, image frames, Office images, transcript pages, verified audio channels and overlapping video windows are separate inputs. Completion requires actual matching inspection receipts and observations of every supplied image.
+- Five-child synthesis groups bound each dependency set to at most 500 findings. All original findings stay searchable; synthesis summaries do not replace their proof. A 1,100-finding production publication regression exercises this boundary.
+- Transcript corrections invalidate the affected ordinal page and synthesis. Unchanged visual windows, audio signals and other transcript pages retain their unit identity. Source/case manifests still notice every correction. Publication and retrieval calculate the same unit stamps.
+- Current knowledge excludes stale, unsupported, unreviewed or out-of-scope findings. Scoped briefs filter historical run metadata against current source permissions, including restrictions made before manifest reconciliation. Model support review and human review remain distinct.
+- Both access routes receive the same knowledge-first brief and host-issued references. Saved candidate IDs keep review and publication bound to exact wording. Answers render ordinary prose with source citations; internal confidence labels and unsolicited next actions are no longer required.
+- Jobs shows analysis coverage, findings, recorded usage, blockers and pause/cancel/resume/retry. Internal tasks do not create conversations. The header distinguishes extraction from analysis; the footer reflects the effective selected route/model. Activity counts distinct original source IDs.
+
+## Coverage and release limits
+
+The host accounts for every permitted source and records unsupported units as gaps. It does not claim an extractor can decode every structure. Office charts/embedded document objects, unrendered PPTX/ODT layout, additional video tracks, unknown PDF extent, decode gaps and missing/unsupported audio channel inventory remain explicit blockers. Older completed audio receipts missing channel counts are never silently treated as mono. These need supported extraction paths or verified replacement preparation before full coverage can become ready.
+
+The native synthetic journey verifies automatic scheduling, hidden tasks, exact proof, human-edit reconciliation, controls and warm retrieval. It is not a real-model semantic accuracy test. See `CASE-INTELLIGENCE-HANDOFF.md` and NEXT-STATUS for commands, reviewer findings, commit references and unrun release gates. No client case was inspected or changed, and no installed/live app was replaced.
