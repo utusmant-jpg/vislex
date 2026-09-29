@@ -568,9 +568,21 @@
       "remaining": "Westlaw DOM survey, selector map with editorial selectors and content_root, and Westlaw snapshot sizing. Until then the Westlaw playbook entry has an empty content_root and capture refuses on real Westlaw (\"Capture is not yet available for this site\")."
     },
     "R37": {
-      "state": "blocked",
+      "state": "implemented",
       "branch": "claude/research-browser",
-      "blocker": "Codex sidecar sign-in probe (dynamic-tool and no-persistence probes) has not been run."
+      "commit": "dcd79a7, 3ab5021",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f3d4079",
+      "evidence": "Research tools reach the ChatGPT-subscription route through subscription_context and the shared run_research_job (block_on on the Codex blocking thread), through the same prepare_research/execute/stash/consume_result path as the API-key route; reasoning for enabling without a new live probe (Codex case threads are ephemeral) in docs/implementation/CODEX-SUBSCRIPTION-GATE.md; src-tauri/tests/research.rs",
+      "commands": [
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked -> 318 passed, 0 failed (research 36, research_citations 6, lib 69, core 93, dossier 36, master_v4 34, plus others); run at 440b236, and f3d4079 changed only frontend files",
+        "cargo check --locked --features subscription,research -> exit 0"
+      ],
+      "unrun_checks": [
+        "Live no-persistence probe with a signed-in Codex sidecar",
+        "Dynamic-tool probe with a signed-in Codex sidecar"
+      ],
+      "remaining": "The live no-persistence probe with a signed-in sidecar has not been run; enabling rests on Codex case threads being ephemeral (CODEX-SUBSCRIPTION-GATE.md). Not verified: verification needs R36 real-Westlaw evidence and the manual R51 journey on real Westlaw.",
+      "reviewer": "No independent review of dcd79a7..f3d4079 yet."
     },
     "R38": {
       "branch": "claude/research-browser",
@@ -684,24 +696,25 @@
     "R45": {
       "state": "implemented",
       "branch": "claude/research-browser",
-      "commit": "tested at f2e7082",
-      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f2e7082 (includes merge of main 2ebc7ad)",
-      "evidence": "Research activity phrases in the chat",
+      "commit": "dcd79a7 (step delta.detail, research_stop), afef5fa (merged as 2f258cc), f3d4079",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f3d4079",
+      "evidence": "Agent-progress research steps carry delta.detail; inline research steps with detail labels in the chat turn and in saved receipts; BrowserPane toolbar Stop via the research_stop command (pauses the task holding the page and stops loading); Browser view stays in view when sending; research.css in the theme.css layer imports with a token-hygiene test refusing component stylesheet imports; light-theme --success darkened to meet 4.5:1",
       "commands": [
-        "npx vitest run -> 333 passed (33 files)",
+        "npx vitest run -> 344 passed (34 files)",
         "npm run build -> exit 0",
-        "npx playwright test e2e/harness-research.spec.ts (msedge) -> 4 passed (reported by the UI agent)",
-        "Playwright regression specs -> 40 passed, 1 accessibility.spec flake that then passed 4 times in a row (reported by the UI agent)",
-        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially:",
-        "powershell -File scripts/native-research-agent.ps1 -> PASS (real chat task: navigate, type, click, read, open opinion, read, research_capture, answer with locator evidence:<sid>#R1L4-L5; citation_mismatch false; extract has the opinion; authority unreviewed; no editorial leaks)"
+        "npx playwright test (all specs) -> 65 passed, 0 failed at f3d4079. Before f3d4079, 3 failed (harness-viewer-layout x2, workspace narrow inspection); they passed on main 2ebc7ad and were bisected to 0ca480e, whose research.css declared the surfaces layer before the app's layer order; f3d4079 moves it into the theme.css layer imports",
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked -> 318 passed, 0 failed (research 36, research_citations 6, lib 69, core 93, dossier 36, master_v4 34, plus others); run at 440b236, and f3d4079 changed only frontend files",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially, all PASS:",
+        "powershell -File scripts/native-research-acceptance.ps1 -> PASS, 28 checks: cdp eval selects only the VisLex target; agent refuses typing on the fixture sign-in page; capture of citable 123 F.3d 456 with no mismatch and no editorial text; accept refused without and with 3 checks, accepted with 4; steps navigate, act, act, read, navigate, read, checkpoint, read, capture, save_dossier, finish_task, review_candidate, finish_task; dossier export opinion-only",
+        "powershell -File scripts/native-research-view.ps1 and native-research-agent.ps1 -> PASS"
       ],
       "unrun_checks": [
         "Holding/stop_if_active runtime path",
         "Runtime-flag-off path",
         "Real Westlaw pages (R36)"
       ],
-      "remaining": "Partial: only the activity phrases are implemented; the rest of R45 is not. Not verified: a research packet cannot be marked verified without the R34-R36 spike evidence and the R51 native run; R36 real-Westlaw evidence and R51 are outstanding.",
-      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors."
+      "remaining": "Not verified: verification needs R36 real-Westlaw evidence and the manual R51 journey on real Westlaw.",
+      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors. No independent review of dcd79a7..f3d4079 yet."
     },
     "R46": {
       "state": "implemented",
@@ -772,18 +785,72 @@
       "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors."
     },
     "R49": {
-      "state": "blocked",
+      "state": "implemented",
       "branch": "claude/research-browser",
-      "blocker": "Depends on the R37 Codex sidecar sign-in probe; research tools stay on the API-key route until it passes."
+      "commit": "dcd79a7, 3ab5021",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f3d4079",
+      "evidence": "New research grants cover routes api_keys and chatgpt_subscription; grants made before dcd79a7 cover api_keys only and keep the research tools hidden on the subscription route until the toggle is switched again; src-tauri/tests/research.rs",
+      "commands": [
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked -> 318 passed, 0 failed (research 36, research_citations 6, lib 69, core 93, dossier 36, master_v4 34, plus others); run at 440b236, and f3d4079 changed only frontend files",
+        "cargo check --locked --features subscription,research -> exit 0",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially, all PASS:",
+        "powershell -File scripts/native-acceptance.ps1, native-research-agent.ps1, native-research-view.ps1, native-research-pane.ps1, native-research-spike-startup.ps1, native-research-spike.ps1 -> PASS"
+      ],
+      "unrun_checks": [
+        "A signed-in ChatGPT-subscription research turn run natively",
+        "Real Westlaw pages (R36)"
+      ],
+      "remaining": "No signed-in subscription turn has been run natively; the native research scripts use the scripted synthetic provider. Not verified: verification needs R36 real-Westlaw evidence and the manual R51 journey on real Westlaw.",
+      "reviewer": "No independent review of dcd79a7..f3d4079 yet."
     },
     "R50": {
-      "state": "pending"
+      "state": "pending",
+      "branch": "claude/research-browser",
+      "blocker": "Conditional on R36 (the user signing into Westlaw once in the research pane; docs/implementation/RESEARCH-SURVEY.md)."
     },
     "R51": {
-      "state": "pending"
+      "state": "implemented",
+      "branch": "claude/research-browser",
+      "commit": "afef5fa (merged as 2f258cc), f3d4079",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f3d4079",
+      "evidence": "scripts/native-research-acceptance.ps1/.mjs: full mock research journey against the loopback fixture with the scripted synthetic provider",
+      "commands": [
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially, all PASS:",
+        "powershell -File scripts/native-research-acceptance.ps1 -> PASS, 28 checks: cdp eval selects only the VisLex target; agent refuses typing on the fixture sign-in page; capture of citable 123 F.3d 456 with no mismatch and no editorial text; accept refused without and with 3 checks, accepted with 4; steps navigate, act, act, read, navigate, read, checkpoint, read, capture, save_dossier, finish_task, review_candidate, finish_task; dossier export opinion-only",
+        "powershell -File scripts/native-acceptance.ps1, native-research-agent.ps1, native-research-view.ps1, native-research-pane.ps1, native-research-spike-startup.ps1, native-research-spike.ps1 -> PASS",
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked -> 318 passed, 0 failed (research 36, research_citations 6, lib 69, core 93, dossier 36, master_v4 34, plus others); run at 440b236, and f3d4079 changed only frontend files",
+        "cargo check --locked --features subscription,research -> exit 0",
+        "npx vitest run -> 344 passed (34 files)",
+        "npm run build -> exit 0",
+        "npx playwright test (all specs) -> 65 passed, 0 failed at f3d4079. Before f3d4079, 3 failed (harness-viewer-layout x2, workspace narrow inspection); they passed on main 2ebc7ad and were bisected to 0ca480e, whose research.css declared the surfaces layer before the app's layer order; f3d4079 moves it into the theme.css layer imports"
+      ],
+      "unrun_checks": [
+        "Manual research journey on real Westlaw",
+        "Real Westlaw pages (R36)",
+        "Holding/stop_if_active runtime path",
+        "Runtime-flag-off path"
+      ],
+      "remaining": "The mock journey passes; the manual journey on real Westlaw is outstanding and needs R36. Open: Accepting an authority's cite-check after finish_task changes the dossier evidence stamp, so dossier approval/export then needs a recheck (\"Evidence changed; recheck dossier before approval\"); this is the existing review-state stamp design, and the R51 journey does the cite-check before finishing. In mock mode research_status reports on_research_site true on the fixture sign-in page because test mode has a single loopback origin; the sign-in refusal is exercised through the password-field typing rule instead. Not verified: verification needs R36 real-Westlaw evidence and the manual R51 journey on real Westlaw.",
+      "reviewer": "No independent review of dcd79a7..f3d4079 yet."
     },
     "R52": {
-      "state": "pending"
+      "state": "implemented",
+      "branch": "claude/research-browser",
+      "commit": "7278800 (merged as e376ae9), 440b236",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f3d4079",
+      "evidence": "research::citations extracts reporter citations in Rust from the vendored Free Law Project reporters-db 3.2.66 (BSD-2-Clause, verified from the PyPI wheel metadata and LICENSE; 97 KB data; generator scripts/build-reporters-db.py with pinned sha256 and --check); capture's detect_citation and mismatch use it; citation guard on finish_task answer (with gaps), write_record title/content/reason and save_work_product title/items_json refuses uncaptured reporter citations after a task has used the research browser, unless they are listed in gaps; src-tauri/tests/research.rs and research_citations tests",
+      "commands": [
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked -> 318 passed, 0 failed (research 36, research_citations 6, lib 69, core 93, dossier 36, master_v4 34, plus others); run at 440b236, and f3d4079 changed only frontend files",
+        "cargo check --locked --features subscription,research -> exit 0",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially, all PASS:",
+        "powershell -File scripts/native-research-acceptance.ps1 -> PASS, 28 checks: cdp eval selects only the VisLex target; agent refuses typing on the fixture sign-in page; capture of citable 123 F.3d 456 with no mismatch and no editorial text; accept refused without and with 3 checks, accepted with 4; steps navigate, act, act, read, navigate, read, checkpoint, read, capture, save_dossier, finish_task, review_candidate, finish_task; dossier export opinion-only"
+      ],
+      "unrun_checks": [
+        "CourtListener optional existence check (deferred)",
+        "Short forms such as \"Id.\" and \"410 U.S. at 120\" (not covered)"
+      ],
+      "remaining": "CourtListener optional existence check deferred; short-form citations (\"Id.\", \"410 U.S. at 120\") are not recognised by the guard. Not verified: verification needs R36 real-Westlaw evidence and the manual R51 journey on real Westlaw.",
+      "reviewer": "No independent review of dcd79a7..f3d4079 yet."
     }
   },
   "packaged_worker_and_acceptance_evidence": {

@@ -181,3 +181,19 @@ Tested commit `f2e7082` (includes the merge of main `2ebc7ad`), Windows 11, WebV
 The scripts assert that the real app WebView profile is unchanged.
 
 Not run: the Holding/`stop_if_active` runtime path, the runtime-flag-off path, and any real Westlaw page (R36). Capture refuses on real Westlaw until the R36 selector map supplies the playbook `content_root`, and the `full` snapshot scope can still return whole-page text on Westlaw document pages until then.
+
+### Re-run at `f3d4079` (R37/R49, R45, R51, R52)
+
+Same machine and build command. Changes since `f2e7082`: `dcd79a7` (research tools on the ChatGPT-subscription route, step detail, `research_stop`), `7278800` (reporter citations from reporters-db 3.2.66), `440b236` (citation guard), `afef5fa` (inline research steps, toolbar Stop, R51 journey) and `f3d4079` (research styles moved into the app's cascade layers). Each script was run serially and each passed:
+
+- `scripts/native-research-acceptance.ps1` (R51, 28 checks): `cdp eval` selects only the VisLex target; the agent is refused typing on the fixture sign-in page; the capture is citable as `123 F.3d 456` with no mismatch and no editorial text; cite-check acceptance is refused with no checks and with 3, and accepted with 4; the task steps run navigate, act, act, read, navigate, read, checkpoint, read, capture, save_dossier, finish_task, review_candidate, finish_task; the dossier export contains the opinion only.
+- `scripts/native-acceptance.ps1`, `native-research-agent.ps1`, `native-research-view.ps1`, `native-research-pane.ps1`, `native-research-spike-startup.ps1` and `native-research-spike.ps1`.
+
+Other checks at the same tree: `cargo test --locked` 318 passed (run at `440b236`; `f3d4079` changed only frontend files), `cargo check --locked --features subscription,research` exit 0, `npx vitest run` 344 passed, `npm run build` exit 0, `npx playwright test` 65 passed. Before `f3d4079`, three Playwright specs failed (harness-viewer-layout twice, workspace narrow inspection); they passed on main `2ebc7ad` and were bisected to `0ca480e`, where `research.css` declared the surfaces layer ahead of the app's layer order.
+
+Open:
+
+- Accepting an authority's cite-check after `finish_task` changes the dossier evidence stamp, so dossier approval and export then ask for a recheck ("Evidence changed; recheck dossier before approval"). This is the existing review-state stamp design; the R51 journey does the cite-check before finishing.
+- In mock mode `research_status` reports `on_research_site` true on the fixture sign-in page, because test mode has a single loopback origin. The sign-in refusal is exercised through the password-field typing rule instead.
+- No signed-in ChatGPT-subscription research turn, and no live no-persistence probe with a signed-in sidecar, has been run (see `CODEX-SUBSCRIPTION-GATE.md`).
+- The manual R51 journey on real Westlaw needs R36, which still waits for the user to sign into Westlaw once (`RESEARCH-SURVEY.md`).

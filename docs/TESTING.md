@@ -59,6 +59,24 @@ python3 scripts/vislex_plan.py check
 
 The Codex-sidecar subscription route is a Cargo feature that stays off for headless `cargo test` and the Linux checks, so they do not compile Tauri. The desktop npm scripts (`npm run desktop`, `desktop:build`, `desktop:build:x64`) pass `--features subscription` (it implies `desktop`), so app builds and dev runs on Windows include the route, for example before running `scripts/native-codex-account-test.ps1`. Without the feature, saved subscription preferences stay readable, and every path that would use the route stops with an explicit reason. It never falls back to API keys.
 
+## Research browser
+
+The research browser is the `research` Cargo feature. Its Rust tests run with the ordinary `cargo test --locked` (`src-tauri/tests/research.rs`, `src-tauri/tests/research_citations.rs` and the `research` library modules); on Windows also run `cargo check --locked --features subscription,research`. `python scripts/build-reporters-db.py --check` rebuilds the vendored reporters-db data from the pinned wheel and fails if it differs from the committed files.
+
+The native journeys need a debug build with the feature, and drive it in debug test mode against a loopback fixture and a scripted synthetic provider. They never use a real research site, provider, research profile or case:
+
+```powershell
+npm exec tauri build -- --debug --features subscription,research --no-bundle
+powershell -File scripts/native-research-spike-startup.ps1   # R34 startup mode: pane profile, no debugging port
+powershell -File scripts/native-research-spike.ps1           # R34 port mode: in-process CDP, isolation, refusals
+powershell -File scripts/native-research-pane.ps1            # R39 pane commands, per-case toggle, auto-close, sign-out
+powershell -File scripts/native-research-view.ps1            # R40 Browser view through the real UI
+powershell -File scripts/native-research-agent.ps1           # R44 chat task driving the pane through the agent loop
+powershell -File scripts/native-research-acceptance.ps1      # R51 full mock journey through cite-check and dossier export
+```
+
+Run them one at a time. Each takes `-BinaryPath` to test another build, writes its report under `artifacts/`, and asserts that the real app WebView profile is unchanged. None of them covers real Westlaw pages (R36) or a signed-in subscription turn.
+
 ## Windows
 
 Follow `README.md` → Verification for the full Windows sequence. Tier 1 is `cargo test --locked`, clippy and `cargo check --features desktop`. Tier 2 adds the packaged worker (`scripts/build-worker.ps1`), the ignored sandbox tests and the native CDP journeys.
