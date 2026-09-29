@@ -17,6 +17,7 @@ export type StepSummary = {
   /** The thing acted on, usually a source name, rendered with emphasis. */
   object?: string;
   sourceId?: string;
+  sourceIds?: string[];
   /** Qualifier after the object, e.g. "lines 1–120". */
   detail?: string;
   /** Outcome, e.g. "8 matches". */
@@ -90,6 +91,7 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
   const sourceName = (sourceId && nameOf(sourceId)) || str(out?.name) || (sourceId ? 'a source' : undefined);
   const base: StepSummary = {
     id: action.id, name: action.name, kind: 'other', verb: humanizeTool(action.name), facts: [], excerpts: [],
+    sourceIds: [...new Set([sourceId, ...(arr(out?.frames) ?? []).map(frame => str((frame as Json).source_id))].filter((id): id is string => !!id))],
     failed, repeat: !!out && 'repeat_notice' in out, createdAt: action.created_at,
   };
   if (failed) base.error = firstLine(action.output);
@@ -132,6 +134,9 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       }).filter(excerpt => excerpt.text);
       return base;
     }
+    case 'read_analysis_unit': return withSource('read', 'Read analysis input');
+    case 'query_case_knowledge': base.kind = 'search'; base.verb = 'Retrieved source-linked findings'; return base;
+    case 'review_saved_candidate': base.kind = 'check'; base.verb = 'Reviewed the saved answer'; return base;
     case 'read_text':
     case 'read_extract_revision': {
       const start = num(out?.start) ?? num(args.start);
@@ -156,7 +161,7 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       withSource('look', args.crop ? 'Looked closely at part of' : 'Looked at');
       return base;
     case 'inspect_artifact_image':
-      base.kind = 'look'; base.verb = 'Looked at a derived image';
+      withSource('look', 'Looked at a derived image');
       return base;
     case 'inspect_video_interval': {
       const startS = num(args.start), endS = num(args.end);
@@ -350,7 +355,7 @@ export function groupLabel(group: StepGroup): string {
 export function traceRecap(steps: StepSummary[]): string {
   if (!steps.length) return 'No recorded actions';
   const searches = steps.filter(step => step.kind === 'search' && !step.failed).length;
-  const consulted = new Set(steps.filter(step => ['read', 'look', 'watch', 'listen'].includes(step.kind) && !step.failed).map(step => step.sourceId ?? step.id)).size;
+  const consulted = new Set(steps.filter(step => ['read', 'look', 'watch', 'listen'].includes(step.kind) && !step.failed).flatMap(step => step.sourceIds ?? (step.sourceId ? [step.sourceId] : []))).size;
   const saved = steps.filter(step => step.kind === 'save' && !step.failed).length;
   const checks = steps.filter(step => step.kind === 'check' && !step.failed).length;
   const failed = steps.filter(step => step.failed).length;
