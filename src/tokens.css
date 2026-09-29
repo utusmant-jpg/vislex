@@ -217,7 +217,7 @@
     --evidence: oklch(50% 0.11 70);
     --evidence-bg: oklch(76% 0.13 80 / 0.16);
     --evidence-border: oklch(58% 0.12 72 / 0.5);
-    --success: oklch(49% 0.13 155);
+    --success: oklch(45% 0.13 155);
     --success-bg: oklch(60% 0.13 155 / 0.12);
     --warning: oklch(52% 0.13 62);
     --warning-bg: oklch(76% 0.14 75 / 0.18);

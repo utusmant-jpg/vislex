@@ -1,6 +1,5 @@
 import { useId, useState } from 'react';
 import { Check, CircleAlert } from 'lucide-react';
-import './research.css';
 
 /** The actor recorded on authorities captured from the research browser. */
 export const RESEARCH_ACTOR = 'research_browser_adapter';

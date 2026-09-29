@@ -3,7 +3,6 @@ import { LogOut, Plus, Trash2 } from 'lucide-react';
 import { native } from '../../bridge';
 import type { Snapshot } from '../../types';
 import { RESEARCH_GRANT_CHANGED, clearResearchSession, errorText, researchGrant, setResearchGrant, type ResearchGrant } from './api';
-import './research.css';
 
 /** Settings → Research browser: the per-case switch, extra sign-in hosts, and signing out. */
 export default function ResearchSettings({ snapshot }: { snapshot: Snapshot | null }) {

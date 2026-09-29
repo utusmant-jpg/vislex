@@ -1,91 +1,90 @@
 /* Research browser: split view, pane toolbar and slot, settings, cite-check.
-   Semantic tokens only (src/tokens.css). Joins the "surfaces" layer declared
-   in src/theme.css so it cascades like the other redesigned surface sheets. */
-@layer surfaces {
-  /* ------------------------------------------------------------ split view */
-  .research-split { flex: 1; min-height: 0; min-width: 0; display: flex; overflow: hidden; background: var(--canvas); }
-  .research-split-chat { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-  /* Width comes from the divider; on a narrow window both columns may shrink. */
-  .research-split-browser { flex: 0 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-  .research-divider {
-    width: 6px; flex: 0 0 6px; cursor: col-resize; position: relative; touch-action: none;
-    background: var(--canvas); border-left: 1px solid var(--border-subtle);
-  }
-  .research-divider::after {
-    content: ''; position: absolute; top: calc(50% - 18px); height: 36px; left: 1px; width: 3px; border-radius: 3px;
-    background: var(--border-control); opacity: 0; transition: opacity var(--dur-fast) var(--ease-standard);
-  }
-  .research-divider:hover::after, .research-divider:focus-visible::after { opacity: 1; background: var(--accent); }
-  .research-divider:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-
-  /* ------------------------------------------------------------ pane */
-  .research-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface-1); }
-  .research-toolbar {
-    min-height: var(--chrome-h); display: flex; align-items: center; gap: 8px; flex-shrink: 0;
-    padding: 0 8px 0 10px; border-bottom: 1px solid var(--border-subtle); background: var(--canvas); color: var(--text-2);
-  }
-  .research-address {
-    flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: var(--control-h-sm);
-    padding: 0 10px; border-radius: var(--radius-pill); background: var(--inset); border: 1px solid var(--border-subtle); color: var(--text-3);
-  }
-  .research-address > svg { flex-shrink: 0; }
-  .research-lock { color: var(--success); }
-  .research-address-input {
-    flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none;
-    font-size: var(--text-sm); color: var(--text-1); text-overflow: ellipsis;
-  }
-  .research-address-input:focus { outline: none; box-shadow: none; }
-  .research-address-input::placeholder { color: var(--text-3); }
-  .research-status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-caption); color: var(--text-2); white-space: nowrap; }
-  .research-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
-  .research-status-open .research-status-dot { background: var(--success); }
-  .research-status-opening .research-status-dot { background: var(--accent); animation: breathe 1.4s var(--ease-standard) infinite; }
-  .research-toolbar-actions { display: flex; align-items: center; gap: 2px; }
-
-  /* The native webview is placed exactly over this box; nothing inside it is
-     visible while the browser is open. */
-  .research-slot { flex: 1; min-height: 0; position: relative; background: var(--surface-1); }
-  .research-slot-state {
-    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-    padding: 24px; text-align: center;
-  }
-  .research-slot-state .danger-text { max-width: 420px; overflow-wrap: anywhere; margin: 0; }
-  .research-empty { padding: 40px 24px; }
-  .research-empty .danger-text { max-width: 420px; overflow-wrap: anywhere; }
-
-  /* ------------------------------------------------------------ settings */
-  .research-settings { display: flex; flex-direction: column; gap: var(--gap-stack, 14px); }
-  .research-switch {
-    position: relative; flex-shrink: 0; width: 38px; height: 22px; padding: 0; border-radius: var(--radius-pill);
-    background: var(--surface-3); border: 1px solid var(--border-control); cursor: pointer;
-    transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
-  }
-  .research-switch-thumb {
-    position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
-    background: var(--text-2); box-shadow: var(--shadow-sm); transition: transform var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
-  }
-  .research-switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
-  .research-switch[aria-checked="true"] .research-switch-thumb { transform: translateX(16px); background: var(--on-accent); }
-  .research-switch:disabled { cursor: not-allowed; opacity: 0.55; }
-  .research-switch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-  .research-host-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); overflow: hidden; }
-  .research-host-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 12px; font-size: var(--text-sm); color: var(--text-1); }
-  .research-host-list li + li { border-top: 1px solid var(--border-subtle); }
-  .research-host-list .mono { min-width: 0; overflow-wrap: anywhere; }
-  .research-host-add { display: flex; gap: 8px; align-items: center; }
-  .research-host-add input { flex: 1; min-width: 0; }
-
-  /* ------------------------------------------------------------ cite-check */
-  .research-authority .research-url { overflow-wrap: anywhere; }
-  .research-quote { margin: 0 0 4px; padding-left: 10px; border-left: 2px solid var(--evidence-border, var(--border)); color: var(--text-1); }
-  .research-mismatch {
-    display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 10px; border-radius: var(--radius-md);
-    background: var(--danger-bg); border: 1px solid color-mix(in oklab, var(--danger) 40%, transparent); color: var(--text-1); font-size: var(--text-sm);
-  }
-  .research-mismatch > svg { flex-shrink: 0; margin-top: 2px; color: var(--danger); }
-  .research-cite-check { margin: 10px 0 0; padding: 10px 12px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-1); min-width: 0; }
-  .research-cite-check legend { padding: 0 4px; font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--text-1); }
-  .research-cite-check ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .research-cite-check .field-hint { margin: 4px 0 0; }
-  .research-cite-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+   Semantic tokens only (src/tokens.css). Imported by src/theme.css into the
+   "surfaces" layer, like the other surface sheets; it must not be imported from
+   components, or its layer would be declared before the app's layer order. */
+/* ------------------------------------------------------------ split view */
+.research-split { flex: 1; min-height: 0; min-width: 0; display: flex; overflow: hidden; background: var(--canvas); }
+.research-split-chat { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* Width comes from the divider; on a narrow window both columns may shrink. */
+.research-split-browser { flex: 0 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.research-divider {
+  width: 6px; flex: 0 0 6px; cursor: col-resize; position: relative; touch-action: none;
+  background: var(--canvas); border-left: 1px solid var(--border-subtle);
 }
+.research-divider::after {
+  content: ''; position: absolute; top: calc(50% - 18px); height: 36px; left: 1px; width: 3px; border-radius: 3px;
+  background: var(--border-control); opacity: 0; transition: opacity var(--dur-fast) var(--ease-standard);
+}
+.research-divider:hover::after, .research-divider:focus-visible::after { opacity: 1; background: var(--accent); }
+.research-divider:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+/* ------------------------------------------------------------ pane */
+.research-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface-1); }
+.research-toolbar {
+  min-height: var(--chrome-h); display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  padding: 0 8px 0 10px; border-bottom: 1px solid var(--border-subtle); background: var(--canvas); color: var(--text-2);
+}
+.research-address {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: var(--control-h-sm);
+  padding: 0 10px; border-radius: var(--radius-pill); background: var(--inset); border: 1px solid var(--border-subtle); color: var(--text-3);
+}
+.research-address > svg { flex-shrink: 0; }
+.research-lock { color: var(--success); }
+.research-address-input {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none;
+  font-size: var(--text-sm); color: var(--text-1); text-overflow: ellipsis;
+}
+.research-address-input:focus { outline: none; box-shadow: none; }
+.research-address-input::placeholder { color: var(--text-3); }
+.research-status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-caption); color: var(--text-2); white-space: nowrap; }
+.research-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.research-status-open .research-status-dot { background: var(--success); }
+.research-status-opening .research-status-dot { background: var(--accent); animation: breathe 1.4s var(--ease-standard) infinite; }
+.research-toolbar-actions { display: flex; align-items: center; gap: 2px; }
+
+/* The native webview is placed exactly over this box; nothing inside it is
+   visible while the browser is open. */
+.research-slot { flex: 1; min-height: 0; position: relative; background: var(--surface-1); }
+.research-slot-state {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 24px; text-align: center;
+}
+.research-slot-state .danger-text { max-width: 420px; overflow-wrap: anywhere; margin: 0; }
+.research-empty { padding: 40px 24px; }
+.research-empty .danger-text { max-width: 420px; overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------------ settings */
+.research-settings { display: flex; flex-direction: column; gap: var(--gap-stack, 14px); }
+.research-switch {
+  position: relative; flex-shrink: 0; width: 38px; height: 22px; padding: 0; border-radius: var(--radius-pill);
+  background: var(--surface-3); border: 1px solid var(--border-control); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
+}
+.research-switch-thumb {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--text-2); box-shadow: var(--shadow-sm); transition: transform var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+}
+.research-switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.research-switch[aria-checked="true"] .research-switch-thumb { transform: translateX(16px); background: var(--on-accent); }
+.research-switch:disabled { cursor: not-allowed; opacity: 0.55; }
+.research-switch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.research-host-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); overflow: hidden; }
+.research-host-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 12px; font-size: var(--text-sm); color: var(--text-1); }
+.research-host-list li + li { border-top: 1px solid var(--border-subtle); }
+.research-host-list .mono { min-width: 0; overflow-wrap: anywhere; }
+.research-host-add { display: flex; gap: 8px; align-items: center; }
+.research-host-add input { flex: 1; min-width: 0; }
+
+/* ------------------------------------------------------------ cite-check */
+.research-authority .research-url { overflow-wrap: anywhere; }
+.research-quote { margin: 0 0 4px; padding-left: 10px; border-left: 2px solid var(--evidence-border, var(--border)); color: var(--text-1); }
+.research-mismatch {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 10px; border-radius: var(--radius-md);
+  background: var(--danger-bg); border: 1px solid color-mix(in oklab, var(--danger) 40%, transparent); color: var(--text-1); font-size: var(--text-sm);
+}
+.research-mismatch > svg { flex-shrink: 0; margin-top: 2px; color: var(--danger); }
+.research-cite-check { margin: 10px 0 0; padding: 10px 12px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-1); min-width: 0; }
+.research-cite-check legend { padding: 0 4px; font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--text-1); }
+.research-cite-check ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.research-cite-check .field-hint { margin: 4px 0 0; }
+.research-cite-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }

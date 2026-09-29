@@ -6,7 +6,6 @@ import {
   RESEARCH_GRANT_CHANGED, clearResearchSession, closeResearchPane, errorText, layoutResearchPane, openResearchPane,
   rectOf, researchGrant, researchPaneHistory, researchPaneState, researchStop, setResearchGrant, type PaneRect, type ResearchGrant, type ResearchPaneState,
 } from './api';
-import './research.css';
 
 export const PANE_STATE_POLL_MS = 1500;
 

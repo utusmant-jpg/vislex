@@ -1,6 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react';
 import BrowserPane from './BrowserPane';
-import './research.css';
 
 export const BROWSER_WIDTH_KEY = 'vislex.research.browserWidth';
 const DEFAULT_WIDTH = 640;

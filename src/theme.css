@@ -19,6 +19,7 @@
 @import "./styles/viewer.css" layer(surfaces);
 @import "./styles/workspaces.css" layer(surfaces);
 @import "./styles/settings.css" layer(surfaces);
+@import "./features/research/research.css" layer(surfaces);
 @import "tailwindcss/utilities.css" layer(utilities);
 
 /* Tailwind's dark: variant follows the app theme attribute, not the OS. */

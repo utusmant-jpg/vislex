@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // Parses src/tokens.css and asserts WCAG 2.x contrast for the semantic pairs the
@@ -118,5 +120,14 @@ describe('token hygiene', () => {
       const colours = [...text.matchAll(/^\s*--(canvas|surface-[123]|accent|border|text-[123]|evidence|ring|background|foreground|primary)\s*:/gm)].map(match => match[1]);
       expect(colours, file).toEqual([]);
     }
+  });
+
+  it('component code imports no stylesheets: theme.css owns the cascade layer order', () => {
+    // A stylesheet imported from a component is bundled before theme.css (main.tsx imports App
+    // first), so any layer it names would be declared ahead of the app's layer order.
+    const root = fileURLToPath(new URL('.', import.meta.url));
+    const components = (readdirSync(root, { recursive: true }) as string[]).filter(file => file.endsWith('.tsx') && file !== 'main.tsx');
+    const offenders = components.filter(file => /^import\s+['"][^'"]+\.css['"]/m.test(readFileSync(join(root, file), 'utf8')));
+    expect(offenders).toEqual([]);
   });
 });
