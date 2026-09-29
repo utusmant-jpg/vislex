@@ -6,7 +6,8 @@ import http from 'node:http';
 
 const port = Number(process.argv[2] ?? 9363);
 const fixture = process.argv[3] ?? 'http://127.0.0.1:9471';
-// 'agent' (R44, default) or 'journey' (R51: sign-in refusal, then research through finish_task).
+// 'agent' (R44, default), 'journey' (R51: sign-in refusal, then research through finish_task) or
+// 'westlaw' (the fast Westlaw tools against the fixture's Westlaw-shaped pages).
 const mode = process.argv[4] ?? 'agent';
 const transcript = [];
 // Research results seen so far, in order. The app compacts its input after a checkpoint, so the
@@ -181,6 +182,43 @@ function researchJourneyStep(results) {
   }
 }
 
+// ---------------------------------------------------------------- Westlaw macro mode
+// research_westlaw_search (a query replacing what the fixture's search box shows, Cases
+// category, jurisdiction reported as not applied), research_westlaw_document on the first row,
+// then research_capture of the opinion lines citing the neutral cite, which the capture must
+// confirm from the document's parallel citations; the answer cites that neutral cite.
+function westlawStep(input) {
+  const results = remember(input, seen);
+  const last = results.at(-1);
+  if (!last) return call('research_westlaw_search', { query: 'adv: theft /s "lawful owner"', jurisdiction: 'Ohio', content_type: 'cases' });
+  const output = parse(last.output);
+  if (output?.error !== undefined) return message(`Synthetic Westlaw run stopped: ${last.name} failed: ${last.output.slice(0, 300)}`);
+  switch (last.name) {
+    case 'research_westlaw_search': {
+      const first = output?.rows?.[0];
+      if (!first?.url) return message(`Synthetic Westlaw run stopped: no result rows in ${last.output.slice(0, 300)}`);
+      return call('research_westlaw_document', { url: first.url });
+    }
+    case 'research_westlaw_document': {
+      const lines = output?.lines ?? [];
+      const start = lines.find(line => line.text.includes('retains property of another'));
+      const end = lines.find(line => line.text.includes('circumstantial evidence'));
+      if (!start || !end) return message(`Synthetic Westlaw run stopped: the opinion lines were not found in ${last.output.slice(0, 300)}`);
+      return call('research_capture', {
+        title: 'Synthetic City v. Example Holdings', jurisdiction: 'Ohio Ct. App., 9th Dist.', relevant_date: null, citation_text: '2031-Ohio-1234',
+        proposition: 'Retaining property knowing it was obtained by theft is theft.', quote_start_line: start.n, quote_end_line: end.n,
+      });
+    }
+    case 'research_capture': {
+      const document = results.find(result => result.name === 'research_westlaw_document');
+      const keycite = parse(document?.output ?? '')?.keycite?.flag ?? 'unknown';
+      return message(`Synthetic Westlaw answer: Synthetic City v. Example Holdings, 2031-Ohio-1234 (KeyCite ${keycite}; mismatch ${output?.citation_mismatch}), holds that retaining property known to be stolen is theft ${output?.locator ?? 'no locator'}.`);
+    }
+    default:
+      return message(`Synthetic Westlaw run stopped after ${last.name}: ${last.output.slice(0, 200)}`);
+  }
+}
+
 function journeyStep(input) {
   const phase = journeyPhase(input);
   if (!phase) return message('Synthetic journey: no journey marker in the prompt.');
@@ -234,7 +272,7 @@ http.createServer((request, response) => {
     const checkpoint = payload.tool_choice?.name === 'checkpoint_review'
       ? call('checkpoint_review', { summary: 'Synthetic checkpoint: research in progress on the fixture site.', citations: [], gaps: [], next_steps: ['Continue the research journey.'] })
       : null;
-    const next = mode === 'journey' ? journeyStep : nextStep;
+    const next = mode === 'journey' ? journeyStep : mode === 'westlaw' ? westlawStep : nextStep;
     const step = checkpoint ?? (offered.includes('research_navigate') ? next(payload.input ?? []) : message('Synthetic research answer: research tools were not offered.'));
     if (mode === 'journey' && step.name === 'save_dossier') await heldUntilReleased();
     transcript.push({ mode, offered_research: offered.filter(name => name.startsWith('research_')), step: step.name ?? 'message', arguments: step.arguments ?? step.content?.[0]?.text });

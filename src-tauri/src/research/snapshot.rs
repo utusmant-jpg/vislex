@@ -33,18 +33,31 @@ const SNAPSHOT_FN: &str = r#"function (scope, excluded) {
     for (const element of matches) { if (!hidden.has(element)) { hidden.set(element, element.getAttribute('aria-hidden')); element.setAttribute('aria-hidden', 'true'); } }
   }
   try {
-    return { text: vislex.ariaSnapshot(root, { mode: 'ai' }), url: location.href, title: document.title, excluded: hidden.size };
+    const text = vislex.ariaSnapshot(root, { mode: 'ai' });
+    // Every ref a snapshot of this page handed out stays resolvable, whatever the scope of later
+    // snapshots. The map lives in this isolated world, so it dies with the page on navigation.
+    const refs = globalThis.__vislexRefs || (globalThis.__vislexRefs = new Map());
+    const last = vislex._lastAriaSnapshotForQuery;
+    if (last && last.info) for (const [ref, entry] of last.info) { if (entry && entry.element) refs.set(ref, entry.element); }
+    if (refs.size > 20000) for (const [ref, element] of Array.from(refs)) { if (!element.isConnected) refs.delete(ref); }
+    return { text, url: location.href, title: document.title, excluded: hidden.size };
   } finally {
     for (const [element, previous] of hidden) { previous === null ? element.removeAttribute('aria-hidden') : element.setAttribute('aria-hidden', previous); }
   }
 }"#;
 
-/// Returns the element for a ref from the latest snapshot, or throws if it is gone.
+/// Returns the element for a ref from any snapshot of the current page (the isolated world's
+/// ref map), or throws if the ref was never handed out on this page or its element is gone.
 const RESOLVE_FN: &str = r#"function (ref) {
-  const snapshot = globalThis.__vislex && globalThis.__vislex._lastAriaSnapshotForQuery;
-  const entry = snapshot && snapshot.info && snapshot.info.get(ref);
-  if (!entry || !entry.element || !entry.element.isConnected) throw new Error('stale ref');
-  return entry.element;
+  const refs = globalThis.__vislexRefs;
+  let element = refs ? refs.get(ref) : undefined;
+  if (!element) {
+    const snapshot = globalThis.__vislex && globalThis.__vislex._lastAriaSnapshotForQuery;
+    const entry = snapshot && snapshot.info && snapshot.info.get(ref);
+    element = entry && entry.element;
+  }
+  if (!element || !element.isConnected) throw new Error('stale ref');
+  return element;
 }"#;
 
 /// Which part of the page to snapshot.
@@ -268,7 +281,7 @@ impl<D: Driver> Session<D> {
         ensure!(valid_ref(reference), "Invalid element ref {reference:?}");
         ensure!(self.context.is_some() && version > self.page_base && version <= self.version, "The page changed since that snapshot; take a new snapshot first");
         let element = self.call_in_world(RESOLVE_FN, &[json!(reference)], false).await.map_err(|error| {
-            if error.to_string().contains("stale ref") { anyhow!("Element {reference} is not in the latest snapshot or no longer on the page; take a new snapshot") } else { error }
+            if error.to_string().contains("stale ref") { anyhow!("Element {reference} is no longer on the page (or was not in a snapshot of this page); take a new snapshot") } else { error }
         })?;
         element["objectId"].as_str().map(str::to_string).context("Element could not be resolved")
     }
@@ -363,6 +376,62 @@ mod tests {
                 assert!(!params["functionDeclaration"].as_str().unwrap().contains("css=body"));
             }
         }
+    }
+
+    /// The log's failure: e71 from a full snapshot failed as "not in the latest snapshot" after
+    /// a narrower (scope main) snapshot of the same page. Every snapshot now merges its refs into
+    /// the isolated world's map, and refs resolve from it (still refusing disconnected elements).
+    #[test]
+    fn refs_from_an_earlier_snapshot_of_the_same_page_still_resolve() {
+        assert!(SNAPSHOT_FN.contains("globalThis.__vislexRefs") && SNAPSHOT_FN.contains("refs.set(ref, entry.element)"), "snapshots merge their refs into the world's map");
+        assert!(RESOLVE_FN.contains("globalThis.__vislexRefs") && RESOLVE_FN.contains("isConnected"), "refs resolve from the map and gone elements are refused");
+        // The page side, scripted: the world's map holds every ref any snapshot handed out.
+        let known = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<String>::new()));
+        let removed = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<String>::new()));
+        let (map, gone) = (known.clone(), removed.clone());
+        let driver = FakeDriver::new(move |method, params| match method {
+            "Page.getFrameTree" => Ok(json!({"frameTree": {"frame": {"id": "F1"}}})),
+            "Page.createIsolatedWorld" => Ok(json!({"executionContextId": 7})),
+            "Runtime.evaluate" => Ok(json!({"result": {"value": true}})),
+            "Runtime.callFunctionOn" => {
+                let function = params["functionDeclaration"].as_str().unwrap_or_default();
+                if function == INSTALLED_FN {
+                    Ok(json!({"result": {"value": true}}))
+                } else if function == SNAPSHOT_FN {
+                    let (text, refs) = if params["arguments"][0]["value"] == "main" {
+                        ("- main [ref=e5]:\n  - paragraph [ref=e6]: Opinion text", vec!["e5", "e6"])
+                    } else {
+                        ("- textbox \"Search suggestions available after typing 3 characters. Use down arrow to access.\" [ref=e71]\n- main [ref=e5]:\n  - paragraph [ref=e6]: Opinion text", vec!["e71", "e5", "e6"])
+                    };
+                    map.lock().unwrap().extend(refs.into_iter().map(str::to_string));
+                    Ok(json!({"result": {"value": {"text": text, "url": "https://1.next.westlaw.com/Document/I1/View/FullText.html", "title": "Doc"}}}))
+                } else if function == RESOLVE_FN {
+                    let reference = params["arguments"][0]["value"].as_str().unwrap_or_default().to_string();
+                    if map.lock().unwrap().contains(&reference) && !gone.lock().unwrap().contains(&reference) {
+                        Ok(json!({"result": {"objectId": format!("obj-{reference}")}}))
+                    } else {
+                        Ok(json!({"exceptionDetails": {"exception": {"description": "Error: stale ref"}}}))
+                    }
+                } else {
+                    anyhow::bail!("unexpected function")
+                }
+            }
+            other => anyhow::bail!("unexpected {other}"),
+        });
+        let mut session = Session::new(driver);
+        block(async {
+            let full = session.snapshot(Scope::Full, None, false, None).await.unwrap();
+            let main = session.snapshot(Scope::Main, None, false, None).await.unwrap();
+            assert!(!main.text.contains("e71"));
+            assert_eq!(session.resolve("e71", full.version).await.unwrap(), "obj-e71", "a ref from the earlier, wider snapshot");
+            assert_eq!(session.resolve("e71", main.version).await.unwrap(), "obj-e71");
+            removed.lock().unwrap().insert("e71".into());
+            assert!(session.resolve("e71", main.version).await.unwrap_err().to_string().contains("no longer on the page"), "a disconnected element is refused");
+            assert!(session.resolve("e99", main.version).await.is_err(), "a ref never handed out is refused");
+            session.reset();
+            known.lock().unwrap().clear();
+            assert!(session.resolve("e5", main.version).await.unwrap_err().to_string().contains("page changed"), "navigation invalidates every ref");
+        });
     }
 
     #[test]
