@@ -6,7 +6,7 @@ export const shortcutGroups: { label: string; rows: { keys: string[][]; action: 
   { label: 'Workspace', rows: [
     { keys: [['Ctrl', 'K']], action: 'Command palette and case search' },
     { keys: [['Ctrl', ',']], action: 'Open settings' },
-    { keys: [['Ctrl', '1'], ['Ctrl', '5']], joiner: 'to', action: 'Chat, Evidence, Findings, Investigate, Jobs' },
+    { keys: [['Ctrl', '1'], ['Ctrl', '6']], joiner: 'to', action: 'Chat, Evidence, Findings, Investigate, Jobs, Browser' },
     { keys: [['Ctrl', 'B']], action: 'Show or hide navigation' },
     { keys: [['Ctrl', 'N']], action: 'New chat (with a case open)' },
     { keys: [['Ctrl', '/']], action: 'Show keyboard shortcuts' },

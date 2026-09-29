@@ -275,6 +275,49 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       fact('Gaps noted', arr(args.gaps)?.length);
       return base;
     }
+    // Research browser tools (src-tauri/src/research/tools.rs).
+    case 'research_status': base.kind = 'check'; base.verb = 'Checked the research browser'; return base;
+    case 'research_navigate': {
+      const url = str(out?.url) ?? str(args.url);
+      let host: string | undefined;
+      try { host = url ? new URL(url).host : undefined; } catch { host = undefined; }
+      base.kind = 'browse'; base.verb = 'Opened a research page'; if (host) { base.verb = 'Opened a page on'; base.object = host; }
+      fact('Address', url);
+      return base;
+    }
+    case 'research_snapshot': base.kind = 'browse'; base.verb = 'Looked over the research page'; fact('Looking for', str(args.find)); return base;
+    case 'research_act': {
+      const kind = str(args.action);
+      base.kind = 'browse';
+      if (kind === 'type') {
+        const typed = str(args.text);
+        base.kind = 'search'; base.verb = typed ? 'Searched the research site for' : 'Typed into the research page';
+        if (typed) base.object = `“${typed}”`;
+        fact('Query', typed);
+      } else if (kind === 'click') base.verb = 'Clicked on the research page';
+      else if (kind === 'press') { const key = str(args.key); base.verb = key ? `Pressed ${key} on the research page` : 'Pressed a key on the research page'; }
+      else if (kind === 'scroll_down' || kind === 'scroll_up') base.verb = `Scrolled ${kind === 'scroll_down' ? 'down' : 'up'} the research page`;
+      return base;
+    }
+    case 'research_read_page': {
+      const offset = num(args.offset), count = num(args.count);
+      const lines = arr(out?.lines);
+      const first = offset !== undefined ? offset + 1 : undefined;
+      const last = first !== undefined ? first + (lines ? lines.length : count ?? 1) - 1 : undefined;
+      base.kind = 'read'; base.verb = 'Read'; base.object = str(out?.title) ?? 'the research page';
+      if (first !== undefined && last !== undefined && last >= first) base.detail = first === last ? `line ${first}` : `lines ${first}–${last}`;
+      fact('Address', str(out?.url));
+      fact('Total lines', num(out?.total_lines));
+      return base;
+    }
+    case 'research_capture': {
+      const title = str(out?.title) ?? str(args.title);
+      base.kind = 'save'; base.verb = 'Saved an authority';
+      if (title) base.object = `“${title}”`;
+      fact('Citation', str(args.citation) ?? str((out?.citation as Json | undefined)?.raw));
+      fact('Proposition', str(args.proposition));
+      return base;
+    }
     default:
       if (sourceName) { base.object = sourceName; base.sourceId = sourceId; fact('Source', sourceName); }
       return base;
@@ -285,6 +328,11 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
 export function liveLabel(toolName: string | undefined): string {
   const name = (toolName ?? '').replaceAll(' ', '_');
   if (!name) return 'Working';
+  if (name === 'research_navigate') return 'Opening a research page';
+  if (name === 'research_read_page') return 'Reading the research page';
+  if (name === 'research_capture') return 'Saving an authority';
+  if (name === 'research_status') return 'Checking the research browser';
+  if (/^research_/.test(name)) return 'Working in the research browser';
   if (/^search/.test(name)) return 'Searching the evidence';
   if (/^(read_text|read_extract)/.test(name)) return 'Reading';
   if (/^read|^list/.test(name)) return 'Looking things up';

@@ -245,6 +245,36 @@ describe('SyntheticBackend guards and paging', () => {
   });
 });
 
+describe('research browser', () => {
+  it('grants per case, opens one pane and closes it when the session no longer allows it', async () => {
+    const { backend, events, command } = setup();
+    const guard = { case_id: FIXTURE.caseA.id, session_epoch: 1 };
+    const rect = { x: 400, y: 60, width: 600, height: 700 };
+    expect(await command('research_grant', guard)).toBeNull();
+    await expect(command('open_research_pane', { ...guard, rect })).rejects.toThrow('Turn on the research browser');
+    await expect(command('set_research_grant', { ...guard, enabled: true, sso_hosts: ['bad host'] })).rejects.toThrow('Invalid sign-in host');
+    await expect(command('set_research_grant', { ...guard, enabled: true, sso_hosts: ['next.westlaw.com'] })).rejects.toThrow('already allowed');
+    const grant = await command<{ enabled: boolean; revision: number; sso_hosts: string[] }>('set_research_grant', { ...guard, enabled: true, sso_hosts: ['Login.Firm.Example'] });
+    expect(grant).toMatchObject({ enabled: true, revision: 1, sso_hosts: ['login.firm.example'] });
+    // A toggle-only change keeps the hosts.
+    expect(await command('set_research_grant', { ...guard, enabled: true })).toMatchObject({ revision: 2, sso_hosts: ['login.firm.example'] });
+
+    const before = events.length;
+    await command('open_research_pane', { ...guard, rect });
+    await command('research_pane_layout', { rect: { ...rect, width: 640 }, visible: true });
+    expect(events.length).toBe(before);
+    expect(backend.researchPane).toMatchObject({ open: true, visible: true, rect: { ...rect, width: 640 } });
+    expect(await command('research_pane_state')).toEqual({ open: true, case_id: FIXTURE.caseA.id, host: 'next.westlaw.com', secure: true });
+
+    // Changing the hosts bumps the revision, which closes the pane (enforce_research_pane).
+    await command('set_research_grant', { ...guard, enabled: true, sso_hosts: [] });
+    expect(await command('research_pane_state')).toMatchObject({ open: false });
+    await command('open_research_pane', { ...guard, rect });
+    await command('clear_research_session');
+    expect(backend.researchPane.open).toBe(false);
+  });
+});
+
 describe('placeholders', () => {
   it('labels generated images as synthetic and never fabricates audio or video bytes', () => {
     const image = decodeURIComponent(placeholderUrl('abc', () => 'image'));

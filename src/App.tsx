@@ -3,7 +3,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  Archive, ArrowLeft, ArrowRight, ChevronsUpDown, CircleDot, FilePlus2, FolderOpen, History, Import,
+  Archive, ArrowLeft, ArrowRight, ChevronsUpDown, CircleDot, FilePlus2, FolderOpen, Globe, History, Import,
   ListChecks, Lock, Maximize2, MessageSquare, MessageSquarePlus, Minimize2, Minus, MoreHorizontal, NotebookPen, Pencil,
   Plus, RotateCcw, ScanSearch, Search, Settings, ShieldCheck, Sparkles, Trash2, X,
 } from 'lucide-react';
@@ -19,6 +19,7 @@ import AgentPanel from './components/AgentPanel';
 import ShortcutsSheet from './components/ShortcutsSheet';
 import BrandMark from './components/BrandMark';
 import ChatBoundary from './components/ChatBoundary';
+import BrowserView from './features/research/BrowserView';
 import { deriveTitle } from './chat/titles';
 import FolderImport from './components/FolderImport';
 import PaneDivider from './components/PaneDivider';
@@ -40,7 +41,7 @@ function WorkspaceLoading({ label, settings = false }: { label: string; settings
   return visible ? <div className={`workspace-loading ${settings ? 'settings-loading' : ''}`} role="status"><span className="activity-dot" aria-hidden="true" />{label}</div> : null;
 }
 
-type View = 'chat' | 'evidence' | 'findings' | 'review' | 'jobs';
+type View = 'chat' | 'evidence' | 'findings' | 'review' | 'jobs' | 'browser';
 type RecentCase = { id: string; name: string; root: string };
 const caseGuard = (snapshot: Snapshot) => ({ case_id: snapshot.id, ...(typeof snapshot.session_epoch === 'number' ? { session_epoch: snapshot.session_epoch } : {}) });
 
@@ -50,6 +51,7 @@ const views: { id: View; label: string; icon: typeof MessageSquare; shortcut: st
   { id: 'findings', label: 'Findings', icon: NotebookPen, shortcut: 'Ctrl+3' },
   { id: 'review', label: 'Investigate', icon: ScanSearch, shortcut: 'Ctrl+4' },
   { id: 'jobs', label: 'Jobs', icon: ListChecks, shortcut: 'Ctrl+5' },
+  { id: 'browser', label: 'Browser', icon: Globe, shortcut: 'Ctrl+6' },
 ];
 
 /** Recent cases are identified by id, name and folder only. Chat titles and
@@ -822,6 +824,7 @@ export default function App() {
     { id: 'view-findings', label: 'Go to Findings', hint: 'Ctrl+3', run: () => { setView('findings'); setPalette(false); } },
     { id: 'view-review', label: 'Go to Investigation workbench', hint: 'Ctrl+4', run: () => { setView('review'); setPalette(false); } },
     { id: 'view-jobs', label: 'Go to Jobs & issues', hint: 'Ctrl+5', run: () => { setView('jobs'); setPalette(false); } },
+    { id: 'view-browser', label: 'Go to Browser', hint: 'Ctrl+6', run: () => { setView('browser'); setPalette(false); } },
     { id: 'settings', label: 'Open settings', hint: 'Ctrl+,', run: () => { setPalette(false); openSettings(); } },
     { id: 'transcribe-all', label: 'Queue missing full transcripts', hint: '', run: () => { setPalette(false); run(async () => { if (!snapshot) throw new Error('Open a case first.'); await api('transcribe_all', caseGuard(snapshot)); await refresh(); }); } },
     { id: 'add-files', label: 'Add files to this case', hint: '', run: () => { setPalette(false); run(importFiles); } },
@@ -1023,7 +1026,11 @@ export default function App() {
             onSample={() => run(async () => { installSnapshot(await api<Snapshot>('load_demo')); })}
             onRecent={openRecent}
           /> : null}
-          {visibleSnapshot && view === 'chat' ? <ChatBoundary resetKey={`${snapshot!.id}:${conversationId ?? 'new'}`}><AgentPanel key={`${snapshot!.id}:${snapshot!.session_epoch ?? 'preview'}`} conversationId={conversationId} onRename={() => { const chat = conversations.find(item => item.id === conversationId); if (chat) beginRename('chat', chat.id, chat.title); }} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={openSettings} focusRequest={focusComposerRequest} /></ChatBoundary> : null}
+          {visibleSnapshot && (view === 'chat' || view === 'browser') ? (() => {
+            const chat = <ChatBoundary resetKey={`${snapshot!.id}:${conversationId ?? 'new'}`}><AgentPanel key={`${snapshot!.id}:${snapshot!.session_epoch ?? 'preview'}`} conversationId={conversationId} onRename={() => { const chat = conversations.find(item => item.id === conversationId); if (chat) beginRename('chat', chat.id, chat.title); }} onConversation={chooseConversation} snapshot={visibleSnapshot} selection={selection} refresh={refresh} run={run} onSource={selectSource} onSettings={openSettings} focusRequest={focusComposerRequest} /></ChatBoundary>;
+            // Browser: the same chat on the left, the research browser on the right.
+            return view === 'browser' ? <BrowserView key={`${snapshot!.id}:${snapshot!.session_epoch ?? 'preview'}`} chat={chat} caseId={snapshot!.id} sessionEpoch={snapshot!.session_epoch} offline={snapshot!.settings.offline} suspended={!!moreMenu} onOpenSettings={section => openSettings(section, 'case')} /> : chat;
+          })() : null}
           {!snapshot && view !== 'chat' ? <div className="empty-state workspace-view"><FolderOpen size={20} /><h3>Open a case first</h3><p>This workspace becomes available once a case is open.</p><button className="primary" onClick={() => setView('chat')}>Choose a case</button></div> : null}
           {snapshot && view === 'evidence' ? <EvidenceLibrary
             snapshot={snapshot}

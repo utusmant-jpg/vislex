@@ -7,6 +7,7 @@ import { CitationChip, Skeleton, StatusPill } from '../ui';
 import { usePagedSources } from '../usePagedSources';
 import SoundDiscovery from './SoundDiscovery';
 import ToolPanel from './ToolPanel';
+import ResearchCiteCheck, { ResearchAuthoritySummary, isResearchAuthority } from '../features/research/ResearchCiteCheck';
 
 type EvidenceObject = { id: string; revision: number; kind: string; title: string; content: string; source_ids: string[]; locators: string[]; review: string; stale: boolean; actor: string; start_seconds: number | null; end_seconds: number | null; dependencies?: { id: string; revision: number }[] };
 type Page = { objects: EvidenceObject[]; next_offset: number | null };
@@ -113,6 +114,10 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
   // Opening the editor from a card far down the list brings it into view.
   useEffect(() => { if (editingKey !== null) { editorHeading.current?.focus(); editorHeading.current?.scrollIntoView?.({ block: 'nearest' }); } }, [editingKey]);
   async function action(fn: () => Promise<void>) { setBusy(true); setError(''); try { await fn(); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
+  /** Records a review decision; a research-browser authority's acceptance carries its cite-check note. */
+  function recordReview(o: EvidenceObject, decision: string, extra: { note?: string; checks?: string[] } = {}) {
+    void action(async () => { const key = `${o.id}:${o.revision}`; setRestoreFocus({ key, version: pageVersion }); await api('evidence_review', { ...caseSessionArgs(snapshot.id,snapshot.session_epoch), id: o.id, revision: o.revision, review: decision, ...extra }); setRestoreFocus({ key, version: pageVersion + 1 }); setRefresh(v => v + 1); });
+  }
   function create() { setDependencyPreviews([]); setEditing({ id: '', revision: 0, kind: 'observation', title: '', content: '', source_ids: [], locators: [], dependencies: [], review: 'unreviewed', stale: false, actor: 'human', start_seconds: null, end_seconds: null }); }
   function change(partial: Partial<EvidenceObject>) { setEditing(o => o ? { ...o, ...partial } : o); }
   async function saveObject() {
@@ -198,13 +203,15 @@ export default function EvidenceNotebook({ snapshot, onClose, onSource }: { snap
       </summary>
       <div className="object-card-body">
         <p className="object-card-provenance">{o.actor} · <span className="mono">{o.id}</span></p>
-        {structuredContent(o)}
+        {isResearchAuthority(o) ? <ResearchAuthoritySummary content={o.content} /> : structuredContent(o)}
         {o.locators.length ? <div className="object-card-citations"><span className="object-card-label">Citations</span>{o.locators.map((citation, i) => <CitationChip key={i} value={citation} onOpen={(id, locator) => { onSource(id, locator); onClose(); }} />)}</div> : null}
         {o.stale ? <p className="notice warning"><TriangleAlert size={16} aria-hidden="true" /><span>A dependency changed. Review is disabled until a new revision rechecks the latest dependencies.</span></p> : null}
+        {isResearchAuthority(o) ? <ResearchCiteCheck object={o} busy={busy} onAccept={checked => recordReview(o, 'accepted', checked)} /> : null}
         <div className="object-card-actions">
           <button className="secondary" data-size="sm" disabled={busy} onClick={() => { setDependencyPreviews([]); setEditing(o); }}>Revise</button>
           <span className="object-card-review" role="group" tabIndex={-1} aria-label={`Review revision ${o.revision} of ${o.title}`}>
-            {['accepted', 'rejected', 'unreviewed'].map(review => <button key={review} className={`quiet review-${review}`} disabled={busy || o.stale || o.review === review} onClick={() => void action(async () => { const key = `${o.id}:${o.revision}`; setRestoreFocus({ key, version: pageVersion }); await api('evidence_review', { ...caseSessionArgs(snapshot.id,snapshot.session_epoch), id: o.id, revision: o.revision, review }); setRestoreFocus({ key, version: pageVersion + 1 }); setRefresh(v => v + 1); })}>{review === 'accepted' ? <Check size={14} /> : review === 'rejected' ? <X size={14} /> : <RotateCcw size={14} />}{review === 'accepted' ? 'Accept revision' : review === 'rejected' ? 'Reject revision' : 'Clear review'}</button>)}
+            {/* A research-browser authority is accepted only through its cite-check above. */}
+            {(isResearchAuthority(o) ? ['rejected', 'unreviewed'] : ['accepted', 'rejected', 'unreviewed']).map(review => <button key={review} className={`quiet review-${review}`} disabled={busy || o.stale || o.review === review} onClick={() => recordReview(o, review)}>{review === 'accepted' ? <Check size={14} /> : review === 'rejected' ? <X size={14} /> : <RotateCcw size={14} />}{review === 'accepted' ? 'Accept revision' : review === 'rejected' ? 'Reject revision' : 'Clear review'}</button>)}
           </span>
         </div>
       </div>

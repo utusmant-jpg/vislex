@@ -77,6 +77,7 @@ for a completed call), `axeViolations`.
 - `harness-jobs.spec.ts` — determinate progress only with reported totals; verbatim units; indeterminate fallback; recovery receipts and error routing.
 - `harness-navigation.spec.ts` — every workspace; large-case paging; every source kind in the viewer; open-file tabs by keyboard; palette results by keyboard; records, findings and investigation surfaces.
 - `harness-focus.spec.ts` — keyboard focus survives every tab close path, Send/Stop and modal errors (toasts render inside an open modal dialog); Alt+Arrow on a tab moves only the tab; checkbox focus rings and highlighted menu items under forced colours; a cancelled job's reason is neutral.
+- `harness-research.spec.ts` — Settings → Research browser (per-case switch by keyboard, sign-in host validation from the backend, sign out) with axe in dark and light; the Browser rail entry's split view, the pane placement calls that follow the slot and the divider, the pane hidden while Settings is open and after leaving the view; the four-item cite-check before accepting a captured authority (`backend.seedResearchAuthority({ mismatch })`). The native research webview is not part of the harness.
 - `harness-a11y.spec.ts` — axe WCAG 2.x A/AA over native-only states in dark and light, with a named baseline of known violations in shared code.
 
 Known app issues are encoded as `test.fail` (the test passes while the issue

@@ -100,3 +100,30 @@ describe('trace helpers', () => {
     expect(humanizeTool('read_text')).toBe('Read text');
   });
 });
+
+describe('research browser steps', () => {
+  it('describes each research tool in a plain sentence', () => {
+    expect(summarizeAction(action('research_status', {}, { open: true }))).toMatchObject({ kind: 'check', verb: 'Checked the research browser' });
+    expect(summarizeAction(action('research_navigate', { url: 'https://next.westlaw.com/Search/Home' }, { url: 'https://next.westlaw.com/Search/Home', snapshot: {} })))
+      .toMatchObject({ kind: 'browse', verb: 'Opened a page on', object: 'next.westlaw.com' });
+    expect(summarizeAction(action('research_snapshot', { scope: 'interactive', find: 'search box' }, { snapshot: {} })).verb).toBe('Looked over the research page');
+    const typed = summarizeAction(action('research_act', { action: 'type', ref: 'e12', snapshot_version: 3, text: 'notice period commercial lease', key: null }, { performed: 'type' }));
+    expect(typed).toMatchObject({ kind: 'search', verb: 'Searched the research site for', object: '“notice period commercial lease”' });
+    expect(typed.facts).toContainEqual({ label: 'Query', value: 'notice period commercial lease' });
+    expect(summarizeAction(action('research_act', { action: 'click', ref: 'e4', snapshot_version: 3, text: null, key: null }, {})).verb).toBe('Clicked on the research page');
+    expect(summarizeAction(action('research_act', { action: 'press', ref: null, snapshot_version: null, text: null, key: 'Enter' }, {})).verb).toBe('Pressed Enter on the research page');
+    expect(summarizeAction(action('research_act', { action: 'scroll_down', ref: null, snapshot_version: null, text: null, key: null }, {})).verb).toBe('Scrolled down the research page');
+    expect(summarizeAction(action('research_read_page', { offset: 0, count: 200 }, { title: 'Synthetic v. Example', lines: [{}, {}, {}], total_lines: 900 })))
+      .toMatchObject({ kind: 'read', verb: 'Read', object: 'Synthetic v. Example', detail: 'lines 1–3' });
+    expect(summarizeAction(action('research_capture', { citation: '1 F.4th 2' }, { title: 'Synthetic v. Example' })))
+      .toMatchObject({ kind: 'save', verb: 'Saved an authority', object: '“Synthetic v. Example”' });
+  });
+
+  it('labels research tools while they run instead of calling them team work', () => {
+    expect(liveLabel('research_navigate')).toBe('Opening a research page');
+    expect(liveLabel('research_act')).toBe('Working in the research browser');
+    expect(liveLabel('research_read_page')).toBe('Reading the research page');
+    expect(liveLabel('research_capture')).toBe('Saving an authority');
+    expect(liveLabel('request_more_research')).toBe('Briefing the team');
+  });
+});

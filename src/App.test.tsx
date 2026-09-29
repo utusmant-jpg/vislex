@@ -307,6 +307,24 @@ it('takes a selected historical text range to Chat and focuses the composer', as
   selection.mockRestore();
 });
 
+it('opens the Browser split view from the rail and Ctrl+6, keeping the chat on the left', async () => {
+  api.mockImplementation(async (action:string)=>action==='snapshot'?snapshot():action==='storage_usage'?{}:null);
+  render(<App/>);
+  await caseOpened();
+  const browser=screen.getByRole('button',{name:'Browser'});
+  fireEvent.click(browser);
+  expect(browser.getAttribute('aria-current')).toBe('true');
+  expect(screen.getByRole('separator',{name:'Resize research browser'})).toBeTruthy();
+  // The same chat stays usable beside the browser.
+  expect(screen.getByRole('textbox',{name:'Agent task'})).toBeTruthy();
+  expect(screen.getByText('The research browser is available in the Windows desktop app.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Chat'}));
+  expect(screen.queryByRole('separator',{name:'Resize research browser'})).toBeNull();
+  fireEvent.keyDown(window,{key:'6',ctrlKey:true});
+  expect(screen.getByRole('button',{name:'Browser'}).getAttribute('aria-current')).toBe('true');
+  expect(screen.getByRole('separator',{name:'Resize research browser'})).toBeTruthy();
+});
+
 it('discards a refresh from the previous case after switching projects', async () => {
   const old=snapshot();old.session_epoch=3;
   const next={...snapshot(),id:'new-case',name:'New case',root:'C:\\new-case'};

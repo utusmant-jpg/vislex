@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import BrandMark from './BrandMark';
 import {
-  AlertTriangle, Cpu, Info, KeyRound, Keyboard, ListChecks, Lock, Palette, Plus, RefreshCw, Save, ShieldCheck, Trash2, X,
+  AlertTriangle, Cpu, Globe, Info, KeyRound, Keyboard, ListChecks, Lock, Palette, Plus, RefreshCw, Save, ShieldCheck, Trash2, X,
 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import { api, native } from '../bridge';
@@ -10,16 +10,17 @@ import { configuredProfiles, defaultConfig, providerNames } from '../aiProfiles'
 import { springs } from '../lib/motion';
 import { StatusPill } from '../ui';
 import SecondOpinionGrantCard from '../features/escalation/SecondOpinionGrantCard';
+import ResearchSettings from '../features/research/ResearchSettings';
 import AppearanceSettings from './AppearanceSettings';
 import KeyboardSettings from './KeyboardSettings';
 import ModelSelect from './ModelSelect';
 import type { AIConfig, AIProfile, ModelOption, Provider, Settings, Snapshot } from '../types';
 
 const companies = Object.keys(providerNames) as Provider[];
-export const settingsSections = ['Appearance', 'Keyboard & accessibility', 'Accounts & models', 'Case permissions', 'Privacy & offline', 'Review & processing', 'About'] as const;
+export const settingsSections = ['Appearance', 'Keyboard & accessibility', 'Accounts & models', 'Case permissions', 'Privacy & offline', 'Review & processing', 'Research browser', 'About'] as const;
 export type SettingsSection = typeof settingsSections[number];
 const sectionGroups: { label: string; items: SettingsSection[] }[] = [
-  { label: 'AI and evidence', items: ['Accounts & models', 'Case permissions', 'Privacy & offline', 'Review & processing'] },
+  { label: 'AI and evidence', items: ['Accounts & models', 'Case permissions', 'Privacy & offline', 'Review & processing', 'Research browser'] },
   { label: 'Workspace', items: ['Appearance', 'Keyboard & accessibility'] },
   { label: 'VisLex', items: ['About'] },
 ];
@@ -30,6 +31,7 @@ const sectionIcons: Record<SettingsSection, ReactNode> = {
   'Case permissions': <ShieldCheck size={16} />,
   'Privacy & offline': <Lock size={16} />,
   'Review & processing': <ListChecks size={16} />,
+  'Research browser': <Globe size={16} />,
   'Appearance': <Palette size={16} />,
   'Keyboard & accessibility': <Keyboard size={16} />,
   'About': <Info size={16} />,
@@ -39,6 +41,7 @@ const sectionSummaries: Record<SettingsSection, string> = {
   'Case permissions': 'What case material permitted models may receive.',
   'Privacy & offline': 'Where case data lives and when AI requests may leave this machine.',
   'Review & processing': 'How AI work is checked, and where processing is tracked.',
+  'Research browser': 'Your legal research account in the built-in browser, per case.',
   'Appearance': 'Theme and density for this device.',
   'Keyboard & accessibility': 'Shortcuts, focus and motion.',
   'About': 'Local evidence workspace.',
@@ -446,6 +449,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
             </> : null}
           </fieldset> : null}
 
+          {section === 'Research browser' ? <ResearchSettings snapshot={snapshot} /> : null}
           {section === 'Appearance' ? <AppearanceSettings /> : null}
           {section === 'Keyboard & accessibility' ? <KeyboardSettings /> : null}
 

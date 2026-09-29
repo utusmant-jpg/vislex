@@ -90,7 +90,8 @@ function GrantChip({ settings, onOpen }: { settings: Settings; onOpen: () => voi
     ? `Offline mode is on; no AI requests are sent. Change it in ${settingsPath('Privacy & offline', 'case')}.`
     : `This case ${state === 'permitted' ? 'permits' : 'does not permit'} sending case text to AI; images ${settings.allow_images ? 'permitted' : 'not permitted'}. Choosing a model does not change this. Change it in ${settingsPath('Case permissions', 'case')}.`;
   return <Tooltip text={detail}>
-    <button type="button" className="chat-grant" data-state={state} onClick={onOpen}>
+    {/* Named explicitly: a narrow chat column (for example beside the research browser) hides the text. */}
+    <button type="button" className="chat-grant" data-state={state} aria-label={label} onClick={onOpen}>
       {state === 'offline' ? <CloudOff size={14} aria-hidden="true" /> : state === 'permitted' ? <ShieldCheck size={14} aria-hidden="true" /> : <ShieldOff size={14} aria-hidden="true" />}
       <span>{label}</span>
     </button>

@@ -37,6 +37,7 @@ const READ_ONLY = new Set([
   'actions', 'issue_history', 'record_detail', 'record_summary', 'source_detail', 'task_page', 'source_page', 'record_page', 'job_page', 'job_progress', 'attention_job_page', 'conversation_detail', 'case_summary',
   'revisions', 'processing_status', 'speaker_annotations', 'video_discovery_status', 'browse_video_discovery', 'storage_usage',
   'second_opinion_candidates', 'second_opinion_grant', 'list_second_opinions', 'second_opinion_preview',
+  'research_grant', 'research_pane_state',
   // App-level reads handled (and returned early) before the case dispatcher in desktop.rs.
   'app_ai_settings', 'ai_access_route', 'codex_account_status', 'codex_account_models', 'codex_account_limits', 'provider_key_status', 'provider_models',
   // Not listed: case_ai_scope and case_ai_access_route are reads, but desktop.rs
@@ -52,7 +53,27 @@ const NO_EMIT = new Set([
   'hybrid_search', 'export_word', 'verify_source',
   'save_provider_key', 'delete_provider_key', 'save_api_key', 'delete_api_key', 'key_status',
   'set_ai_access_route', 'save_codex_selection', 'codex_account_login', 'codex_account_cancel_login',
+  // Research pane commands run in research_pane_command, before dispatch, and never emit.
+  'open_research_pane', 'research_pane_layout', 'close_research_pane', 'clear_research_session',
 ]);
+
+// src-tauri/src/research/mod.rs: hosts the research browser always allows, and the sign-in limit.
+const RESEARCH_HOSTS = ['1.next.westlaw.com', 'next.westlaw.com', 'www.westlaw.com', 'signon.thomsonreuters.com'];
+const MAX_SSO_HOSTS = 10;
+export type ResearchGrant = { enabled: boolean; revision: number; changed_at: string; destination: string; sso_hosts: string[]; caps: Record<string, unknown>; routes: string[]; approval_mode: string };
+export type ResearchPane = { open: boolean; caseId: string | null; epoch: number; grantRevision: number; host: string | null; rect: { x: number; y: number; width: number; height: number } | null; visible: boolean };
+
+/** normalize_sso_host in research/mod.rs (ASCII names only). */
+function normalizeSsoHost(value: string): string {
+  const input = value.trim().replace(/\.$/, '');
+  const invalid = () => new Error(`Invalid sign-in host ${JSON.stringify(input)}; enter a host name such as login.firm.example`);
+  if (!input || /[/:@*?# ]/.test(input)) throw invalid();
+  const host = input.toLowerCase();
+  const labels = host.split('.');
+  if (host.length > 253 || labels.length < 2 || !labels.every(label => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) throw invalid();
+  if (RESEARCH_HOSTS.includes(host)) throw new Error(`${host} is already allowed`);
+  return host;
+}
 
 const defaultStream = (source: string, email: string): string[] => {
   const text = `Synthetic streamed answer for harness testing. The statement places two people near the north entrance evidence:${source}#R2L5-L5 and the facilities email records two door openings evidence:${email}#L6-L6. Displayed clocks remain unverified, so this is not a finding.`;
@@ -88,6 +109,10 @@ export class SyntheticBackend {
   // (grant required, single-use preview, no transcript change until decided).
   private secondOpinionGrant: { vendor: string; model: string; revision: number; granted_at: string } | null = null;
   private secondOpinions: Record<string, unknown>[] = [];
+  // SYNTHETIC research browser state; mirrors research/mod.rs grants and the pane rules in
+  // desktop.rs (one pane, owned by a case session, closed when that session no longer allows it).
+  researchGrants = new Map<string, ResearchGrant>();
+  researchPane: ResearchPane = { open: false, caseId: null, epoch: 0, grantRevision: 0, host: null, rect: null, visible: false };
 
   /** Every event the backend emitted, for asserting delivery (or its absence). */
   emitted: { event: string; payload: unknown; at: number }[] = [];
@@ -130,6 +155,7 @@ export class SyntheticBackend {
       }
       // Compute the response now (as the real dispatcher would), deliver it later.
       const result = isCommand ? this.dispatch(action, args) : this.plugin(cmd, args);
+      if (isCommand) this.enforceResearchPane();
       if (isCommand && !READ_ONLY.has(action) && !NO_EMIT.has(action)) this.caseChanged();
       if (wait) await sleep(wait);
       if (this.holds.has(action)) await new Promise<void>(release => this.waiting.push({ action, release }));
@@ -362,6 +388,26 @@ export class SyntheticBackend {
         return [{ id: `harness-model-${provider}-large`, name: `Harness ${provider} large (synthetic)` }, { id: `harness-model-${provider}-small`, name: `Harness ${provider} small (synthetic)` }, { id: provider === 'openai' ? 'harness-model-alpha' : provider === 'anthropic' ? 'harness-model-beta' : `harness-model-${provider}-mini`, name: 'Harness default (synthetic)' }];
       }
       case 'key_status': return { configured: this.storedKeys.size > 0 };
+      // ---- research pane (research_pane_command in desktop.rs; only opening needs a case) ----
+      case 'open_research_pane': {
+        const c = this.current();
+        this.requireEpoch(args);
+        if (args.case_id !== c.id) throw new Error('Case changed before opening the research browser');
+        if (c.settings.offline) throw new Error('Offline mode enabled');
+        const grant = this.researchGrants.get(c.id);
+        if (!grant?.enabled) throw new Error('Turn on the research browser for this case in Settings');
+        if (this.researchPane.open && (this.researchPane.caseId !== c.id || this.researchPane.epoch !== this.sessionEpoch)) throw new Error('The research browser is open for another case session');
+        this.researchPane = { open: true, caseId: c.id, epoch: this.sessionEpoch, grantRevision: grant.revision, host: 'next.westlaw.com', rect: this.paneRect(args), visible: true };
+        return { open: true };
+      }
+      case 'research_pane_layout': {
+        const rect = this.paneRect(args);
+        if (this.researchPane.open) { this.researchPane.rect = rect; this.researchPane.visible = args.visible === true; }
+        return null;
+      }
+      case 'research_pane_state': return { open: this.researchPane.open, case_id: this.researchPane.open ? this.researchPane.caseId : null, host: this.researchPane.open ? this.researchPane.host : null, secure: this.researchPane.open ? true : null };
+      case 'close_research_pane': this.closeResearchPane(); return null;
+      case 'clear_research_session': this.closeResearchPane(); if (this.active) this.touch(this.active); return null;
     }
 
     // ---- case lifecycle ----
@@ -516,6 +562,20 @@ export class SyntheticBackend {
         c.accessOverride = route; return { override: route, effective: route === 'app' ? this.accessRoute : route, selection_override: false, selection: null };
       }
       case 'save_case_codex_selection': throw new Error('Verified Codex sidecar is unavailable');
+      case 'research_grant': return this.researchGrants.get(c.id) ?? null;
+      case 'set_research_grant': {
+        this.requireCase(args, 'research browser update', true);
+        if (typeof args.enabled !== 'boolean') throw new Error('Missing research browser setting');
+        const previous = this.researchGrants.get(c.id);
+        const requested = args.sso_hosts === undefined || args.sso_hosts === null ? previous?.sso_hosts ?? [] : args.sso_hosts;
+        if (!Array.isArray(requested) || requested.some(host => typeof host !== 'string')) throw new Error('Invalid sign-in hosts');
+        if (args.enabled && c.settings.offline) throw new Error('Turn off offline mode before enabling the research browser');
+        if (requested.length > MAX_SSO_HOSTS) throw new Error(`At most ${MAX_SSO_HOSTS} sign-in hosts`);
+        const hosts = [...new Set((requested as string[]).map(normalizeSsoHost))].sort();
+        const grant: ResearchGrant = { enabled: args.enabled, revision: (previous?.revision ?? 0) + 1, changed_at: new Date().toISOString(), destination: 'westlaw', sso_hosts: hosts, caps: previous?.caps ?? {}, routes: ['api_keys'], approval_mode: 'autonomous' };
+        this.researchGrants.set(c.id, grant); this.touch(c);
+        return grant;
+      }
       case 'direct_media_permission': return { enabled: c.directMedia };
       case 'set_direct_media_permission': this.requireCase(args, 'media permission update', true); c.directMedia = Boolean(args.enabled); this.touch(c); return null;
       case 'ai_config': return c.ai_config;
@@ -728,6 +788,30 @@ export class SyntheticBackend {
       case 'backup': this.requireCase(args, 'backup', true); return { path: args.path };
     }
     throw new Error('Unknown application command');
+  }
+
+  private paneRect(args: Record<string, unknown>) {
+    const rect = args.rect as Record<string, unknown> | undefined;
+    if (!rect || !['x', 'y', 'width', 'height'].every(key => typeof rect[key] === 'number')) throw new Error('Missing research pane position');
+    return { x: Number(rect.x), y: Number(rect.y), width: Number(rect.width), height: Number(rect.height) };
+  }
+  private closeResearchPane() { this.researchPane = { ...this.researchPane, open: false, caseId: null, host: null, visible: false }; }
+  /** enforce_research_pane: the pane closes when its case session no longer allows it. */
+  private enforceResearchPane() {
+    const pane = this.researchPane;
+    if (!pane.open) return;
+    const grant = pane.caseId ? this.researchGrants.get(pane.caseId) : undefined;
+    const allowed = !!this.active && this.active.id === pane.caseId && this.sessionEpoch === pane.epoch && !this.active.settings.offline && !!grant?.enabled && grant.revision === pane.grantRevision;
+    if (!allowed) this.closeResearchPane();
+  }
+  /** Adds a captured research-browser authority (actor research_browser_adapter) for cite-check specs. */
+  seedResearchAuthority(options: { mismatch?: boolean } = {}) {
+    const c = this.current();
+    const id = syntheticId('object', 9000 + c.evidence.length);
+    const content = { url: 'https://next.westlaw.com/Document/SYNTHETIC-OPINION', title: 'Harbor Freight v. Synthetic Depot (SYNTHETIC)', citation: { raw: '123 F.4th 456 (9th Cir. 2025)', claimed: options.mismatch ? '123 F.4th 465 (9th Cir. 2025)' : '123 F.4th 456 (9th Cir. 2025)', mismatch: !!options.mismatch }, quote: { exact: 'A notice period runs from actual receipt. (Synthetic quotation for software testing.)', locator: 'line 42' }, proposition: 'Notice runs from receipt (synthetic).', treatment_status: 'not_checked', proposition_support: 'unassessed' };
+    const object = { id, revision: 1, kind: 'authority', title: 'Harbor Freight v. Synthetic Depot (SYNTHETIC)', content: JSON.stringify(content), source_ids: [], locators: [], review: 'unreviewed', stale: false, actor: 'research_browser_adapter', start_seconds: null, end_seconds: null, dependencies: [] };
+    c.evidence = [object, ...c.evidence]; this.touch(c);
+    return id;
   }
 
   private setJob(c: HarnessCase, id: unknown, status: string) {
