@@ -68,8 +68,8 @@ function nextStep(input) {
 
 // ---------------------------------------------------------------- R51 journey mode
 // Two tasks, told apart by a marker in the user's prompt. JOURNEY-SIGNIN: check the page, look
-// at it, try to type into its search box (the app refuses while a password field is on the
-// page), then stop and ask the user. JOURNEY-RESEARCH: search, read, open the opinion, read it,
+// at it, try to type into its password field (the app leaves passwords to the user), then stop
+// and ask the user. JOURNEY-RESEARCH: search, read, open the opinion, read it,
 // capture the quoted lines, declare a one-claim dossier citing the capture's locator, and finish
 // through finish_task (which asks for a support review first, as agent.rs requires).
 const journeySeen = { signin: new Map(), research: new Map() };
@@ -106,9 +106,9 @@ function signinStep(results) {
   if (!last) return call('research_status', {});
   if (last.name === 'research_status') return call('research_snapshot', { scope: 'interactive', find: null, delta: false, max_chars: null });
   if (last.name === 'research_snapshot') {
-    const ref = refOf(last.output, /searchbox \\?"Search\\?" \[ref=(e\d+)\]/);
-    if (!ref) return message(`${SIGNIN_STOP} (No search box: ${last.output.slice(0, 200)})`);
-    return call('research_act', { action: 'type', ref, snapshot_version: versionOf(last.output), text: 'duty of care /s negligence', key: null });
+    const ref = refOf(last.output, /textbox \\?"Password\\?" \[ref=(e\d+)\]/);
+    if (!ref) return message(`${SIGNIN_STOP} (No password field: ${last.output.slice(0, 200)})`);
+    return call('research_act', { action: 'type', ref, snapshot_version: versionOf(last.output), text: 'not-a-real-password', key: null });
   }
   return message(`${SIGNIN_STOP} The browser reported: ${last.output.slice(0, 240)}`);
 }

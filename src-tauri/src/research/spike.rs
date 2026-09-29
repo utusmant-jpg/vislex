@@ -284,11 +284,11 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, start: String, profile: std::pat
         let stale = session.resolve(button.as_deref().unwrap_or("e1"), snapshot.version).await;
         outcome.insert("old_ref_after_navigation".into(), json!(stale.map_err(|error| error.to_string())));
         let signin = session.snapshot(Scope::Interactive, None, false, None).await?;
-        let refused = match ref_of(&signin.text, "- searchbox") {
-            Some(search) => session.type_text(&search, signin.version, "anything").await.map_err(|error| error.to_string()),
-            None => Err("no searchbox ref".into()),
+        let refused = match ref_of(&signin.text, "- textbox \"Password\"") {
+            Some(password) => session.type_text(&password, signin.version, "anything").await.map_err(|error| error.to_string()),
+            None => Err("no password field ref".into()),
         };
-        outcome.insert("typing_with_password_on_page".into(), json!(refused));
+        outcome.insert("typing_into_password_field".into(), json!(refused));
         outcome.insert("offsite_navigation".into(), json!(session.navigate("https://example.com/", &policy, Duration::ZERO, Duration::from_secs(5)).await.map_err(|error| error.to_string())));
         Value::Object(outcome)
     };
@@ -322,7 +322,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, start: String, profile: std::pat
     if session["typed"].get("Ok").is_none() { violations.push("session could not type into the search box"); }
     if session["clicked"].get("Ok").is_none() || session["page_saw_trusted_click"] != Value::Bool(true) { violations.push("session click did not reach the page as a trusted click"); }
     if session["old_ref_after_navigation"].get("Ok").is_some() { violations.push("a ref survived navigation"); }
-    if session["typing_with_password_on_page"].get("Ok").is_some() { violations.push("session typed while a password field was on the page"); }
+    if session["typing_into_password_field"].get("Ok").is_some() { violations.push("session typed into a password field"); }
     if session["offsite_navigation"].get("Ok").is_some() { violations.push("session navigated off the research origin"); }
     if !report["environment"]["webview2_user_data_folder_env"].as_bool().unwrap_or(true) && report["environment"]["effective_user_data_folder_is_profile"] != Value::Bool(true) {
         violations.push("research pane did not use its own profile");
