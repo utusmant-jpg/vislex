@@ -1414,7 +1414,7 @@ fn current_saved_analysis_uses_small_first_reply_and_expands_only_on_request() {
     assert_eq!(first.body["tools"].as_array().unwrap().len(),1);
     assert_eq!(first.body["tools"][0]["name"],"request_more_research");
     assert_eq!(first.body["model"],"gpt-5.6-luna");
-    assert_eq!(first.body["reasoning"]["effort"],"low");
+    assert_eq!(first.body["reasoning"]["effort"],"high","Knowledge reuse must preserve reasoning effort rather than silently downgrade it");
     assert!(!first.body["instructions"].as_str().unwrap().contains("QUESTION DOSSIER"));
     assert!(agent::execute_tool(&mut c,&task,"search_evidence",&json!({"query":"bag","offset":0})).is_err(),"Quick phase must not permit an unadvertised research tool");
     let response=json!({"status":"completed","usage":{"input_tokens":20,"output_tokens":10},"output":[{"type":"function_call","call_id":"research","name":"request_more_research","arguments":"{\"reason\":\"Need the exact source wording\"}"}]});

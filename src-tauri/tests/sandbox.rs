@@ -600,3 +600,49 @@ fn identical_extraction_reuses_verified_artifacts_across_reopen() {
     let changed=processing::prepare_request(&mut case,&sid,json!({"crop":[0,0,10,10]})).unwrap();
     assert!(changed.cached.is_none());
 }
+
+
+#[test]
+#[ignore = "Requires packaged worker and generated CAI image fixtures"]
+fn analysis_derivatives_retain_embedded_and_physical_frame_provenance() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Synthetic analysis derivatives").unwrap();
+    let fixtures=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated");
+    for filename in ["multipage.tiff","single-frame.tiff","embedded-image.docx"] {case.import_files(&[fixtures.join(filename).to_string_lossy().into_owned()],"synthetic").unwrap();}
+    evidence_desk::automatic::enqueue(&mut case).unwrap();
+    while let Some(job)=evidence_desk::automatic::next(&mut case).unwrap() {
+        let staged=processing::stage_prepared(&job.processor,processing::run_prepared(&job.processor));
+        evidence_desk::automatic::publish_staged(&mut case,&job,staged).unwrap();
+    }
+    let mut settings=case.settings().unwrap();settings.offline=false;settings.allow_text=true;settings.allow_images=true;settings.model="synthetic".into();case.save_settings(settings).unwrap();
+    let run=evidence_desk::intelligence::ensure_run(&mut case,"synthetic/high").unwrap().unwrap();
+    for source in case.sources().unwrap() {
+        if source.name.ends_with(".tiff") {
+            let expected=if source.name=="multipage.tiff"{2}else{1};
+            let count:i64=case.db.query_row("SELECT count(*) FROM case_analysis_units u JOIN case_analysis_run_units ru ON ru.unit_id=u.id WHERE ru.run_id=? AND u.source_id=? AND u.kind='image_frame'",rusqlite::params![run,source.id],|r|r.get(0)).unwrap();assert_eq!(count,expected);
+            for frame in 0..expected {let value=processing::process_request(&mut case,&source.id,json!({"operation":"render_image_frame","frame":frame})).unwrap();assert_eq!(value["published"][0]["metadata"]["frame_index"],frame);case.validate_citation(value["published"][0]["locator"].as_str().unwrap()).unwrap();}
+        } else {
+            let count:i64=case.db.query_row("SELECT count(*) FROM case_analysis_units u JOIN case_analysis_run_units ru ON ru.unit_id=u.id WHERE ru.run_id=? AND u.source_id=? AND u.kind='office_image'",rusqlite::params![run,source.id],|r|r.get(0)).unwrap();assert_eq!(count,1);
+            let value=processing::process_request(&mut case,&source.id,json!({"operation":"office_image","image_index":0})).unwrap();
+            assert!(value["published"][0]["metadata"]["package_part"].as_str().unwrap().starts_with("word/media/"));
+            assert!(processing::process_request(&mut case,&source.id,json!({"operation":"office_image","image_index":99})).is_err());
+        }
+        case.verify_source(&source.id).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "Requires packaged worker and generated CAI dense video fixture"]
+fn analysis_video_intervals_share_one_readonly_source_lease() {
+    let dir=tempfile::tempdir().unwrap();let mut case=Case::create(&dir.path().join("case"),"Synthetic dense analysis").unwrap();
+    let input=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/generated/dense-timing.mp4");case.import_files(&[input.to_string_lossy().into_owned()],"synthetic").unwrap();
+    let source=case.sources().unwrap()[0].clone();
+    for start in [0.,1.] {
+        let value=processing::process_request(&mut case,&source.id,json!({"start":start,"end":start+1.,"interval":0.5})).unwrap();
+        let frames=value["published"].as_array().unwrap();assert_eq!(frames.len(),2);
+        for (index,frame) in frames.iter().enumerate(){assert!((frame["metadata"]["source_relative_seconds"].as_f64().unwrap()-(start+index as f64*0.5)).abs()<0.101);case.validate_citation(frame["locator"].as_str().unwrap()).unwrap();}
+        case.verify_source(&source.id).unwrap();
+    }
+    let receipts=fs::read_dir(case.root.join("staging")).unwrap().filter_map(Result::ok).filter_map(|e|fs::read(e.path().join("source-lease-receipt.json")).ok()).map(|r|serde_json::from_slice::<Value>(&r).unwrap()).collect::<Vec<_>>();
+    assert_eq!(receipts.len(),2);assert_eq!(receipts.iter().filter(|r|r["copied_bytes_for_job"].as_u64().unwrap_or(0)>0).count(),1);
+    println!("CAI dense-video source bytes={} staged-source bytes={} jobs={}",source.size,receipts.iter().map(|r|r["copied_bytes_for_job"].as_u64().unwrap_or(0)).sum::<u64>(),receipts.len());
+}
