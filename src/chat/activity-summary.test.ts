@@ -119,6 +119,16 @@ describe('research browser steps', () => {
       .toMatchObject({ kind: 'save', verb: 'Saved an authority', object: '“Synthetic v. Example”' });
   });
 
+  it('says when a sign-in page is showing and when an action opened a new page', () => {
+    const status = summarizeAction(action('research_status', {}, { open: true, on_research_site: false, host: 'signon.thomsonreuters.com', action_needed: 'Ask the user to sign in.' }));
+    expect(status).toMatchObject({ verb: 'Checked the research browser', result: 'sign-in or outside page showing' });
+    expect(status.facts).toEqual([{ label: 'Page', value: 'signon.thomsonreuters.com' }, { label: 'Next', value: 'Ask the user to sign in.' }]);
+    expect(summarizeAction(action('research_status', {}, { open: true, on_research_site: true, url: 'https://next.westlaw.com/x', title: 'Search results' })).facts).toEqual([{ label: 'Page', value: 'Search results' }]);
+    const click = summarizeAction(action('research_act', { action: 'click', ref: 'e4', snapshot_version: 3, text: null, key: null }, { performed: 'click', url: 'https://next.westlaw.com/Document/X', navigated: true, snapshot: {} }));
+    expect(click).toMatchObject({ verb: 'Clicked on the research page', result: 'opened a page on next.westlaw.com' });
+    expect(summarizeAction(action('research_act', { action: 'scroll_down', ref: null, snapshot_version: null, text: null, key: null }, { performed: 'scroll_down', url: 'https://next.westlaw.com/Document/X', navigated: false, snapshot: {} })).result).toBeUndefined();
+  });
+
   it('labels research tools while they run instead of calling them team work', () => {
     expect(liveLabel('research_navigate')).toBe('Opening a research page');
     expect(liveLabel('research_act')).toBe('Working in the research browser');

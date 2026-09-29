@@ -74,6 +74,10 @@ function pageList(pages: number[]): string {
   return contiguous ? `pages ${sorted[0]}–${sorted.at(-1)}` : `pages ${sorted.join(', ')}`;
 }
 
+function hostOf(url: string | undefined): string | undefined {
+  try { return url ? new URL(url).host || undefined : undefined; } catch { return undefined; }
+}
+
 function firstLine(text: string): string {
   const parsed = parse(text);
   const raw = str(parsed?.error) ?? text;
@@ -276,11 +280,16 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       return base;
     }
     // Research browser tools (src-tauri/src/research/tools.rs).
-    case 'research_status': base.kind = 'check'; base.verb = 'Checked the research browser'; return base;
+    case 'research_status': {
+      base.kind = 'check'; base.verb = 'Checked the research browser';
+      // Off the research site (a sign-in or outside page): the agent waits for the user.
+      if (out?.on_research_site === false) { base.result = 'sign-in or outside page showing'; fact('Page', str(out.host)); fact('Next', str(out.action_needed)); }
+      else fact('Page', str(out?.title));
+      return base;
+    }
     case 'research_navigate': {
       const url = str(out?.url) ?? str(args.url);
-      let host: string | undefined;
-      try { host = url ? new URL(url).host : undefined; } catch { host = undefined; }
+      const host = hostOf(url);
       base.kind = 'browse'; base.verb = 'Opened a research page'; if (host) { base.verb = 'Opened a page on'; base.object = host; }
       fact('Address', url);
       return base;
@@ -297,6 +306,8 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       } else if (kind === 'click') base.verb = 'Clicked on the research page';
       else if (kind === 'press') { const key = str(args.key); base.verb = key ? `Pressed ${key} on the research page` : 'Pressed a key on the research page'; }
       else if (kind === 'scroll_down' || kind === 'scroll_up') base.verb = `Scrolled ${kind === 'scroll_down' ? 'down' : 'up'} the research page`;
+      // Results carry {performed, url, navigated, snapshot}; a click or key may open a new page.
+      if (out?.navigated === true) { const host = hostOf(str(out.url)); base.result = host ? `opened a page on ${host}` : 'opened a new page'; fact('Address', str(out.url)); }
       return base;
     }
     case 'research_read_page': {
