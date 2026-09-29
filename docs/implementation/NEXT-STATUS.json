@@ -1347,6 +1347,42 @@
       "native_exe_sha256": "2CFE9662FC7EFCC0C7F66212C6D6A0554F7802D9C489E445B8A43543DE96371A",
       "worker_exe_sha256": "9DBC14D7CEF0E188BA29A12F8B7E87E44D856552DAE4D02AFA0DF44FEC0BCFE5",
       "note": "CAI namespace avoids R-number collisions; namespaced additive schema preserves shared migration numbering. Implementation is committed locally for Claude to merge later; primary checkout/live app untouched. Implemented is not verified."
+    },
+    "CAI-MERGE-2026-09-28": {
+      "state": "implemented",
+      "branch": "claude/merge-case-intelligence",
+      "base": "172f850 (main) + 44e3b04 (codex/case-intelligence)",
+      "commit_under_test": "cdb47ac",
+      "environment": "Windows 11 10.0.26200 x64, isolated worktree .claude/worktrees/merge-ci; rustc 1.98.1, Node 24.14.1, Python 3.11.15; synthetic cases and debug test settings only",
+      "evidence": "docs/implementation/CASE-INTELLIGENCE-HANDOFF.md (Merge result); ignored local artifacts/merge-*.log, native-intelligence-acceptance.json, native-research-acceptance.json",
+      "resolution": [
+        "agent.rs available_tools is the single catalogue for API and subscription routes and appends research tools only when research::tools::exposed allows them and the task is not internal analysis; research guidance follows the advertised catalogue",
+        "execute_tool leaves research calls to research::tools::consume_result so a mid-job switch-off still discards the stashed page (caught by research::switching_research_off_mid_job_discards_its_result)",
+        "desktop.rs read-only command list keeps analysis_status, query_case_knowledge and research_grant",
+        "NEXT-TASKS/NEXT-STATUS merged additively by task ID; R history and CAI evidence retained"
+      ],
+      "fixes": [
+        "intelligence.rs: sources whose only occurrences are research-browser captures (web-research:/westlaw-research:) are not planned as factual case evidence; the same bytes produced as evidence are analyzed (case_intelligence::research_browser_captures_are_not_planned_as_factual_case_evidence, confirmed failing without the fix)",
+        "scripts/native-intelligence-acceptance.ps1 sets VISLEX_TEST_CASE_ROOT, required by main's test-mode case guard"
+      ],
+      "commands": [
+        "npm ci -> exit 0, 0 vulnerabilities",
+        "npm run test -> exit 0, 355 passed in 34 files",
+        "npm run build -> exit 0; Vite chunk-size warning remains",
+        "cargo test --locked --no-fail-fast --manifest-path src-tauri/Cargo.toml --features subscription,research -> exit 0, 348 passed, 0 failed, 36 ignored (1100-finding synthesis stress test included)",
+        "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features subscription,research -> exit 0 with 84 warnings; not a warning-free claim",
+        "cargo build --locked --manifest-path src-tauri/Cargo.toml --features subscription,research,tauri/custom-protocol -> exit 0; debug EXE SHA-256 1CF5A4B22F0B4A7EFB044D24A1751AB49F9EB3C7E3DCDB3B2795882F07A6D568",
+        "scripts/native-intelligence-acceptance.ps1 -> exit 0: automatic ready, hidden tasks, exact proof, human revision preserved, human edit reconciled, pause/resume; 3 units / 3 findings",
+        "scripts/native-research-acceptance.ps1 -> exit 0, all checks passed (password refusal, cite-check gate, capture citable, isolation)",
+        "scripts/native-app-ai-acceptance.ps1 -> exit 0, override preserved, reopen inheritance, 0 provider calls",
+        "npx playwright test (PW_PORT=4178, CI=1) -> 61 passed, 6 page.goto/harness-load timeouts on cold dev server",
+        "npx playwright test --last-failed --workers=1 (same config) -> exit 0, 6 passed; all 67 covered, no assertions or timeouts changed",
+        "python scripts/vislex_plan.py check -> exit 0"
+      ],
+      "worker": "Not rebuilt: workers/ and scripts/build-worker.ps1 are byte-identical to codex/case-intelligence, so its PyInstaller output (evidence-worker.exe SHA-256 9DBC14D7CEF0E188BA29A12F8B7E87E44D856552DAE4D02AFA0DF44FEC0BCFE5, re-hashed) was copied into the ignored resources/worker",
+      "reviewer": "Separate read-only Claude review agent inspected the resolution and auto-merged regions; found no path giving internal analysis research tools and no dropped safeguard. Findings: acceptance-script env (fixed), research captures entering automatic analysis (fixed), research page reads no longer counted in the chat 'consulted N sources' recap (accepted: those are not case sources). Reviewer did not run tests.",
+      "unrun_checks": "AppContainer sandbox --ignored suite not re-run on the merged tree (worker sources unchanged); no real provider or ChatGPT subscription turn; no verified-sidecar installer journey; no large-case benchmark; CAI release acceptance items in the handoff remain open.",
+      "note": "Not pushed or merged into main; primary checkout untouched."
     }
   },
   "redesign_worktree_progress": {

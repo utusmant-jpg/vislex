@@ -76,3 +76,23 @@ A separate read-only reviewer agent inspected the diff and adversarial contracts
 Release acceptance remains open. No real provider or ChatGPT subscription case turn, verified-sidecar installer journey, 40–60 GB case analysis, comparable cold-analysis/memory/API-usage benchmark, scaling or screen-reader matrix was run. Two-hour lease and 32 MiB publication benchmarks and ignored discovery/semantic/video-index suites outside sandbox were not re-run here.
 
 Office charts/embedded document objects, unrendered PPTX/ODT structure, additional video tracks, unknown PDF extent, decode gaps and old audio receipts lacking verified channel counts remain explicit coverage blockers. The app accounts for these inputs and refuses full-coverage readiness; their extraction/inspection paths are still required for those source types. Full-case understanding means supported current inputs have been analyzed, not omniscience, continuous video perception or human/legal certification.
+
+## Merge result (Claude, 2026-09-28)
+
+Merged into `claude/merge-case-intelligence` (merge commit `cdb47ac`, main `172f850` + this branch `44e3b04`) in the isolated worktree `.claude/worktrees/merge-ci`. Not pushed and not merged into `main`. The primary checkout is untouched.
+
+- Conflicts were resolved semantically. `available_tools` is now the single catalogue for both routes and includes main's research-browser tools only when `research::tools::exposed` allows them. Internal analysis tasks never get them. Research calls keep main's own `consume_result` gate, so switching research off mid-job still discards the stashed page.
+- Two integration fixes came out of the separate review.
+  - Research-browser captures are legal authority, not case evidence. Sources whose only occurrences come from research captures are excluded from automatic analysis runs. A regression test covers this and was confirmed to fail without the fix.
+  - The intelligence acceptance script now sets `VISLEX_TEST_CASE_ROOT`, which main's test-mode case guard requires.
+- The worker was not rebuilt. Its sources are byte-identical to this branch, so the existing build was reused after checking its hash (`9DBC…FCE5`).
+- Results on the merged tree:
+  - Frontend: 355/355 passed.
+  - Rust (`subscription,research`): 348 passed, 0 failed, 36 ignored.
+  - Clippy: exit 0, with warnings.
+  - Native intelligence, research and app-AI acceptance journeys: all exit 0.
+  - Playwright: all 67 covered. 6 cold-start load timeouts passed when re-run serially, with no changes to assertions or timeouts.
+- Not re-run on the merged tree:
+  - The AppContainer `--ignored` sandbox suite.
+  - Everything listed under "Release acceptance remains open" above.
+- Full evidence is in NEXT-STATUS `additional_work.CAI-MERGE-2026-09-28`.
