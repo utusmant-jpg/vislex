@@ -89,7 +89,7 @@ function firstLine(text: string): string {
 const RESEARCH_KEYS = new Set(['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End']);
 
 export function isResearchTool(name: string | undefined): boolean {
-  return /^research_(status|navigate|snapshot|act|read_page|capture)$/.test(name ?? '');
+  return /^research_(status|navigate|snapshot|act|read_page|capture|westlaw_search|westlaw_document)$/.test(name ?? '');
 }
 
 /** Host and path of an address, without its query or fragment: "next.westlaw.com/Document/X". */
@@ -126,6 +126,8 @@ export function researchDetail(name: string, args: Json, out?: Json | null): str
       return first === last ? `line ${first}` : `lines ${first}–${last}`;
     }
     case 'research_capture': return str(args.citation_text) ?? str(args.citation);
+    case 'research_westlaw_search': return str(args.query);
+    case 'research_westlaw_document': return hostAndPath(str(args.url));
     default: return undefined;
   }
 }
@@ -145,6 +147,8 @@ export function researchStep(name: string, detail?: string, action?: string): Re
     case 'research_snapshot': return text ? { kind: 'browse', verb: 'Looked over the page', object: `(${text})` } : { kind: 'browse', verb: 'Looked over the page' };
     case 'research_read_page': return text ? { kind: 'read', verb: 'Read', object: text } : { kind: 'read', verb: 'Read the research page' };
     case 'research_capture': return text ? { kind: 'save', verb: 'Captured', object: text } : { kind: 'save', verb: 'Captured an authority' };
+    case 'research_westlaw_search': return text ? { kind: 'search', verb: 'Searched Westlaw:', object: text } : { kind: 'search', verb: 'Searched Westlaw' };
+    case 'research_westlaw_document': return text ? { kind: 'read', verb: 'Opened', object: text } : { kind: 'read', verb: 'Read the document' };
     case 'research_act': {
       // The backend names the page action apart from its detail, so a typed query such as
       // "click-wrap enforceability" is never read as a click.
@@ -430,6 +434,19 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       fact('Proposition', str(args.proposition));
       fact('Locator', str(out?.locator));
       return base;
+    case 'research_westlaw_search': {
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args, out)));
+      fact('Query', str(args.query));
+      const results = arr(out?.results)?.length ?? num(out?.count);
+      if (results !== undefined) base.result = plural(results, 'result');
+      return base;
+    }
+    case 'research_westlaw_document':
+      Object.assign(base, researchStep(action.name, researchDetail(action.name, args, out)));
+      fact('Title', str(out?.title));
+      fact('Citation', str(out?.citation));
+      fact('Address', str(out?.url) ?? str(args.url));
+      return base;
     default:
       if (sourceName) { base.object = sourceName; base.sourceId = sourceId; fact('Source', sourceName); }
       return base;
@@ -446,6 +463,8 @@ export function liveLabel(toolName: string | undefined, detail?: string, action?
   if (name === 'research_read_page') return 'Reading the research page';
   if (name === 'research_capture') return 'Saving an authority';
   if (name === 'research_status') return 'Checking the research browser';
+  if (name === 'research_westlaw_search') return 'Searching Westlaw';
+  if (name === 'research_westlaw_document') return 'Reading the document';
   if (/^research_/.test(name)) return 'Working in the research browser';
   if (/^search/.test(name)) return 'Searching the evidence';
   if (/^(read_text|read_extract)/.test(name)) return 'Reading';

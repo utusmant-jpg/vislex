@@ -21,6 +21,7 @@ import { CitationContext, citationOrder, locatorWords, numbering, type CitationS
 import { useSourceDirectory } from '../chat/source-directory';
 import { useLiveProgress, type LiveProgress } from '../chat/live-progress';
 import { liveLabel } from '../chat/activity-summary';
+import { SEND_PROMPT_EVENT, publishChatState, type SendPromptDetail, type SendPromptResult } from '../features/research/prompts';
 
 // Keep unsaved chat drafts in memory only; never put case content in browser storage.
 const chatDrafts = new Map<string, string>();
@@ -349,6 +350,8 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     if (sending || chatBlocked || !text.trim() || !native || !snapshot || snapshot.settings.offline || !snapshot.settings.allow_text || !modelReady) return;
     setSending(true);
     const sentFrom = currentDraftKey.current;
+    // A message sent from elsewhere (vislex:send-prompt) leaves the user's unsent draft alone.
+    const sentDraft = (chatDrafts.get(sentFrom) ?? '') === text;
     run(async () => {
       try {
         const viewerContext = buildViewerAttachment(selection, getViewerContext(), skipContext);
@@ -360,7 +363,7 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           viewer_context: viewerContext,
         });
         if (currentCaseId.current !== sessionKey) return;
-        draft('', sentFrom);
+        if (sentDraft) draft('', sentFrom);
         following.current = true;
         if (result?.task_id) { freshTurns.current.add(result.task_id); setAnchoredTurn(result.task_id); }
         onConversation(result.conversation_id ?? result.task_id);
@@ -397,6 +400,36 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
     onNew: text => submit(text),
     onCancel: stop,
   });
+
+  // vislex:send-prompt (the Browser view's research bar): sends at once through the same
+  // runtime path and gate as the composer's Send, answering why not when it cannot.
+  const sendBlocked = !snapshot ? 'Open a case first.'
+    : block ? block.message
+    : running ? 'A response is running in this chat.'
+    : chatBlocked ? 'Waiting for case preparation.'
+    : sending ? 'A message is being sent.'
+    : null;
+  const sendFromEvent = useRef<(text: string) => SendPromptResult>(() => ({ sent: false, reason: 'The chat is not ready.' }));
+  sendFromEvent.current = text => {
+    if (!text.trim()) return { sent: false, reason: 'Nothing to send.' };
+    if (sendBlocked) return { sent: false, reason: sendBlocked };
+    void runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] });
+    return { sent: true };
+  };
+  useEffect(() => {
+    const onSendPrompt = (event: Event) => {
+      const detail = (event as CustomEvent<SendPromptDetail>).detail;
+      if (!detail || typeof detail.text !== 'string') return;
+      detail.result = sendFromEvent.current(detail.text);
+    };
+    window.addEventListener(SEND_PROMPT_EVENT, onSendPrompt);
+    return () => window.removeEventListener(SEND_PROMPT_EVENT, onSendPrompt);
+  }, []);
+  const blockedWhenIdle = running ? null : sendBlocked;
+  useEffect(() => {
+    publishChatState(snapshot ? { caseId: snapshot.id, running: !!running, runningPrompt: running?.prompt ?? null, blocked: blockedWhenIdle } : null);
+  }, [snapshot?.id, running?.id, running?.prompt, blockedWhenIdle]);
+  useEffect(() => () => publishChatState(null), []);
 
   const followUps = task?.status === 'complete' && !task.error ? (task.progress?.next_steps ?? []).filter(Boolean).slice(0, 3) : [];
   const starters = starterPrompts(snapshot);

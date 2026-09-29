@@ -9,9 +9,20 @@ import ResearchSettings from './ResearchSettings';
 import ResearchCiteCheck, { CITE_CHECKS, citeCheckNote } from './ResearchCiteCheck';
 import SettingsDialog from '../../components/SettingsDialog';
 import EvidenceNotebook from '../../components/EvidenceNotebook';
+import ResearchAuthorities, { KEYCITE_FLAGS, KeyCitePill, type KeyCiteFlag } from './ResearchAuthorities';
+import { DEEP_RESEARCH_PREFIX, DEEP_RESEARCH_PROMPT, QUICK_RESEARCH_PREFIX, QUICK_RESEARCH_PROMPT, SEND_PROMPT_EVENT, publishChatState, type SendPromptDetail } from './prompts';
 import type { Snapshot } from '../../types';
 
 const api = vi.hoisted(() => vi.fn());
+const events = vi.hoisted(() => ({ listeners: new Map<string, Set<(event: { payload: unknown }) => void>>() }));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: async (name: string, callback: (event: { payload: unknown }) => void) => {
+    const set = events.listeners.get(name) ?? new Set();
+    set.add(callback); events.listeners.set(name, set);
+    return () => { set.delete(callback); };
+  },
+}));
+const fire = (name: string) => act(() => { for (const callback of events.listeners.get(name) ?? []) callback({ payload: null }); });
 vi.mock('../../bridge', async () => ({ ...await vi.importActual<typeof import('../../bridge')>('../../bridge'), api, native: true }));
 vi.mock('../../ui', async importOriginal => ({ ...(await importOriginal<typeof import('../../ui')>()), useTheme: () => ({ theme: 'dark', setTheme: vi.fn(), density: 'comfortable', setDensity: vi.fn() }) }));
 
@@ -60,7 +71,7 @@ beforeEach(() => {
     return { ...box, x: box.left, y: box.top, right: box.left + box.width, bottom: box.top + box.height, toJSON: () => box } as DOMRect;
   });
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.querySelectorAll('dialog').forEach(dialog => dialog.remove()); });
+afterEach(() => { cleanup(); publishChatState(null); events.listeners.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.querySelectorAll('dialog').forEach(dialog => dialog.remove()); });
 
 const layouts = () => api.mock.calls.filter(([action]) => action === 'research_pane_layout').map(([, args]) => args as { rect: Record<string, number>; visible: boolean });
 
@@ -432,5 +443,172 @@ it('shows no warning, consent or acknowledgement language in any research state'
   offlineSettings.unmount();
   const check = render(<ResearchCiteCheck object={authority()} onAccept={vi.fn()} />);
   texts.push(visibleText(check.container));
+  for (const text of texts) expect(text).not.toMatch(FORBIDDEN);
+});
+
+/** A stand-in for the case chat: answers vislex:send-prompt as AgentPanel does. */
+function fakeChat(result: SendPromptDetail['result'] = { sent: true }) {
+  const sent: string[] = [];
+  const handler = (event: Event) => { const detail = (event as CustomEvent<SendPromptDetail>).detail; sent.push(detail.text); detail.result = result; };
+  window.addEventListener(SEND_PROMPT_EVENT, handler);
+  return { sent, stop: () => window.removeEventListener(SEND_PROMPT_EVENT, handler) };
+}
+
+it('keeps the exact research prefixes and prompts the backend keys on', () => {
+  expect(QUICK_RESEARCH_PREFIX).toBe('Quick research:');
+  expect(DEEP_RESEARCH_PREFIX).toBe('Deep research:');
+  expect(QUICK_RESEARCH_PROMPT).toBe('Quick research: find and verify the controlling law on the key issues of the charges in this case, KeyCite every authority relied on, and capture the supporting passages.');
+  expect(DEEP_RESEARCH_PROMPT).toBe('Deep research: exhaustively research every charge, element, defence and procedural issue in this case from every angle, binding authority first then persuasive, favourable and adverse, KeyCite everything, capture every passage relied on, and save a research memo to the case.');
+  expect(SEND_PROMPT_EVENT).toBe('vislex:send-prompt');
+});
+
+it('the research bar sends Quick research, Deep research and a typed instruction to the chat', async () => {
+  backend(grant(true));
+  const chat = fakeChat();
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  await screen.findByText('Connected');
+  const bar = screen.getByRole('group', { name: 'Research with the AI' });
+  const quick = within(bar).getByRole('button', { name: 'Quick research' });
+  const deep = within(bar).getByRole('button', { name: 'Deep research' });
+  const input = within(bar).getByRole('textbox', { name: 'Instruction for the AI' }) as HTMLInputElement;
+  const send = within(bar).getByRole('button', { name: 'Send instruction' });
+  expect(input.getAttribute('placeholder')).toBe('Tell the AI what to do on Westlaw…');
+  // Real controls in document order: Quick, Deep, the instruction, Send.
+  expect([...bar.querySelectorAll('button, input')]).toEqual([quick, deep, input, send]);
+  expect(quick.getAttribute('aria-disabled')).toBeNull();
+  fireEvent.click(quick);
+  fireEvent.click(deep);
+  expect(chat.sent).toEqual([QUICK_RESEARCH_PROMPT, DEEP_RESEARCH_PROMPT]);
+  // An empty instruction sends nothing; a typed one is sent as-is and cleared.
+  expect(send.getAttribute('aria-disabled')).toBe('true');
+  fireEvent.submit(input.form!);
+  expect(chat.sent).toHaveLength(2);
+  fireEvent.change(input, { target: { value: '  Find the leading case on duress in Ohio  ' } });
+  expect(send.getAttribute('aria-disabled')).toBeNull();
+  fireEvent.submit(input.form!);
+  expect(chat.sent.at(-1)).toBe('  Find the leading case on duress in Ohio  ');
+  expect(input.value).toBe('');
+  chat.stop();
+});
+
+it('a refused send is reported and keeps the typed instruction', async () => {
+  backend(grant(true));
+  const chat = fakeChat({ sent: false, reason: 'Offline mode is on, so no AI requests are sent for this case.' });
+  const spy = vi.spyOn(notify, 'info');
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  await screen.findByText('Connected');
+  const input = screen.getByRole('textbox', { name: 'Instruction for the AI' }) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: 'Search Westlaw for duress' } });
+  fireEvent.submit(input.form!);
+  expect(spy).toHaveBeenCalledWith('Not sent', 'Offline mode is on, so no AI requests are sent for this case.');
+  expect(input.value).toBe('Search Westlaw for duress');
+  chat.stop();
+});
+
+it('the research controls are unavailable, with a reason, when the browser is off, closed or the chat is busy', async () => {
+  const state = backend(grant(false));
+  const chat = fakeChat();
+  const view = render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  const bar = await screen.findByRole('group', { name: 'Research with the AI' });
+  const quick = within(bar).getByRole('button', { name: 'Quick research' });
+  await within(bar).findByText('The research browser is off for this case.');
+  expect(quick.getAttribute('aria-disabled')).toBe('true');
+  // Still focusable, and described by its reason.
+  expect(quick.hasAttribute('disabled')).toBe(false);
+  expect(document.getElementById(quick.getAttribute('aria-describedby')!)?.textContent).toBe('The research browser is off for this case.');
+  fireEvent.click(quick);
+  expect(chat.sent).toEqual([]);
+  view.unmount();
+
+  state.grant = grant(true);
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  await screen.findByText('Connected');
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  expect(await screen.findByText('Open the research browser first.')).toBeTruthy();
+  fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+  await screen.findByText('Connected');
+  const deep = screen.getByRole('button', { name: 'Deep research' });
+  expect(deep.getAttribute('aria-disabled')).toBeNull();
+
+  // A research task running in this case's chat: a quiet Researching… state; the toolbar Stop stays.
+  act(() => publishChatState({ caseId: 'synthetic-case', running: true, runningPrompt: DEEP_RESEARCH_PROMPT, blocked: null }));
+  expect(screen.getByText('Researching…')).toBeTruthy();
+  expect(deep.getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+  fireEvent.click(deep);
+  expect(chat.sent).toEqual([]);
+  // Another question running: not called research, and says why.
+  act(() => publishChatState({ caseId: 'synthetic-case', running: true, runningPrompt: 'Summarise the statement', blocked: null }));
+  expect(screen.queryByText('Researching…')).toBeNull();
+  expect(screen.getByText('A task is already running in the chat.')).toBeTruthy();
+  // The chat's own reason when it cannot send.
+  act(() => publishChatState({ caseId: 'synthetic-case', running: false, runningPrompt: null, blocked: 'Waiting for case preparation.' }));
+  expect(screen.getByText('Waiting for case preparation.')).toBeTruthy();
+  // Another case's chat state does not apply here.
+  act(() => publishChatState({ caseId: 'other-case', running: true, runningPrompt: QUICK_RESEARCH_PROMPT, blocked: null }));
+  expect(deep.getAttribute('aria-disabled')).toBeNull();
+  fireEvent.click(deep);
+  expect(chat.sent).toEqual([DEEP_RESEARCH_PROMPT]);
+  chat.stop();
+});
+
+const captured = (id: string, flag: KeyCiteFlag | null, extra: Record<string, unknown> = {}) => ({
+  ...authority({ id, title: `Captured ${id} (SYNTHETIC)` }),
+  source_ids: ['source-7'], locators: ['evidence:source-7#R1L4-L6'],
+  content: JSON.stringify({ url: `https://1.next.westlaw.com/Document/${id}`, title: `Synthetic ${id} v. Example`, citation: { raw: '123 F.4th 456', claimed: '123 F.4th 456', mismatch: false }, jurisdiction: 'Ohio', court: 'Ohio Supreme Court', ...(flag ? { keycite: { flag } } : {}), quote: { exact: 'Synthetic words.', locator: 'evidence:source-7#R1L4-L6' } }),
+  ...extra,
+});
+
+it('lists research authorities with citation, court, KeyCite pill and review state, and refreshes on case-changed', async () => {
+  let objects: unknown[] = [captured('A1', 'red'), authority({ id: 'public-1', actor: 'human', title: 'Public authority' }), captured('A2', null, { review: 'accepted' })];
+  const kinds: unknown[] = [];
+  api.mockImplementation(async (action: string, args: Record<string, unknown> = {}) => { if (action !== 'evidence_list') return null; kinds.push(args.kind); return { objects, next_offset: null }; });
+  const onSource = vi.fn();
+  render(<ResearchAuthorities caseId="synthetic-case" sessionEpoch={4} onSource={onSource} />);
+  const toggle = screen.getByRole('button', { name: /Authorities/ });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  await waitFor(() => expect(toggle.textContent).toContain('2'));
+  expect(kinds).toEqual(['authority']);
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  const list = screen.getByRole('list', { name: 'Captured authorities' });
+  const rows = within(list).getAllByRole('listitem');
+  expect(rows).toHaveLength(2);
+  expect(within(list).queryByText('Public authority')).toBeNull();
+  expect(within(rows[0]).getByText('Synthetic A1 v. Example')).toBeTruthy();
+  expect(within(rows[0]).getByText('123 F.4th 456')).toBeTruthy();
+  expect(within(rows[0]).getByText('Ohio Supreme Court · Ohio')).toBeTruthy();
+  expect(within(rows[0]).getByRole('img', { name: 'KeyCite: Red flag, no longer good law for at least one point' })).toBeTruthy();
+  expect(within(rows[0]).getByText('Red flag')).toBeTruthy();
+  expect(within(rows[0]).getByText('Unreviewed')).toBeTruthy();
+  expect(within(rows[1]).getByRole('img', { name: /^KeyCite: Not checked/ })).toBeTruthy();
+  expect(within(rows[1]).getByText('Accepted')).toBeTruthy();
+  // The citation chip opens the captured source at its locator.
+  fireEvent.click(within(rows[0]).getByRole('button', { name: /Open cited evidence/ }));
+  expect(onSource).toHaveBeenCalledWith('source-7', 'R1L4-L6');
+
+  objects = [captured('A3', 'yellow'), ...objects];
+  fire('case-changed');
+  await waitFor(() => expect(within(screen.getByRole('list', { name: 'Captured authorities' })).getAllByRole('listitem')).toHaveLength(3));
+  expect(screen.getByRole('img', { name: /^KeyCite: Yellow flag/ })).toBeTruthy();
+});
+
+it('shows the empty state, reads every page, and names each KeyCite flag in words', async () => {
+  const pages: Record<number, unknown> = { 0: { objects: [], next_offset: 50 }, 50: { objects: [], next_offset: null } };
+  api.mockImplementation(async (action: string, args: Record<string, unknown> = {}) => action === 'evidence_list' ? pages[Number(args.offset)] : null);
+  const view = render(<ResearchAuthorities caseId="synthetic-case" sessionEpoch={4} />);
+  fireEvent.click(screen.getByRole('button', { name: /Authorities/ }));
+  expect(await screen.findByText('No authorities captured yet.')).toBeTruthy();
+  expect(api.mock.calls.filter(([action]) => action === 'evidence_list').map(([, args]) => (args as { offset: number }).offset)).toEqual([0, 50]);
+  view.unmount();
+  const texts: string[] = [];
+  for (const flag of Object.keys(KEYCITE_FLAGS) as KeyCiteFlag[]) {
+    const pill = render(<KeyCitePill flag={flag} />);
+    const element = screen.getByRole('img');
+    expect(element.getAttribute('aria-label')).toBe(`KeyCite: ${KEYCITE_FLAGS[flag].label}, ${KEYCITE_FLAGS[flag].meaning}`);
+    expect(element.textContent).toBe(KEYCITE_FLAGS[flag].label);
+    texts.push(visibleText(pill.container));
+    pill.unmount();
+  }
   for (const text of texts) expect(text).not.toMatch(FORBIDDEN);
 });
