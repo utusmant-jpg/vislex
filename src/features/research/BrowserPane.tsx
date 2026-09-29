@@ -33,7 +33,11 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
   suspended?: boolean;
   onOpenSettings: (section: 'Research browser' | 'Privacy & offline') => void;
 }) {
-  const slot = useRef<HTMLDivElement>(null);
+  const slot = useRef<HTMLDivElement | null>(null);
+  // The slot as state too: placement must start when the slot appears, which can be after the
+  // pane is already known to be open (returning to the view with the pane still open).
+  const [slotElement, setSlotElement] = useState<HTMLDivElement | null>(null);
+  const attachSlot = useCallback((element: HTMLDivElement | null) => { slot.current = element; setSlotElement(element); }, []);
   const [grant, setGrant] = useState<ResearchGrant | null>(null);
   const [grantLoaded, setGrantLoaded] = useState(false);
   const [phase, setPhase] = useState<Phase>('closed');
@@ -110,7 +114,7 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
   // Placement: every move or resize of the slot, window resizes, dialogs opening or closing.
   useEffect(() => {
     if (phase !== 'open') return;
-    const element = slot.current;
+    const element = slotElement;
     if (!element) return;
     let frame = 0;
     let last = '';
@@ -139,7 +143,7 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
       dialogs.disconnect();
       layoutResearchPane(lastRect, false).catch(() => { /* Already closed. */ });
     };
-  }, [phase, suspended]);
+  }, [phase, suspended, slotElement]);
 
   async function turnOn() {
     setBusy(true);
@@ -203,7 +207,7 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
       <button type="button" className="primary" data-size="sm" disabled={busy} onClick={() => void turnOn()}><Power size={14} aria-hidden="true" />Turn on for this case</button>
     </div>;
   } else {
-    body = <div ref={slot} className="research-slot" role="region" aria-label="Research browser" aria-busy={phase === 'opening' || undefined}>
+    body = <div ref={attachSlot} className="research-slot" role="region" aria-label="Research browser" aria-busy={phase === 'opening' || undefined}>
       {phase !== 'open' ? <div className="research-slot-state">
         {phase === 'opening' ? <p className="field-hint" role="status">Opening the research browser…</p> : <>
           <p className="field-hint">The research browser is closed.</p>

@@ -562,10 +562,15 @@
       "reviewer": "Not yet reviewed independently."
     },
     "R36": {
-      "state": "pending"
+      "state": "blocked",
+      "branch": "claude/research-browser",
+      "blocker": "Needs the user to sign into Westlaw once in the research pane; survey tooling is documented in docs/implementation/RESEARCH-SURVEY.md.",
+      "remaining": "Westlaw DOM survey, selector map with editorial selectors and content_root, and Westlaw snapshot sizing. Until then the Westlaw playbook entry has an empty content_root and capture refuses on real Westlaw (\"Capture is not yet available for this site\")."
     },
     "R37": {
-      "state": "pending"
+      "state": "blocked",
+      "branch": "claude/research-browser",
+      "blocker": "Codex sidecar sign-in probe (dynamic-tool and no-persistence probes) has not been run."
     },
     "R38": {
       "branch": "claude/research-browser",
@@ -592,15 +597,35 @@
       "reviewer": "Independent review of 6c83511; findings fixed in 71333c2 (race-safe open, audit before case switch, isolated test profiles)."
     },
     "R40": {
-      "state": "pending"
+      "state": "implemented",
+      "branch": "claude/research-browser",
+      "commit": "0ca480e, e322e6b, a5e67ed",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f2e7082 (includes merge of main 2ebc7ad)",
+      "evidence": "Rail Browser view (Ctrl+6) with chat left and browser right; Settings \"Research browser\" section; toolbar back/forward/reload; e2e/harness-research.spec.ts",
+      "commands": [
+        "npx vitest run -> 334 passed (33 files), including the regression test for the pane staying hidden on return to the view",
+        "npm run build -> exit 0",
+        "npx playwright test e2e/harness-research.spec.ts (msedge) -> 4 passed (reported by the UI agent)",
+        "Playwright regression specs -> 40 passed, 1 accessibility.spec flake that then passed 4 times in a row (reported by the UI agent)",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially:",
+        "powershell -File scripts/native-research-pane.ps1 -> PASS (pane commands, toggle, close on off/offline/case switch, sign-out deletes the profile)",
+        "powershell -File scripts/native-research-view.ps1 -> PASS through the real UI: rail Browser button opens chat beside the pane; the research page reports 640x846 = its slot; hidden after leaving the view and while Settings is open, visible again after; toolbar Back returns from /second.html to /index.html (artifacts/research-view.json, .png). First run found the pane staying hidden on return to the view; fixed in BrowserPane (placement starts when the slot mounts)"
+      ],
+      "unrun_checks": [
+                "Holding/stop_if_active runtime path",
+        "Runtime-flag-off path",
+        "Real Westlaw pages (R36)"
+      ],
+      "remaining": "Not verified: a research packet cannot be marked verified without the R34-R36 spike evidence and the R51 native run; R36 real-Westlaw evidence and R51 are outstanding.",
+      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors."
     },
     "R41": {
       "branch": "claude/research-browser",
       "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
       "state": "implemented",
       "commit": "pending",
-      "evidence": "docs/SECURITY.md research browser paragraphs (pane isolation, refusals, tool rules, audit, test mode)",
-      "remaining": "Update again when capture (R46/R47) lands."
+      "evidence": "docs/SECURITY.md research browser paragraphs (pane isolation, refusals, tool rules, audit, test mode); capture paragraph (sanitised opinion HTML, immutable sources, cite-check gate, whitelisted projection, audits) added for R46/R47",
+      "remaining": "Commit the capture paragraph; revisit after R36 supplies Westlaw editorial selectors."
     },
     "R42": {
       "branch": "claude/research-browser",
@@ -616,40 +641,140 @@
     },
     "R43": {
       "branch": "claude/research-browser",
-      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f2e7082 (includes merge of main 2ebc7ad)",
       "state": "implemented",
-      "commit": "cc1f6a2",
+      "commit": "cc1f6a2; re-review fixes in d013d3b, f4c5b1a",
       "evidence": "src-tauri/tests/research.rs agent tests (exposure, checks/audit/caps, exact-call results, run_job, authority refusal, background tasks excluded); tests/master_v4.rs strict schemas incl. research tools",
       "commands": [
-        "cargo test --locked -> 276 passed at cc1f6a2; 277 after merging main"
+        "cargo test --locked -> 276 passed at cc1f6a2; 277 after merging main",
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 301 passed (lib 63, backup_artifacts 11, core 93, discovery 13, dossier 36, extract_revisions 10, journey 4, master_v4 34, research 31, plus others), ignored tests not run; run at f4c5b1a before the main merge, which changed only scripts/docs/package.json and the codex_account.rs SIDECAR hash",
+        "cargo check --locked --features desktop,research -> exit 0",
+        "cargo check --locked --features subscription,research -> exit 0",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially:",
+        "powershell -File scripts/native-research-spike-startup.ps1 and scripts/native-research-spike.ps1 -> PASS (in-process CDP p50 about 0.3 ms, isolated world invisible to the page, trusted click, invoke refused and evidence fetch fails in the child, password-field typing refused); real app WebView profile unchanged (asserted by the scripts)"
       ],
-      "reviewer": "Independent review of cc1f6a2 in progress."
+      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors. Re-review fixes: main scope needs a main region; like-for-like deltas keyed by task/scope/find; stash cleared after every turn; snapshot/read content dropped if the address returned with it is off-site; clicks/presses paced before the address check; landing check watches loader id/address for a 1.5 s settle window; research_page_opened audited from the desktop step whatever the outcome; navigate paths <=300 chars with no whitespace/control/evidence: after percent-decoding; no navigation away from sign-in pages; case-wide per-minute pace; clearer error messages.",
+      "unrun_checks": [
+        "Holding/stop_if_active runtime path",
+        "Runtime-flag-off path",
+        "Real Westlaw pages (R36)"
+      ]
     },
     "R44": {
       "branch": "claude/research-browser",
-      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 153.0.4234.48, Rust 1.98.1, Node 24.14.1",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f2e7082 (includes merge of main 2ebc7ad)",
       "state": "implemented",
-      "commit": "cc1f6a2",
+      "commit": "cc1f6a2; re-review fixes in d013d3b, f4c5b1a",
       "evidence": "scripts/native-research-agent.ps1: a real chat task navigates, types, clicks, reads and answers through the agent loop against the loopback fixture with a scripted synthetic provider; receipts complete",
       "commands": [
-        "powershell -File scripts/native-research-agent.ps1 -> research agent journey passed"
+        "powershell -File scripts/native-research-agent.ps1 -> research agent journey passed",
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 301 passed (lib 63, backup_artifacts 11, core 93, discovery 13, dossier 36, extract_revisions 10, journey 4, master_v4 34, research 31, plus others), ignored tests not run; run at f4c5b1a before the main merge, which changed only scripts/docs/package.json and the codex_account.rs SIDECAR hash",
+        "cargo check --locked --features desktop,research -> exit 0",
+        "cargo check --locked --features subscription,research -> exit 0",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially:",
+        "powershell -File scripts/native-research-agent.ps1 -> PASS (real chat task: navigate, type, click, read, open opinion, read, research_capture, answer with locator evidence:<sid>#R1L4-L5; citation_mismatch false; extract has the opinion; authority unreviewed; no editorial leaks)"
       ],
-      "reviewer": "Independent review of cc1f6a2 in progress."
+      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors. Re-review fixes: main scope needs a main region; like-for-like deltas keyed by task/scope/find; stash cleared after every turn; snapshot/read content dropped if the address returned with it is off-site; clicks/presses paced before the address check; landing check watches loader id/address for a 1.5 s settle window; research_page_opened audited from the desktop step whatever the outcome; navigate paths <=300 chars with no whitespace/control/evidence: after percent-decoding; no navigation away from sign-in pages; case-wide per-minute pace; clearer error messages.",
+      "unrun_checks": [
+        "Holding/stop_if_active runtime path",
+        "Runtime-flag-off path",
+        "Real Westlaw pages (R36)"
+      ]
     },
     "R45": {
-      "state": "pending"
+      "state": "implemented",
+      "branch": "claude/research-browser",
+      "commit": "tested at f2e7082",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f2e7082 (includes merge of main 2ebc7ad)",
+      "evidence": "Research activity phrases in the chat",
+      "commands": [
+        "npx vitest run -> 333 passed (33 files)",
+        "npm run build -> exit 0",
+        "npx playwright test e2e/harness-research.spec.ts (msedge) -> 4 passed (reported by the UI agent)",
+        "Playwright regression specs -> 40 passed, 1 accessibility.spec flake that then passed 4 times in a row (reported by the UI agent)",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially:",
+        "powershell -File scripts/native-research-agent.ps1 -> PASS (real chat task: navigate, type, click, read, open opinion, read, research_capture, answer with locator evidence:<sid>#R1L4-L5; citation_mismatch false; extract has the opinion; authority unreviewed; no editorial leaks)"
+      ],
+      "unrun_checks": [
+        "Holding/stop_if_active runtime path",
+        "Runtime-flag-off path",
+        "Real Westlaw pages (R36)"
+      ],
+      "remaining": "Partial: only the activity phrases are implemented; the rest of R45 is not. Not verified: a research packet cannot be marked verified without the R34-R36 spike evidence and the R51 native run; R36 real-Westlaw evidence and R51 are outstanding.",
+      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors."
     },
     "R46": {
-      "state": "pending"
+      "state": "implemented",
+      "branch": "claude/research-browser",
+      "commit": "f560932 (merged as b108abd), d013d3b, f4c5b1a",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f2e7082 (includes merge of main 2ebc7ad)",
+      "evidence": "research_capture publishes sanitised opinion HTML as an immutable source with an R1 extract and an authority object; task scope grows only for the capturing task; case.rs publish_import/publish_extract use savepoints; src-tauri/tests/research.rs; scripts/native-research-agent.ps1",
+      "commands": [
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 301 passed (lib 63, backup_artifacts 11, core 93, discovery 13, dossier 36, extract_revisions 10, journey 4, master_v4 34, research 31, plus others), ignored tests not run; run at f4c5b1a before the main merge, which changed only scripts/docs/package.json and the codex_account.rs SIDECAR hash",
+        "cargo check --locked --features desktop,research -> exit 0",
+        "cargo check --locked --features subscription,research -> exit 0",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially:",
+        "powershell -File scripts/native-research-agent.ps1 -> PASS (real chat task: navigate, type, click, read, open opinion, read, research_capture, answer with locator evidence:<sid>#R1L4-L5; citation_mismatch false; extract has the opinion; authority unreviewed; no editorial leaks)",
+        "powershell -File scripts/native-acceptance.ps1 -> PASS (6 fixtures, exports hashed, cross-case denials, provider_calls 0)"
+      ],
+      "unrun_checks": [
+        "Holding/stop_if_active runtime path",
+        "Runtime-flag-off path",
+        "Real Westlaw pages (R36)",
+        "Capture on real Westlaw (refuses until R36 supplies content_root)"
+      ],
+      "remaining": "Not verified: a research packet cannot be marked verified without the R34-R36 spike evidence and the R51 native run; R36 real-Westlaw evidence and R51 are outstanding.",
+      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors."
     },
     "R47": {
-      "state": "pending"
+      "state": "implemented",
+      "branch": "claude/research-browser",
+      "commit": "f560932 (merged as b108abd), d013d3b, f4c5b1a",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f2e7082 (includes merge of main 2ebc7ad)",
+      "evidence": "Work products copy a whitelisted authority projection; native research agent run asserts no editorial leaks; src-tauri/tests/research.rs",
+      "commands": [
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 301 passed (lib 63, backup_artifacts 11, core 93, discovery 13, dossier 36, extract_revisions 10, journey 4, master_v4 34, research 31, plus others), ignored tests not run; run at f4c5b1a before the main merge, which changed only scripts/docs/package.json and the codex_account.rs SIDECAR hash",
+        "cargo check --locked --features desktop,research -> exit 0",
+        "cargo check --locked --features subscription,research -> exit 0",
+        "npm exec tauri build -- --debug --features subscription,research --no-bundle, then native scripts run serially:",
+        "powershell -File scripts/native-research-agent.ps1 -> PASS (real chat task: navigate, type, click, read, open opinion, read, research_capture, answer with locator evidence:<sid>#R1L4-L5; citation_mismatch false; extract has the opinion; authority unreviewed; no editorial leaks)",
+        "powershell -File scripts/native-acceptance.ps1 -> PASS (6 fixtures, exports hashed, cross-case denials, provider_calls 0)"
+      ],
+      "unrun_checks": [
+        "Holding/stop_if_active runtime path",
+        "Runtime-flag-off path",
+        "Real Westlaw pages (R36)"
+      ],
+      "remaining": "Not verified: a research packet cannot be marked verified without the R34-R36 spike evidence and the R51 native run; R36 real-Westlaw evidence and R51 are outstanding.",
+      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors."
     },
     "R48": {
-      "state": "pending"
+      "state": "implemented",
+      "branch": "claude/research-browser",
+      "commit": "0ca480e, e322e6b, a5e67ed",
+      "environment": "Windows 11 Home build 26200, Snapdragon X X1E80100 (x64 build under emulation), WebView2 Edg/153; tested at f2e7082 (includes merge of main 2ebc7ad)",
+      "evidence": "Cite-check card in the UI; backend evidence::review_checked enforces the four cite-checks (exists, quote, citator, support) for authorities with actor research_browser_adapter and records cite_check in the evidence_review audit",
+      "commands": [
+        "VISLEX_WORKER_PATH=<main checkout worker> cargo test --locked --manifest-path src-tauri/Cargo.toml -> exit 0, 301 passed (lib 63, backup_artifacts 11, core 93, discovery 13, dossier 36, extract_revisions 10, journey 4, master_v4 34, research 31, plus others), ignored tests not run; run at f4c5b1a before the main merge, which changed only scripts/docs/package.json and the codex_account.rs SIDECAR hash",
+        "cargo check --locked --features desktop,research -> exit 0",
+        "cargo check --locked --features subscription,research -> exit 0",
+        "npx vitest run -> 333 passed (33 files)",
+        "npm run build -> exit 0",
+        "npx playwright test e2e/harness-research.spec.ts (msedge) -> 4 passed (reported by the UI agent)",
+        "Playwright regression specs -> 40 passed, 1 accessibility.spec flake that then passed 4 times in a row (reported by the UI agent)"
+      ],
+      "unrun_checks": [
+        "Holding/stop_if_active runtime path",
+        "Runtime-flag-off path",
+        "Real Westlaw pages (R36)"
+      ],
+      "remaining": "Not verified: a research packet cannot be marked verified without the R34-R36 spike evidence and the R51 native run; R36 real-Westlaw evidence and R51 are outstanding.",
+      "reviewer": "Re-review of 171e176 (Claude subagent): 0 blockers, 4 majors, 7 minors. Majors 1, 2 and 4 and the minors (navigate from sign-in, restore order, deltas, stash after rollback, per-case rate, error mapping) fixed in d013d3b/f4c5b1a. Major 3 only partly fixed: the full snapshot scope can still return whole-page text on real Westlaw document pages until the R36 selector map supplies editorial selectors."
     },
     "R49": {
-      "state": "pending"
+      "state": "blocked",
+      "branch": "claude/research-browser",
+      "blocker": "Depends on the R37 Codex sidecar sign-in probe; research tools stay on the API-key route until it passes."
     },
     "R50": {
       "state": "pending"

@@ -85,6 +85,25 @@ it('opens the pane over the slot, follows resizes, and hides it on unmount', asy
   expect(layouts().at(-1)).toEqual({ rect: { x: 380, y: 64, width: 700, height: 720 }, visible: false });
 });
 
+it('shows the pane again when the view returns while the pane is still open', async () => {
+  backend(grant(true));
+  const first = render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  await waitFor(() => expect(layouts().at(-1)?.visible).toBe(true));
+  first.unmount();
+  expect(layouts().at(-1)?.visible).toBe(false);
+  const opens = api.mock.calls.filter(([action]) => action === 'open_research_pane').length;
+  // As in the app, the grant (a case read) can answer after the pane state (an app-level read).
+  const answer = api.getMockImplementation()!;
+  api.mockImplementation(async (action: string, args?: Record<string, unknown>) => {
+    if (action === 'research_grant') await new Promise(resolve => setTimeout(resolve, 80));
+    return answer(action, args);
+  });
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  await waitFor(() => expect(layouts().at(-1)).toEqual({ rect: { x: 420, y: 64, width: 600, height: 700 }, visible: true }));
+  // The open pane is placed again, not reopened.
+  expect(api.mock.calls.filter(([action]) => action === 'open_research_pane').length).toBe(opens);
+});
+
 it('offers back, forward and reload once the pane is open', async () => {
   backend(grant(true));
   render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);

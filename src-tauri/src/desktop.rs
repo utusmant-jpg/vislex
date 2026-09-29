@@ -153,6 +153,22 @@ async fn command(app: tauri::AppHandle, webview: tauri::Webview, action: String,
         let profile=PathBuf::from(text(&args,"profile").map_err(|e|e.to_string())?);
         return crate::research::spike::run(app, start, profile).await.map_err(|e|format!("{e:#}"));
     }
+    // R40 native journey probe: what the research page itself reports (size, visibility,
+    // address), through the in-process bridge. Debug test builds only; fixed expressions only.
+    #[cfg(all(feature = "research", windows, debug_assertions))]
+    if action=="research_debug_probe" && std::env::var("VISLEX_TEST_MODE").as_deref()==Ok("1") {
+        let probe=async {
+            let pane=crate::research::pane::webview(&app).context("The research browser is closed")?;
+            let bridge=crate::research::cdp::CdpBridge::new(pane);
+            if args["go"]=="second" {
+                bridge.call("Runtime.evaluate",json!({"expression":"location.href='/second.html'"}),std::time::Duration::from_secs(5)).await?;
+                return Ok(Value::Null);
+            }
+            let page=bridge.call("Runtime.evaluate",json!({"expression":"({width: innerWidth, height: innerHeight, visibility: document.visibilityState, url: location.href})","returnByValue":true}),std::time::Duration::from_secs(5)).await?;
+            Ok::<Value,anyhow::Error>(page["result"]["value"].clone())
+        };
+        return probe.await.map_err(|e|format!("{e:#}"));
+    }
     #[cfg(feature = "research")]
     if let Some(result) = research_pane_command(&app, &action, &args).await {
         return result.map_err(|e| format!("{e:#}"));

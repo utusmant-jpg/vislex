@@ -168,3 +168,16 @@ The research pane is a headed, user-signed-in WebView2, but sites that detect au
 - Only one machine was measured, an ARM64 host running x64 under emulation.
 - Startup mode clears `WEBVIEW2_USER_DATA_FOLDER`, so the main application webview uses the user's real VisLex WebView2 profile during that run. The research pane still uses its own temporary profile, and no case data is involved.
 - The command's webview-label check is not exercised on its own. Every probe observed was refused earlier, by Tauri's remote-origin rule or by the framed page never loading.
+
+## Native runs 2026-09-28
+
+Tested commit `f2e7082` (includes the merge of main `2ebc7ad`), Windows 11, WebView2 Edg/153. Build: `npm exec tauri build -- --debug --features subscription,research --no-bundle`. Each script was run serially and each passed:
+
+- `scripts/native-acceptance.ps1`: 6 fixtures, exports hashed, cross-case denials, `provider_calls` 0.
+- `scripts/native-research-agent.ps1`: a real chat task navigates, types, clicks, reads, opens an opinion, reads it, calls `research_capture` and answers with the locator `evidence:<sid>#R1L4-L5`; `citation_mismatch` is false, the extract contains the opinion, the authority is unreviewed and no editorial text leaks.
+- `scripts/native-research-pane.ps1`: pane commands, toggle, close on toggle-off/offline/case switch, sign-out deletes the profile.
+- `scripts/native-research-spike-startup.ps1` and `scripts/native-research-spike.ps1`: in-process CDP p50 about 0.3 ms, isolated world invisible to the page, trusted click, invoke refused and evidence fetch fails in the child, password-field typing refused.
+
+The scripts assert that the real app WebView profile is unchanged.
+
+Not run: the Holding/`stop_if_active` runtime path, the runtime-flag-off path, and any real Westlaw page (R36). Capture refuses on real Westlaw until the R36 selector map supplies the playbook `content_root`, and the `full` snapshot scope can still return whole-page text on Westlaw document pages until then.
