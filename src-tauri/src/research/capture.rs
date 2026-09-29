@@ -6,12 +6,13 @@
 //! audit -> automatic preparation. Any failure rolls all of it back and leaves no staged file and
 //! no unregistered original behind.
 
-use std::sync::OnceLock;
+use std::collections::HashSet;
 
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
+use super::citations;
 use super::tools::{quote_span, relevant_date_arg, text_arg, MAX_CAPTURE_BYTES};
 use crate::case::{digest, id, now, Case, PreparedImport};
 
@@ -21,24 +22,41 @@ pub const ACTOR: &str = "research_browser_adapter";
 pub const MAX_QUOTE_CHARS: usize = 20_000;
 const NEXT: &str = "Dossier and records were marked stale by this import; re-read before saving claims";
 
-fn citation_pattern() -> &'static regex::Regex {
-    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
-    PATTERN.get_or_init(|| {
-        regex::Regex::new(
-            r"\b\d{1,4}\s+(?:U\.\s?S\.|S\.\s?Ct\.|L\.\s?Ed\.(?:\s?2d)?|F\.\s?Supp\.(?:\s?[234]d|\s?4th)?|F\.\s?App'x|F\.(?:\s?(?:2d|3d|4th))?|A\.(?:\s?[23]d)?|N\.E\.(?:\s?[23]d)?|N\.W\.(?:\s?2d)?|S\.E\.(?:\s?2d)?|S\.W\.(?:\s?[23]d)?|So\.(?:\s?[23]d)?|P\.(?:\s?[23]d)?|Cal\.\s?Rptr\.(?:\s?[23]d)?|WL)\s+\d{1,7}\b",
-        )
-        .expect("citation pattern")
-    })
-}
+/// Lines searched for the citation printed at the top of a document.
+const HEADER_LINES: usize = 60;
+/// Lines after the first printed citation that may carry its parallel citations.
+const PARALLEL_LINES: usize = 2;
 
-/// The first reporter citation printed near the top of the document text, if any. A lead for the
-/// mismatch check only; it is not a verified citation.
+/// The first reporter citation printed near the top of the document text, as printed with its
+/// spacing collapsed, if any. A lead for the mismatch check only; it is not a verified citation.
 pub fn detect_citation(lines: &[&str]) -> Option<String> {
-    lines.iter().take(60).find_map(|line| citation_pattern().find(line).map(|found| found.as_str().split_whitespace().collect::<Vec<_>>().join(" ")))
+    lines.iter().take(HEADER_LINES).find_map(|line| citations::extract(line).into_iter().next().map(|found| found.raw.split_whitespace().collect::<Vec<_>>().join(" ")))
 }
 
-fn normalized(citation: &str) -> String {
+/// Normalized citations printed in the document header: the first line with a citation and the
+/// next lines, which usually carry its parallel citations.
+fn header_citations(lines: &[&str]) -> HashSet<String> {
+    let header = &lines[..lines.len().min(HEADER_LINES)];
+    let Some(first) = header.iter().position(|line| !citations::extract(line).is_empty()) else { return HashSet::new() };
+    header[first..header.len().min(first + PARALLEL_LINES + 1)].iter().flat_map(|line| citations::normalized_all(line)).collect()
+}
+
+fn squashed(citation: &str) -> String {
     citation.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
+}
+
+/// Whether the agent's claimed citation differs from the one printed in the document. Every
+/// reporter citation the agent claims must be printed in the header (normalized, so "F. 3d" and
+/// "F.3d" agree); a claim with no recognisable reporter citation falls back to text comparison.
+fn citation_mismatch(raw: &str, claimed: &str, lines: &[&str]) -> bool {
+    let claims = citations::normalized_all(claimed);
+    if claims.is_empty() {
+        let (raw, claimed) = (squashed(raw), squashed(claimed));
+        return !(claimed.contains(&raw) || raw.contains(&claimed));
+    }
+    let mut printed = header_citations(lines);
+    printed.extend(citations::normalized_all(raw));
+    !claims.iter().all(|claim| printed.contains(claim))
 }
 
 /// A readable, filesystem-neutral source name from the model's title.
@@ -72,10 +90,7 @@ pub fn publish(case: &mut Case, task: &str, bundle: &Value, args: &Value) -> Res
     let exact = lines[start..=end].join("\n");
     ensure!(exact.chars().count() <= MAX_QUOTE_CHARS, "Quote at most {MAX_QUOTE_CHARS} characters; quote a narrower span");
     let raw = bundle["citation_raw"].as_str().map(str::to_string);
-    let mismatch = raw.as_ref().map(|raw| {
-        let (raw, claimed) = (normalized(raw), normalized(&claimed));
-        !(claimed.contains(&raw) || raw.contains(&claimed))
-    });
+    let mismatch = raw.as_ref().map(|raw| citation_mismatch(raw, &claimed, &lines));
 
     let bytes = html.as_bytes();
     let sha = digest(bytes);
@@ -223,7 +238,29 @@ mod tests {
         assert_eq!(detect_citation(&["567 U.S. 1 (2012)"]).as_deref(), Some("567 U.S. 1"));
         assert_eq!(detect_citation(&["12 F. Supp. 3d 45"]).as_deref(), Some("12 F. Supp. 3d 45"));
         assert_eq!(detect_citation(&["No citation here", "Section 12 of the Act"]), None);
-        assert_eq!(normalized("123 F.3d 456"), normalized("123 f.3d  456"));
+        // As printed (spacing collapsed), not canonicalized; statutes are not case citations.
+        assert_eq!(detect_citation(&["Codified at 12 U.S.C. § 1234", "Roe v. Wade, 410 U. S. 113, 120"]).as_deref(), Some("410 U. S. 113"));
+        assert_eq!(detect_citation(&["Smith v. Jones, 2019-Ohio-1234"]).as_deref(), Some("2019-Ohio-1234"));
+        let mut late = vec!["text"; 60];
+        late.push("123 F.3d 456");
+        assert_eq!(detect_citation(&late), None, "only the document header is searched");
         assert_eq!(source_name("Smith v. Jones <script>/..\\"), "Research capture - Smith v Jones script.html");
+    }
+
+    #[test]
+    fn mismatch_compares_normalized_citations_and_accepts_printed_parallel_cites() {
+        let lines = ["Roe v. Wade", "410 U.S. 113, 93 S. Ct. 705,", "35 L. Ed. 2d 147 (1973)", "Opinion", "See 123 F.3d 456."];
+        let raw = detect_citation(&lines).unwrap();
+        assert_eq!(raw, "410 U.S. 113");
+        assert!(!citation_mismatch(&raw, "410 U. S. 113", &lines));
+        assert!(!citation_mismatch(&raw, "Roe v. Wade, 410 U.S. 113, 120 (1973)", &lines));
+        assert!(!citation_mismatch(&raw, "93 S.Ct. 705", &lines), "a printed parallel citation");
+        assert!(!citation_mismatch(&raw, "410 U.S. 113, 35 L. Ed. 2d 147", &lines));
+        assert!(citation_mismatch(&raw, "411 U.S. 113", &lines));
+        assert!(citation_mismatch(&raw, "123 F.3d 456", &lines), "a case cited in the body is not this document");
+        assert!(citation_mismatch(&raw, "410 U.S. 113, 999 S. Ct. 1", &lines), "every claimed citation must be printed");
+        // A claim without a reporter citation is compared as text.
+        assert!(!citation_mismatch(&raw, "410U.S.113", &lines));
+        assert!(citation_mismatch(&raw, "Roe v. Wade", &lines));
     }
 }
