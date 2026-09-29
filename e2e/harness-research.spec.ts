@@ -60,7 +60,7 @@ test('the Browser rail entry splits chat and browser and places the pane over it
   expect(opened.args).toMatchObject({ case_id: fx.caseA.id, session_epoch: 1 });
 
   const slot = page.getByRole('region', { name: 'Research browser' });
-  await expect(page.getByRole('textbox', { name: 'Address' })).toHaveValue('next.westlaw.com');
+  await expect(page.getByRole('textbox', { name: 'Address or search' })).toHaveValue('https://next.westlaw.com/');
   const box = (await slot.boundingBox())!;
   await expect.poll(async () => (await calls(page, 'research_pane_layout')).at(-1)?.args).toEqual({
     rect: { x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height) }, visible: true,
@@ -87,6 +87,60 @@ test('the Browser rail entry splits chat and browser and places the pane over it
   await page.keyboard.press('Control+1');
   await expect.poll(async () => (await calls(page, 'research_pane_layout')).at(-1)?.args.visible).toBe(false);
 });
+
+for (const scheme of ['dark', 'light'] as const) {
+  test(`the address field opens addresses and web searches by keyboard, and Home returns to Westlaw (${scheme})`, async ({ page }, testInfo) => {
+    await openHarness(page, { colorScheme: scheme });
+    await page.keyboard.press('Control+6');
+    await page.getByRole('button', { name: 'Turn on for this case' }).press('Enter');
+    await lastCall(page, 'open_research_pane');
+    const address = page.getByRole('textbox', { name: 'Address or search' });
+    await expect(address).toHaveValue('https://next.westlaw.com/');
+    await expect(address).toHaveAttribute('placeholder', 'Search or enter address');
+
+    // Reached with Tab from the page buttons; focusing selects the whole address.
+    await page.getByRole('button', { name: 'Home' }).focus();
+    await page.keyboard.press('Tab');
+    await expect(address).toBeFocused();
+    expect(await address.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd, input.value.length])).toEqual([0, 25, 25]);
+    await scan(page, `browser-address-focused-${scheme}`, testInfo);
+
+    // Words search the web.
+    await page.keyboard.type('duty of care negligence');
+    await page.keyboard.press('Enter');
+    expect((await lastCall(page, 'research_pane_navigate')).args).toEqual({ url: 'https://www.google.com/search?q=duty%20of%20care%20negligence' });
+    // The address is selected again, so the next typing replaces it.
+    await expect.poll(() => address.evaluate((input: HTMLInputElement) => input.selectionEnd! - input.selectionStart! === input.value.length && input.value.length > 0)).toBe(true);
+
+    // A host name gets https://.
+    await page.keyboard.type('example.com');
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await calls(page, 'research_pane_navigate')).length).toBe(2);
+    expect((await lastCall(page, 'research_pane_navigate')).args).toEqual({ url: 'https://example.com' });
+
+    // Another scheme is refused before anything is sent.
+    await page.keyboard.type('javascript:alert(1)');
+    await page.keyboard.press('Enter');
+    await expect(page.getByText('That address cannot be opened here')).toBeVisible();
+    await expect(address).toHaveAttribute('aria-invalid', 'true');
+    expect(await calls(page, 'research_pane_navigate')).toHaveLength(2);
+
+    // Escape restores the current address and leaves the field; polling shows the page opened.
+    await page.keyboard.press('Escape');
+    await expect(address).not.toBeFocused();
+    await expect(address).toHaveValue('https://example.com/');
+    await expect(address).not.toHaveAttribute('aria-invalid', 'true');
+
+    // Home returns to the Westlaw home page.
+    await page.getByRole('button', { name: 'Home' }).press('Enter');
+    await expect.poll(async () => (await calls(page, 'research_pane_navigate')).length).toBe(3);
+    expect((await lastCall(page, 'research_pane_navigate')).args).toEqual({ url: 'https://1.next.westlaw.com/' });
+    await expect(address).toHaveValue('https://1.next.westlaw.com/');
+    await scan(page, `browser-address-${scheme}`, testInfo);
+    expect(await page.locator('.research-pane').innerText()).not.toMatch(FORBIDDEN);
+    expect(await address.getAttribute('placeholder')).not.toMatch(FORBIDDEN);
+  });
+}
 
 test('a captured authority is accepted only after the four-item cite-check', async ({ page }, testInfo) => {
   const fx = await openHarness(page);
@@ -117,7 +171,7 @@ test('research steps appear in the chat turn as they run, and the toolbar Stop p
   await page.keyboard.press('Control+6');
   await page.getByRole('button', { name: 'Turn on for this case' }).press('Enter');
   await lastCall(page, 'open_research_pane');
-  await expect(page.getByRole('textbox', { name: 'Address' })).toHaveValue('next.westlaw.com');
+  await expect(page.getByRole('textbox', { name: 'Address or search' })).toHaveValue('https://next.westlaw.com/');
   await page.getByRole('textbox', { name: 'Agent task' }).focus();
   await page.keyboard.type('Find authority on the duty of care');
   await page.keyboard.press('Enter');

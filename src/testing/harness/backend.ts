@@ -54,7 +54,7 @@ const NO_EMIT = new Set([
   'save_provider_key', 'delete_provider_key', 'save_api_key', 'delete_api_key', 'key_status',
   'set_ai_access_route', 'save_codex_selection', 'codex_account_login', 'codex_account_cancel_login',
   // Research pane commands run in research_pane_command, before dispatch, and never emit.
-  'open_research_pane', 'research_pane_layout', 'research_pane_history', 'close_research_pane', 'clear_research_session',
+  'open_research_pane', 'research_pane_layout', 'research_pane_history', 'research_pane_navigate', 'close_research_pane', 'clear_research_session',
   // research_stop is app-level too; it emits itself only when it paused a task.
   'research_stop',
 ]);
@@ -63,7 +63,7 @@ const NO_EMIT = new Set([
 const RESEARCH_HOSTS = ['1.next.westlaw.com', 'next.westlaw.com', 'www.westlaw.com', 'signon.thomsonreuters.com'];
 const MAX_SSO_HOSTS = 10;
 export type ResearchGrant = { enabled: boolean; revision: number; changed_at: string; destination: string; sso_hosts: string[]; caps: Record<string, unknown>; routes: string[]; approval_mode: string };
-export type ResearchPane = { open: boolean; caseId: string | null; epoch: number; grantRevision: number; host: string | null; rect: { x: number; y: number; width: number; height: number } | null; visible: boolean };
+export type ResearchPane = { open: boolean; caseId: string | null; epoch: number; grantRevision: number; host: string | null; url: string | null; rect: { x: number; y: number; width: number; height: number } | null; visible: boolean };
 
 /** normalize_sso_host in research/mod.rs (ASCII names only). */
 function normalizeSsoHost(value: string): string {
@@ -114,7 +114,7 @@ export class SyntheticBackend {
   // SYNTHETIC research browser state; mirrors research/mod.rs grants and the pane rules in
   // desktop.rs (one pane, owned by a case session, closed when that session no longer allows it).
   researchGrants = new Map<string, ResearchGrant>();
-  researchPane: ResearchPane = { open: false, caseId: null, epoch: 0, grantRevision: 0, host: null, rect: null, visible: false };
+  researchPane: ResearchPane = { open: false, caseId: null, epoch: 0, grantRevision: 0, host: null, url: null, rect: null, visible: false };
   /** The task holding the research page (the last one given a scripted research step). */
   researchTask: string | null = null;
 
@@ -434,7 +434,7 @@ export class SyntheticBackend {
         const grant = this.researchGrants.get(c.id);
         if (!grant?.enabled) throw new Error('Turn on the research browser for this case in Settings');
         if (this.researchPane.open && (this.researchPane.caseId !== c.id || this.researchPane.epoch !== this.sessionEpoch)) throw new Error('The research browser is open for another case session');
-        this.researchPane = { open: true, caseId: c.id, epoch: this.sessionEpoch, grantRevision: grant.revision, host: 'next.westlaw.com', rect: this.paneRect(args), visible: true };
+        this.researchPane = { open: true, caseId: c.id, epoch: this.sessionEpoch, grantRevision: grant.revision, host: 'next.westlaw.com', url: 'https://next.westlaw.com/', rect: this.paneRect(args), visible: true };
         return { open: true };
       }
       case 'research_pane_layout': {
@@ -442,11 +442,20 @@ export class SyntheticBackend {
         if (this.researchPane.open) { this.researchPane.rect = rect; this.researchPane.visible = args.visible === true; }
         return null;
       }
-      case 'research_pane_state': return { open: this.researchPane.open, case_id: this.researchPane.open ? this.researchPane.caseId : null, host: this.researchPane.open ? this.researchPane.host : null, secure: this.researchPane.open ? true : null };
+      case 'research_pane_state': return { open: this.researchPane.open, case_id: this.researchPane.open ? this.researchPane.caseId : null, host: this.researchPane.open ? this.researchPane.host : null, url: this.researchPane.open ? this.researchPane.url : null, secure: this.researchPane.open ? !this.researchPane.url?.startsWith('http:') : null };
       case 'research_pane_history':
         if (!this.researchPane.open) throw new Error('The research browser is closed');
         if (!['back', 'forward', 'reload'].includes(String(args.action))) throw new Error('Unknown browser action');
         return null;
+      // App-level: the user opens an address in the pane (http and https only).
+      case 'research_pane_navigate': {
+        if (!this.researchPane.open) throw new Error('The research browser is closed');
+        let url: URL;
+        try { url = new URL(String(args.url ?? '')); } catch { throw new Error('Enter a web address'); }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only http and https addresses can be opened');
+        this.researchPane = { ...this.researchPane, host: url.hostname, url: url.href };
+        return null;
+      }
       case 'close_research_pane': this.closeResearchPane(); return null;
       case 'clear_research_session': this.closeResearchPane(); if (this.active) this.touch(this.active); return null;
       // App-level: pauses the task holding the research page (the last one given a research
@@ -849,7 +858,7 @@ export class SyntheticBackend {
     if (!rect || !['x', 'y', 'width', 'height'].every(key => typeof rect[key] === 'number')) throw new Error('Missing research pane position');
     return { x: Number(rect.x), y: Number(rect.y), width: Number(rect.width), height: Number(rect.height) };
   }
-  private closeResearchPane() { this.researchPane = { ...this.researchPane, open: false, caseId: null, host: null, visible: false }; }
+  private closeResearchPane() { this.researchPane = { ...this.researchPane, open: false, caseId: null, host: null, url: null, visible: false }; }
   /** enforce_research_pane: the pane closes when its case session no longer allows it. */
   private enforceResearchPane() {
     const pane = this.researchPane;

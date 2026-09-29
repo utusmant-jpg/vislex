@@ -264,7 +264,12 @@ describe('research browser', () => {
     await command('research_pane_layout', { rect: { ...rect, width: 640 }, visible: true });
     expect(events.length).toBe(before);
     expect(backend.researchPane).toMatchObject({ open: true, visible: true, rect: { ...rect, width: 640 } });
-    expect(await command('research_pane_state')).toEqual({ open: true, case_id: FIXTURE.caseA.id, host: 'next.westlaw.com', secure: true });
+    expect(await command('research_pane_state')).toEqual({ open: true, case_id: FIXTURE.caseA.id, host: 'next.westlaw.com', url: 'https://next.westlaw.com/', secure: true });
+    // research_pane_navigate: the user opens http(s) addresses only; it never emits.
+    await expect(command('research_pane_navigate', { url: 'javascript:alert(1)' })).rejects.toThrow('Only http and https');
+    await command('research_pane_navigate', { url: 'https://example.com/a?b=1' });
+    expect(events.length).toBe(before);
+    expect(await command('research_pane_state')).toMatchObject({ host: 'example.com', url: 'https://example.com/a?b=1', secure: true });
 
     // Changing the hosts bumps the revision, which closes the pane (enforce_research_pane).
     await command('set_research_grant', { ...guard, enabled: true, sso_hosts: [] });
