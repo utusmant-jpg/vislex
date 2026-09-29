@@ -92,3 +92,67 @@
 .research-cite-check ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .research-cite-check .field-hint { margin: 4px 0 0; }
 .research-cite-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+
+/* ------------------------------------------------------------ research bar */
+.research-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--border-subtle); background: var(--canvas);
+}
+.research-instruct {
+  flex: 1 1 220px; min-width: 0; display: flex; align-items: center; gap: 2px; height: var(--control-h-sm);
+  padding: 0 2px 0 10px; border-radius: var(--radius-pill); background: var(--inset); border: 1px solid var(--border-subtle);
+}
+.research-instruct:focus-within { border-color: var(--ring); box-shadow: 0 0 0 1px var(--ring); }
+.research-instruct-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; font-size: var(--text-sm); color: var(--text-1); }
+.research-instruct-input:focus { outline: none; box-shadow: none; }
+.research-instruct-input::placeholder { color: var(--text-3); }
+.research-bar-status { flex-basis: 100%; font-size: var(--text-caption); color: var(--text-2); display: inline-flex; align-items: center; gap: 6px; }
+.research-bar-status:empty { display: none; }
+.research-bar-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: breathe 1.4s var(--ease-standard) infinite; }
+@media (prefers-reduced-motion: reduce) { .research-bar-dot { animation: none; } }
+
+/* ------------------------------------------------------------ authorities */
+.research-authorities { flex-shrink: 0; max-height: 40%; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--border-subtle); background: var(--canvas); }
+.research-authorities-heading { margin: 0; font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.research-authorities-toggle {
+  width: 100%; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 0; border-radius: 0;
+  background: transparent; color: var(--text-1); font: inherit; text-align: left; cursor: pointer;
+}
+.research-authorities-toggle:hover { background: var(--hover); }
+.research-authorities-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.research-authorities-chevron { color: var(--text-2); transition: transform var(--dur-fast) var(--ease-standard); }
+.research-authorities.is-open .research-authorities-chevron { transform: rotate(90deg); }
+.research-authorities-count { margin-left: auto; font-weight: var(--weight-regular); font-size: var(--text-caption); color: var(--text-2); }
+.research-authorities-body { overflow: auto; min-height: 0; padding: 0 10px 8px; }
+.research-authorities-body .field-hint { margin: 4px 0; }
+.research-authorities-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.research-authority-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 8px 0; }
+.research-authority-row + .research-authority-row { border-top: 1px solid var(--border-subtle); }
+.research-authority-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.research-authority-title { font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text-1); overflow-wrap: anywhere; }
+.research-authority-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--text-caption); color: var(--text-2); }
+.research-authority-citation { font-family: var(--font-mono); }
+.research-authority-tags { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: flex-end; gap: 4px; }
+.research-authority-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.research-authority-actions:empty { display: none; }
+
+/* KeyCite: the flag is named in text; colour, fill and stripes only repeat it. */
+.keycite-pill {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--radius-pill);
+  font-size: var(--text-caption); font-weight: var(--weight-medium); white-space: nowrap; line-height: 1;
+  color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border);
+}
+.keycite-pill .keycite-icon { flex-shrink: 0; }
+.keycite-red { background: var(--danger-bg); border-color: color-mix(in oklab, var(--danger) 45%, transparent); }
+.keycite-red .keycite-icon { color: var(--danger); fill: var(--danger); }
+.keycite-yellow { background: var(--warning-bg); border-color: color-mix(in oklab, var(--warning) 45%, transparent); }
+.keycite-yellow .keycite-icon { color: var(--warning); fill: var(--warning); }
+.keycite-orange { background: color-mix(in oklab, var(--danger-bg) 50%, var(--warning-bg)); border-color: color-mix(in oklab, var(--danger) 30%, var(--warning) 30%); }
+.keycite-orange .keycite-icon { color: color-mix(in oklab, var(--danger) 50%, var(--warning)); fill: color-mix(in oklab, var(--danger) 50%, var(--warning)); }
+.keycite-blue_striped { background: repeating-linear-gradient(135deg, var(--info-bg) 0 4px, var(--surface-2) 4px 8px); border-color: color-mix(in oklab, var(--info) 45%, transparent); }
+.keycite-blue_striped .keycite-icon { color: var(--info); }
+.keycite-none .keycite-icon, .keycite-unknown .keycite-icon { color: var(--text-2); }
+@media (forced-colors: active) {
+  .keycite-pill { border-color: CanvasText; background: Canvas; color: CanvasText; }
+  .keycite-pill .keycite-icon { color: CanvasText; fill: none; }
+}

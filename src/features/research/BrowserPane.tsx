@@ -6,6 +6,8 @@ import {
   RESEARCH_GRANT_CHANGED, RESEARCH_HOME_URL, clearResearchSession, closeResearchPane, errorText, layoutResearchPane, openResearchPane,
   rectOf, researchGrant, researchPaneHistory, researchPaneNavigate, researchPaneState, researchStop, setResearchGrant, toAddress, type PaneRect, type ResearchGrant, type ResearchPaneState,
 } from './api';
+import ResearchBar from './ResearchBar';
+import ResearchAuthorities from './ResearchAuthorities';
 
 export const PANE_STATE_POLL_MS = 1500;
 
@@ -23,7 +25,7 @@ function dialogOpen() {
  * with research_pane_layout whenever it moves or resizes; the webview is hidden
  * when the slot unmounts, collapses, is suspended, or a dialog is open.
  */
-export default function BrowserPane({ caseId, sessionEpoch, offline = false, suspended = false, onOpenSettings }: {
+export default function BrowserPane({ caseId, sessionEpoch, offline = false, suspended = false, onOpenSettings, onSource }: {
   caseId: string;
   sessionEpoch?: number;
   /** The case's saved offline setting. */
@@ -31,6 +33,8 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
   /** Temporarily hide the native pane (for example while an overlay covers this area). */
   suspended?: boolean;
   onOpenSettings: (section: 'Research browser' | 'Privacy & offline') => void;
+  /** Opens a cited source at its locator (from the Authorities list). */
+  onSource?: (sourceId: string, locator?: string) => void;
 }) {
   const slot = useRef<HTMLDivElement | null>(null);
   // The slot as state too: placement must start when the slot appears, which can be after the
@@ -264,7 +268,16 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
     </div>;
   }
 
+  // Why the research modes cannot start from here; the chat's own state is added by the bar.
+  const researchUnavailable = !grantLoaded ? 'Loading…'
+    : isOffline ? 'This case is offline.'
+    : !enabled ? 'The research browser is off for this case.'
+    : phase === 'opening' ? 'The research browser is opening.'
+    : phase !== 'open' ? 'Open the research browser first.'
+    : null;
+
   return <section className="research-pane" aria-label="Research">
+    {native ? <ResearchBar caseId={caseId} unavailable={researchUnavailable} /> : null}
     <div className="research-toolbar">
       {native && enabled && !isOffline && phase === 'open' ? <div className="research-toolbar-actions" role="group" aria-label="Page history">
         <button type="button" className="quiet" data-size="sm" aria-label="Back" title="Back" onClick={() => history('back')}><ArrowLeft size={14} aria-hidden="true" /></button>
@@ -294,5 +307,6 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
       </div> : null}
     </div>
     {body}
+    {native ? <ResearchAuthorities caseId={caseId} sessionEpoch={sessionEpoch} onSource={onSource} canOpenPage={enabled && !isOffline && phase === 'open'} /> : null}
   </section>;
 }

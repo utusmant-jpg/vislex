@@ -240,3 +240,135 @@ test('the chat Stop still stops a research turn on its own', async ({ page }) =>
   expect(await calls(page, 'research_stop')).toHaveLength(0);
   await expect(page.locator('.conversation-turn').filter({ hasText: 'Chat stop during research' }).getByText('Stopped', { exact: true })).toBeVisible();
 });
+
+// src/features/research/prompts.ts; the backend keys on the prefixes.
+const QUICK = 'Quick research: find and verify the controlling law on the key issues of the charges in this case, KeyCite every authority relied on, and capture the supporting passages.';
+const DEEP = 'Deep research: exhaustively research every charge, element, defence and procedural issue in this case from every angle, binding authority first then persuasive, favourable and adverse, KeyCite everything, capture every passage relied on, and save a research memo to the case.';
+
+async function seedAuthority(page: Page, options: { keycite?: string; cited?: boolean; title?: string }) {
+  return page.evaluate(value => (window.__vislexHarness as unknown as { backend: { seedResearchAuthority: (options: Record<string, unknown>) => string } }).backend.seedResearchAuthority(value), options);
+}
+async function startTasks(page: Page) {
+  return (await calls(page, 'start_task')).filter(call => call.outcome);
+}
+
+for (const scheme of ['dark', 'light'] as const) {
+  test(`Quick research, Deep research and a typed instruction are sent to the chat by keyboard (${scheme})`, async ({ page }, testInfo) => {
+    const fx = await openHarness(page, { colorScheme: scheme });
+    await page.evaluate(() => window.__vislexHarness!.setScenario({ autoStream: false }));
+    await page.keyboard.press('Control+6');
+    const bar = page.getByRole('group', { name: 'Research with the AI' });
+    const quick = bar.getByRole('button', { name: 'Quick research' });
+    const deep = bar.getByRole('button', { name: 'Deep research' });
+    const instruction = bar.getByRole('textbox', { name: 'Instruction for the AI' });
+    const send = bar.getByRole('button', { name: 'Send instruction' });
+    // Off for this case: the controls stay focusable and say why they cannot start.
+    await expect(bar.getByText('The research browser is off for this case.')).toBeVisible();
+    await expect(quick).toHaveAttribute('aria-disabled', 'true');
+    await quick.focus();
+    await page.keyboard.press('Enter');
+    expect(await calls(page, 'start_task')).toHaveLength(0);
+    await scan(page, `research-bar-off-${scheme}`, testInfo);
+
+    await page.getByRole('button', { name: 'Turn on for this case' }).press('Enter');
+    await lastCall(page, 'open_research_pane');
+    await expect(page.getByRole('textbox', { name: 'Address or search' })).toHaveValue('https://next.westlaw.com/');
+    await expect(quick).not.toHaveAttribute('aria-disabled', 'true');
+
+    // Focus order: Quick → Deep → instruction → Send → the toolbar.
+    await quick.focus();
+    await page.keyboard.press('Tab');
+    await expect(deep).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(instruction).toBeFocused();
+    await expect(instruction).toHaveAttribute('placeholder', 'Tell the AI what to do on Westlaw…');
+    await page.keyboard.press('Tab');
+    await expect(send).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Shift+Tab');
+    await expect(quick).toBeFocused();
+
+    // Space on Quick research sends its prompt through the chat's send path (same case, epoch and model).
+    await page.keyboard.press('Space');
+    await expect.poll(async () => (await startTasks(page)).length).toBe(1);
+    const first = (await startTasks(page))[0];
+    expect(first.args).toMatchObject({ case_id: fx.caseA.id, session_epoch: 1, prompt: QUICK });
+    const firstId = (first.result as { task_id: string }).task_id;
+    await expect(page.locator('.conversation-turn').filter({ hasText: 'Quick research:' })).toBeVisible();
+    // While it runs: a quiet Researching… state, the modes wait, and the toolbar Stop is still there.
+    await expect(bar.getByText('Researching…')).toBeVisible();
+    await expect(deep).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+    await scan(page, `research-bar-running-${scheme}`, testInfo);
+    await deep.focus();
+    await page.keyboard.press('Enter');
+    expect(await startTasks(page)).toHaveLength(1);
+    await page.evaluate(id => window.__vislexHarness!.completeTask(id, 'Synthetic research answer.'), firstId);
+    await expect(bar.getByText('Researching…')).toHaveCount(0);
+    await expect(deep).not.toHaveAttribute('aria-disabled', 'true');
+
+    // Enter on Deep research continues the same chat.
+    await deep.focus();
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await startTasks(page)).length).toBe(2);
+    const second = (await startTasks(page))[1];
+    expect(second.args).toMatchObject({ prompt: DEEP, parent_task_id: firstId });
+    await page.evaluate(id => window.__vislexHarness!.completeTask(id), (second.result as { task_id: string }).task_id);
+    await expect(deep).not.toHaveAttribute('aria-disabled', 'true');
+
+    // A typed instruction goes as typed, with Enter; then with Space on Send.
+    await instruction.focus();
+    await page.keyboard.type('Search Westlaw for notice periods in commercial leases');
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await startTasks(page)).length).toBe(3);
+    const third = (await startTasks(page))[2];
+    expect(third.args).toMatchObject({ prompt: 'Search Westlaw for notice periods in commercial leases' });
+    await expect(instruction).toHaveValue('');
+    await expect(bar.getByText('Researching…')).toBeVisible();
+    await page.evaluate(id => window.__vislexHarness!.completeTask(id), (third.result as { task_id: string }).task_id);
+    await expect(bar.getByText('Researching…')).toHaveCount(0);
+    await instruction.focus();
+    await page.keyboard.type('Open the first result');
+    await page.keyboard.press('Tab');
+    await expect(send).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect.poll(async () => (await startTasks(page)).length).toBe(4);
+    expect((await startTasks(page))[3].args).toMatchObject({ prompt: 'Open the first result' });
+    // The chat composer's own draft was never touched.
+    await expect(page.getByRole('textbox', { name: 'Agent task' })).toHaveValue('');
+    expect(await page.locator('.research-pane').innerText()).not.toMatch(FORBIDDEN);
+  });
+
+  test(`the Authorities list shows a captured authority with its KeyCite flag (${scheme})`, async ({ page }, testInfo) => {
+    await openHarness(page, { colorScheme: scheme });
+    await page.keyboard.press('Control+6');
+    const toggle = page.getByRole('button', { name: /^Authorities/ });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.press('Enter');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByText('No authorities captured yet.')).toBeVisible();
+
+    // A capture arrives (case-changed): the open list refreshes.
+    await seedAuthority(page, { keycite: 'red', cited: true });
+    const list = page.getByRole('list', { name: 'Captured authorities' });
+    const row = list.getByRole('listitem').filter({ hasText: 'Harbor Freight v. Synthetic Depot (SYNTHETIC)' });
+    await expect(row).toBeVisible();
+    await expect(row.getByText('123 F.4th 456 (9th Cir. 2025)')).toBeVisible();
+    await expect(row.getByText('Ninth Circuit (SYNTHETIC)')).toBeVisible();
+    await expect(row.getByRole('img', { name: 'KeyCite: Red flag, no longer good law for at least one point' })).toBeVisible();
+    await expect(row.getByText('Red flag', { exact: true })).toBeVisible();
+    await expect(row.getByText('Unreviewed')).toBeVisible();
+    await seedAuthority(page, { title: 'Second Synthetic v. Example (SYNTHETIC)' });
+    await expect(list.getByRole('listitem')).toHaveCount(2);
+    await expect(list.getByRole('listitem').filter({ hasText: 'Second Synthetic' }).getByRole('img', { name: /^KeyCite: Not checked/ })).toBeVisible();
+    await expect(toggle).toContainText('2');
+    await scan(page, `research-authorities-${scheme}`, testInfo);
+    expect(await page.locator('.research-authorities').innerText()).not.toMatch(FORBIDDEN);
+
+    // Collapsing by keyboard hides the list.
+    await toggle.press('Space');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(list).toBeHidden();
+  });
+}

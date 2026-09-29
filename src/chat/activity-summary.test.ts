@@ -148,6 +148,30 @@ describe('research browser steps', () => {
     expect(researchStepLabel('research_act', '')).toBe('Worked on the research page');
   });
 
+  it('labels the Westlaw search and document tools, live and from saved receipts', () => {
+    // Live: agent-progress delta.detail is the query, or the document's host and path.
+    expect(liveLabel('research_westlaw_search', 'duty of care /s negligence')).toBe('Searched Westlaw: duty of care /s negligence');
+    expect(liveLabel('research_westlaw_document', '1.next.westlaw.com/Document/I0abc')).toBe('Opened 1.next.westlaw.com/Document/I0abc');
+    expect(liveLabel('research_westlaw_search')).toBe('Searching Westlaw');
+    expect(liveLabel('research_westlaw_document')).toBe('Reading the document');
+    expect(researchStepLabel('research_westlaw_document')).toBe('Read the document');
+    expect(researchStepLabel('research_westlaw_search')).toBe('Searched Westlaw');
+    // Receipts: args.query and args.url give the same sentence.
+    expect(researchDetail('research_westlaw_search', { query: 'duty of care /s negligence' })).toBe('duty of care /s negligence');
+    expect(researchDetail('research_westlaw_document', { url: 'https://1.next.westlaw.com/Document/I0abc?transitionType=Default#co' })).toBe('1.next.westlaw.com/Document/I0abc');
+    const searched = summarizeAction(action('research_westlaw_search', { query: 'duty of care /s negligence' }, { results: [{ title: 'A' }, { title: 'B' }] }));
+    expect(searched).toMatchObject({ kind: 'search', verb: 'Searched Westlaw:', object: 'duty of care /s negligence', result: '2 results' });
+    expect(searched.facts).toContainEqual({ label: 'Query', value: 'duty of care /s negligence' });
+    const opened = summarizeAction(action('research_westlaw_document', { url: 'https://1.next.westlaw.com/Document/I0abc?x=1' }, { title: 'Synthetic v. Example', url: 'https://1.next.westlaw.com/Document/I0abc' }));
+    expect(opened).toMatchObject({ kind: 'read', verb: 'Opened', object: '1.next.westlaw.com/Document/I0abc' });
+    expect(opened.facts).toContainEqual({ label: 'Title', value: 'Synthetic v. Example' });
+    expect(summarizeAction(action('research_westlaw_document', {}, {}))).toMatchObject({ verb: 'Read the document' });
+    // Both are research steps: listed inline in a running turn, once.
+    const at = Date.parse('2026-09-28T10:00:00Z');
+    expect(researchLines([searched], [{ activity: 'research_westlaw_document', detail: '1.next.westlaw.com/Document/I0abc', at }]).map(line => line.label))
+      .toEqual(['Searched Westlaw: duty of care /s negligence', 'Opened 1.next.westlaw.com/Document/I0abc']);
+  });
+
   it('lists research steps once: receipts first, then live steps without a receipt yet', () => {
     const at = Date.parse('2026-09-28T10:00:00Z');
     const receipt = summarizeAction({ ...action('research_act', { action: 'type', text: 'duty of care /s negligence' }, { performed: 'type' }), id: 'r1', created_at: '2026-09-28T10:00:01Z' });

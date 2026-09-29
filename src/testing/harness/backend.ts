@@ -868,12 +868,18 @@ export class SyntheticBackend {
     if (!allowed) this.closeResearchPane();
   }
   /** Adds a captured research-browser authority (actor research_browser_adapter) for cite-check specs. */
-  seedResearchAuthority(options: { mismatch?: boolean } = {}) {
+  /** A research browser capture (capture.rs publish) as an unreviewed authority object. `keycite`
+   *  records a KeyCite flag in content.keycite.flag; `cited` gives it a locator into the witness
+   *  statement (capture.rs cites the captured page's own source). Emits case-changed. */
+  seedResearchAuthority(options: { mismatch?: boolean; keycite?: string; cited?: boolean; title?: string } = {}) {
     const c = this.current();
     const id = syntheticId('object', 9000 + c.evidence.length);
-    const content = { url: 'https://next.westlaw.com/Document/SYNTHETIC-OPINION', title: 'Harbor Freight v. Synthetic Depot (SYNTHETIC)', citation: { raw: '123 F.4th 456 (9th Cir. 2025)', claimed: options.mismatch ? '123 F.4th 465 (9th Cir. 2025)' : '123 F.4th 456 (9th Cir. 2025)', mismatch: !!options.mismatch }, quote: { exact: 'A notice period runs from actual receipt. (Synthetic quotation for software testing.)', locator: 'line 42' }, proposition: 'Notice runs from receipt (synthetic).', treatment_status: 'not_checked', proposition_support: 'unassessed' };
-    const object = { id, revision: 1, kind: 'authority', title: 'Harbor Freight v. Synthetic Depot (SYNTHETIC)', content: JSON.stringify(content), source_ids: [], locators: [], review: 'unreviewed', stale: false, actor: 'research_browser_adapter', start_seconds: null, end_seconds: null, dependencies: [] };
+    const title = options.title ?? 'Harbor Freight v. Synthetic Depot (SYNTHETIC)';
+    const locator = options.cited ? `evidence:${FIXTURE.statement}#R2L2-L3` : null;
+    const content = { url: 'https://next.westlaw.com/Document/SYNTHETIC-OPINION', title, citation: { raw: '123 F.4th 456 (9th Cir. 2025)', claimed: options.mismatch ? '123 F.4th 465 (9th Cir. 2025)' : '123 F.4th 456 (9th Cir. 2025)', mismatch: !!options.mismatch }, jurisdiction: 'Ninth Circuit (SYNTHETIC)', quote: { exact: 'A notice period runs from actual receipt. (Synthetic quotation for software testing.)', locator: locator ?? 'line 42' }, proposition: 'Notice runs from receipt (synthetic).', treatment_status: 'not_checked', proposition_support: 'unassessed', ...(options.keycite ? { keycite: { flag: options.keycite } } : {}) };
+    const object = { id, revision: 1, kind: 'authority', title, content: JSON.stringify(content), source_ids: locator ? [FIXTURE.statement] : [], locators: locator ? [locator] : [], review: 'unreviewed', stale: false, actor: 'research_browser_adapter', start_seconds: null, end_seconds: null, dependencies: [] };
     c.evidence = [object, ...c.evidence]; this.touch(c);
+    if (c === this.active) this.caseChanged();
     return id;
   }
 

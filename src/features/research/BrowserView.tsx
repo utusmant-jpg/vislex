@@ -21,13 +21,15 @@ function saveWidth(width: number) {
  * separated by a draggable, keyboard-operable divider. The browser width is a
  * per-device preference.
  */
-export default function BrowserView({ chat, caseId, sessionEpoch, offline, suspended, onOpenSettings }: {
+export default function BrowserView({ chat, caseId, sessionEpoch, offline, suspended, onOpenSettings, onSource }: {
   chat: ReactNode;
   caseId: string;
   sessionEpoch?: number;
   offline?: boolean;
   suspended?: boolean;
   onOpenSettings: (section: 'Research browser' | 'Privacy & offline') => void;
+  /** Opens a cited source at its locator (the Authorities list's citation chips). */
+  onSource?: (sourceId: string, locator?: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; width: number } | null>(null);
@@ -66,7 +68,7 @@ export default function BrowserView({ chat, caseId, sessionEpoch, offline, suspe
       }}
     />
     <div className="research-split-browser" style={{ flexBasis: shown, width: shown }}>
-      <BrowserPane caseId={caseId} sessionEpoch={sessionEpoch} offline={offline} suspended={suspended} onOpenSettings={onOpenSettings} />
+      <BrowserPane caseId={caseId} sessionEpoch={sessionEpoch} offline={offline} suspended={suspended} onOpenSettings={onOpenSettings} onSource={onSource} />
     </div>
   </div>;
 }

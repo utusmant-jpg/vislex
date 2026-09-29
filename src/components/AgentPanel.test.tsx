@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AgentPanel from './AgentPanel';
+import { DEEP_RESEARCH_PROMPT, QUICK_RESEARCH_PROMPT, currentChatState, sendPrompt } from '../features/research/prompts';
 import type { Snapshot, Task } from '../types';
 
 const api = vi.hoisted(() => vi.fn());
@@ -297,6 +298,44 @@ describe('chat composer interaction', () => {
     view.rerender(<AgentPanel {...props} conversationId="chat-one" />);
     expect(composer().value).toBe('Draft for chat one');
     expect(JSON.stringify({ ...sessionStorage }) + JSON.stringify({ ...localStorage })).not.toContain('Draft for chat one');
+  });
+
+  it('vislex:send-prompt sends at once through the Send path and keeps the unsent draft', async () => {
+    const data = snapshot(); data.session_epoch = 7;
+    const { onConversation } = panel(data);
+    const composer = screen.getByRole('textbox', { name: 'Agent task' }) as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: 'My unsent draft' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toHaveProperty('disabled', false));
+    expect(currentChatState()).toEqual({ caseId: 'case-1', running: false, runningPrompt: null, blocked: null });
+    let result: ReturnType<typeof sendPrompt> | undefined;
+    act(() => { result = sendPrompt(QUICK_RESEARCH_PROMPT); });
+    expect(result).toEqual({ sent: true });
+    await waitFor(() => expect(api).toHaveBeenCalledWith('start_task', expect.objectContaining({ case_id: 'case-1', session_epoch: 7, prompt: QUICK_RESEARCH_PROMPT, parent_task_id: null })));
+    expect(api.mock.calls.filter(([action]) => action === 'start_task')).toHaveLength(1);
+    await waitFor(() => expect(onConversation).toHaveBeenCalledWith('new-chat'));
+    // The message was not the composer's draft, so the draft stays.
+    expect(composer.value).toBe('My unsent draft');
+    // The old draft-prompt event still only fills the composer.
+    act(() => { window.dispatchEvent(new CustomEvent('vislex:draft-prompt', { detail: { text: 'Drafted only' } })); });
+    expect(composer.value).toBe('Drafted only');
+    expect(api.mock.calls.filter(([action]) => action === 'start_task')).toHaveLength(1);
+  });
+
+  it('vislex:send-prompt answers why it cannot send while a response runs, and reports the running prompt', async () => {
+    const running = { ...task('current-task', 'current-chat'), prompt: DEEP_RESEARCH_PROMPT };
+    const view = panel(snapshot([running]), 'current-chat');
+    await waitFor(() => expect(currentChatState()).toMatchObject({ caseId: 'case-1', running: true, runningPrompt: DEEP_RESEARCH_PROMPT }));
+    let result: ReturnType<typeof sendPrompt> | undefined;
+    act(() => { result = sendPrompt(QUICK_RESEARCH_PROMPT); });
+    expect(result).toEqual({ sent: false, reason: 'A response is running in this chat.' });
+    act(() => { result = sendPrompt('   '); });
+    expect(result).toEqual({ sent: false, reason: 'Nothing to send.' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(api).not.toHaveBeenCalledWith('start_task', expect.anything());
+    // With no chat mounted the sender is told so, and the published state is cleared.
+    view.unmount();
+    expect(currentChatState()).toBeNull();
+    expect(sendPrompt(QUICK_RESEARCH_PROMPT)).toEqual({ sent: false, reason: 'The chat is not open.' });
   });
 
   it('does not select a late chat response after the case changes', async () => {
