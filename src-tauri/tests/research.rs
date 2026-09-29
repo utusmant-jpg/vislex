@@ -996,3 +996,23 @@ fn records_citing_uncaptured_reporter_citations_are_refused_after_research() {
     let output = last_action(&case, &task)["output"].to_string();
     assert!(output.contains("research_capture") && output.contains("123 F.3d 456"), "{output}");
 }
+
+#[test]
+fn captured_web_pages_are_not_sent_to_the_sandboxed_worker() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let receipt = run_research(&mut case, &task, fixture_page(DOCUMENT_URL), &document_playbook(), "research_capture", capture_args(3, 4));
+    assert_eq!(receipt["status"], "complete", "{receipt}");
+    let output: serde_json::Value = serde_json::from_str(receipt["output"].as_str().unwrap()).unwrap();
+    let source = output["source_id"].as_str().unwrap().to_string();
+    // A job that failed earlier (as older builds did) is settled; a new one completes at once.
+    evidence_desk::automatic::enqueue(&mut case).unwrap();
+    case.db.execute("UPDATE processing_jobs SET status='failed',error='Sandboxed extraction currently supports PDF' WHERE kind='auto_prepare' AND source_id=?", [&source]).unwrap();
+    evidence_desk::automatic::enqueue(&mut case).unwrap();
+    let status = |case: &Case| case.db.query_row::<(String, String), _, _>("SELECT status,error FROM processing_jobs WHERE kind='auto_prepare' AND source_id=?", [&source], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(status(&case), ("complete".to_string(), String::new()));
+    case.db.execute("UPDATE processing_jobs SET status='queued' WHERE kind='auto_prepare' AND source_id=?", [&source]).unwrap();
+    while let Some(job) = evidence_desk::automatic::next(&mut case).unwrap() {
+        assert_ne!(job.processor.source.id, source, "a captured page never reaches the worker");
+    }
+    assert_eq!(status(&case).0, "complete");
+}

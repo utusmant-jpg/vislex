@@ -77,6 +77,10 @@ pub fn visual_coverage(case:&Case,task:&str)->Result<Value> {
     Ok(json!({"version":1,"task_id":task,"interval_seconds":20,"complete":all_complete,"sources":sources,"meaning":"Only recorded AI observations of sampled frames count. Last decoded time estimates playable extent; neither sampled-bin coverage nor scene-frame coverage proves continuous human review."}))
 }
 
+/// Sources that are web pages with a published text extract (research browser captures).
+const CAPTURED_WEB_PAGES:&str="SELECT s.id FROM sources s JOIN extracts e ON e.source_id=s.id WHERE s.mime LIKE '%html%' OR lower(s.name) LIKE '%.html' OR lower(s.name) LIKE '%.htm'";
+const CAPTURED_RESULT:&str=r#"{"native_text_indexed":true,"prepared_by":"research_capture","model_inspected":false}"#;
+
 pub fn enqueue(case:&mut Case)->Result<()> {
     crate::discovery::enqueue_missing(case)?;
     if let Ok(worker)=processing::worker_path() {
@@ -87,6 +91,9 @@ pub fn enqueue(case:&mut Case)->Result<()> {
         }
     }
     case.db.execute("UPDATE processing_jobs SET status='queued',error='' WHERE kind='auto_prepare' AND status='interrupted'",[])?;
+    // Web pages captured by the research browser arrive with their text extract; an earlier
+    // attempt to send them to the sandboxed worker (which does not extract HTML) is settled.
+    case.db.execute(&format!("UPDATE processing_jobs SET status='complete',error='',result=? WHERE kind='auto_prepare' AND status='failed' AND source_id IN ({CAPTURED_WEB_PAGES})"),[CAPTURED_RESULT])?;
     for source in case.sources()? {
         let exists:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM processing_jobs WHERE source_id=? AND kind='auto_prepare')",[&source.id],|r|r.get(0))?;
         if !exists {
@@ -114,6 +121,11 @@ pub fn next(case:&mut Case)->Result<Option<Job>> {
             let over_limit=!indexed && source.size>10*1024*1024;
             let reason=if indexed {""} else if over_limit {"Text is over the 10 MB indexing limit: readable page by page from the original, but not searchable or citable by line"} else {"Text could not be decoded/indexed; retained for review"};
             case.db.execute("UPDATE processing_jobs SET status=?,result=?,error=? WHERE id=?",params![if indexed {"complete"}else{"failed"},json!({"native_text_indexed":indexed,"over_index_limit":over_limit,"model_inspected":false}).to_string(),reason,queue_id])?;
+            continue;
+        }
+        let captured:bool=case.db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM ({CAPTURED_WEB_PAGES}) WHERE id=?)"),[&source_id],|r|r.get(0))?;
+        if captured {
+            case.db.execute("UPDATE processing_jobs SET status='complete',result=?,error='' WHERE id=?",params![CAPTURED_RESULT,queue_id])?;
             continue;
         }
         match processing::prepare_request(case,&source_id,json!({"operation":"automatic"})) {
