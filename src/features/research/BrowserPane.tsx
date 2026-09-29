@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Globe, Lock, LogOut, Power, RefreshCw, RotateCw, Square, WifiOff, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { ArrowLeft, ArrowRight, Globe, Home, Lock, LogOut, Power, RefreshCw, RotateCw, Square, WifiOff, X } from 'lucide-react';
 import { native } from '../../bridge';
 import { notify } from '../../ui';
 import {
-  RESEARCH_GRANT_CHANGED, clearResearchSession, closeResearchPane, errorText, layoutResearchPane, openResearchPane,
-  rectOf, researchGrant, researchPaneHistory, researchPaneState, researchStop, setResearchGrant, type PaneRect, type ResearchGrant, type ResearchPaneState,
+  RESEARCH_GRANT_CHANGED, RESEARCH_HOME_URL, clearResearchSession, closeResearchPane, errorText, layoutResearchPane, openResearchPane,
+  rectOf, researchGrant, researchPaneHistory, researchPaneNavigate, researchPaneState, researchStop, setResearchGrant, toAddress, type PaneRect, type ResearchGrant, type ResearchPaneState,
 } from './api';
 
 export const PANE_STATE_POLL_MS = 1500;
@@ -158,6 +158,39 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
   function history(action: 'back' | 'forward' | 'reload') {
     researchPaneHistory(action).catch(error => notify.fromError('The research browser could not do that', error));
   }
+
+  // The address field: shows the current address; while it has focus it holds what the user
+  // is typing (polling never overwrites it). Enter opens the address or searches the web.
+  const address = useRef<HTMLInputElement | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [addressInvalid, setAddressInvalid] = useState(false);
+  // A click that focuses the field keeps the select-all from focus (its mouseup would clear it).
+  const keepSelection = useRef(false);
+  useEffect(() => { if (phase !== 'open') { setDraft(null); setAddressInvalid(false); } }, [phase]);
+  async function navigate(url: string) {
+    try { await researchPaneNavigate(url); return true; }
+    catch (error) { notify.fromError('The research browser could not open that address', error); return false; }
+  }
+  async function submitAddress() {
+    const text = draft ?? '';
+    if (!text.trim()) return;
+    const url = toAddress(text);
+    if (!url) {
+      setAddressInvalid(true);
+      notify.error('That address cannot be opened here', 'Enter a web address (http or https) or words to search for.');
+      return;
+    }
+    setAddressInvalid(false);
+    if (await navigate(url) && live.current && document.activeElement === address.current) {
+      setDraft(url);
+      // Like a browser's address bar, the next keystroke replaces the address.
+      window.requestAnimationFrame(() => { if (document.activeElement === address.current) address.current?.select(); });
+    }
+  }
+  function addressKey(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Enter') { event.preventDefault(); void submitAddress(); }
+    else if (event.key === 'Escape') { event.preventDefault(); setDraft(null); setAddressInvalid(false); event.currentTarget.blur(); }
+  }
   // Stops the agent's work in the page: the backend pauses the task holding the research page
   // and stops the page loading. The chat's own Stop is unchanged.
   const [stopping, setStopping] = useState(false);
@@ -191,7 +224,7 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
     }
   }
 
-  const host = phase === 'open' ? pane?.host ?? null : null;
+  const currentAddress = phase === 'open' ? pane?.url || pane?.host || '' : '';
   const secure = phase === 'open' && pane?.secure === true;
   const statusLabel = phase === 'open' ? 'Connected' : phase === 'opening' ? 'Opening…' : 'Closed';
 
@@ -237,10 +270,21 @@ export default function BrowserPane({ caseId, sessionEpoch, offline = false, sus
         <button type="button" className="quiet" data-size="sm" aria-label="Back" title="Back" onClick={() => history('back')}><ArrowLeft size={14} aria-hidden="true" /></button>
         <button type="button" className="quiet" data-size="sm" aria-label="Forward" title="Forward" onClick={() => history('forward')}><ArrowRight size={14} aria-hidden="true" /></button>
         <button type="button" className="quiet" data-size="sm" aria-label="Reload" title="Reload" onClick={() => history('reload')}><RotateCw size={14} aria-hidden="true" /></button>
+        <button type="button" className="quiet" data-size="sm" aria-label="Home" title="Home" onClick={() => void navigate(RESEARCH_HOME_URL)}><Home size={14} aria-hidden="true" /></button>
       </div> : null}
       <div className="research-address" role="group" aria-label="Current site">
         {secure ? <Lock size={13} className="research-lock" aria-label="Secure connection" role="img" /> : <Globe size={13} aria-hidden="true" />}
-        <input className="research-address-input" readOnly tabIndex={-1} aria-label="Address" value={host ?? ''} placeholder={phase === 'open' ? 'Loading…' : 'Not open'} />
+        {phase === 'open'
+          ? <input ref={address} type="text" className="research-address-input" aria-label="Address or search" placeholder="Search or enter address"
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="go" aria-invalid={addressInvalid || undefined}
+              value={draft ?? currentAddress}
+              onFocus={event => { setDraft(currentAddress); event.currentTarget.select(); }}
+              onMouseDown={event => { keepSelection.current = document.activeElement !== event.currentTarget; }}
+              onMouseUp={event => { if (keepSelection.current) { keepSelection.current = false; event.preventDefault(); } }}
+              onChange={event => { setDraft(event.target.value); setAddressInvalid(false); }}
+              onKeyDown={addressKey}
+              onBlur={() => { setDraft(null); setAddressInvalid(false); keepSelection.current = false; }} />
+          : <input type="text" className="research-address-input" disabled aria-label="Address or search" value="" placeholder={phase === 'opening' ? 'Loading…' : 'Not open'} />}
       </div>
       <span className={`research-status research-status-${phase}`} role="status"><span className="research-status-dot" aria-hidden="true" />{statusLabel}</span>
       {native && enabled && !isOffline ? <div className="research-toolbar-actions">

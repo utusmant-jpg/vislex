@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { notify } from '../../ui';
-import BrowserPane from './BrowserPane';
+import BrowserPane, { PANE_STATE_POLL_MS } from './BrowserPane';
+import { RESEARCH_HOME_URL, toAddress } from './api';
 import BrowserView, { BROWSER_WIDTH_KEY } from './BrowserView';
 import ResearchSettings from './ResearchSettings';
 import ResearchCiteCheck, { CITE_CHECKS, citeCheckNote } from './ResearchCiteCheck';
@@ -24,13 +25,14 @@ const grant = (enabled: boolean, sso_hosts: string[] = []) => ({ enabled, revisi
 
 /** A small synthetic research backend: one grant for the case and one pane. */
 function backend(initial: ReturnType<typeof grant> | null) {
-  const state = { grant: initial, open: false };
+  const state = { grant: initial, open: false, url: 'https://next.westlaw.com/' as string | null };
   api.mockImplementation(async (action: string, args: Record<string, unknown> = {}) => {
     switch (action) {
       case 'research_grant': return state.grant;
       case 'set_research_grant': state.grant = grant(Boolean(args.enabled), (args.sso_hosts as string[] | undefined) ?? state.grant?.sso_hosts ?? []); return state.grant;
       case 'open_research_pane': state.open = true; return { open: true };
-      case 'research_pane_state': return state.open ? { open: true, case_id: 'synthetic-case', host: 'next.westlaw.com', secure: true } : { open: false, case_id: null, host: null, secure: null };
+      case 'research_pane_state': return state.open ? { open: true, case_id: 'synthetic-case', host: state.url ? new URL(state.url).hostname : 'next.westlaw.com', url: state.url, secure: true } : { open: false, case_id: null, host: null, url: null, secure: null };
+      case 'research_pane_navigate': if (!/^https?:/.test(String(args.url))) throw 'Only http and https addresses can be opened'; state.url = String(args.url); return null;
       case 'close_research_pane': case 'clear_research_session': state.open = false; return null;
       case 'research_pane_layout': case 'research_pane_history': return null;
       case 'app_ai_settings': return { configured: true, config: snapshot.ai_config, settings: snapshot.settings };
@@ -68,7 +70,7 @@ it('opens the pane over the slot, follows resizes, and hides it on unmount', asy
   await waitFor(() => expect(api).toHaveBeenCalledWith('open_research_pane', { case_id: 'synthetic-case', session_epoch: 4, rect: { x: 420, y: 64, width: 600, height: 700 } }));
   expect(screen.getByRole('region', { name: 'Research browser' })).toBeTruthy();
   await waitFor(() => expect(layouts()).toContainEqual({ rect: { x: 420, y: 64, width: 600, height: 700 }, visible: true }));
-  await waitFor(() => expect((screen.getByRole('textbox', { name: 'Address' }) as HTMLInputElement).value).toBe('next.westlaw.com'));
+  await waitFor(() => expect((screen.getByRole('textbox', { name: 'Address or search' }) as HTMLInputElement).value).toBe('https://next.westlaw.com/'));
   expect(screen.getByRole('img', { name: 'Secure connection' })).toBeTruthy();
   expect(screen.getByText('Connected')).toBeTruthy();
 
@@ -112,6 +114,107 @@ it('offers back, forward and reload once the pane is open', async () => {
     fireEvent.click(within(history).getByRole('button', { name }));
     await waitFor(() => expect(api).toHaveBeenCalledWith('research_pane_history', { action }));
   }
+});
+
+it('toAddress opens web addresses, searches for words, and refuses other schemes', () => {
+  expect(toAddress('example.com')).toBe('https://example.com');
+  expect(toAddress('  example.com/path?q=1  ')).toBe('https://example.com/path?q=1');
+  expect(toAddress('example.com:8080/x')).toBe('https://example.com:8080/x');
+  expect(toAddress('localhost')).toBe('https://localhost');
+  expect(toAddress('localhost:3000/app')).toBe('https://localhost:3000/app');
+  expect(toAddress('https://1.next.westlaw.com/Document/I0')).toBe('https://1.next.westlaw.com/Document/I0');
+  expect(toAddress('HTTP://Example.com')).toBe('HTTP://Example.com');
+  expect(toAddress('duty of care negligence')).toBe('https://www.google.com/search?q=duty%20of%20care%20negligence');
+  expect(toAddress('negligence')).toBe('https://www.google.com/search?q=negligence');
+  expect(toAddress('a.b c&d')).toBe('https://www.google.com/search?q=a.b%20c%26d');
+  expect(toAddress('42 U.S.C. \u00a7 1983')).toBe(`https://www.google.com/search?q=${encodeURIComponent('42 U.S.C. \u00a7 1983')}`);
+  for (const refused of ['javascript:alert(1)', 'file:///C:/synthetic.txt', 'data:text/html,x', 'mailto:someone@example.com', 'about:blank', 'ftp://example.com']) expect(toAddress(refused)).toBeNull();
+  expect(toAddress('   ')).toBeNull();
+});
+
+it('the address field opens what is typed with Enter and restores the address with Escape', async () => {
+  const state = backend(grant(true));
+  const spy = vi.spyOn(notify, 'error');
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  const input = await screen.findByRole('textbox', { name: 'Address or search' }) as HTMLInputElement;
+  await waitFor(() => expect(input.value).toBe('https://next.westlaw.com/'));
+  // A real, focusable text field.
+  expect(input.readOnly).toBe(false);
+  expect(input.getAttribute('tabindex')).toBeNull();
+  expect(input.getAttribute('placeholder')).toBe('Search or enter address');
+
+  act(() => { input.focus(); });
+  expect([input.selectionStart, input.selectionEnd]).toEqual([0, input.value.length]);
+  fireEvent.change(input, { target: { value: 'duty of care negligence' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(api).toHaveBeenCalledWith('research_pane_navigate', { url: 'https://www.google.com/search?q=duty%20of%20care%20negligence' }));
+
+  fireEvent.change(input, { target: { value: 'example.com' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(api).toHaveBeenCalledWith('research_pane_navigate', { url: 'https://example.com' }));
+  expect(state.url).toBe('https://example.com');
+
+  // Another scheme is refused here, with a message, and nothing is sent.
+  const sent = api.mock.calls.filter(([action]) => action === 'research_pane_navigate').length;
+  fireEvent.change(input, { target: { value: 'javascript:alert(1)' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(spy).toHaveBeenCalledWith('That address cannot be opened here', expect.any(String)));
+  expect(input.getAttribute('aria-invalid')).toBe('true');
+  expect(api.mock.calls.filter(([action]) => action === 'research_pane_navigate').length).toBe(sent);
+
+  // Escape drops the edit, shows the current address and leaves the field.
+  fireEvent.keyDown(input, { key: 'Escape' });
+  expect(document.activeElement).not.toBe(input);
+  await waitFor(() => expect(input.value).toBe('https://example.com'));
+  expect(input.getAttribute('aria-invalid')).toBeNull();
+});
+
+it('polling does not overwrite what the user is typing, and updates the address afterwards', async () => {
+  const state = backend(grant(true));
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  const input = await screen.findByRole('textbox', { name: 'Address or search' }) as HTMLInputElement;
+  await waitFor(() => expect(input.value).toBe('https://next.westlaw.com/'));
+  act(() => { input.focus(); });
+  fireEvent.change(input, { target: { value: 'half-typed' } });
+  // The page moves on (the agent navigated); the next poll reports it.
+  state.url = 'https://1.next.westlaw.com/Document/I0SYNTHETIC';
+  const polls = api.mock.calls.filter(([action]) => action === 'research_pane_state').length;
+  await waitFor(() => expect(api.mock.calls.filter(([action]) => action === 'research_pane_state').length).toBeGreaterThan(polls), { timeout: PANE_STATE_POLL_MS * 2 });
+  await act(async () => { await Promise.resolve(); });
+  expect(input.value).toBe('half-typed');
+  act(() => { input.blur(); });
+  await waitFor(() => expect(input.value).toBe('https://1.next.westlaw.com/Document/I0SYNTHETIC'));
+});
+
+it('falls back to the host when the backend reports no full address', async () => {
+  const state = backend(grant(true));
+  state.url = null;
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  await waitFor(() => expect((screen.getByRole('textbox', { name: 'Address or search' }) as HTMLInputElement).value).toBe('next.westlaw.com'));
+});
+
+it('Home opens the Westlaw home page', async () => {
+  backend(grant(true));
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  const history = await screen.findByRole('group', { name: 'Page history' });
+  fireEvent.click(within(history).getByRole('button', { name: 'Home' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('research_pane_navigate', { url: RESEARCH_HOME_URL }));
+  expect(RESEARCH_HOME_URL).toBe('https://1.next.westlaw.com/');
+});
+
+it('reports a refused navigation through the notification helper', async () => {
+  backend(grant(true));
+  const answer = api.getMockImplementation()!;
+  api.mockImplementation(async (action: string, args?: Record<string, unknown>) => { if (action === 'research_pane_navigate') throw 'The research browser is closed'; return answer(action, args); });
+  const spy = vi.spyOn(notify, 'fromError');
+  render(<BrowserPane caseId="synthetic-case" sessionEpoch={4} onOpenSettings={vi.fn()} />);
+  const input = await screen.findByRole('textbox', { name: 'Address or search' }) as HTMLInputElement;
+  await waitFor(() => expect(input.value).toBe('https://next.westlaw.com/'));
+  act(() => { input.focus(); });
+  fireEvent.change(input, { target: { value: 'example.com' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(spy).toHaveBeenCalledWith('The research browser could not open that address', 'The research browser is closed'));
+  expect(input.value).toBe('example.com');
 });
 
 it('hides the pane while a modal dialog is open and shows it again afterwards', async () => {

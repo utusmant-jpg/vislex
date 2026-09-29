@@ -35,6 +35,10 @@
   font-size: var(--text-sm); color: var(--text-1); text-overflow: ellipsis;
 }
 .research-address-input:focus { outline: none; box-shadow: none; }
+/* The field's own outline is off; the pill shows focus and an address that cannot be opened. */
+.research-address:focus-within { border-color: var(--ring); box-shadow: 0 0 0 1px var(--ring); color: var(--text-2); }
+.research-address:has(.research-address-input[aria-invalid="true"]) { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
+.research-address-input:disabled { cursor: default; }
 .research-address-input::placeholder { color: var(--text-3); }
 .research-status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-caption); color: var(--text-2); white-space: nowrap; }
 .research-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
