@@ -188,7 +188,9 @@ function researchJourneyStep(results) {
 // then research_capture of the opinion lines citing the neutral cite, which the capture must
 // confirm from the document's parallel citations; the answer cites that neutral cite.
 function westlawStep(input) {
-  const results = remember(input, seen);
+  // Only the research tools drive this script; the app's own review steps (finish_task asking for
+  // a support review) are answered by repeating the final answer.
+  const results = remember(input, seen).filter(result => result.name.startsWith('research_'));
   const last = results.at(-1);
   if (!last) return call('research_westlaw_search', { query: 'adv: theft /s "lawful owner"', jurisdiction: 'Ohio', content_type: 'cases' });
   const output = parse(last.output);

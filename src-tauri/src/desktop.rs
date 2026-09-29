@@ -160,6 +160,12 @@ async fn command(app: tauri::AppHandle, webview: tauri::Webview, action: String,
         let probe=async {
             let pane=crate::research::pane::webview(&app).context("The research browser is closed")?;
             let bridge=crate::research::cdp::CdpBridge::new(pane);
+            // Runs one research tool on the open pane, as the agent would, and returns its result.
+            if let Some(name)=args["job"].as_str() {
+                let owner=app.state::<crate::research::pane::PaneState>().owner().context("The research browser has no owner")?;
+                let job=crate::research::tools::Job{task:"debug-probe".into(),name:name.into(),args:args["args"].clone(),args_hash:String::new(),sso_hosts:Vec::new(),pacing:std::time::Duration::ZERO,grant_revision:owner.grant_revision};
+                return Ok(match crate::research::runtime::execute(&app,&owner.case_id,owner.session_epoch,&job).await {Ok(value)=>json!({"ok":value}),Err(error)=>json!({"error":format!("{error:#}")})});
+            }
             if args["go"]=="second" {
                 bridge.call("Runtime.evaluate",json!({"expression":"location.href='/second.html'"}),std::time::Duration::from_secs(5)).await?;
                 return Ok(Value::Null);

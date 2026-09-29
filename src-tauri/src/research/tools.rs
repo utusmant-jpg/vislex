@@ -623,7 +623,8 @@ pub fn on_westlaw(policy: &NavigationPolicy, url: &str) -> bool {
         return false;
     }
     if policy.is_mock() {
-        return true;
+        // In debug test mode only the fixture's Westlaw-shaped pages count as Westlaw.
+        return url.parse::<reqwest::Url>().is_ok_and(|parsed| parsed.path().starts_with("/westlaw-") || parsed.path().starts_with("/Document/") || parsed.path().starts_with("/RelatedInformation/"));
     }
     url.parse::<reqwest::Url>().is_ok_and(|parsed| parsed.scheme() == "https" && parsed.host_str().is_some_and(westlaw::is_westlaw_host))
 }

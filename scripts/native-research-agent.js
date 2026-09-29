@@ -52,7 +52,8 @@
     capture = {
       locator: capture.locator,
       citation_mismatch: capture.citation_mismatch,
-      extract_has_opinion: String(extract.text).includes('duty of reasonable care'),
+      // The opinion text of the generic fixture or of the Westlaw-shaped fixture document.
+      extract_has_opinion: /duty of reasonable care|retains property of another/.test(String(extract.text)),
       authority_kind: authority.kind,
       authority_review: authority.review,
       authority_locators: authority.locators,
@@ -61,7 +62,11 @@
   }
   const captured = Boolean(capture && /^evidence:[^#]+#R\d+L\d+-L\d+$/.test(capture.locator) && capture.extract_has_opinion && capture.authority_kind === 'authority' && capture.authority_review === 'unreviewed');
   return {
-    ok: task.status === 'complete' && (task.answer ?? '').includes('Synthetic research answer: the page begins') && research.length >= 7 && failures.length === 0 && captured && leaked.length === 0,
+    // Default run: generic tools (navigate, type, click, read, capture). Westlaw run (-Mode westlaw):
+    // the fast tools (search, document, capture) against the fixture's Westlaw-shaped pages.
+    ok: task.status === 'complete' && failures.length === 0 && captured && leaked.length === 0
+      && (((task.answer ?? '').includes('Synthetic research answer: the page begins') && research.length >= 7)
+        || ((task.answer ?? '').includes('Synthetic Westlaw answer') && !/KeyCite unknown/.test(task.answer ?? '') && research.length >= 3)),
     task_status: task.status,
     answer: task.answer,
     research,

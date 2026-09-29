@@ -1,4 +1,4 @@
-param([int]$Port=9338,[int]$FixturePort=9471,[int]$ProviderPort=9363,[string]$BinaryPath="")
+param([int]$Port=9338,[int]$FixturePort=9471,[int]$ProviderPort=9363,[string]$BinaryPath="",[ValidateSet('agent','westlaw')][string]$Mode='agent')
 # R44 native journey: a real chat task drives the research pane through the agent loop, with a
 # scripted synthetic provider and the loopback fixture. No real site, provider or case is used.
 $ErrorActionPreference='Stop'
@@ -13,7 +13,7 @@ $realBefore=& $realStamp
 $fixture=$null; $provider=$null; $process=$null
 try {
     $fixture=Start-Process -FilePath 'node' -ArgumentList @(('"'+(Join-Path $PSScriptRoot 'research-fixture-server.mjs')+'"'),$FixturePort) -WindowStyle Hidden -PassThru
-    $provider=Start-Process -FilePath 'node' -ArgumentList @(('"'+(Join-Path $PSScriptRoot 'research-provider-mock.mjs')+'"'),$ProviderPort,"http://127.0.0.1:$FixturePort") -WindowStyle Hidden -PassThru
+    $provider=Start-Process -FilePath 'node' -ArgumentList @(('"'+(Join-Path $PSScriptRoot 'research-provider-mock.mjs')+'"'),$ProviderPort,"http://127.0.0.1:$FixturePort",$Mode) -WindowStyle Hidden -PassThru
     foreach($url in @("http://127.0.0.1:$FixturePort/index.html","http://127.0.0.1:$ProviderPort/state")) {
         $served=$false
         for($attempt=0;$attempt -lt 30;$attempt++) { try {$null=Invoke-WebRequest -UseBasicParsing -Uri $url; $served=$true;break} catch {Start-Sleep -Milliseconds 200} }
