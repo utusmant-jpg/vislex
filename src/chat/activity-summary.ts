@@ -389,6 +389,8 @@ export function summarizeAction(action: Action, nameOf: NameLookup = () => undef
       return base;
     }
     case 'finish_inventory': base.kind = 'finish'; base.verb = 'Finished the inventory'; return base;
+    // Publishes the reviewed saved candidate through finish_task; same stored output.
+    case 'publish_saved_candidate':
     case 'finish_task': {
       base.kind = 'finish';
       const status = str(out?.status);
@@ -462,7 +464,7 @@ export function liveLabel(toolName: string | undefined, detail?: string, action?
   if (/validate|coverage|check|review_candidate/.test(name)) return 'Checking citations';
   if (/^(write|save|record)/.test(name) || name === 'checkpoint_review') return 'Saving notes';
   if (/delegate|team|research/.test(name)) return 'Briefing the team';
-  if (/finish/.test(name)) return 'Preparing the answer';
+  if (/finish|publish_saved_candidate/.test(name)) return 'Preparing the answer';
   return humanizeTool(name);
 }
 

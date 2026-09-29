@@ -58,6 +58,8 @@ describe('summarizeAction', () => {
   it('reports what finish_task returned, never more', () => {
     expect(summarizeAction(action('finish_task', { answer: 'x', citations: ['a', 'b'] }, { status: 'review_required' })).verb).toBe('Sent the answer for review');
     expect(summarizeAction(action('finish_task', { answer: 'x' }, { status: 'complete', citation_count: 3 })).result).toBe('3 citations');
+    expect(summarizeAction(action('publish_saved_candidate', { candidate_id: 'c1' }, { status: 'complete', citation_count: 2 }))).toMatchObject({ kind: 'finish', verb: 'Prepared the answer', result: '2 citations' });
+    expect(liveLabel('publish_saved_candidate')).toBe('Preparing the answer');
   });
 });
 
