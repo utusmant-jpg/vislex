@@ -1729,6 +1729,10 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
                         }
                     }
                     let handled=with_case_expected(&app,&case_id,Some(epoch),|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
+                    // A failed tool arm rolls back its savepoint, which would restore the page text
+                    // it had just discarded; research page text never outlives the turn.
+                    #[cfg(all(feature = "research", windows))]
+                    let _=with_case_expected(&app,&case_id,Some(epoch),|c|c.set_meta(&format!("research_result:{task}"),""));
                     for job in &media.cleanup {let _=crate::processing::cleanup_published_input(job);}
                     with_case_expected(&app,&case_id,Some(epoch),|c|{for job in &job_ids {c.db.execute("UPDATE processing_jobs SET status='failed',error='Tool did not publish; inspect the task receipt or retry' WHERE id=? AND status='running'",[job])?;}Ok(())})?;
                     let more=handled?;kick_transcriptions(app.clone(),case_id.clone());emit_case_changed(&app);if !more{break;}

@@ -24,15 +24,16 @@ const INSTALLED_FN: &str = "function () { return Boolean(globalThis.__vislex); }
 /// duration of one synchronous call (restored before returning, never visible on screen).
 const SNAPSHOT_FN: &str = r#"function (scope, excluded) {
   const vislex = globalThis.__vislex;
-  const root = scope === 'main' ? (document.querySelector('main, [role=main]') || document.body) : document.body;
-  const hidden = [];
+  const root = scope === 'main' ? document.querySelector('main, [role=main]') : document.body;
+  if (!root) return { missing: true, url: location.href, title: document.title };
+  const hidden = new Map();
   for (const selector of excluded) {
     let matches = [];
     try { matches = document.querySelectorAll(selector); } catch (error) { continue; }
-    for (const element of matches) { hidden.push([element, element.getAttribute('aria-hidden')]); element.setAttribute('aria-hidden', 'true'); }
+    for (const element of matches) { if (!hidden.has(element)) { hidden.set(element, element.getAttribute('aria-hidden')); element.setAttribute('aria-hidden', 'true'); } }
   }
   try {
-    return { text: vislex.ariaSnapshot(root, { mode: 'ai' }), url: location.href, title: document.title, excluded: hidden.length };
+    return { text: vislex.ariaSnapshot(root, { mode: 'ai' }), url: location.href, title: document.title, excluded: hidden.size };
   } finally {
     for (const [element, previous] of hidden) { previous === null ? element.removeAttribute('aria-hidden') : element.setAttribute('aria-hidden', previous); }
   }
@@ -52,7 +53,7 @@ const RESOLVE_FN: &str = r#"function (ref) {
 pub enum Scope {
     /// Only actionable and structural lines (links, buttons, inputs, headings).
     Interactive,
-    /// The main landmark (or the body when the page has none).
+    /// The main landmark; refused on a page without one.
     Main,
     /// The whole page.
     Full,
@@ -130,7 +131,10 @@ pub struct Session<D: Driver> {
     version: u64,
     /// Snapshot version at the last navigation; refs from earlier snapshots are invalid.
     page_base: u64,
-    last_text: Option<String>,
+    /// The last snapshot text, keyed by observer, scope and filter (for deltas).
+    last_text: Option<(String, String)>,
+    /// Who is observing (the task), so one chat's delta never diffs against another's snapshot.
+    observer: String,
     /// Selectors whose subtrees never appear in snapshots (editorial content on document
     /// and citator pages, from the site playbook).
     pub excluded: Vec<String>,
@@ -140,7 +144,12 @@ pub struct Session<D: Driver> {
 
 impl<D: Driver> Session<D> {
     pub fn new(driver: D) -> Self {
-        Self { driver, context: None, version: 0, page_base: 0, last_text: None, excluded: Vec::new(), last_action: None }
+        Self { driver, context: None, version: 0, page_base: 0, last_text: None, observer: String::new(), excluded: Vec::new(), last_action: None }
+    }
+
+    /// Sets who the next snapshots are for (the task id).
+    pub fn set_observer(&mut self, observer: &str) {
+        self.observer = observer.to_string();
     }
 
     pub fn driver(&self) -> &D {
@@ -220,6 +229,7 @@ impl<D: Driver> Session<D> {
         let dom_scope = if scope == Scope::Main { "main" } else { "body" };
         let raw = self.call_in_world(SNAPSHOT_FN, &[json!(dom_scope), Value::Array(excluded)], true).await?;
         let raw = raw.get("value").cloned().unwrap_or(raw);
+        ensure!(raw["missing"] != Value::Bool(true), "This page has no main content region; use scope interactive, or full with find");
         let full = raw["text"].as_str().context("Snapshot returned no text")?.to_string();
         let lines: Vec<&str> = full.lines().collect();
         let ref_count = lines.iter().filter(|line| line.contains("[ref=")).count();
@@ -229,11 +239,13 @@ impl<D: Driver> Session<D> {
             _ => lines.iter().map(|line| line.to_string()).collect(),
         };
         let selected = selected.join("\n");
+        // A delta compares like with like: the same observer, scope and filter.
+        let key = format!("{}\u{0}{scope:?}\u{0}{}", self.observer, find.unwrap_or_default().trim());
         let (text, is_delta) = match (&self.last_text, delta) {
-            (Some(previous), true) => (line_delta(previous, &selected), true),
+            (Some((previous_key, previous)), true) if *previous_key == key => (line_delta(previous, &selected), true),
             _ => (selected.clone(), false),
         };
-        self.last_text = Some(selected);
+        self.last_text = Some((key, selected));
         self.version += 1;
         let limit = max_chars.unwrap_or(DEFAULT_MAX_CHARS).clamp(500, HARD_MAX_CHARS);
         let truncated = text.chars().count() > limit;
@@ -328,11 +340,16 @@ mod tests {
             let first = session.snapshot(Scope::Interactive, None, false, None).await.unwrap();
             assert_eq!(first.ref_count, 3);
             assert!(!first.text.contains("filler"));
-            let second = session.snapshot(Scope::Full, None, true, None).await.unwrap();
+            let second = session.snapshot(Scope::Interactive, None, true, None).await.unwrap();
             assert!(second.delta);
+            // A delta is only against the same observer, scope and filter.
+            assert!(!session.snapshot(Scope::Full, None, true, None).await.unwrap().delta);
+            session.set_observer("another-chat");
+            assert!(!session.snapshot(Scope::Full, None, true, None).await.unwrap().delta);
+            session.set_observer("");
             assert_eq!(session.resolve("e3", second.version).await.unwrap(), "obj-3");
             assert_eq!(session.resolve("e3", first.version).await.unwrap(), "obj-3", "refs stay valid across snapshots of the same page");
-            assert!(session.resolve("e3", second.version + 1).await.unwrap_err().to_string().contains("new snapshot"), "future versions are refused");
+            assert!(session.resolve("e3", session.version() + 1).await.unwrap_err().to_string().contains("new snapshot"), "future versions are refused");
             assert!(session.resolve("e9", second.version).await.unwrap_err().to_string().contains("no longer on the page"));
             assert!(session.resolve("e3 >> css=body", second.version).await.is_err());
             session.reset();
@@ -346,6 +363,20 @@ mod tests {
                 assert!(!params["functionDeclaration"].as_str().unwrap().contains("css=body"));
             }
         }
+    }
+
+    #[test]
+    fn the_main_scope_needs_a_main_region() {
+        let driver = FakeDriver::new(|method, params| match method {
+            "Page.getFrameTree" => Ok(json!({"frameTree": {"frame": {"id": "F1"}}})),
+            "Page.createIsolatedWorld" => Ok(json!({"executionContextId": 7})),
+            "Runtime.evaluate" => Ok(json!({"result": {"value": true}})),
+            "Runtime.callFunctionOn" if params["functionDeclaration"] == INSTALLED_FN => Ok(json!({"result": {"value": true}})),
+            "Runtime.callFunctionOn" => Ok(json!({"result": {"value": {"missing": true, "url": "https://1.next.westlaw.com/Home", "title": "Home"}}})),
+            other => anyhow::bail!("unexpected {other}"),
+        });
+        let mut session = Session::new(driver);
+        assert!(block(session.snapshot(Scope::Main, None, false, None)).unwrap_err().to_string().contains("no main content"));
     }
 
     #[test]
