@@ -507,6 +507,38 @@
     },
     "R32": {
       "state": "pending"
+    },
+    "CAI-01": {
+      "state": "in_progress",
+      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+    },
+    "CAI-02": {
+      "state": "pending",
+      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+    },
+    "CAI-03": {
+      "state": "pending",
+      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+    },
+    "CAI-04": {
+      "state": "pending",
+      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+    },
+    "CAI-05": {
+      "state": "pending",
+      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+    },
+    "CAI-06": {
+      "state": "pending",
+      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+    },
+    "CAI-07": {
+      "state": "pending",
+      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
+    },
+    "CAI-08": {
+      "state": "pending",
+      "note": "Approved work on codex/case-intelligence; isolated from concurrent Claude work."
     }
   },
   "packaged_worker_and_acceptance_evidence": {

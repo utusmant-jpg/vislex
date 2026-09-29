@@ -72,6 +72,35 @@ pub fn tools(mode: &str) -> Vec<Value> {
     t
 }
 
+/// One capability catalogue for API and subscription dispatch. Availability is
+/// distinct from authorization; execute_tool still revalidates live grants.
+pub fn available_tools(case: &Case, task: &str) -> Result<Vec<Value>> {
+    let (mode, _, _) = scope(case, task)?;
+    let subscription = case.meta(&format!("task_access_route:{task}"))?.as_deref() == Some("chatgpt_subscription");
+    let settings = case.settings()?;
+    let images = if subscription { settings.allow_images } else { crate::providers::task_profile(case, task)?.allow_images && settings.allow_images };
+    let automatic = case.meta(&format!("automatic_task:{task}"))?.as_deref() == Some("true");
+    let direct = !subscription && crate::providers::task_profile(case, task)?.provider == crate::providers::Provider::Gemini && case.meta("gemini_direct_media")?.as_deref() == Some("true");
+    Ok(tools(&mode).into_iter().filter(|tool| {
+        let name = tool["name"].as_str().unwrap_or("");
+        if name == "inspect_automatic_video_batch" && !automatic { return false; }
+        if ["inspect_image", "inspect_artifact_image", "inspect_document_page", "inspect_document_pages", "inspect_video_interval", "inspect_automatic_video_batch", "save_observation_track"].contains(&name) && !images { return false; }
+        if name == "inspect_direct_media" && !direct { return false; }
+        if subscription && ["delegate_tasks", "list_agent_models"].contains(&name) { return false; }
+        true
+    }).collect())
+}
+
+fn tool_error_code(error: &anyhow::Error) -> &'static str {
+    let text = format!("{error:#}");
+    if text.contains("image_permission_denied") || text.contains("permission") || text.contains("disabled") { "permission_denied" }
+    else if text.contains("wrong_task_purpose") { "wrong_task_purpose" }
+    else if text.contains("locator") || text.contains("Citation") || text.contains("Artifact") { "invalid_evidence_reference" }
+    else if text.contains("changed") || text.contains("current revision") { "stale_input" }
+    else if text.contains("candidate") { "candidate_mismatch" }
+    else { "invalid_request" }
+}
+
 fn quick_answer_tool() -> Value {
     tool("request_more_research", "Use when current saved analysis does not answer the question with enough support. The next turn opens the full case tools.", json!({"reason":{"type":"string"}}), vec!["reason"])
 }
@@ -604,7 +633,8 @@ fn execute_tool_prepared(case: &mut Case, task: &str, name: &str, args: &Value, 
             json!({"source_id":source,"artifact_id":artifact,"locator":format!("evidence:{source}#artifact:{artifact}"),"metadata":metadata,"status":"Image attached for visual inspection"})
         }
         "inspect_automatic_video_batch" => {
-            ensure!(settings.allow_images && case.meta(&format!("automatic_task:{task}"))?.as_deref()==Some("true"),"Automatic visual review or image permission is unavailable");
+            ensure!(settings.allow_images,"image_permission_denied: Image transmission is disabled for this task");
+            ensure!(case.meta(&format!("automatic_task:{task}"))?.as_deref()==Some("true"),"wrong_task_purpose: Batch discovery review is reserved for automatic analysis; use inspect_artifact_image or inspect_video_interval");
             let frames=crate::automatic::next_visual_batch(case,task)?;
             ensure!(!frames.is_empty(),"No saved discovery frames remain to inspect");
             for frame in &frames {
@@ -1141,9 +1171,7 @@ pub fn subscription_context(case: &mut Case, task: &str) -> Result<(String, Vec<
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     ensure!(status == "running", "Task stopped");
-    let (mode, _, _) = scope(case, task)?;
-    let mut definitions = tools(&mode);
-    definitions.retain(|tool| !["inspect_direct_media", "delegate_tasks", "list_agent_models"].contains(&tool["name"].as_str().unwrap_or("")));
+    let definitions = available_tools(case, task)?;
     let mut entries: Vec<Value> = serde_json::from_str(&history)?;
     // Retain complete entries at the end; large exact receipts are still
     // recoverable with read_tool_result instead of being truncated mid-JSON.
@@ -1411,7 +1439,7 @@ pub fn prepare_request(case: &mut Case, task: &str) -> Result<PreparedRequest> {
             image_count += 1;
         }
     }
-    let tool_defs = if visual_review {vec![visual_review_tool()]}else if quick_answer {vec![quick_answer_tool()]}else{tools(&mode)};
+    let tool_defs = if visual_review {vec![visual_review_tool()]}else if quick_answer {vec![quick_answer_tool()]}else{available_tools(case, task)?};
     // Gateway ids carry a vendor prefix ("openai/gpt-5"); judge the model itself.
     let base_model=crate::providers::base_model_id(&settings.model);
     let reasoning_model=base_model.starts_with("gpt-5") && !base_model.contains("chat");
@@ -1575,7 +1603,7 @@ pub fn receive_prepared(case: &mut Case, task: &str, transmission: &str, respons
             Ok(v) => (v, "complete"),
             Err(e) => {
                 case.db.execute_batch("ROLLBACK TO agent_action")?;
-                (json!({"error":e.to_string()}), "failed")
+                (json!({"error":format!("{e:#}"),"error_code":tool_error_code(&e)}), "failed")
             }
         };
         let duplicate=crate::review_progress::observe(case,task,name,&args,&result,status)?;
