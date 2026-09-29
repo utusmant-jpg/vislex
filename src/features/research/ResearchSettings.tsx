@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { LogOut, Plus, Trash2 } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { native } from '../../bridge';
 import type { Snapshot } from '../../types';
 import { RESEARCH_GRANT_CHANGED, clearResearchSession, errorText, researchGrant, setResearchGrant, type ResearchGrant } from './api';
 
-/** Settings → Research browser: the per-case switch, extra sign-in hosts, and signing out. */
+/** Settings → Research browser: the per-case switch and signing out. */
 export default function ResearchSettings({ snapshot }: { snapshot: Snapshot | null }) {
   const caseId = snapshot?.id;
   const sessionEpoch = snapshot?.session_epoch;
@@ -13,8 +13,6 @@ export default function ResearchSettings({ snapshot }: { snapshot: Snapshot | nu
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [hostError, setHostError] = useState('');
-  const [newHost, setNewHost] = useState('');
   const [signOutBusy, setSignOutBusy] = useState(false);
   const [signOutStatus, setSignOutStatus] = useState('');
   const [signOutError, setSignOutError] = useState('');
@@ -31,16 +29,14 @@ export default function ResearchSettings({ snapshot }: { snapshot: Snapshot | nu
   }, [caseId, sessionEpoch]);
 
   const enabled = !!grant?.enabled;
-  const hosts = grant?.sso_hosts ?? [];
   const reason = !native ? 'Available in the Windows desktop app.' : !snapshot ? 'Open a case to change this setting.' : offline ? 'This case is offline. Allow AI dispatch in Privacy & offline to turn the research browser on.' : '';
   const caseReady = native && !!snapshot;
   // Turning off is always allowed for an open case; turning on needs it online.
   const switchDisabled = !caseReady || busy || !loaded || (!enabled && offline);
-  const hostsDisabled = !caseReady || busy || !loaded || offline;
 
   async function update(nextEnabled: boolean, nextHosts: string[] | undefined, onError: (message: string) => void) {
     if (!caseId) return false;
-    setBusy(true); setError(''); setHostError('');
+    setBusy(true); setError('');
     try {
       const next = await setResearchGrant(caseId, sessionEpoch, nextEnabled, nextHosts);
       if (live.current) setGrant(next);
@@ -51,11 +47,6 @@ export default function ResearchSettings({ snapshot }: { snapshot: Snapshot | nu
     } finally {
       if (live.current) setBusy(false);
     }
-  }
-  async function addHost() {
-    const host = newHost.trim();
-    if (!host) { setHostError('Enter a host name such as login.firm.example.'); return; }
-    if (await update(enabled, [...hosts, host], setHostError) && live.current) setNewHost('');
   }
   async function signOut() {
     setSignOutBusy(true); setSignOutStatus(''); setSignOutError('');
@@ -69,7 +60,7 @@ export default function ResearchSettings({ snapshot }: { snapshot: Snapshot | nu
       <div className="settings-card-header">
         <div className="settings-card-heading">
           <h3 id="settings-research-title">Research browser for this case</h3>
-          <p>Browse your legal research account beside the chat. VisLex can search and read it for this case when it is on.</p>
+          <p>A web browser beside the chat, opening on Westlaw. When it is on, VisLex can browse, search and read for this case.</p>
         </div>
         <button
           type="button"
@@ -85,34 +76,6 @@ export default function ResearchSettings({ snapshot }: { snapshot: Snapshot | nu
       <p className="settings-fact" role="status">{!loaded ? 'Loading…' : enabled ? 'On for this case.' : 'Off for this case.'}</p>
       {reason ? <p className="field-hint" id="settings-research-reason">{reason}</p> : null}
       {error ? <p role="alert" className="small danger-text">{error}</p> : null}
-    </section>
-
-    <section className="settings-card" aria-labelledby="settings-research-hosts-title">
-      <div className="settings-card-header"><div className="settings-card-heading">
-        <h3 id="settings-research-hosts-title">Sign-in hosts</h3>
-        <p>Add your firm's single sign-on host if your research account signs in through it. Changing this list closes the research browser; open it again to continue.</p>
-      </div></div>
-      {hosts.length ? <ul className="research-host-list" aria-label="Sign-in hosts">
-        {hosts.map(host => <li key={host}>
-          <span className="mono">{host}</span>
-          <button type="button" className="icon-button" aria-label={`Remove ${host}`} disabled={hostsDisabled} onClick={() => void update(enabled, hosts.filter(item => item !== host), setHostError)}><Trash2 size={15} /></button>
-        </li>)}
-      </ul> : <p className="settings-empty">No extra sign-in hosts.</p>}
-      <form className="research-host-add" onSubmit={event => { event.preventDefault(); void addHost(); }}>
-        <input
-          aria-label="Sign-in host"
-          value={newHost}
-          disabled={hostsDisabled}
-          spellCheck={false}
-          autoComplete="off"
-          placeholder="login.firm.example"
-          aria-invalid={hostError ? true : undefined}
-          aria-describedby={hostError ? 'settings-research-host-error' : undefined}
-          onChange={event => { setNewHost(event.target.value); setHostError(''); }}
-        />
-        <button type="submit" className="secondary" data-size="sm" disabled={hostsDisabled}><Plus size={14} aria-hidden="true" />Add host</button>
-      </form>
-      {hostError ? <p role="alert" id="settings-research-host-error" className="small danger-text">{hostError}</p> : null}
     </section>
 
     <section className="settings-card" aria-labelledby="settings-research-session-title">

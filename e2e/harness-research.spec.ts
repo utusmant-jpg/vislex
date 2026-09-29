@@ -33,14 +33,6 @@ for (const scheme of ['dark', 'light'] as const) {
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
     expect((await lastCall(page, 'set_research_grant')).args).toEqual({ case_id: fx.caseA.id, session_epoch: 1, enabled: true });
 
-    const host = dialog.getByRole('textbox', { name: 'Sign-in host' });
-    await host.fill('not a host');
-    await host.press('Enter');
-    await expect(dialog.getByRole('alert')).toContainText('Invalid sign-in host');
-    await host.fill('login.firm.example');
-    await dialog.getByRole('button', { name: 'Add host' }).click();
-    await expect(dialog.getByRole('list', { name: 'Sign-in hosts' })).toContainText('login.firm.example');
-    expect((await lastCall(page, 'set_research_grant')).args).toEqual({ case_id: fx.caseA.id, session_epoch: 1, enabled: true, sso_hosts: ['login.firm.example'] });
     await scan(page, `settings-research-on-${scheme}`, testInfo);
     expect(await dialog.locator('.research-settings').innerText()).not.toMatch(FORBIDDEN);
 

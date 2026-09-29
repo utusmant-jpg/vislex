@@ -343,22 +343,7 @@ it('Settings → Research browser switches the case, edits sign-in hosts and sig
   await waitFor(() => expect(api).toHaveBeenCalledWith('set_research_grant', { case_id: 'synthetic-case', session_epoch: 4, enabled: true }));
   await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
 
-  fireEvent.change(screen.getByRole('textbox', { name: 'Sign-in host' }), { target: { value: 'login.firm.example' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Add host' }));
-  await waitFor(() => expect(api).toHaveBeenCalledWith('set_research_grant', { case_id: 'synthetic-case', session_epoch: 4, enabled: true, sso_hosts: ['login.firm.example'] }));
-  expect(await screen.findByText('login.firm.example')).toBeTruthy();
-
-  // The backend's validation message is shown next to the field.
-  const prior = api.getMockImplementation()!;
-  api.mockImplementation(async (action: string, args?: Record<string, unknown>) => { if (action === 'set_research_grant') throw 'Invalid sign-in host "bad host"; enter a host name such as login.firm.example'; return prior(action, args); });
-  fireEvent.change(screen.getByRole('textbox', { name: 'Sign-in host' }), { target: { value: 'bad host' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Add host' }));
-  expect((await screen.findByRole('alert')).textContent).toContain('Invalid sign-in host "bad host"');
-  expect(screen.getByRole('textbox', { name: 'Sign-in host' }).getAttribute('aria-invalid')).toBe('true');
-  api.mockImplementation(prior);
-
-  fireEvent.click(screen.getByRole('button', { name: 'Remove login.firm.example' }));
-  await waitFor(() => expect(api).toHaveBeenCalledWith('set_research_grant', { case_id: 'synthetic-case', session_epoch: 4, enabled: true, sso_hosts: [] }));
+  expect(screen.queryByRole('textbox', { name: 'Sign-in host' })).toBeNull();
 
   fireEvent.click(screen.getByRole('button', { name: 'Sign out and clear research session' }));
   await waitFor(() => expect(api).toHaveBeenCalledWith('clear_research_session'));
@@ -375,7 +360,6 @@ it('disables the case switch with a reason when no case is open or the case is o
   await waitFor(() => expect(api).toHaveBeenCalledWith('research_grant', { case_id: 'synthetic-case', session_epoch: 4 }));
   expect((screen.getByRole('switch', { name: 'Research browser for this case' }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText(/This case is offline/)).toBeTruthy();
-  expect((screen.getByRole('textbox', { name: 'Sign-in host' }) as HTMLInputElement).disabled).toBe(true);
 });
 
 const authority = (extra: Record<string, unknown> = {}) => ({
@@ -438,9 +422,9 @@ it('shows no warning, consent or acknowledgement language in any research state'
     texts.push(visibleText(view.container));
     view.unmount();
   }
-  backend(grant(true, ['login.firm.example']));
+  backend(grant(true));
   const settings = render(<ResearchSettings snapshot={snapshot} />);
-  await screen.findByText('login.firm.example');
+  await screen.findByText('On for this case.');
   texts.push(visibleText(settings.container));
   settings.unmount();
   const offlineSettings = render(<ResearchSettings snapshot={{ ...snapshot, settings: { ...snapshot.settings, offline: true } }} />);
