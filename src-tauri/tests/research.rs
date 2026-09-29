@@ -455,6 +455,12 @@ fn fixture_respond(url: &str, method: &str, params: &serde_json::Value) -> anyho
         "Runtime.callFunctionOn" if function.contains("ariaSnapshot") => {
             json!({"result": {"value": {"text": if hides(1) { "- heading \"Smith\" [ref=e1]".to_string() } else { format!("- text: {HEADNOTE}") }, "url": url, "title": "Smith"}}})
         }
+        // The KeyCite signals a document page shows.
+        "Runtime.callFunctionOn" if function == research::playbook::westlaw::KEYCITE_FN => json!({"result": {"value": {
+            "url": url,
+            "flags": if document { vec!["Yellow Flag - Negative Treatment"] } else { vec![] },
+            "tabs": if document { json!([{"label": "Negative Treatment", "count": 1, "url": format!("{url}#negative")}, {"label": "History", "count": 2, "url": ""}, {"label": "Citing References", "count": 9, "url": ""}]) } else { json!([]) },
+        }}}),
         "Runtime.callFunctionOn" if function.contains("content_root") => {
             let entries = params["arguments"][0]["value"].as_array().cloned().unwrap_or_default();
             let host = url.parse::<reqwest::Url>().unwrap().host_str().unwrap().to_string();
@@ -566,7 +572,13 @@ fn research_capture_publishes_citable_evidence_without_editorial_content() {
     assert_eq!(authority["locators"], json!([locator]));
     let content: serde_json::Value = serde_json::from_str(authority["content"].as_str().unwrap()).unwrap();
     assert_eq!(content["url"], DOCUMENT_URL);
-    assert_eq!(content["citation"], json!({"raw": "123 F.3d 456", "claimed": "123 F.3d 456", "mismatch": false, "claimed_in_text": false}));
+    assert_eq!(content["citation"], json!({"raw": "123 F.3d 456", "claimed": "123 F.3d 456", "mismatch": false, "claimed_in_text": false, "parallel": ["123 F.3d 456"]}));
+    // The KeyCite signals the page showed at capture time are stored with the authority.
+    let keycite = &content["keycite"];
+    assert_eq!((keycite["flag"].as_str(), keycite["flag_text"].as_str()), (Some("yellow"), Some("Yellow Flag - Negative Treatment")));
+    assert_eq!((keycite["negative_treatment"].as_u64(), keycite["history"].as_u64(), keycite["citing_references"].as_u64()), (Some(1), Some(2), Some(9)));
+    assert!(keycite["observed_at"].is_string());
+    assert_eq!(output["keycite"]["flag"], "yellow");
     assert_eq!(content["jurisdiction"], "9th Cir.");
     assert_eq!(content["relevant_date"], "2001-05-01");
     assert_eq!(content["retrieved_by"]["task"], task);
@@ -1015,4 +1027,426 @@ fn captured_web_pages_are_not_sent_to_the_sandboxed_worker() {
         assert_ne!(job.processor.source.id, source, "a captured page never reaches the worker");
     }
     assert_eq!(status(&case).0, "complete");
+}
+
+// ---- Westlaw task-log fixes: keys, read counts, dossier messages ----
+
+#[test]
+fn key_combinations_and_large_read_counts_are_accepted_before_the_page_is_touched() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    let press = |key: &str| call("research_act", json!({"action": "press", "ref": null, "snapshot_version": null, "text": null, "key": key}));
+    for key in ["Control+A", "Shift+Tab", "Alt+ArrowLeft", "Meta+A", "Enter", "j"] {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &press(key)).unwrap().is_some(), "{key}");
+    }
+    for key in ["Control+W", "Control+Q", "Alt+F4", "Control+Shift+I", "F12", "Control+V"] {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &press(key)).unwrap().is_none(), "{key}");
+        let stored = case.meta(&format!("research_result:{task}")).unwrap().unwrap();
+        assert!(stored.contains("not allowed"), "{key}: {stored}");
+    }
+    // A read of more than 200 lines reads 200 instead of failing (the log asked for more).
+    let read = call("research_read_page", json!({"offset": 0, "count": 400}));
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &read).unwrap().is_some());
+    assert_eq!(research::tools::read_count(&json!({"count": 400})), Some(200));
+    assert_eq!(research::tools::read_count(&json!({"count": 0})), Some(1));
+    assert_eq!(research::tools::read_count(&json!({"count": "all"})), None);
+    assert_eq!(research::tools::activity_detail("research_read_page", &json!({"offset": 0, "count": 400})).as_deref(), Some("lines 0\u{2013}199"));
+    // The job reads at most 200 lines.
+    use research::{driver::FakeDriver, snapshot::Session};
+    let page = FakeDriver::new(|method, params| {
+        let function = params["functionDeclaration"].as_str().unwrap_or_default();
+        Ok(match method {
+            "Page.getFrameTree" => json!({"frameTree": {"frame": {"id": "F1"}}}),
+            "Page.createIsolatedWorld" => json!({"executionContextId": 3}),
+            "Runtime.evaluate" if params["expression"].as_str().unwrap_or_default().starts_with("({url: location.href") => json!({"result": {"value": {"url": DOCUMENT_URL, "title": "Opinion", "ready": "complete"}}}),
+            "Runtime.evaluate" => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.contains("Boolean(globalThis.__vislex)") => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.contains("innerText") => json!({"result": {"value": {"url": DOCUMENT_URL, "title": "Opinion", "lines": (0..500).map(|n| format!("Line {n}")).collect::<Vec<_>>()}}}),
+            other => anyhow::bail!("unexpected {other}"),
+        })
+    });
+    let mut session = Session::new(page);
+    let read = block_on(research::tools::run_job(&mut session, &research_job("research_read_page", json!({"offset": 0, "count": 400})))).unwrap();
+    assert_eq!(read["lines"].as_array().unwrap().len(), 200);
+    assert_eq!(read["next_offset"], 200);
+}
+
+/// Runs a read_text call through the agent loop and returns its receipt.
+fn read_text(case: &mut Case, task: &str, source: &str) -> serde_json::Value {
+    let request = evidence_desk::agent::prepare_request(case, task).unwrap();
+    evidence_desk::agent::receive(case, task, &request.transmission, call("read_text", json!({"source_id": source, "start": 1, "count": 1}))).unwrap();
+    last_action(case, task)
+}
+
+#[test]
+fn dossier_receipts_may_be_the_locator_a_read_returned_and_errors_say_what_to_give() {
+    let (_dir, mut case, task) = case_with_task(false);
+    let source = case.sources().unwrap()[0].id.clone();
+    let receipt = read_text(&mut case, &task, &source);
+    assert_eq!(receipt["status"], "complete", "{receipt}");
+    let receipt_id = receipt["id"].as_str().unwrap().to_string();
+    let locator = serde_json::from_str::<serde_json::Value>(receipt["output"].as_str().unwrap()).unwrap()["locator"].as_str().unwrap().to_string();
+    assert!(locator.starts_with("evidence:"), "{locator}");
+    let dossier = |receipts: serde_json::Value, contrary: serde_json::Value| {
+        json!({"revision": 0, "scope": "Read the note.", "checks": [{"id": "read-note", "description": "Read the note", "source_id": source, "tool": "read_text", "state": "done", "receipts": receipts, "reason": ""}],
+            "claims": [{"id": "claim-note", "proposition": "The note is synthetic.", "assessment": "supported_within_scope", "supporting": [locator], "contrary": contrary, "uncertainty": "", "next_check": ""}]})
+    };
+    // Prose in contrary: say what belongs there.
+    let error = evidence_desk::dossier::save(&mut case, &task, &dossier(json!([receipt_id]), json!(["The note does not say who wrote it."]))).unwrap_err().to_string();
+    assert!(error.contains("supporting and contrary entries must be evidence locators (evidence:") && error.contains("put explanations in uncertainty"), "{error}");
+    // A locator no read of this task returned (the log's case): explain what receipts are.
+    let error = evidence_desk::dossier::save(&mut case, &task, &dossier(json!([format!("evidence:{source}#R1L350-L389")]), json!([]))).unwrap_err().to_string();
+    assert!(error.contains("Receipts are the Receipt IDs of this task's completed read_text actions") && error.contains("40809e8f-"), "{error}");
+    let error = evidence_desk::dossier::save(&mut case, &task, &dossier(json!(["not-a-receipt"]), json!([]))).unwrap_err().to_string();
+    assert!(error.contains("Receipts are the Receipt IDs"), "{error}");
+    // The exact locator the read returned names that read: accepted, stored as its Receipt ID.
+    evidence_desk::dossier::save(&mut case, &task, &dossier(json!([locator]), json!([]))).unwrap();
+    let stored = evidence_desk::dossier::load(&case, &task).unwrap().unwrap();
+    assert_eq!(stored.checks[0].receipts, [receipt_id]);
+    // Only the task's own completed reads count: a task that has not read the lines is refused.
+    let unread = evidence_desk::agent::start(&mut case, "Another question", "investigate", vec![source.clone()], vec![], 0.).unwrap();
+    let error = evidence_desk::dossier::save(&mut case, &unread, &dossier(json!([locator]), json!([]))).unwrap_err().to_string();
+    assert!(error.contains("no completed read_text action of this task returned"), "{error}");
+}
+
+// ---- research_westlaw_search / research_westlaw_document ----
+
+const WESTLAW_RESULTS: &str = "https://1.next.westlaw.com/Search/Results.html";
+const STOW_URL: &str = "https://1.next.westlaw.com/Document/I4a1b2c3d/View/FullText.html?originationContext=Search";
+const STOW_CITE_LINE: &str = "Court of Appeals of Ohio, Ninth District, Summit County. June 20, 2012 Not Reported in N.E.2d 2012 -Ohio- 2746 2012 WL 2336914";
+
+/// A scripted Westlaw page: the global search box (holding earlier text), Enter opening a
+/// results page, a "Cases" category link, and results as the results page function reads them.
+struct Westlaw {
+    url: String,
+    loader: u32,
+    value: String,
+    selected: bool,
+    /// The site updates its results in place (no new address or document) when searching.
+    in_place: bool,
+    searched: bool,
+}
+
+fn westlaw_site(start: &str, before: &str, home_lands_on: &'static str) -> research::driver::FakeDriver {
+    westlaw_site_with(start, before, home_lands_on, false)
+}
+
+fn westlaw_site_with(start: &str, before: &str, home_lands_on: &'static str, in_place: bool) -> research::driver::FakeDriver {
+    use research::playbook::westlaw;
+    let state = std::sync::Arc::new(std::sync::Mutex::new(Westlaw { url: start.into(), loader: 1, value: before.into(), selected: false, in_place, searched: false }));
+    research::driver::FakeDriver::new(move |method, params| {
+        let mut site = state.lock().unwrap();
+        let function = params["functionDeclaration"].as_str().unwrap_or_default();
+        let expression = params["expression"].as_str().unwrap_or_default();
+        let on_westlaw = site.url.contains("westlaw.com");
+        Ok(match method {
+            "Page.getFrameTree" => json!({"frameTree": {"frame": {"id": "F1", "loaderId": format!("L{}", site.loader)}}}),
+            "Page.createIsolatedWorld" => json!({"executionContextId": 3}),
+            "Page.navigate" => {
+                site.url = if params["url"] == research::WESTLAW_HOME { home_lands_on.to_string() } else { params["url"].as_str().unwrap().to_string() };
+                site.loader += 1;
+                json!({"frameId": "F1"})
+            }
+            "Page.stopLoading" | "DOM.scrollIntoViewIfNeeded" => json!({}),
+            "Runtime.evaluate" if expression.starts_with("({url: location.href") => json!({"result": {"value": {"url": site.url, "title": "Westlaw", "ready": "complete"}}}),
+            "Runtime.evaluate" if expression.starts_with("document.readyState") => json!({"result": {"value": site.url}}),
+            "Runtime.evaluate" => json!({"result": {"value": true}}),
+            "Input.insertText" => {
+                let text = params["text"].as_str().unwrap().to_string();
+                if site.selected { site.value = text } else { site.value.push_str(&text) }
+                site.selected = false;
+                json!({})
+            }
+            "Input.dispatchKeyEvent" => {
+                if params["key"] == "Enter" && params["type"] == "keyDown" {
+                    if site.in_place {
+                        site.searched = true;
+                    } else {
+                        site.url = format!("{WESTLAW_RESULTS}?query={}", site.value.len());
+                        site.loader += 1;
+                    }
+                }
+                json!({})
+            }
+            "Input.dispatchMouseEvent" => {
+                if params["type"] == "mouseReleased" {
+                    site.url = format!("{WESTLAW_RESULTS}?type=cases");
+                    site.loader += 1;
+                }
+                json!({})
+            }
+            "DOM.getBoxModel" => json!({"model": {"content": [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]}}),
+            "Runtime.callFunctionOn" => {
+                let null = json!({"result": {"type": "object", "subtype": "null", "value": null}});
+                if function.contains("Boolean(globalThis.__vislex)") {
+                    json!({"result": {"value": true}})
+                } else if function == westlaw::SEARCH_BOX_FN {
+                    if on_westlaw { json!({"result": {"type": "object", "subtype": "node", "objectId": "box"}}) } else { null }
+                } else if function == westlaw::SEARCH_BUTTON_FN {
+                    null
+                } else if function == westlaw::CATEGORY_LINK_FN {
+                    assert_eq!(params["arguments"][0]["value"], json!(["Cases"]));
+                    json!({"result": {"type": "object", "subtype": "node", "objectId": "cases-link"}})
+                } else if function.contains("password_on_page") {
+                    let search = params["objectId"] == "box";
+                    json!({"result": {"value": {"tag": if search { "input" } else { "a" }, "input_type": if search { "text" } else { "" }, "autocomplete": "off", "name": "", "id": "searchInputId", "aria_label": if search { "Search suggestions available after typing 3 characters. Use down arrow to access." } else { "" }, "placeholder": "", "role": if search { "combobox" } else { "" }, "href": "", "text": "", "title": "", "content_editable": false, "form_action": "", "password_on_page": false, "otp_on_page": false}}})
+                } else if function.contains("this.focus()") || function.contains("elementFromPoint") {
+                    json!({"result": {"value": true}})
+                } else if function.contains("selectNodeContents") {
+                    site.selected = true;
+                    json!({"result": {"value": "select"}})
+                } else if function.contains("'value' in this") {
+                    json!({"result": {"value": {"active": true, "value": site.value}}})
+                } else if function == westlaw::RESULTS_FN {
+                    let cases = site.url.contains("type=cases");
+                    let results = site.url.starts_with(WESTLAW_RESULTS);
+                    if site.in_place && !site.searched {
+                        // The results of an earlier search, still showing.
+                        return Ok(json!({"result": {"value": {"url": site.url, "title": "Search Results", "no_results": false, "counts": [], "rows": [{"rank": 1, "title": "Earlier Result v. Old", "url": "https://1.next.westlaw.com/Document/I0/View/FullText.html", "citation_line": "", "summary": "", "snippets": [], "flags": []}]}}}));
+                    }
+                    json!({"result": {"value": {
+                        "url": site.url,
+                        "title": "Search Results",
+                        "no_results": false,
+                        "rows": if results { json!([
+                            {"rank": 1, "title": "Stow v. Paster", "url": STOW_URL, "citation_line": STOW_CITE_LINE, "summary": "Summary of the appeal.", "snippets": ["... theft ...", "... lawful owner ...", "... third ...", "... fourth ..."], "flags": ["Yellow Flag - Negative Treatment"]},
+                            {"rank": 2, "title": "State v. Example", "url": "https://1.next.westlaw.com/Document/I2/View/FullText.html", "citation_line": "Supreme Court of Ohio. 81 Ohio St.3d 337", "summary": "", "snippets": [], "flags": []}
+                        ]) } else { json!([]) },
+                        "counts": if cases { json!([{"label": "Cases", "count": 66, "heading": true}]) } else { json!([{"label": "Overview", "count": 120, "heading": true}, {"label": "Cases", "count": 66, "heading": false}]) },
+                    }}})
+                } else {
+                    anyhow::bail!("unexpected function {function}")
+                }
+            }
+            other => anyhow::bail!("unexpected {other}"),
+        })
+    })
+}
+
+fn westlaw_search_args(query: &str, jurisdiction: serde_json::Value, content_type: serde_json::Value) -> serde_json::Value {
+    json!({"query": query, "jurisdiction": jurisdiction, "content_type": content_type})
+}
+
+#[test]
+fn westlaw_search_replaces_the_query_submits_and_returns_compact_rows() {
+    use research::{snapshot::Session, tools::run_job};
+    let query = "adv: theft /s \"lawful owner\"";
+    // The box already holds an older query, as in the log ("CO(Ohioadv: theft ...").
+    let mut session = Session::new(westlaw_site(&format!("{WESTLAW_RESULTS}?query=old"), "CO(Ohio", "https://1.next.westlaw.com/Home"));
+    let result = block_on(run_job(&mut session, &research_job("research_westlaw_search", westlaw_search_args(query, json!("Ohio"), json!("cases"))))).unwrap();
+    assert_eq!(result["query"], query);
+    let inserted: Vec<String> = session.driver().calls().into_iter().filter(|(method, _)| method == "Input.insertText").map(|(_, params)| params["text"].as_str().unwrap().to_string()).collect();
+    assert_eq!(inserted, [query], "the old query was replaced, not added to");
+    assert!(result["url"].as_str().unwrap().contains("type=cases"), "{result}");
+    assert_eq!((result["total"].as_u64(), result["total_label"].as_str()), (Some(66), Some("Cases (66)")));
+    let rows = result["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["rank"], 1);
+    assert_eq!(rows[0]["title"], "Stow v. Paster");
+    assert_eq!(rows[0]["url"], STOW_URL);
+    assert_eq!(rows[0]["citation_line"], STOW_CITE_LINE);
+    assert_eq!(rows[0]["keycite_flag"], "yellow");
+    assert_eq!(rows[0]["snippets"].as_array().unwrap().len(), 3);
+    // The content type was applied by opening the Cases category; the jurisdiction was not.
+    assert_eq!(result["filters"]["content_type"], json!({"requested": "cases", "applied": true}));
+    assert_eq!(result["filters"]["jurisdiction"], json!({"requested": "Ohio", "applied": false}));
+    assert_eq!(result["filters_applied"], false);
+    assert!(result["guidance"][0].as_str().unwrap().contains("jurisdiction (Ohio) was not set"));
+    assert!(result["note"].as_str().unwrap().contains("untrusted"));
+    // Model text only ever travels as data.
+    for (method, params) in session.driver().calls() {
+        if method == "Runtime.callFunctionOn" {
+            assert!(!params["functionDeclaration"].as_str().unwrap().contains("lawful owner"));
+        }
+    }
+    // Enter was a trusted key press carrying the carriage return.
+    assert!(session.driver().calls().iter().any(|(method, params)| method == "Input.dispatchKeyEvent" && params["key"] == "Enter" && params["text"] == "\r"));
+
+    // Without filters: nothing opened, nothing claimed.
+    let mut session = Session::new(westlaw_site(&format!("{WESTLAW_RESULTS}?query=old"), "", "https://1.next.westlaw.com/Home"));
+    let result = block_on(run_job(&mut session, &research_job("research_westlaw_search", westlaw_search_args("theft", json!(null), json!(null))))).unwrap();
+    assert_eq!((result["total"].as_u64(), result["filters_applied"].as_bool()), (Some(120), Some(false)));
+    assert!(result["guidance"].as_array().unwrap().is_empty());
+    assert!(!session.driver().methods().contains(&"Input.dispatchMouseEvent".to_string()), "no category was opened");
+
+    // A site that updates its results in place: the rows already showing are never returned as
+    // the new results; the new rows are.
+    let mut session = Session::new(westlaw_site_with(&format!("{WESTLAW_RESULTS}?query=old"), "old query", "https://1.next.westlaw.com/Home", true));
+    let result = block_on(run_job(&mut session, &research_job("research_westlaw_search", westlaw_search_args("theft", json!(null), json!(null))))).unwrap();
+    assert_eq!(result["rows"][0]["title"], "Stow v. Paster", "{result}");
+}
+
+#[test]
+fn westlaw_search_opens_westlaw_first_and_stops_on_a_sign_in_page() {
+    use research::{snapshot::Session, tools::run_job};
+    // From another site, the search opens Westlaw's home page first.
+    let mut session = Session::new(westlaw_site("https://www.google.com/search?q=theft", "", "https://1.next.westlaw.com/Home"));
+    let result = block_on(run_job(&mut session, &research_job("research_westlaw_search", westlaw_search_args("theft /s owner", json!(null), json!("all"))))).unwrap();
+    assert_eq!(result["rows"].as_array().unwrap().len(), 2);
+    let navigated: Vec<String> = session.driver().calls().into_iter().filter(|(method, _)| method == "Page.navigate").map(|(_, params)| params["url"].as_str().unwrap().to_string()).collect();
+    assert_eq!(navigated, [research::WESTLAW_HOME]);
+    // An expired session lands on the sign-in page: the agent is told what to do.
+    let mut session = Session::new(westlaw_site("https://www.google.com/", "", "https://signon.thomsonreuters.com/?productid=CBT"));
+    let error = block_on(run_job(&mut session, &research_job("research_westlaw_search", westlaw_search_args("theft", json!(null), json!(null))))).unwrap_err().to_string();
+    assert!(error.contains("Westlaw is not showing") && error.contains("signon.thomsonreuters.com"), "{error}");
+    assert!(!session.driver().methods().contains(&"Input.insertText".to_string()), "nothing typed off Westlaw");
+}
+
+#[test]
+fn westlaw_macro_calls_are_checked_and_audited() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    let search = call("research_westlaw_search", westlaw_search_args("theft /s \"lawful owner\"", json!("Ohio"), json!("cases")));
+    let job = research::tools::prepare_research(&mut case, &task, &request.transmission, &search).unwrap().expect("job");
+    assert_eq!(job.name, "research_westlaw_search");
+    let audited: String = case.db.query_row("SELECT data FROM audit WHERE event='research_query_requested' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    assert!(audited.contains("lawful owner") && audited.contains("research_westlaw_search") && audited.contains("Ohio"), "{audited}");
+    for (args, reason) in [
+        (westlaw_search_args("", json!(null), json!(null)), "Nothing to type"),
+        (westlaw_search_args("a\u{7}b", json!(null), json!(null)), "printable"),
+        (westlaw_search_args("theft", json!(null), json!("dockets")), "content_type"),
+    ] {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_westlaw_search", args)).unwrap().is_none());
+        assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains(reason), "{reason}");
+    }
+    let document = |url: serde_json::Value| call("research_westlaw_document", json!({"url": url}));
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &document(json!(STOW_URL))).unwrap().is_some());
+    let opened: String = case.db.query_row("SELECT data FROM audit WHERE event='research_navigation_requested' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    assert!(opened.contains("/Document/I4a1b2c3d/View/FullText.html") && opened.contains("research_westlaw_document"), "{opened}");
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &document(json!(null))).unwrap().is_some());
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &document(json!("https://www.courtlistener.com/opinion/1/x/"))).unwrap().is_none());
+    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("only on Westlaw"));
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &document(json!("http://192.168.1.1/Document/x"))).unwrap().is_none());
+    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("private-network"));
+    // The steps shown in the chat.
+    use research::tools::activity_detail;
+    assert_eq!(activity_detail("research_westlaw_search", &westlaw_search_args("theft /s owner", json!(null), json!(null))).as_deref(), Some("theft /s owner"));
+    assert_eq!(activity_detail("research_westlaw_document", &json!({"url": STOW_URL})).as_deref(), Some("1.next.westlaw.com/Document/I4a1b2c3d/View/FullText.html"));
+    assert_eq!(activity_detail("research_westlaw_document", &json!({"url": null})).as_deref(), Some("current page"));
+    // Strict schemas: every property required, nothing else accepted.
+    for definition in research::tools::tool_definitions() {
+        let properties = definition["parameters"]["properties"].as_object().unwrap();
+        let required = definition["parameters"]["required"].as_array().unwrap();
+        assert_eq!(properties.len(), required.len(), "{}", definition["name"]);
+        assert_eq!(definition["parameters"]["additionalProperties"], false);
+        assert_eq!(definition["strict"], true);
+    }
+    case.verify_audit().unwrap();
+}
+
+/// The Westlaw document of the user's log, as research_read_page reads it: the header's text
+/// nodes ran together, and the document ends with its All Citations line.
+fn stow_lines() -> Vec<String> {
+    let mut lines: Vec<String> = [
+        "Stow v. Paster",
+        "Court of Appeals of Ohio, Ninth District, Summit County.June 20, 2012Not Reported in N.E.2d2012 WL 23369142012 -Ohio- 2746 (Approx. 6 pages)",
+        "CHECK OHIO SUPREME COURT RULES FOR REPORTING OF OPINIONS AND WEIGHT OF LEGAL AUTHORITY.",
+        "Opinion",
+        "The owner's consent to the retention of the property was not shown.",
+    ]
+    .iter()
+    .map(|line| line.to_string())
+    .collect();
+    lines.extend((0..250).map(|n| format!("Opinion paragraph {n}.")));
+    lines.extend(["All Citations".to_string(), "Not Reported in N.E.2d, 2012 WL 2336914, 2012 -Ohio- 2746".to_string()]);
+    lines
+}
+
+fn westlaw_document_page(url: &'static str) -> research::driver::FakeDriver {
+    use research::playbook::westlaw;
+    let here = std::sync::Arc::new(std::sync::Mutex::new(url.to_string()));
+    research::driver::FakeDriver::new(move |method, params| {
+        let function = params["functionDeclaration"].as_str().unwrap_or_default();
+        let expression = params["expression"].as_str().unwrap_or_default();
+        let url = here.lock().unwrap().clone();
+        Ok(match method {
+            "Page.getFrameTree" => json!({"frameTree": {"frame": {"id": "F1", "loaderId": "L1"}}}),
+            "Page.createIsolatedWorld" => json!({"executionContextId": 3}),
+            "Page.navigate" => {
+                *here.lock().unwrap() = params["url"].as_str().unwrap().to_string();
+                json!({"frameId": "F1"})
+            }
+            "Runtime.evaluate" if expression.starts_with("({url: location.href") => json!({"result": {"value": {"url": url, "title": "Stow v. Paster | Westlaw Advantage", "ready": "complete"}}}),
+            "Runtime.evaluate" if expression.starts_with("document.readyState") => json!({"result": {"value": url}}),
+            "Runtime.evaluate" => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.contains("Boolean(globalThis.__vislex)") => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.starts_with("function (excluded)") => json!({"result": {"value": {"url": url, "title": "Stow v. Paster | Westlaw Advantage", "lines": stow_lines()}}}),
+            "Runtime.callFunctionOn" if function.starts_with("function (entries, excluded)") => {
+                json!({"result": {"value": {"url": url, "title": "Stow v. Paster", "entry": "generic", "document_text": true, "lines": stow_lines(), "html": "<main><p>Stow v. Paster</p></main>", "page_html": "<html><main><p>Stow v. Paster</p></main></html>"}}})
+            }
+            "Runtime.callFunctionOn" if function == westlaw::KEYCITE_FN => json!({"result": {"value": {
+                "url": url,
+                "flags": ["Red Flag - Severe Negative Treatment"],
+                "tabs": [
+                    {"label": "Negative Treatment", "count": 0, "url": "https://1.next.westlaw.com/RelatedInformation/I4a1b2c3d/kcNegativeTreatment.html"},
+                    {"label": "History", "count": 2, "url": "https://1.next.westlaw.com/RelatedInformation/I4a1b2c3d/kcHistory.html"},
+                    {"label": "Citing References", "count": 9, "url": "https://1.next.westlaw.com/RelatedInformation/I4a1b2c3d/kcCitingReferences.html"}
+                ],
+            }}}),
+            other => anyhow::bail!("unexpected {other}"),
+        })
+    })
+}
+
+#[test]
+fn westlaw_document_returns_header_facts_keycite_and_numbered_lines() {
+    use research::{snapshot::Session, tools::run_job};
+    let mut session = Session::new(westlaw_document_page(WESTLAW_RESULTS));
+    let result = block_on(run_job(&mut session, &research_job("research_westlaw_document", json!({"url": STOW_URL})))).unwrap();
+    assert_eq!(result["url"], STOW_URL);
+    assert_eq!(result["title"], "Stow v. Paster");
+    assert_eq!(result["court"], "Court of Appeals of Ohio, Ninth District, Summit County.");
+    assert_eq!(result["decided"], json!({"text": "June 20, 2012", "date": "2012-06-20"}));
+    assert_eq!(result["citations"], json!(["2012 WL 2336914", "2012 Ohio 2746"]));
+    assert_eq!(result["all_citations"], "Not Reported in N.E.2d, 2012 WL 2336914, 2012 -Ohio- 2746");
+    let notes = result["reporting_notes"].to_string();
+    assert!(notes.contains("Not Reported in N.E.2d") && notes.contains("CHECK OHIO SUPREME COURT RULES FOR REPORTING"), "{notes}");
+    let keycite = &result["keycite"];
+    assert_eq!((keycite["flag"].as_str(), keycite["flag_text"].as_str()), (Some("red"), Some("Red Flag - Severe Negative Treatment")));
+    assert_eq!((keycite["negative_treatment"].as_u64(), keycite["history"].as_u64(), keycite["citing_references"].as_u64()), (Some(0), Some(2), Some(9)));
+    assert!(keycite["tabs"][1]["url"].as_str().unwrap().ends_with("kcHistory.html"));
+    // Lines are numbered as research_read_page numbers them: the first 200, then next_offset.
+    let lines = result["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 200);
+    assert_eq!(lines[3], json!({"n": 3, "text": "Opinion"}));
+    assert_eq!((result["total_lines"].as_u64(), result["next_offset"].as_u64()), (Some(257), Some(200)));
+    let read = block_on(run_job(&mut session, &research_job("research_read_page", json!({"offset": 0, "count": 5})))).unwrap();
+    assert_eq!(read["lines"].as_array().unwrap()[..], lines[..5]);
+    // The page showing may be read without a url; other sites are refused with directions.
+    let current = block_on(run_job(&mut session, &research_job("research_westlaw_document", json!({"url": null})))).unwrap();
+    assert_eq!(current["citations"], result["citations"]);
+    let mut elsewhere = Session::new(westlaw_document_page("https://www.courtlistener.com/opinion/1/x/"));
+    let error = block_on(run_job(&mut elsewhere, &research_job("research_westlaw_document", json!({"url": null})))).unwrap_err().to_string();
+    assert!(error.contains("only on Westlaw") && error.contains("research_read_page"), "{error}");
+}
+
+/// The log's false refusal: the answer cited 2012-Ohio-2746 while the capture had stored only
+/// 2012 WL 2336914. A capture now records the document's parallel citations and the guard
+/// accepts any of them; the KeyCite signals shown are stored with the authority.
+#[test]
+fn a_capture_records_parallel_citations_so_the_guard_accepts_the_neutral_cite() {
+    let (_dir, mut case, task) = case_with_task(true);
+    case.set_meta(&format!("research_usage:{task}"), r#"{"navigations":1}"#).unwrap();
+    let args = json!({"title": "Stow v. Paster", "jurisdiction": "Ohio Ct. App., 9th Dist.", "relevant_date": "2012-06-20", "citation_text": "2012 WL 2336914", "proposition": "Retention without the owner's consent.", "quote_start_line": 4, "quote_end_line": 4});
+    let receipt = run_research(&mut case, &task, westlaw_document_page(STOW_URL), &research::playbook::Playbook::production(), "research_capture", args);
+    assert_eq!(receipt["status"], "complete", "{receipt}");
+    let output: serde_json::Value = serde_json::from_str(receipt["output"].as_str().unwrap()).unwrap();
+    assert_eq!(output["citation_raw"], "2012 WL 2336914");
+    assert_eq!(output["citation_parallel"], json!(["2012 WL 2336914", "2012 Ohio 2746"]));
+    assert_eq!(output["citation_mismatch"], false);
+    assert_eq!(output["keycite"]["flag"], "red");
+    let authority = evidence_desk::evidence::read(&case, output["authority_id"].as_str().unwrap(), None).unwrap();
+    let content: serde_json::Value = serde_json::from_str(authority["content"].as_str().unwrap()).unwrap();
+    assert_eq!(content["citation"]["parallel"], json!(["2012 WL 2336914", "2012 Ohio 2746"]));
+    assert_eq!((content["keycite"]["history"].as_u64(), content["keycite"]["citing_references"].as_u64()), (Some(2), Some(9)));
+    let answer = "Stow v. Paster, 9th Dist. Summit No. 26050, 2012-Ohio-2746, holds that retention without consent suffices.";
+    research::citations::guard(&case, &task, &[answer], &[]).unwrap();
+    research::citations::guard(&case, &task, &["Stow v. Paster, 2012 -Ohio- 2746, 2012 WL 2336914."], &[]).unwrap();
+    let error = research::citations::guard(&case, &task, &["Compare 2012-Ohio-2747."], &[]).unwrap_err().to_string();
+    assert!(error.contains("2012 Ohio 2747"), "{error}");
+    // Claiming the neutral cite itself is confirmed by the printed parallel citations too.
+    let args = json!({"title": "Stow v. Paster", "jurisdiction": "Ohio", "relevant_date": null, "citation_text": "2012-Ohio-2746", "proposition": "Retention without consent.", "quote_start_line": 4, "quote_end_line": 4});
+    let receipt = run_research(&mut case, &task, westlaw_document_page(STOW_URL), &research::playbook::Playbook::production(), "research_capture", args);
+    let output: serde_json::Value = serde_json::from_str(receipt["output"].as_str().unwrap()).unwrap();
+    assert_eq!(output["citation_mismatch"], false, "{output}");
 }

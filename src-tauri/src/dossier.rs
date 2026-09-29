@@ -281,6 +281,28 @@ pub fn save(case: &mut Case, task: &str, value: &Value) -> Result<Value> {
     let stamp = evidence_stamp(case, task)?;
     let changed = old.is_some()
         && case.meta(&format!("dossier_evidence:{task}"))?.as_deref() != Some(stamp.as_str());
+    // A receipt is the Receipt ID of one of this task's completed inspection actions. A model
+    // that gives the evidence locator that action returned instead (read_text returns
+    // "evidence:<source>#R<rev>L<a>-L<b>") names the same inspection: it is resolved here to
+    // the latest completed action of the check's tool, in this task, that returned exactly
+    // that locator, and the Receipt ID is what is stored.
+    for check in next.checks.iter_mut().filter(|check| check.state == "done") {
+        for receipt in check.receipts.iter_mut() {
+            if !receipt.starts_with("evidence:") {
+                continue;
+            }
+            let action: Option<String> = case.db.query_row(
+                "SELECT id FROM actions WHERE task_id=? AND name=? AND status='complete' AND json_valid(output) AND json_extract(output,'$.locator')=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                params![task, check.tool, receipt.as_str()],
+                |r| r.get(0),
+            ).optional()?;
+            let action = action.with_context(|| format!(
+                "Check {} receipt {} is an evidence locator that no completed {} action of this task returned. Receipts are the Receipt IDs of this task's completed {} actions (for example 40809e8f-…), or the exact locator one of them returned; read the source with {} first",
+                check.id, receipt.chars().take(180).collect::<String>(), check.tool, check.tool, check.tool
+            ))?;
+            *receipt = action;
+        }
+    }
     let mut ids = std::collections::HashSet::new();
     for check in &next.checks {
         ensure!(
@@ -326,7 +348,7 @@ pub fn save(case: &mut Case, task: &str, value: &Value) -> Result<Value> {
             for receipt in &check.receipts {
                 let input: Option<String> = case.db.query_row("SELECT input FROM actions WHERE id=? AND task_id=? AND name=? AND status='complete'", params![receipt,task,check.tool], |r|r.get(0)).optional()?;
                 let input: Value = serde_json::from_str(
-                    &input.context(format!("Check {} receipt {} is missing or belongs to another task/tool; use a completed {} receipt from this task",check.id,receipt,check.tool))?,
+                    &input.context(format!("Check {} receipt {} is missing or belongs to another task/tool. Receipts are the Receipt IDs of this task's completed {} actions (for example 40809e8f-…), or the exact evidence locator one of them returned",check.id,receipt.chars().take(180).collect::<String>(),check.tool))?,
                 )?;
                 if check.tool == "read_record" {
                     let record = case.record(
@@ -390,6 +412,12 @@ pub fn save(case: &mut Case, task: &str, value: &Value) -> Result<Value> {
             );
         }
         for citation in claim.supporting.iter().chain(&claim.contrary) {
+            ensure!(
+                citation.trim_start().starts_with("evidence:"),
+                "Claim {}: supporting and contrary entries must be evidence locators (evidence:…); put explanations in uncertainty. Not a locator: {}",
+                claim.id,
+                citation.chars().take(180).collect::<String>()
+            );
             validate_locator(case, citation, &scope).with_context(||format!("Claim {} has invalid evidence locator {}",claim.id,citation.chars().take(180).collect::<String>()))?;
         }
     }

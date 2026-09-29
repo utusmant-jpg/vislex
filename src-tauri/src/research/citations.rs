@@ -135,7 +135,8 @@ fn table() -> &'static Table {
             r"\b(?P<volume>[0-9]{{1,4}})\s+(?P<reporter>{})(?:\s*\((?:[0-9]{{1,2}}\s+)?[A-Z][A-Za-z.]*\))?,?\s+(?P<page>[0-9]{{1,8}}|_{{3,}})\b",
             alternation(all)
         ));
-        let hyphenated = build(format!(r"\b(?P<volume>(?:17|18|19|20)[0-9]{{2}})-(?P<reporter>{})-(?P<page>[0-9]{{1,8}})\b", alternation(neutral)));
+        // Westlaw prints neutral cites with spaces around the hyphens ("2012 -Ohio- 2746").
+        let hyphenated = build(format!(r"\b(?P<volume>(?:17|18|19|20)[0-9]{{2}})[ \t]{{0,2}}-[ \t]{{0,2}}(?P<reporter>{})[ \t]{{0,2}}-[ \t]{{0,2}}(?P<page>[0-9]{{1,8}})\b", alternation(neutral)));
         Table { full, hyphenated, canonical, cite_types: data.editions }
     })
 }
@@ -205,7 +206,8 @@ fn task_sources(case: &Case, task: &str) -> Result<HashSet<String>> {
 }
 
 /// Normalized citations of research authorities in the task's scope: the citation printed in the
-/// captured document, and the agent's claimed citation unless it was flagged as a mismatch.
+/// captured document, its printed parallel citations, and the agent's claimed citation when the
+/// document confirmed it.
 fn captured(case: &Case, task: &str) -> Result<HashSet<String>> {
     let sources = task_sources(case, task)?;
     let mut statement = case.db.prepare(
@@ -224,6 +226,10 @@ fn captured(case: &Case, task: &str) -> Result<HashSet<String>> {
         let citation = &content["citation"];
         if let Some(raw) = citation["raw"].as_str() {
             citations.extend(normalized_all(raw));
+        }
+        // Parallel citations of the captured case, printed in its header and "All Citations" line.
+        for parallel in citation["parallel"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            citations.extend(normalized_all(parallel));
         }
         // The agent's claimed citation counts when the document confirmed it: it matched the
         // printed citation, or (with no printed citation found) it appears in the document text.
@@ -419,6 +425,18 @@ mod tests {
         ] {
             assert!(cites(text).is_empty(), "{text}: {:?}", cites(text));
         }
+    }
+
+    #[test]
+    fn westlaw_neutral_cites_with_spaced_hyphens() {
+        assert_eq!(cites("2012 -Ohio- 2746"), ["2012 Ohio 2746"]);
+        assert_eq!(cites("2012-Ohio-2746"), cites("2012 -Ohio- 2746"), "one normal form");
+        assert_eq!(cites("2012 - Ohio - 2746"), ["2012 Ohio 2746"]);
+        assert_eq!(cites("Not Reported in N.E.2d, 2012 WL 2336914, 2012 -Ohio- 2746"), ["2012 WL 2336914", "2012 Ohio 2746"]);
+        assert_eq!(cites("81 Ohio St.3d 337, 691 N.E.2d 285, 1998 -Ohio- 627"), ["81 Ohio St. 3d 337", "691 N.E.2d 285", "1998 Ohio 627"]);
+        // A hyphen split across lines is not a citation; nor is a range of years.
+        assert!(cites("2012 -\nOhio- 2746").is_empty());
+        assert!(cites("from 2010 - 2012").is_empty());
     }
 
     #[test]

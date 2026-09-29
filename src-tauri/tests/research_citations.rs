@@ -45,6 +45,53 @@ fn capture(case: &mut Case, task: &str, printed: &str, claimed: &str) -> serde_j
     research::publish(case, task, &bundle, &args).unwrap()
 }
 
+/// Publishes a synthetic capture of a Westlaw-style document with exactly these text lines.
+fn capture_lines(case: &mut Case, task: &str, lines: &[&str], claimed: &str) -> serde_json::Value {
+    let html = format!("<main>{}</main>", lines.iter().map(|line| format!("<p>{line}</p>")).collect::<String>());
+    let bundle = json!({
+        "url": format!("https://1.next.westlaw.com/Document/{}", evidence_desk::case::id()),
+        "html": html,
+        "lines": lines,
+        "full_page_sha256": evidence_desk::case::digest(html.as_bytes()),
+        "citation_raw": research::capture::detect_citation(lines),
+        "playbook": "generic",
+    });
+    let args = json!({"title": "Synthetic", "jurisdiction": "Ohio", "citation_text": claimed, "proposition": "A proposition.", "relevant_date": null, "quote_start_line": 3, "quote_end_line": 3});
+    research::publish(case, task, &bundle, &args).unwrap()
+}
+
+#[test]
+fn westlaw_parallel_citations_from_the_header_and_all_citations_are_captured() {
+    let (_dir, mut case, source) = setup();
+    research::set_grant(&mut case, true, &[]).unwrap();
+    let task = start(&mut case, &source, true);
+    // Stow v. Paster as Westlaw rendered it: the header's text nodes ran together.
+    let stow = [
+        "Stow v. Paster",
+        "Court of Appeals of Ohio, Ninth District, Summit County.June 20, 2012Not Reported in N.E.2d2012 WL 23369142012 -Ohio- 2746 (Approx. 6 pages)",
+        "Opinion",
+        "The judgment is affirmed.",
+        "All Citations",
+        "Not Reported in N.E.2d, 2012 WL 2336914, 2012 -Ohio- 2746",
+    ];
+    let output = capture_lines(&mut case, &task, &stow, "2012 WL 2336914");
+    assert_eq!(output["citation_raw"], "2012 WL 2336914");
+    assert_eq!(output["citation_parallel"], json!(["2012 WL 2336914", "2012 Ohio 2746"]));
+    assert_eq!(output["citation_mismatch"], false);
+    // The answer of the log, refused before this fix, now passes; an uncaptured cite does not.
+    citations::guard(&case, &task, &["Stow v. Paster, 2012-Ohio-2746, 2012 WL 2336914."], &[]).unwrap();
+    citations::guard(&case, &task, &["Stow v. Paster, 2012 -Ohio- 2746."], &[]).unwrap();
+    assert!(citations::guard(&case, &task, &["See 2012-Ohio-2747."], &[]).is_err());
+
+    // A reported case: every parallel citation comes from its All Citations line.
+    let reported = ["State v. Example", "Supreme Court of Ohio.", "Opinion", "The judgment is reversed. See 123 F.3d 456.", "All Citations", "81 Ohio St.3d 337, 691 N.E.2d 285, 1998 -Ohio- 627"];
+    let output = capture_lines(&mut case, &task, &reported, "1998-Ohio-627");
+    assert_eq!(output["citation_mismatch"], false, "{output}");
+    citations::guard(&case, &task, &["State v. Example, 81 Ohio St.3d 337, 691 N.E.2d 285, 1998-Ohio-627."], &[]).unwrap();
+    let error = citations::guard(&case, &task, &["Compare 123 F.3d 456."], &[]).unwrap_err().to_string();
+    assert!(error.contains("123 F.3d 456"), "a case the opinion cites is not captured by capturing the opinion: {error}");
+}
+
 #[test]
 fn fabricated_citations_are_refused_with_an_actionable_message() {
     let (_dir, mut case, source) = setup();
