@@ -265,6 +265,22 @@ async fn research_pane_command(app: &tauri::AppHandle, action: &str, args: &Valu
     Some(result)
 }
 
+/// Resolves when the research browser is switched off or reconfigured for the task's case, so
+/// a running research job is abandoned (its result is also refused by the tool arm).
+#[cfg(all(feature = "research", windows))]
+async fn research_revoked(app: &tauri::AppHandle, case_id: &str, epoch: u64, task: &str, revision: u64) {
+    loop {
+        let revoked = with_case_expected(app, case_id, Some(epoch), |case| {
+            Ok(!crate::research::grant(case).ok().flatten().is_some_and(|grant| grant.enabled && grant.revision == revision) || !crate::research::tools::exposed(case, task)?)
+        })
+        .unwrap_or(true);
+        if revoked {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+}
+
 /// Whether the open case session still allows the pane `owner` opened.
 #[cfg(feature = "research")]
 fn research_allowed_for(app: &tauri::AppHandle, owner: &crate::research::pane::Owner) -> bool {
@@ -1703,10 +1719,11 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
                         if let Ok(Some(job))=research {
                             let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":{"activity":job.name}}));
                             let outcome=tokio::select!{
-                                result=crate::research::runtime::execute(&app,&case_id,&job)=>result,
+                                result=crate::research::runtime::execute(&app,&case_id,epoch,&job)=>result,
                                 _=cancelled(&app,&case_id,epoch,&task)=>Err(anyhow::anyhow!("Research stopped")),
+                                _=research_revoked(&app,&case_id,epoch,&task,job.grant_revision)=>Err(anyhow::anyhow!("The research browser was switched off or its settings changed")),
                             };
-                            if outcome.as_ref().is_err_and(|error| error.to_string()=="Research stopped") {crate::research::runtime::stop_loading(&app).await;}
+                            if outcome.is_err() {crate::research::runtime::stop_if_active(&app,&job).await;}
                             with_case_expected(&app,&case_id,Some(epoch),|c|crate::research::tools::stash(c,&job,outcome))?;
                         }
                     }
@@ -2014,6 +2031,8 @@ fn debug_test_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
 }
 
 pub fn run() {
+    #[cfg(all(feature = "research", windows))]
+    crate::research::tools::mark_runtime_available();
 
     let builder = tauri::Builder::default()
 

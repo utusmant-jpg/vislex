@@ -264,9 +264,12 @@ pub fn set_grant(case: &mut crate::case::Case, enabled: bool, sso_hosts: &[Strin
 
 /// Per-task limits enforced in Rust regardless of model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Caps {
     pub searches: u32,
     pub documents: u32,
+    /// Clicks and key presses (either can open a document).
+    pub actions: u32,
     pub captures: u32,
     pub typed_characters: u32,
     pub min_navigation_interval_ms: u64,
@@ -275,7 +278,7 @@ pub struct Caps {
 
 impl Default for Caps {
     fn default() -> Self {
-        Self { searches: 30, documents: 60, captures: 25, typed_characters: 4_000, min_navigation_interval_ms: 1_500, navigations_per_minute: 20 }
+        Self { searches: 30, documents: 60, actions: 150, captures: 25, typed_characters: 4_000, min_navigation_interval_ms: 1_500, navigations_per_minute: 20 }
     }
 }
 

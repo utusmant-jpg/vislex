@@ -156,8 +156,9 @@ impl<D: Driver> Session<D> {
         Ok(())
     }
 
-    pub async fn press(&mut self, key: &str) -> Result<()> {
+    pub async fn press(&mut self, key: &str, pacing: Duration) -> Result<()> {
         ensure!(ALLOWED_KEYS.contains(&key), "Key {key:?} is not allowed");
+        self.pace(pacing).await;
         let code = match key { "Enter" => 13, "Tab" => 9, "Escape" => 27, "ArrowDown" => 40, "ArrowUp" => 38, "PageDown" => 34, "PageUp" => 33, "Home" => 36, _ => 35 };
         for kind in ["keyDown", "keyUp"] {
             self.driver().call("Input.dispatchKeyEvent", json!({"type": kind, "key": key, "code": key, "windowsVirtualKeyCode": code})).await?;
@@ -361,8 +362,8 @@ mod tests {
     #[test]
     fn only_listed_keys_are_pressed() {
         let mut session = Session::new(FakeDriver::new(|_, _| Ok(json!({}))));
-        block(session.press("Enter")).unwrap();
-        assert!(block(session.press("F12")).is_err());
-        assert!(block(session.press("Control")).is_err());
+        block(session.press("Enter", Duration::ZERO)).unwrap();
+        assert!(block(session.press("F12", Duration::ZERO)).is_err());
+        assert!(block(session.press("Control", Duration::ZERO)).is_err());
     }
 }

@@ -97,6 +97,7 @@ fn a_corrupt_research_grant_can_still_be_switched_off() {
 // ---- R43: the agent's research tools ----
 
 fn case_with_task(research_on: bool) -> (tempfile::TempDir, Case, String) {
+    research::tools::mark_runtime_available();
     let (dir, mut case) = setup();
     let source = dir.path().join("note.txt");
     std::fs::write(&source, "A synthetic note.\n").unwrap();
@@ -153,16 +154,25 @@ fn research_calls_are_checked_audited_and_limited_before_any_browser_action() {
     let query = call("research_act", json!({"action": "type", "ref": "e1", "snapshot_version": 1, "text": "duty of care /s negligence", "key": null}));
     let job = research::tools::prepare_research(&mut case, &task, &request.transmission, &query).unwrap().expect("job");
     assert_eq!(job.name, "research_act");
-    let audited: String = case.db.query_row("SELECT data FROM audit WHERE event='research_query_sent' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    let audited: String = case.db.query_row("SELECT data FROM audit WHERE event='research_query_requested' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).unwrap();
     assert!(audited.contains("duty of care /s negligence"));
 
-    // Page limit from the grant's caps.
+    // Page limit and per-minute rate from the grant's caps.
+    let mut stored: serde_json::Value = serde_json::from_str(&case.meta("research_browser_grant").unwrap().unwrap()).unwrap();
+    stored["caps"]["documents"] = json!(3);
+    stored["caps"]["navigations_per_minute"] = json!(100);
+    case.set_meta("research_browser_grant", &stored.to_string()).unwrap();
     let navigate = call("research_navigate", json!({"url": "https://1.next.westlaw.com/Search/Home.html"}));
-    for _ in 0..research::Caps::default().documents {
+    for _ in 0..3 {
         assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &navigate).unwrap().is_some());
     }
     assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &navigate).unwrap().is_none());
-    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("limit"));
+    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("research pages"));
+    stored["caps"]["documents"] = json!(100);
+    stored["caps"]["navigations_per_minute"] = json!(3);
+    case.set_meta("research_browser_grant", &stored.to_string()).unwrap();
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &navigate).unwrap().is_none(), "the fourth page change within a minute is refused");
+    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("a minute"));
 
     // A settings change during the task stops further research in it.
     research::set_grant(&mut case, true, &["login.firm.example".into()]).unwrap();
@@ -188,7 +198,7 @@ fn research_results_reach_the_model_only_for_the_exact_call() {
     // Without a stored result (not run through the desktop) the call fails clearly.
     let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
     evidence_desk::agent::receive(&mut case, &task, &request.transmission, call("research_snapshot", args.clone())).unwrap();
-    assert!(last_action(&case, &task)["output"].as_str().unwrap().contains("desktop app"));
+    assert!(last_action(&case, &task)["output"].as_str().unwrap().contains("not run"));
 
     // A result stored for different arguments is not handed to another call.
     let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
@@ -208,6 +218,7 @@ fn research_jobs_run_against_the_page_through_the_driver() {
         Ok(match method {
             "Page.getFrameTree" => json!({"frameTree": {"frame": {"id": "F1"}}}),
             "Page.createIsolatedWorld" => json!({"executionContextId": 3}),
+            "Runtime.evaluate" if params["expression"].as_str().unwrap_or_default().starts_with("({url: location.href") => json!({"result": {"value": {"url": "https://1.next.westlaw.com/Document/x", "title": "Opinion", "ready": "complete"}}}),
             "Runtime.evaluate" => json!({"result": {"value": true}}),
             "Runtime.callFunctionOn" if function.contains("Boolean(globalThis.__vislex)") => json!({"result": {"value": true}}),
             "Runtime.callFunctionOn" if function.contains("ariaSnapshot") => json!({"result": {"value": {"text": "- heading \"Opinion\" [level=1] [ref=e2]", "url": "https://1.next.westlaw.com/Document/x", "title": "Opinion"}}}),
@@ -216,7 +227,7 @@ fn research_jobs_run_against_the_page_through_the_driver() {
         })
     });
     let mut session = Session::new(page);
-    let job = |name: &str, args: serde_json::Value| Job { task: "t".into(), name: name.into(), args, args_hash: String::new(), sso_hosts: vec![], pacing: std::time::Duration::ZERO };
+    let job = |name: &str, args: serde_json::Value| Job { task: "t".into(), name: name.into(), args, args_hash: String::new(), sso_hosts: vec![], pacing: std::time::Duration::ZERO, grant_revision: 1 };
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let snapshot = runtime.block_on(run_job(&mut session, &job("research_snapshot", json!({"scope": "full", "find": null, "delta": false, "max_chars": null})))).unwrap();
     assert!(snapshot["snapshot"]["text"].as_str().unwrap().contains("Opinion"));
@@ -240,8 +251,149 @@ fn the_model_cannot_mint_authority_objects_without_retrieval() {
 
 #[test]
 fn background_review_tasks_never_get_research_tools() {
-    let (_dir, mut case, task) = case_with_task(true);
+    let (_dir, case, task) = case_with_task(true);
     assert!(research::tools::exposed(&case, &task).unwrap());
     case.set_meta(&format!("automatic_task:{task}"), "true").unwrap();
+    assert!(!research::tools::exposed(&case, &task).unwrap());
+}
+
+
+// ---- R43/R44 review fixes ----
+
+fn research_job(name: &str, args: serde_json::Value) -> research::tools::Job {
+    research::tools::Job { task: "t".into(), name: name.into(), args, args_hash: String::new(), sso_hosts: vec![], pacing: std::time::Duration::ZERO, grant_revision: 1 }
+}
+
+/// A page whose address is `location` and whose clicks move it to `after_click`.
+fn page_at(location: &'static str, after_click: &'static str) -> research::driver::FakeDriver {
+    let clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    research::driver::FakeDriver::new(move |method, params| {
+        let function = params["functionDeclaration"].as_str().unwrap_or_default();
+        let here = if clicked.load(std::sync::atomic::Ordering::SeqCst) { after_click } else { location };
+        Ok(match method {
+            "Page.getFrameTree" => json!({"frameTree": {"frame": {"id": "F1"}}}),
+            "Page.createIsolatedWorld" => json!({"executionContextId": 3}),
+            "Runtime.evaluate" if params["expression"].as_str().unwrap_or_default().starts_with("({url: location.href") => json!({"result": {"value": {"url": here, "title": "t", "ready": "complete"}}}),
+            "Runtime.evaluate" => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.contains("Boolean(globalThis.__vislex)") => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.contains("ariaSnapshot") => json!({"result": {"value": {"text": "- link \"Result\" [ref=e2]", "url": here, "title": "t"}}}),
+            "Runtime.callFunctionOn" if function.contains("stale ref") => json!({"result": {"objectId": "obj-2"}}),
+            "Runtime.callFunctionOn" if function.contains("password_on_page") => json!({"result": {"value": {"tag": "a", "input_type": "", "autocomplete": "", "name": "", "id": "", "aria_label": "", "placeholder": "", "role": "", "href": "", "text": "Result", "title": "", "content_editable": false, "form_action": "", "password_on_page": false, "otp_on_page": false}}}),
+            "Runtime.callFunctionOn" if function.contains("elementFromPoint") => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.contains("innerText") => json!({"result": {"value": {"missing": true, "url": here, "title": "t"}}}),
+            "DOM.getBoxModel" => json!({"model": {"content": [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]}}),
+            "Input.dispatchMouseEvent" => {
+                if params["type"] == "mouseReleased" {
+                    clicked.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                json!({})
+            }
+            "DOM.scrollIntoViewIfNeeded" | "Page.stopLoading" => json!({}),
+            other => anyhow::bail!("unexpected {other}"),
+        })
+    })
+}
+
+fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
+}
+
+#[test]
+fn the_agent_never_acts_on_sign_in_or_outside_pages() {
+    use research::{snapshot::Session, tools::run_job};
+    let mut session = Session::new(page_at("https://signon.thomsonreuters.com/?returnto=x", "https://signon.thomsonreuters.com/"));
+    for name in ["research_snapshot", "research_read_page"] {
+        let args = if name == "research_snapshot" { json!({"scope": "full", "find": null, "delta": false, "max_chars": null}) } else { json!({"offset": 0, "count": 10}) };
+        assert!(block_on(run_job(&mut session, &research_job(name, args))).unwrap_err().to_string().contains("sign-in"), "{name}");
+    }
+    let status = block_on(run_job(&mut session, &research_job("research_status", json!({})))).unwrap();
+    assert_eq!(status["on_research_site"], false);
+    assert!(status.get("title").is_none(), "no page content from a sign-in page");
+    assert!(!session.driver().methods().iter().any(|method| method == "Runtime.callFunctionOn"), "nothing read from the sign-in page");
+}
+
+#[test]
+fn a_click_that_lands_on_a_sign_in_page_stops_and_hands_back() {
+    use research::{snapshot::{Scope, Session}, tools::run_job};
+    let mut session = Session::new(page_at("https://1.next.westlaw.com/Search/Results.html", "https://signon.thomsonreuters.com/?expired=1"));
+    let version = block_on(session.snapshot(Scope::Full, None, false, None)).unwrap().version;
+    let click = research_job("research_act", json!({"action": "click", "ref": "e2", "snapshot_version": version, "text": null, "key": null}));
+    assert!(block_on(run_job(&mut session, &click)).unwrap_err().to_string().contains("sign-in"));
+    assert!(session.driver().methods().contains(&"Page.stopLoading".to_string()));
+}
+
+#[test]
+fn reading_needs_a_main_region_and_never_falls_back_to_the_whole_page() {
+    use research::{snapshot::Session, tools::run_job};
+    let mut session = Session::new(page_at("https://1.next.westlaw.com/Home", "https://1.next.westlaw.com/Home"));
+    let error = block_on(run_job(&mut session, &research_job("research_read_page", json!({"offset": 0, "count": 5})))).unwrap_err();
+    assert!(error.to_string().contains("main content"));
+}
+
+#[test]
+fn stop_abandons_a_running_research_job_promptly() {
+    use research::{driver::Driver, snapshot::Session, tools::run_job};
+    struct Slow;
+    impl Driver for Slow {
+        fn call(&self, _method: &str, _params: serde_json::Value) -> impl std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send {
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                Ok(json!({}))
+            }
+        }
+    }
+    let mut session = Session::new(Slow);
+    let started = std::time::Instant::now();
+    let job = research_job("research_status", json!({}));
+    let outcome = block_on(async {
+        tokio::select! {
+            result = run_job(&mut session, &job) => Some(result),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => None,
+        }
+    });
+    assert!(outcome.is_none() && started.elapsed() < std::time::Duration::from_millis(250));
+}
+
+#[test]
+fn addresses_with_queries_are_refused_and_clicks_are_limited() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    for url in ["https://1.next.westlaw.com/Search/Results.html?query=client+name", "https://1.next.westlaw.com/Document#facts", &format!("https://1.next.westlaw.com/{}", "a".repeat(2_100))] {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_navigate", json!({"url": url}))).unwrap().is_none(), "{url}");
+    }
+    // A small action limit in the stored grant binds clicks and key presses.
+    let mut grant: serde_json::Value = serde_json::from_str(&case.meta("research_browser_grant").unwrap().unwrap()).unwrap();
+    grant["caps"]["actions"] = json!(2);
+    case.set_meta("research_browser_grant", &grant.to_string()).unwrap();
+    let click = call("research_act", json!({"action": "click", "ref": "e2", "snapshot_version": 1, "text": null, "key": null}));
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &click).unwrap().is_some());
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &click).unwrap().is_some());
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &click).unwrap().is_none());
+    assert!(case.meta(&format!("research_result:{task}")).unwrap().unwrap().contains("research actions"));
+}
+
+#[test]
+fn an_unreadable_research_setting_never_blocks_other_ai_work() {
+    let (_dir, mut case, task) = case_with_task(true);
+    case.set_meta("research_browser_grant", "{not json").unwrap();
+    assert!(!research::tools::exposed(&case, &task).unwrap());
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    assert!(!request.body["tools"].as_array().unwrap().iter().any(|tool| tool["name"].as_str().unwrap_or_default().starts_with("research_")));
+}
+
+#[test]
+fn switching_research_off_mid_job_discards_its_result() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    let args = json!({"scope": "interactive", "find": null, "delta": false, "max_chars": null});
+    let response = call("research_snapshot", args);
+    let job = research::tools::prepare_research(&mut case, &task, &request.transmission, &response).unwrap().expect("job");
+    research::tools::stash(&case, &job, Ok(json!({"snapshot": {"text": "page text that must not reach the model"}}))).unwrap();
+    research::set_grant(&mut case, false, &[]).unwrap();
+    evidence_desk::agent::receive(&mut case, &task, &request.transmission, response).unwrap();
+    let output = last_action(&case, &task)["output"].as_str().unwrap().to_string();
+    assert!(output.contains("switched off") && !output.contains("must not reach"));
+    // Switching back on (a new revision) does not revive research in this task.
+    research::set_grant(&mut case, true, &[]).unwrap();
     assert!(!research::tools::exposed(&case, &task).unwrap());
 }

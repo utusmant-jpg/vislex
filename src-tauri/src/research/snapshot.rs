@@ -256,7 +256,7 @@ impl<D: Driver> Session<D> {
         ensure!(valid_ref(reference), "Invalid element ref {reference:?}");
         ensure!(self.context.is_some() && version > self.page_base && version <= self.version, "The page changed since that snapshot; take a new snapshot first");
         let element = self.call_in_world(RESOLVE_FN, &[json!(reference)], false).await.map_err(|error| {
-            if error.to_string().contains("stale ref") { anyhow!("Element {reference} is no longer on the page; take a new snapshot") } else { error }
+            if error.to_string().contains("stale ref") { anyhow!("Element {reference} is not in the latest snapshot or no longer on the page; take a new snapshot") } else { error }
         })?;
         element["objectId"].as_str().map(str::to_string).context("Element could not be resolved")
     }

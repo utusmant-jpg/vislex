@@ -30,8 +30,6 @@ pub struct PaneState {
     opening: AtomicBool,
     /// True only while a pane exists that passed `verify_isolation`.
     verified: AtomicBool,
-    /// Set by Stop; checked between DevTools calls by agent jobs.
-    pub cancel: Arc<AtomicBool>,
     /// The policy the open pane was created with; navigation and pop-up handlers read it.
     policy: Arc<Mutex<Option<NavigationPolicy>>>,
     /// Case session the open pane belongs to; the pane closes when it is no longer current.
