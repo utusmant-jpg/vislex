@@ -323,7 +323,6 @@ async fn research_revoked(app: &tauri::AppHandle, case_id: &str, epoch: u64, tas
     }
 }
 
-/// Whether the open case session still allows the pane `owner` opened.
 /// Runs one checked research job on the pane, on either access route: announces the step in
 /// the chat (`stream` is the live-progress id of the turn), then runs the job outside the case
 /// lock, raced with Stop, the research switch and `interrupted` (the subscription watchdog). The
@@ -362,6 +361,7 @@ async fn run_research_job(app: &tauri::AppHandle, case_id: &str, epoch: u64, tas
     })
 }
 
+/// Whether the open case session still allows the pane `owner` opened.
 #[cfg(feature = "research")]
 fn research_allowed_for(app: &tauri::AppHandle, owner: &crate::research::pane::Owner) -> bool {
     let state = app.state::<AppState>();
