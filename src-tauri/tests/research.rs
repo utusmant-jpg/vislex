@@ -799,3 +799,71 @@ fn backups_hold_captures_but_never_the_research_profile() {
         }
     }
 }
+
+// ---- 171e176 re-review fixes ----
+
+#[test]
+fn navigation_addresses_carrying_search_text_are_refused() {
+    let (_dir, mut case, task) = case_with_task(true);
+    let request = evidence_desk::agent::prepare_request(&mut case, &task).unwrap();
+    let long = format!("https://1.next.westlaw.com/Document/{}", "a".repeat(300));
+    for url in ["https://1.next.westlaw.com/Search/negligent%20hiring%20smith", "https://1.next.westlaw.com/x/evidence%3Asrc1", "https://1.next.westlaw.com/a%0Ab", long.as_str()] {
+        assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &call("research_navigate", json!({"url": url}))).unwrap().is_none(), "{url}");
+    }
+    let document = call("research_navigate", json!({"url": "https://1.next.westlaw.com/Document/I0a1b2c3d4/View/FullText.html"}));
+    assert!(research::tools::prepare_research(&mut case, &task, &request.transmission, &document).unwrap().is_some());
+    // Page changes also count against a case-wide pace shared by every chat.
+    assert!(case.meta("research_recent_page_changes").unwrap().is_some_and(|raw| raw.starts_with('[') && raw.len() > 2));
+}
+
+#[test]
+fn the_agent_never_navigates_away_from_a_sign_in_page() {
+    use research::{snapshot::Session, tools::run_job};
+    let mut session = Session::new(page_at("https://signon.thomsonreuters.com/?returnto=x", "https://signon.thomsonreuters.com/"));
+    let navigate = research_job("research_navigate", json!({"url": "https://1.next.westlaw.com/Home"}));
+    assert!(block_on(run_job(&mut session, &navigate)).unwrap_err().to_string().contains("sign-in"));
+    assert!(!session.driver().methods().iter().any(|method| method == "Page.navigate"));
+}
+
+#[test]
+fn page_content_is_dropped_when_the_page_moved_off_site_meanwhile() {
+    use research::{snapshot::Session, tools::run_job};
+    // The address check sees the research site; by the time of the snapshot the page is a sign-in page.
+    let driver = research::driver::FakeDriver::new(|method, params| {
+        let function = params["functionDeclaration"].as_str().unwrap_or_default();
+        Ok(match method {
+            "Page.getFrameTree" => json!({"frameTree": {"frame": {"id": "F1"}}}),
+            "Page.createIsolatedWorld" => json!({"executionContextId": 3}),
+            "Runtime.evaluate" if params["expression"].as_str().unwrap_or_default().starts_with("({url: location.href") => json!({"result": {"value": {"url": "https://1.next.westlaw.com/Search/Results.html", "title": "t", "ready": "complete"}}}),
+            "Runtime.evaluate" => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.contains("Boolean(globalThis.__vislex)") => json!({"result": {"value": true}}),
+            "Runtime.callFunctionOn" if function.contains("ariaSnapshot") => json!({"result": {"value": {"text": "- textbox \"Username\" [ref=e1]: someone@example.com", "url": "https://signon.thomsonreuters.com/", "title": "Sign in"}}}),
+            "Runtime.callFunctionOn" if function.contains("innerText") => json!({"result": {"value": {"lines": ["someone@example.com"], "url": "https://signon.thomsonreuters.com/", "title": "Sign in"}}}),
+            other => anyhow::bail!("unexpected {other}"),
+        })
+    });
+    let mut session = Session::new(driver);
+    let snapshot = research_job("research_snapshot", json!({"scope": "interactive", "find": null, "delta": false, "max_chars": null}));
+    let error = block_on(run_job(&mut session, &snapshot)).unwrap_err().to_string();
+    assert!(error.contains("sign-in") && !error.contains("someone@"), "{error}");
+    let read = research_job("research_read_page", json!({"offset": 0, "count": 5}));
+    let error = block_on(run_job(&mut session, &read)).unwrap_err().to_string();
+    assert!(error.contains("sign-in") && !error.contains("someone@"), "{error}");
+}
+
+#[test]
+fn pages_a_job_opened_are_audited_whatever_its_outcome() {
+    let (_dir, mut case, _task) = case_with_task(true);
+    let job = research_job("research_act", json!({"action": "click"}));
+    let count = |case: &Case| case.db.query_row("SELECT COUNT(*) FROM audit WHERE event='research_page_opened'", [], |row| row.get::<_, i64>(0)).unwrap();
+    research::tools::audit_page_change(&mut case, &job, Some("https://1.next.westlaw.com/Search/Results.html"), Some("https://1.next.westlaw.com/Document/I1/View/FullText.html"), false).unwrap();
+    assert_eq!(count(&case), 1);
+    let audited: String = case.db.query_row("SELECT data FROM audit WHERE event='research_page_opened' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    assert!(audited.contains("\"succeeded\":false") && audited.contains("/Document/I1/View/FullText.html"), "{audited}");
+    // A fragment change, no change, or no page at all is not a new page.
+    research::tools::audit_page_change(&mut case, &job, Some("https://1.next.westlaw.com/Document/I1"), Some("https://1.next.westlaw.com/Document/I1#co_pp_sp"), true).unwrap();
+    research::tools::audit_page_change(&mut case, &job, Some("https://1.next.westlaw.com/Home"), Some("https://1.next.westlaw.com/Home"), true).unwrap();
+    research::tools::audit_page_change(&mut case, &job, Some("https://1.next.westlaw.com/Home"), None, true).unwrap();
+    assert_eq!(count(&case), 1);
+    case.verify_audit().unwrap();
+}

@@ -107,7 +107,7 @@ pub fn validate_typed_text(text: &str) -> Result<()> {
 }
 
 impl<D: Driver> Session<D> {
-    async fn pace(&mut self, interval: Duration) {
+    pub(crate) async fn pace(&mut self, interval: Duration) {
         if let Some(last) = self.last_action {
             let elapsed = last.elapsed();
             if elapsed < interval {

@@ -1719,13 +1719,17 @@ fn run_session(app:tauri::AppHandle,case_id:String,epoch:u64,task:String,coordin
                         let research=with_case_expected(&app,&case_id,Some(epoch),|c|{c.set_meta(&format!("research_result:{task}"),"")?;crate::research::tools::prepare_research(c,&task,&prepared.transmission,&value)});
                         if let Ok(Some(job))=research {
                             let _=app.emit("agent-progress",json!({"case_id":case_id,"session_epoch":epoch,"task_id":task,"transmission_id":prepared.transmission,"delta":{"activity":job.name}}));
+                            let pane_url=|app:&tauri::AppHandle|crate::research::pane::webview(app).and_then(|pane|pane.url().ok()).map(|url|url.to_string());
+                            let before=pane_url(&app);
                             let outcome=tokio::select!{
                                 result=crate::research::runtime::execute(&app,&case_id,epoch,&job)=>result,
                                 _=cancelled(&app,&case_id,epoch,&task)=>Err(anyhow::anyhow!("Research stopped")),
                                 _=research_revoked(&app,&case_id,epoch,&task,job.grant_revision)=>Err(anyhow::anyhow!("The research browser was switched off or its settings changed")),
                             };
                             if outcome.is_err() {crate::research::runtime::stop_if_active(&app,&job).await;}
-                            with_case_expected(&app,&case_id,Some(epoch),|c|crate::research::tools::stash(c,&job,outcome))?;
+                            // Pages the job opened are audited whatever its outcome (stopped, failed or done).
+                            let after=pane_url(&app);
+                            with_case_expected(&app,&case_id,Some(epoch),|c|{crate::research::tools::audit_page_change(c,&job,before.as_deref(),after.as_deref(),outcome.is_ok())?;crate::research::tools::stash(c,&job,outcome)})?;
                         }
                     }
                     let handled=with_case_expected(&app,&case_id,Some(epoch),|c|agent::receive_prepared(c,&task,&prepared.transmission,value,&mut media));
