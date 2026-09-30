@@ -287,6 +287,7 @@ def process(job: Path, request: dict) -> dict:
                 video = next((s for s in container.streams if s.type == 'video'), None)
                 if video is None:
                     raise ValueError('No decodable video stream')
+                video.thread_type = 'AUTO'  # long windows decode every frame; use all cores
                 origin = float((video.start_time or 0) * video.time_base)
                 container.seek(max(0, int((start + origin) * av.time_base)), backward=True)
                 samples = []
