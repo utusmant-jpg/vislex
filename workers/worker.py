@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 
 MAX_TEXT = 8_000_000
+WORKER_PROTOCOL = 2
 
 def is_appcontainer() -> bool:
     if sys.platform != 'win32':
@@ -261,6 +262,92 @@ def process(job: Path, request: dict) -> dict:
                 metadata = {'video_stream': video.index, 'origin_seconds': origin, 'requested_time': target, 'direction': direction, 'frames_decoded': decoded, 'selection': 'adjacent decoded presentation frame'}
             notes = ['Exact adjacent decoded frame PTS from the original recording. The JPEG is a resized derivative; original bytes are preserved.', 'Audio and intervening activity were not inspected.']
             return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': metadata, 'limitations': notes, 'previews': previews}
+        if request.get('operation') == 'sheet':
+            try:
+                start = float(request.get('start', 0))
+                end = float(request.get('end', 10))
+                interval = float(request.get('interval', 1))
+            except (TypeError, ValueError):
+                raise ValueError('Contact sheet start, end, and interval must be numbers')
+            cols, rows, tile_width = request.get('cols', 3), request.get('rows', 3), request.get('tile_width', 640)
+            if not (isinstance(cols, int) and not isinstance(cols, bool) and 2 <= cols <= 4):
+                raise ValueError('Contact sheet columns must be an integer from 2 to 4')
+            if not (isinstance(rows, int) and not isinstance(rows, bool) and 2 <= rows <= 4):
+                raise ValueError('Contact sheet rows must be an integer from 2 to 4')
+            if not (isinstance(tile_width, int) and not isinstance(tile_width, bool) and 240 <= tile_width <= 960):
+                raise ValueError('Contact sheet tile width must be an integer from 240 to 960')
+            if not (math.isfinite(start) and math.isfinite(end) and math.isfinite(interval) and 0 <= start < end and end - start <= 180 and interval >= 0.5):
+                raise ValueError('Choose a 0-180 second window with an interval of at least 0.5 seconds')
+            if (end - start) / interval > 64:
+                raise ValueError('Contact sheet exceeds the 64 sampled frame limit; increase the interval or shorten the window')
+            tile_height = round(tile_width * 9 / 16)
+            targets = [start + index * interval for index in range(max(1, math.ceil((end - start) / interval - 1e-9)))]
+            with av.open(str(source)) as container:
+                streams = [{'index': s.index, 'type': s.type, 'time_base': str(s.time_base), 'start_time': s.start_time} for s in container.streams]
+                video = next((s for s in container.streams if s.type == 'video'), None)
+                if video is None:
+                    raise ValueError('No decodable video stream')
+                origin = float((video.start_time or 0) * video.time_base)
+                container.seek(max(0, int((start + origin) * av.time_base)), backward=True)
+                samples = []
+                decoded = 0
+                for frame in container.decode(video):
+                    decoded += 1
+                    if decoded > 20000:
+                        raise ValueError('Decode limit reached before requested interval completed')
+                    if frame.pts is None:
+                        continue
+                    presentation = float(frame.pts * frame.time_base)
+                    relative = presentation - origin
+                    if relative >= end:
+                        break
+                    if len(samples) >= len(targets):
+                        break
+                    if relative + 1e-7 < targets[len(samples)]:
+                        continue
+                    image = frame.to_image()
+                    original_size = list(image.size)
+                    image.thumbnail((tile_width, tile_height))
+                    samples.append({'image': image, 'pts': frame.pts, 'time_base': str(frame.time_base), 'source_relative_seconds': relative, 'presentation_seconds': presentation, 'original_size': original_size})
+                metadata = {'streams': streams, 'video_stream': video.index, 'origin_seconds': origin, 'requested_interval': [start, end], 'sample_interval': interval, 'frames_decoded': decoded, 'sampled_frames': len(samples), 'operation': 'sheet'}
+            from PIL import Image, ImageDraw, ImageFont
+            try:
+                font = ImageFont.load_default(size=18)
+            except TypeError:
+                font = ImageFont.load_default()
+
+            def stamp(seconds: float) -> str:
+                seconds = round(max(0.0, seconds), 1)
+                hours = int(seconds // 3600)
+                minutes = int((seconds - hours * 3600) // 60)
+                remainder = seconds - hours * 3600 - minutes * 60
+                return f'{hours}:{minutes:02d}:{remainder:04.1f}' if hours else f'{minutes:02d}:{remainder:04.1f}'
+
+            per_sheet = cols * rows
+            previews = []
+            for sheet_index in range(math.ceil(len(samples) / per_sheet)):
+                canvas = Image.new('RGB', (cols * tile_width, rows * tile_height), 'black')
+                tiles = []
+                for position in range(per_sheet):
+                    global_index = sheet_index * per_sheet + position
+                    if global_index >= len(samples):
+                        break
+                    sample = samples[global_index]
+                    tile = Image.new('RGB', (tile_width, tile_height), 'black')
+                    tile.paste(sample['image'], ((tile_width - sample['image'].width) // 2, (tile_height - sample['image'].height) // 2))
+                    label = f'#{global_index} {stamp(sample["source_relative_seconds"])}'
+                    overlay = Image.new('RGBA', tile.size, (0, 0, 0, 0))
+                    draw = ImageDraw.Draw(overlay)
+                    left, top, right, bottom = draw.textbbox((4, 3), label, font=font)
+                    draw.rectangle((0, 0, right + 4, bottom + 3), fill=(0, 0, 0, 170))
+                    draw.text((4, 3), label, fill=(255, 255, 255, 255), font=font)
+                    canvas.paste(Image.alpha_composite(tile.convert('RGBA'), overlay).convert('RGB'), ((position % cols) * tile_width, (position // cols) * tile_height))
+                    tiles.append({'index': global_index, 'tile': position, 'pts': sample['pts'], 'time_base': sample['time_base'], 'source_relative_seconds': sample['source_relative_seconds'], 'presentation_seconds': sample['presentation_seconds'], 'original_size': sample['original_size']})
+                filename = f'sheet-{sheet_index:03d}.jpg'
+                canvas.save(job / filename, quality=85)
+                previews.append({'path': filename, 'sheet_index': sheet_index, 'cols': cols, 'rows': rows, 'tile_width': tile_width, 'tile_height': tile_height, 'output_size': [canvas.width, canvas.height], 'tiles': tiles})
+            notes = ['Contact sheet tiles are reduced-resolution derivatives; original frames remain the authoritative source.', 'Gaps between sampled frames were not inspected.', 'Audio was not inspected.', 'No identity or presence conclusion is established by a contact sheet.']
+            return {'version': 1, 'status': 'complete', 'pages': pages, 'metadata': metadata, 'limitations': notes, 'previews': previews}
         start, end = float(request.get('start', 0)), float(request.get('end', 10))
         interval = float(request.get('interval', 1))
         if not (0 <= start < end and end - start <= 30 and interval >= 0.1 and (end-start)/interval <= 24):
@@ -482,9 +569,12 @@ def write_result(job: Path, result: dict) -> None:
     """Publish result.json; if serialization fails, Rust still receives a failed diagnostic."""
     output = job / 'result.json'
     try:
-        output.write_text(json.dumps(json_safe(result), ensure_ascii=False), encoding='utf-8')
+        payload = dict(result)
+        if 'protocol' not in payload:
+            payload['protocol'] = WORKER_PROTOCOL
+        output.write_text(json.dumps(json_safe(payload), ensure_ascii=False), encoding='utf-8')
     except Exception as exc:
-        output.write_text(json.dumps({'version': 1, 'status': 'failed', 'error': repr(exc)[:2000]}, ensure_ascii=False), encoding='utf-8')
+        output.write_text(json.dumps({'version': 1, 'protocol': WORKER_PROTOCOL, 'status': 'failed', 'error': repr(exc)[:2000]}, ensure_ascii=False), encoding='utf-8')
 
 def main() -> None:
     if not is_appcontainer():
