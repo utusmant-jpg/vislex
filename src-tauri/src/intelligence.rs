@@ -10,7 +10,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub const UNIT_INSTRUCTIONS:&str="This task is a host-owned analysis unit, not user chat. Use read_analysis_unit, reuse its included input, inspect every required page/frame/range, publish_analysis_unit with exact ref and receipt IDs, then finish_analysis_unit with per-finding source-based assessments. Do not create a dossier, coverage prompt or answer through finish_task. Material ambiguity and relevant source_processing fidelity limitations belong in the stored findings and structured data. Model support review remains distinct from human review.";
-pub const ANALYSIS_VERSION: &str = "case-intelligence-v1";
+pub const ANALYSIS_VERSION: &str = "case-intelligence-v2";
+/// Bounded unit sizes. Each unit is one short model conversation, so these
+/// constants set the call count for a case (see docs/implementation/CASE-INDEX-HANDOFF.md).
+pub const VIDEO_SEGMENT_SECONDS: f64 = 90.;
+pub const VIDEO_SAMPLE_SECONDS: f64 = 3.;
+const TEXT_UNIT_LINES: usize = 400;
+const TEXT_UNIT_CHARS: usize = 24_000;
+const TEXT_FRAGMENT_CHARS: usize = 8_000;
+const TRANSCRIPT_UNIT_SEGMENTS: i64 = 120;
+const PAGES_PER_UNIT: i64 = 4;
+const SYNTHESIS_FAN_IN: usize = 10;
+/// A host-owned unit that needs more model steps than this is looping; it is
+/// blocked with its last error instead of consuming tokens indefinitely.
+pub const MAX_UNIT_STEPS: i64 = 14;
+pub const MAX_UNIT_TOOL_FAILURES: i64 = 3;
+/// Consecutive units ending blocked before the run pauses itself for attention.
+const CIRCUIT_BREAKER_UNITS: usize = 4;
 /// Namespaced additive migration deliberately does not consume a shared PRAGMA
 /// version while other owners are developing migrations in isolated branches.
 pub fn migrate(db: &rusqlite::Connection) -> Result<()> {
@@ -59,8 +75,10 @@ fn base_source_stamp(case: &Case, source: &str) -> Result<String> {
             r.get::<_, String>(3)?,
         ))
     })? {
-        let (id, kind, state, result) = row?;
-        pieces.push(format!("{id}:{kind}:{state}:{}", digest(result.as_bytes())));
+        // Job IDs are excluded: re-running an interrupted identical job must not
+        // invalidate completed analysis. Only its status and exact result count.
+        let (_id, kind, state, result) = row?;
+        pieces.push(format!("{kind}:{state}:{}", digest(result.as_bytes())));
     }
     Ok(digest(pieces.join("\n").as_bytes()))
 }
@@ -293,7 +311,7 @@ fn add_unit(
         stamp.to_owned()
     };
     let unit = digest(json!([source, stamp, kind, spec]).to_string().as_bytes());
-    case.db.execute("INSERT OR IGNORE INTO case_analysis_units(id,source_id,input_stamp,kind,spec,state,reason,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",params![unit,source,stamp,kind,spec.to_string(),if blocked.is_some(){"blocked"}else{"queued"},blocked.unwrap_or(""),now(),now()])?;
+    case.db.execute("INSERT OR IGNORE INTO case_analysis_units(id,source_id,input_stamp,kind,spec,state,reason,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",params![unit,source,stamp,kind,spec.to_string(),if blocked.is_some(){"gap"}else{"queued"},blocked.unwrap_or(""),now(),now()])?;
     case.db.execute(
         "INSERT OR IGNORE INTO case_analysis_run_units VALUES(?,?,?)",
         params![run, unit, *ordinal],
@@ -301,8 +319,8 @@ fn add_unit(
     *ordinal += 1;
     Ok(unit)
 }
-// Five inputs × at most 100 published findings keeps every dependency set
-// below evidence::write's existing 1,000-reference boundary without dropping facts.
+// SYNTHESIS_FAN_IN inputs × at most 100 published findings keeps every dependency set
+// within evidence::write's existing 1,000-reference boundary without dropping facts.
 fn add_synthesis_groups(
     case: &Case,
     run: &str,
@@ -311,9 +329,9 @@ fn add_synthesis_groups(
     mut inputs: Vec<String>,
     ordinal: &mut i64,
 ) -> Result<Vec<String>> {
-    while inputs.len() > 5 {
+    while inputs.len() > SYNTHESIS_FAN_IN {
         let mut next = Vec::new();
-        for group in inputs.chunks(5) {
+        for group in inputs.chunks(SYNTHESIS_FAN_IN) {
             next.push(add_unit(
                 case,
                 run,
@@ -418,15 +436,15 @@ pub fn ensure_run(case: &mut Case, model_manifest: &str) -> Result<Option<String
                 let mut line = 0;
                 while line < lines.len() {
                     let chars = lines[line].chars().count();
-                    if chars > 2000 {
-                        for offset in (0..chars).step_by(2000) {
+                    if chars > TEXT_FRAGMENT_CHARS {
+                        for offset in (0..chars).step_by(TEXT_FRAGMENT_CHARS) {
                             add_unit(
                                 case,
                                 &run,
                                 Some(&source.id),
                                 &stamp,
                                 "text_fragment",
-                                json!({"revision":revision,"line":line+1,"char_offset":offset,"char_count":(chars-offset).min(2000)}),
+                                json!({"revision":revision,"line":line+1,"char_offset":offset,"char_count":(chars-offset).min(TEXT_FRAGMENT_CHARS)}),
                                 &mut ordinal,
                                 None,
                             )?;
@@ -434,10 +452,13 @@ pub fn ensure_run(case: &mut Case, model_manifest: &str) -> Result<Option<String
                         line += 1;
                     } else {
                         let start = line;
+                        let mut budget = 0;
                         while line < lines.len()
-                            && line - start < 120
-                            && lines[line].chars().count() <= 2000
+                            && line - start < TEXT_UNIT_LINES
+                            && lines[line].chars().count() <= TEXT_FRAGMENT_CHARS
+                            && (line == start || budget + lines[line].chars().count() <= TEXT_UNIT_CHARS)
                         {
+                            budget += lines[line].chars().count() + 1;
                             line += 1;
                         }
                         add_unit(
@@ -457,17 +478,20 @@ pub fn ensure_run(case: &mut Case, model_manifest: &str) -> Result<Option<String
             if source.kind == "pdf" {
                 let pages: Option<i64> = case.db.query_row("SELECT max(CAST(json_extract(metadata,'$.page_count') AS INTEGER)) FROM artifacts WHERE source_id=?",[&source.id],|r|r.get(0))?;
                 if let Some(pages) = pages.filter(|p| *p > 0) {
-                    for page in 1..=pages {
+                    let mut first = 1;
+                    while first <= pages {
+                        let group: Vec<i64> = (first..=(first + PAGES_PER_UNIT - 1).min(pages)).collect();
                         add_unit(
                             case,
                             &run,
                             Some(&source.id),
                             &stamp,
-                            "page",
-                            json!({"page":page}),
+                            "pages",
+                            json!({"pages":group}),
                             &mut ordinal,
                             None,
                         )?;
+                        first += PAGES_PER_UNIT;
                         added = true;
                     }
                 } else {
@@ -526,33 +550,9 @@ pub fn ensure_run(case: &mut Case, model_manifest: &str) -> Result<Option<String
                                     Some("Audio decoder reported missing track coverage"),
                                 )?;
                             }
-                            if let Some(end) = track["actual_end_seconds"]
-                                .as_f64()
-                                .filter(|t| t.is_finite() && *t > 0.)
-                            {
-                                let channels =
-                                    track["channels"].as_u64().filter(|n| (1..=32).contains(n));
-                                let Some(channels) = channels else {
-                                    add_unit(case,&run,Some(&source.id),&stamp,"audio_channel_inventory",json!({"track":track["index"],"channels":track["channels"]}),&mut ordinal,Some("Audio channel inventory is missing or exceeds the supported channel range; full channel coverage is unverified"))?;
-                                    continue;
-                                };
-                                for channel in 0..channels {
-                                    let mut start = 0.;
-                                    while start < end {
-                                        add_unit(
-                                            case,
-                                            &run,
-                                            Some(&source.id),
-                                            &stamp,
-                                            "audio_signal",
-                                            json!({"start":start,"end":(start+60_f64).min(end),"track":track["index"],"channel":channel}),
-                                            &mut ordinal,
-                                            None,
-                                        )?;
-                                        start += 60.;
-                                    }
-                                }
-                            }
+                            // Per-minute sound-onset scans were one model conversation per
+                            // channel-minute and duplicated the transcript; sound events stay
+                            // available on demand (scan_sound_events) during questions.
                         }
                         let total: i64 = case.db.query_row(
                             "SELECT count(*) FROM transcript_segments WHERE run_id=?",
@@ -560,14 +560,14 @@ pub fn ensure_run(case: &mut Case, model_manifest: &str) -> Result<Option<String
                             |r| r.get(0),
                         )?;
                         if total > 0 {
-                            for start in (0..total).step_by(25) {
+                            for start in (0..total).step_by(TRANSCRIPT_UNIT_SEGMENTS as usize) {
                                 add_unit(
                                     case,
                                     &run,
                                     Some(&source.id),
                                     &stamp,
                                     "transcript",
-                                    json!({"run_id":transcript,"offset":start,"count":(total-start).min(25),"artifact_id":transcript}),
+                                    json!({"run_id":transcript,"offset":start,"count":(total-start).min(TRANSCRIPT_UNIT_SEGMENTS),"artifact_id":transcript}),
                                     &mut ordinal,
                                     None,
                                 )?;
@@ -623,37 +623,23 @@ pub fn ensure_run(case: &mut Case, model_manifest: &str) -> Result<Option<String
                         && end.is_some_and(|s| s.is_finite() && s >= 0.)
                     {
                         let duration = end.unwrap();
+                        // One unit per VIDEO_SEGMENT_SECONDS, reviewed as timestamped
+                        // contact sheets sampled every VIDEO_SAMPLE_SECONDS. Denser
+                        // looks happen on demand when a question needs them.
                         let mut start = 0.;
                         while start < duration {
+                            let end = (start + VIDEO_SEGMENT_SECONDS).min(duration + 0.001);
                             add_unit(
                                 case,
                                 &run,
                                 Some(&source.id),
                                 &stamp,
-                                "video",
-                                json!({"start":start,"end":(start+5_f64).min(duration+0.001),"interval":0.5,"discovery_run":discovery}),
+                                "video_segment",
+                                json!({"start":start,"end":end,"interval":VIDEO_SAMPLE_SECONDS,"discovery_run":discovery}),
                                 &mut ordinal,
                                 None,
                             )?;
-                            start += 4.;
-                        }
-                        let mut scenes=case.db.prepare("SELECT artifact_id,seconds FROM discovery_samples WHERE run_id=? AND kind='video_overview' AND json_extract(metadata,'$.scene_boundary')=1 ORDER BY seconds,artifact_id")?;
-                        let scenes = scenes
-                            .query_map([&discovery], |r| {
-                                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
-                            })?
-                            .collect::<std::result::Result<Vec<_>, _>>()?;
-                        for (artifact, seconds) in scenes {
-                            add_unit(
-                                case,
-                                &run,
-                                Some(&source.id),
-                                &stamp,
-                                "frame",
-                                json!({"artifact_id":artifact,"seconds":seconds,"scene_boundary":true}),
-                                &mut ordinal,
-                                None,
-                            )?;
+                            start += VIDEO_SEGMENT_SECONDS;
                         }
                         if result["has_gaps"] == true {
                             add_unit(

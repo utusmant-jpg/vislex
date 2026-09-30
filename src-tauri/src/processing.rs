@@ -186,9 +186,21 @@ pub fn run_prepared(job:&PreparedJob)->Result<Value> {
     let path=job.staging.path().join("result.json");
     ensure!(path.metadata()?.len()<=16*1024*1024,"Worker output too large");
     let value:Value=serde_json::from_slice(&fs::read(path)?)?;
+    check_worker_protocol(&value)?;
     ensure!(value["version"]==1 && value["status"]=="complete","{}",value["error"].as_str().unwrap_or("Invalid processor output"));
     Ok(value)
 }
+/// Worker/host protocol generation. A packaged worker built from older source
+/// cannot honour newer request fields (for example source leases), so its
+/// output is refused with an actionable message instead of a misleading error.
+pub const WORKER_PROTOCOL: u64 = 2;
+pub const WORKER_OUTDATED: &str = "The packaged evidence worker is out of date";
+pub fn check_worker_protocol(value:&Value)->Result<()> {
+    let reported=value["protocol"].as_u64();
+    ensure!(reported==Some(WORKER_PROTOCOL),"{WORKER_OUTDATED} (reports protocol {}, this app needs {WORKER_PROTOCOL}). Rebuild it with scripts/build-worker.ps1 and restart VisLex. Worker message: {}",reported.map_or("none".to_string(),|p|p.to_string()),value["error"].as_str().unwrap_or("none").chars().take(300).collect::<String>());
+    Ok(())
+}
+pub fn worker_outdated(error:&str)->bool { error.contains(WORKER_OUTDATED) }
 /// Resume only a registered private job. Outputs remain unpublished until normal validation succeeds.
 pub fn resume(case:&mut Case,job_id:&str)->Result<PreparedJob> {
     let (source_id,kind,status):(String,String,String)=case.db.query_row("SELECT source_id,kind,status FROM processing_jobs WHERE id=?",[job_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;

@@ -59,7 +59,16 @@
       "cargo fmt*": "allow",
       "cargo clippy*": "allow",
       "npx tsc*": "allow",
-      "npx vitest*": "allow"
+      "npx vitest*": "allow",
+      "ls*": "allow",
+      "dir*": "allow",
+      "pwd": "allow",
+      "git branch*": "allow",
+      "git rev-parse*": "allow",
+      "..\\..\\..\\.venv-worker\\Scripts\\python.exe -m pytest *": "allow",
+      "../../../.venv-worker/Scripts/python.exe -m pytest *": "allow",
+      "..\\..\\..\\.venv-worker\\Scripts\\python.exe -m unittest *": "allow",
+      "../../../.venv-worker/Scripts/python.exe -m unittest *": "allow"
     }
   },
   "agent": {
