@@ -8,7 +8,7 @@ const tool=(name,args)=>({type:'function_call',call_id:randomUUID(),name,argumen
 function respond(response,body) {
   requests++;
   const prompt=JSON.stringify(body.input ?? []);
-  const unit=prompt.match(/Internal case analysis unit ([0-9a-f]{64})/i)?.[1];
+  const unit=prompt.match(/(?:Internal case analysis unit|VisLex internal analysis unit) ([0-9a-f]{64})/i)?.[1];
   if (!unit) throw new Error('Fixture received a task outside internal analysis');
   if (body.reasoning?.effort !== 'high') throw new Error('Selected API reasoning effort was downgraded');
   const input=body.input ?? [];

@@ -145,6 +145,18 @@ it('ignores an older source page returned after switching cases', async () => {
   expect(loaded).not.toHaveBeenCalled();
 });
 
+it('explains a self-paused case analysis and lists coverage notes separately from failures', () => {
+  const current=snapshot();
+  current.jobs=[];
+  current.analysis_status={run_id:'run',state:'paused',current:true,total:12,complete:5,running:0,blocked:1,gaps:1,findings:9,model_manifest:'synthetic',usage:{input_tokens:1000,output_tokens:100,cost:null,unreported:false},pause_reason:'The packaged evidence worker is out of date (reports protocol none, this app needs 2).',blockers:[{unit_id:'u1',source_id:null,kind:'video_segment',reason:'Analysis unit stopped after 14 model steps'}],coverage_gaps:[{unit_id:'u2',source_id:null,kind:'audio_gap',reason:'Audio decoder reported missing track coverage'}],version:'case-intelligence-v2',human_review:'separate'};
+  render(<JobsCenter snapshot={current} run={fn => { void fn(); }} refresh={async () => undefined} onConversation={vi.fn()} />);
+  expect(screen.getByRole('status').textContent).toContain('evidence worker is out of date');
+  expect(screen.getByText('1 blocked analysis units')).toBeTruthy();
+  expect(screen.getByText('1 coverage notes')).toBeTruthy();
+  expect(screen.getByText(/audio_gap: Audio decoder reported missing track coverage/)).toBeTruthy();
+  expect(screen.getByRole('button',{name:'Resume analysis'})).toBeTruthy();
+});
+
 it('shows a failed automatic review even when its original chat is hidden', async () => {
   const current=snapshot();
   current.jobs=[];

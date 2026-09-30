@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, ArrowDown, ArrowUp, CircleDashed, CircleStop, CloudOff, CornerDownRight, FileText, Info, ListPlus, LoaderCircle,
+  AlertTriangle, ArrowDown, ArrowUp, CircleDashed, CircleStop, CloudOff, CornerDownRight, FileText, Info, LoaderCircle,
   MessageSquareQuote, PencilLine, Play, Quote, RotateCcw, Settings2, ShieldCheck, ShieldOff, Square, X, XCircle,
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
@@ -431,7 +431,6 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   }, [snapshot?.id, running?.id, running?.prompt, blockedWhenIdle]);
   useEffect(() => () => publishChatState(null), []);
 
-  const followUps = task?.status === 'complete' && !task.error ? (task.progress?.next_steps ?? []).filter(Boolean).slice(0, 3) : [];
   const starters = starterPrompts(snapshot);
   const reducedMotion = useReducedMotion();
   const contextName = selection
@@ -489,7 +488,6 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
           live={turn.status === 'running' && !!snapshot}
           snapshot={snapshot}
           chatBlocked={chatBlocked}
-          followUps={turn.id === task?.id ? followUps : []}
           scroll={scroll}
           following={following}
           lookup={lookup}
@@ -595,8 +593,8 @@ export default function AgentPanel({ snapshot, selection, refresh, run, onSource
   </AssistantRuntimeProvider>;
 }
 
-function ConversationTurn({ turn, fresh, anchored, reducedMotion, latest, live, snapshot, chatBlocked, followUps, scroll, following, lookup, onSource, onDraft, onResume, onContinue }: {
-  turn: Task; fresh: { current: Set<string> }; anchored: boolean; reducedMotion: boolean; latest: boolean; live: boolean; snapshot: Snapshot | null; chatBlocked: boolean; followUps: string[];
+function ConversationTurn({ turn, fresh, anchored, reducedMotion, latest, live, snapshot, chatBlocked, scroll, following, lookup, onSource, onDraft, onResume, onContinue }: {
+  turn: Task; fresh: { current: Set<string> }; anchored: boolean; reducedMotion: boolean; latest: boolean; live: boolean; snapshot: Snapshot | null; chatBlocked: boolean;
   scroll: { current: HTMLDivElement | null }; following: { current: boolean }; lookup: SourceLookup; onSource: SourceOpener; onDraft: (text: string) => void; onResume: () => void; onContinue: () => void;
 }) {
   // Decided once at mount: only a turn this panel just sent fades in.
@@ -649,10 +647,6 @@ function ConversationTurn({ turn, fresh, anchored, reducedMotion, latest, live, 
         {turn.status === 'paused' && !chatBlocked ? <button type="button" className="secondary resume-button" data-size="sm" onClick={onResume}><Play size={14} aria-hidden="true" />Resume work</button> : null}
         {latest && turn.status === 'paused' && !!turn.error && !chatBlocked ? <button type="button" className="quiet" onClick={onContinue}><CornerDownRight size={14} aria-hidden="true" />Continue in new task</button> : null}
         {outcome.kind === 'failed' ? <button type="button" className="quiet" onClick={() => onDraft(turn.prompt)}><RotateCcw size={14} aria-hidden="true" />Edit and ask again</button> : null}
-      </div> : null}
-      {latest && turn.status === 'complete' && followUps.length ? <div className="follow-ups">
-        <span className="follow-up-label">Suggested next checks</span>
-        {followUps.map(step => <button key={step} type="button" className="follow-up" onClick={() => onDraft(`Perform this next check: ${step}`)}><ListPlus size={14} aria-hidden="true" /><span>{step}</span></button>)}
       </div> : null}
     </div>
   </motion.article>;

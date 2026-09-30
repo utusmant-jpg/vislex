@@ -481,19 +481,25 @@ pub fn uncertain_words(words:&Value)->(usize,Vec<Value>) {
     (items.len(),uncertain)
 }
 pub fn segment_page(case:&Case,source_id:&str,run_id:&str,cursor:Option<i64>)->Result<Value> {
+    segment_window(case,source_id,run_id,cursor.unwrap_or(0),25)
+}
+/// Consecutive transcript segments with corrections. `count` is bounded so a
+/// host-owned analysis unit can read its whole assigned range in one receipt.
+pub fn segment_window(case:&Case,source_id:&str,run_id:&str,start:i64,count:i64)->Result<Value> {
     uuid::Uuid::parse_str(run_id)?;
     let source=case.source(source_id)?;
     ensure!(!source.restricted,"Transcript source is restricted");
     let (job_source,kind,status):(String,String,String)=case.db.query_row("SELECT source_id,kind,status FROM processing_jobs WHERE id=?",[run_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     ensure!(job_source==source_id&&kind=="full_audio"&&status=="complete","Transcript version is not available");
-    let start=cursor.unwrap_or(0);ensure!(start>=0,"Invalid transcript cursor");
-    let mut statement=case.db.prepare("SELECT ordinal,track,start_seconds,end_seconds,text,metadata,words FROM transcript_segments WHERE run_id=? AND ordinal>=? ORDER BY ordinal LIMIT 26")?;
-    let mut segments=statement.query_map(params![run_id,start],|r|{
+    ensure!(start>=0,"Invalid transcript cursor");
+    ensure!((1..=200).contains(&count),"Transcript window must contain 1 to 200 segments");
+    let mut statement=case.db.prepare("SELECT ordinal,track,start_seconds,end_seconds,text,metadata,words FROM transcript_segments WHERE run_id=? AND ordinal>=? ORDER BY ordinal LIMIT ?")?;
+    let mut segments=statement.query_map(params![run_id,start,count+1],|r|{
         let words=serde_json::from_str::<Value>(&r.get::<_,String>(6)?).unwrap_or(Value::Null);
         let (word_count,uncertain)=uncertain_words(&words);
         Ok(json!({"ordinal":r.get::<_,i64>(0)?,"track":r.get::<_,i64>(1)?,"start":r.get::<_,f64>(2)?,"end":r.get::<_,f64>(3)?,"text":r.get::<_,String>(4)?,"metadata":serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or(Value::Null),"word_count":word_count,"uncertain_words":uncertain}))
     })?.collect::<std::result::Result<Vec<_>,_>>()?;
-    let more=segments.len()>25;segments.truncate(25);
+    let more=segments.len() as i64>count;segments.truncate(count as usize);
     for segment in &mut segments {
         let correction:Option<(String,i64,String,String)>=case.db.query_row("SELECT id,revision,proposed_text,review FROM transcript_corrections WHERE run_id=? AND ordinal=? ORDER BY revision DESC LIMIT 1",params![run_id,segment["ordinal"].as_i64().context("Missing segment ordinal")?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
         if let Some((id,revision,text,review))=correction {segment["correction"]=json!({"id":id,"revision":revision,"text":text,"review":review});}

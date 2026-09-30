@@ -42,6 +42,7 @@ pub fn run(
         "input":[{"type":"text","text":context}],"model":model,"effort":effort}))?;
     let turn_id = started["turn"]["id"].as_str().context("Codex turn ID missing")?.to_owned();
     let mut last_message = None;
+    let mut last_error: Option<String> = None;
     let mut usage = None;
     let mut last_event = Instant::now();
     loop {
@@ -81,13 +82,19 @@ pub fn run(
                     if let Some(text) = params["item"]["text"].as_str() { last_message = Some(text.to_owned()); }
                 }
             }
+            "error" if params["threadId"] == thread_id => {
+                if let Some(message) = params["error"]["message"].as_str() { last_error = Some(message.to_owned()); }
+            }
             "thread/tokenUsage/updated" if params["threadId"] == thread_id && params["turnId"] == turn_id => {
                 let total=&params["tokenUsage"]["total"];
                 usage=Some(json!({"input_tokens":total["inputTokens"],"output_tokens":total["outputTokens"],
                     "cached_input_tokens":total["cachedInputTokens"],"reasoning_output_tokens":total["reasoningOutputTokens"]}));
             }
             "turn/completed" if params["threadId"] == thread_id && params["turn"]["id"] == turn_id => {
-                ensure!(params["turn"]["status"] == "completed", "Codex turn did not complete: {}", params["turn"]["status"]);
+                // Keep the service's own reason (for example a usage limit and its
+                // reset time); a bare status hides why every retry fails.
+                let reason = params["turn"]["error"]["message"].as_str().or(last_error.as_deref()).unwrap_or("");
+                ensure!(params["turn"]["status"] == "completed", "Codex turn did not complete: {}{}{}", params["turn"]["status"], if reason.is_empty() {""} else {": "}, reason.chars().take(400).collect::<String>());
                 if last_message.is_none() {
                     last_message=params["turn"]["items"].as_array().and_then(|items|items.iter().rev().find(|item|item["type"]=="agentMessage"))
                         .and_then(|item|item["text"].as_str()).map(str::to_owned);

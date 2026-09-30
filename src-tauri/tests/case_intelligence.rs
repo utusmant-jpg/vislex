@@ -598,19 +598,14 @@ fn long_unicode_lines_are_analyzed_in_exact_complete_fragments() {
         let proof =
             evidence_desk::intelligence::resolve_ref(&case, reference, &[source.clone()]).unwrap();
         collected.push_str(proof["proof"]["text"].as_str().unwrap());
+        // An explicitly inspected zero-finding unit completes at publication.
         let published = call(
             &mut case,
             &task,
             "publish_analysis_unit",
             json!({"receipts":[read["receipt_id"]],"findings":[]}),
         );
-        assert_eq!(published["status"], "analysis_published", "{published}");
-        call(
-            &mut case,
-            &task,
-            "finish_analysis_unit",
-            json!({"reviews":[]}),
-        );
+        assert_eq!(published["status"], "analysis_unit_complete", "{published}");
     }
     assert_eq!(collected, long);
 }
@@ -690,7 +685,7 @@ fn retry_does_not_orphan_an_active_unit_or_relaunch_permanent_extraction_gaps() 
     evidence_desk::intelligence::next_task(&mut case, false, "synthetic-model/high").unwrap();
     evidence_desk::intelligence::control(&mut case, "retry_failed").unwrap();
     let state:String=case.db.query_row("SELECT state FROM case_analysis_units WHERE kind='unsupported' ORDER BY rowid DESC LIMIT 1",[],|r|r.get(0)).unwrap();
-    assert_eq!(state, "blocked");
+    assert_eq!(state, "gap");
 }
 
 #[test]
@@ -699,7 +694,7 @@ fn synthesis_tree_publishes_over_one_thousand_findings_without_dropping_dependen
     agent::pause(&mut case, &interactive, "Stopped by user").unwrap();
     case.publish_extract(
         &source,
-        &"The synthetic account reports three objects.\n".repeat(1320),
+        &"The synthetic account reports three objects.\n".repeat(2400),
         "Synthetic bounded synthesis",
         true,
     )
@@ -729,7 +724,7 @@ fn synthesis_tree_publishes_over_one_thousand_findings_without_dropping_dependen
                     &mut case,
                     &task,
                     "query_case_knowledge",
-                    json!({"query":"","offset":offset}),
+                    json!({"query":"","offset":offset,"limit":200}),
                 );
                 total += page["items"].as_array().unwrap().len();
                 receipts.push(page["receipt_id"].clone());
@@ -743,7 +738,7 @@ fn synthesis_tree_publishes_over_one_thousand_findings_without_dropping_dependen
                 }
             }
             assert!(
-                total <= 500,
+                total <= 1000,
                 "Host must bound each synthesis input set, got {total}"
             );
             (receipts, reference, Vec::new())
@@ -770,21 +765,22 @@ fn synthesis_tree_publishes_over_one_thousand_findings_without_dropping_dependen
         );
         assert_eq!(complete["status"], "analysis_unit_complete", "{complete}");
     }
-    assert_eq!(leaf_findings, 1100);
-    assert!(groups >= 5);
+    // 2,400 lines are twelve 200-line text units; ten inputs per group.
+    assert_eq!(leaf_findings, 1200);
+    assert!(groups >= 3);
     assert_eq!(
         evidence_desk::intelligence::status(&case).unwrap().unwrap()["state"],
         "ready"
     );
     let max_dependencies:i64=case.db.query_row("SELECT max(n) FROM (SELECT count(*) n FROM evidence_dependencies GROUP BY object_id,revision)",[],|r|r.get(0)).unwrap();
-    assert_eq!(max_dependencies, 500);
+    assert_eq!(max_dependencies, 1000);
     let total: i64 = case
         .db
         .query_row("SELECT count(*) FROM evidence_dependencies", [], |r| {
             r.get(0)
         })
         .unwrap();
-    assert!(total >= 1100);
+    assert!(total >= 1200);
 }
 
 #[test]
@@ -886,14 +882,15 @@ fn failed_preparation_is_a_persisted_gap_in_the_analysis_inventory() {
     assert!(evidence_desk::automatic::next(&mut case).unwrap().is_none());
     evidence_desk::intelligence::ensure_run(&mut case, "synthetic/high").unwrap();
     let status = evidence_desk::intelligence::status(&case).unwrap().unwrap();
-    assert!(status["blockers"]
+    assert!(status["coverage_gaps"]
         .as_array()
         .unwrap()
         .iter()
         .any(|b| b["kind"] == "preparation_gap"));
+    assert!(!status["blockers"].as_array().unwrap().iter().any(|b| b["kind"] == "preparation_gap"), "A coverage note is not a failed unit");
     evidence_desk::intelligence::control(&mut case, "retry_failed").unwrap();
     assert!(
-        evidence_desk::intelligence::status(&case).unwrap().unwrap()["blockers"]
+        evidence_desk::intelligence::status(&case).unwrap().unwrap()["coverage_gaps"]
             .as_array()
             .unwrap()
             .iter()
@@ -942,7 +939,7 @@ fn source_restriction_hides_old_run_status_before_manifest_reconciliation() {
         assert!(!brief.to_string().contains(&other));
     }
     let read = call(&mut case, &internal, "read_analysis_unit", json!({}));
-    assert_eq!(read["analysis_status"]["scope"], "selected_sources");
+    assert!(read["analysis_status"].is_null(), "Unit input must not carry case-wide status");
     assert!(!read.to_string().contains(&other));
 }
 
@@ -990,7 +987,7 @@ fn media_inventory_fixture(case: &mut Case, channels: serde_json::Value) -> (Str
             ],
         )
         .unwrap();
-    for ordinal in 0..50 {
+    for ordinal in 0..240 {
         case.db
             .execute(
                 "INSERT INTO transcript_segments VALUES(?,?,?,0,?,?,?,'[]','{}')",
@@ -1029,8 +1026,8 @@ fn transcript_correction_reuses_unchanged_visual_signal_and_other_transcript_uni
         .unwrap()
         .unwrap();
     let before = units(&case, &first, &source);
-    assert!(before.keys().any(|k| k.starts_with("video:")));
-    assert!(before.keys().any(|k| k.starts_with("audio_signal:")));
+    assert!(before.keys().any(|k| k.starts_with("video_segment:")));
+    assert!(!before.keys().any(|k| k.starts_with("audio_signal:") || k.starts_with("video:") || k.starts_with("frame:")), "Per-4-second video, scene-frame and per-minute audio units are no longer planned");
     assert_eq!(
         before
             .keys()
@@ -1059,9 +1056,8 @@ fn transcript_correction_reuses_unchanged_visual_signal_and_other_transcript_uni
     assert_ne!(first, second);
     let after = units(&case, &second, &source);
     for (key, old) in &before {
-        if key.starts_with("video:")
-            || key.starts_with("audio_signal:")
-            || (key.starts_with("transcript:") && key.contains("\"offset\":25"))
+        if key.starts_with("video_segment:")
+            || (key.starts_with("transcript:") && key.contains("\"offset\":120"))
         {
             assert_eq!(
                 after.get(key),
@@ -1086,25 +1082,20 @@ fn transcript_correction_reuses_unchanged_visual_signal_and_other_transcript_uni
 }
 
 #[test]
-fn legacy_or_excess_channel_inventory_blocks_complete_audio_coverage() {
-    for channels in [serde_json::Value::Null, json!(33)] {
+fn audio_is_covered_by_transcript_units_not_per_channel_minute_scans() {
+    // Per-channel-minute sound scans were one model conversation each and
+    // duplicated the transcript; unknown or excess channel counts therefore no
+    // longer matter to planning. Sound events remain available on demand.
+    for channels in [serde_json::Value::Null, json!(33), json!(2)] {
         let (_dir, mut case, _source, _task) = setup();
         let (source, _transcript) = media_inventory_fixture(&mut case, channels);
         let run = evidence_desk::intelligence::ensure_run(&mut case, "synthetic/high")
             .unwrap()
             .unwrap();
-        let count:i64 = case.db.query_row("SELECT count(*) FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.source_id=? AND u.kind='audio_channel_inventory' AND u.state='blocked'",rusqlite::params![run,source],|r|r.get(0)).unwrap();
-        assert_eq!(count, 1);
-        let scans:i64 = case.db.query_row("SELECT count(*) FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.source_id=? AND u.kind='audio_signal'",rusqlite::params![run,source],|r|r.get(0)).unwrap();
-        assert_eq!(scans, 0, "Unknown channels must not silently become mono");
-        evidence_desk::intelligence::control(&mut case, "retry_failed").unwrap();
-        assert!(
-            evidence_desk::intelligence::status(&case).unwrap().unwrap()["blockers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|b| b["kind"] == "audio_channel_inventory")
-        );
+        let count = |kind: &str| -> i64 { case.db.query_row("SELECT count(*) FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.source_id=? AND u.kind=?",rusqlite::params![run,source,kind],|r|r.get(0)).unwrap() };
+        assert_eq!(count("audio_signal"), 0);
+        assert_eq!(count("audio_channel_inventory"), 0);
+        assert_eq!(count("transcript"), 2, "240 segments are two bounded transcript units");
     }
 }
 

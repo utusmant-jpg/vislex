@@ -1912,10 +1912,12 @@ fn start_automatic_review(case:&mut Case,app:&tauri::AppHandle)->anyhow::Result<
         let provider=crate::providers::load(case)?.provider;
         if provider_key_for_case(provider).is_err() {return Ok(None);}
     }
+    // Only the route and model identify analysis output. Effort, provider pool
+    // and other settings changes must not discard completed units.
     let model_manifest=if subscription {
-        format!("chatgpt_subscription:{}",serde_json::to_string(&case_subscription_selection(case,app)?)?)
+        format!("chatgpt_subscription:{}",case_subscription_selection(case,app)?.map(|s|s.model).unwrap_or_default())
     } else {
-        format!("api_keys:{}:{}",serde_json::to_string(&crate::providers::load(case)?)?,case.settings()?.model)
+        format!("api_keys:{}:{}",crate::providers::load(case)?.provider.name(),case.settings()?.model)
     };
     let task=crate::intelligence::next_task(case,subscription,&model_manifest)?;
     if let Some(task)=&task {
