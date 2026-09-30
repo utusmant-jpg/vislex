@@ -68,7 +68,9 @@
       "..\\..\\..\\.venv-worker\\Scripts\\python.exe -m pytest *": "allow",
       "../../../.venv-worker/Scripts/python.exe -m pytest *": "allow",
       "..\\..\\..\\.venv-worker\\Scripts\\python.exe -m unittest *": "allow",
-      "../../../.venv-worker/Scripts/python.exe -m unittest *": "allow"
+      "../../../.venv-worker/Scripts/python.exe -m unittest *": "allow",
+      "..\\..\\..\\.venv-worker\\Scripts\\python.exe -m unittest discover *": "allow",
+      "../../../.venv-worker/Scripts/python.exe -m unittest discover *": "allow"
     }
   },
   "agent": {
