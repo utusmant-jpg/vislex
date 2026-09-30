@@ -292,14 +292,23 @@ def process(job: Path, request: dict) -> dict:
                 container.seek(max(0, int((start + origin) * av.time_base)), backward=True)
                 samples = []
                 decoded = 0
+                # Linear decode through the window: bound it by the stream's own rate
+                # so high-frame-rate (slow-motion) recordings are not refused.
+                rate = float(video.average_rate or video.guessed_rate or 30)
+                decode_limit = min(400000, max(20000, int((end - start + 5) * max(rate, 1.0) * 1.5)))
+                previous_relative = None
+                max_gap = 0.0
                 for frame in container.decode(video):
                     decoded += 1
-                    if decoded > 20000:
+                    if decoded > decode_limit:
                         raise ValueError('Decode limit reached before requested interval completed')
                     if frame.pts is None:
                         continue
                     presentation = float(frame.pts * frame.time_base)
                     relative = presentation - origin
+                    if previous_relative is not None and relative >= start:
+                        max_gap = max(max_gap, relative - previous_relative)
+                    previous_relative = relative
                     if relative >= end:
                         break
                     if len(samples) >= len(targets):
@@ -310,7 +319,7 @@ def process(job: Path, request: dict) -> dict:
                     original_size = list(image.size)
                     image.thumbnail((tile_width, tile_height))
                     samples.append({'image': image, 'pts': frame.pts, 'time_base': str(frame.time_base), 'source_relative_seconds': relative, 'presentation_seconds': presentation, 'original_size': original_size})
-                metadata = {'streams': streams, 'video_stream': video.index, 'origin_seconds': origin, 'requested_interval': [start, end], 'sample_interval': interval, 'frames_decoded': decoded, 'sampled_frames': len(samples), 'operation': 'sheet'}
+                metadata = {'streams': streams, 'video_stream': video.index, 'origin_seconds': origin, 'requested_interval': [start, end], 'sample_interval': interval, 'frames_decoded': decoded, 'sampled_frames': len(samples), 'max_frame_gap_seconds': max_gap, 'operation': 'sheet'}
             from PIL import Image, ImageDraw, ImageFont
             try:
                 font = ImageFont.load_default(size=18)

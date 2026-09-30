@@ -1120,3 +1120,78 @@ fn research_browser_captures_are_not_planned_as_factual_case_evidence() {
     assert_ne!(next, run);
     assert!(units(&case, &next) > 0);
 }
+
+#[test]
+fn publication_with_support_completes_the_unit_in_one_call() {
+    let (_dir, mut case, source, task) = unit_setup();
+    let read = call(&mut case, &task, "read_analysis_unit", json!({}));
+    let published = call(
+        &mut case,
+        &task,
+        "publish_analysis_unit",
+        json!({"receipts":[read["receipt_id"]],"findings":[{"kind":"statement","title":"Reported objects","text":"The witness reports three objects.","supporting":[read["input"]["ref_id"]],"contrary":[],"assessment":"attributed","data_json":"{}","support":{"state":"supported","reason":"The first immutable line reports three objects."}}]}),
+    );
+    assert_eq!(published["status"], "analysis_unit_complete", "{published}");
+    let knowledge =
+        evidence_desk::intelligence::query_knowledge(&case, &[source], "objects", 0).unwrap();
+    assert_eq!(knowledge["items"][0]["support_review"]["state"], "supported");
+    assert_eq!(knowledge["items"][0]["human_review"], "unreviewed", "Model support is not human review");
+}
+
+#[test]
+fn free_form_assessment_is_rejected_with_the_allowed_values() {
+    let (_dir, mut case, _source, task) = unit_setup();
+    let read = call(&mut case, &task, "read_analysis_unit", json!({}));
+    let result = call(
+        &mut case,
+        &task,
+        "publish_analysis_unit",
+        json!({"receipts":[read["receipt_id"]],"findings":[{"kind":"statement","title":"t","text":"The witness reports three objects.","supporting":[read["input"]["ref_id"]],"contrary":[],"assessment":"probably true","data_json":"{}"}]}),
+    );
+    let error = result["error"].as_str().unwrap();
+    assert!(error.contains("Unknown epistemic assessment") && error.contains("observed"), "{error}");
+    let schema = agent::available_tools(&case, &task).unwrap().into_iter().find(|t| t["name"] == "publish_analysis_unit").unwrap();
+    assert_eq!(schema["parameters"]["properties"]["findings"]["items"]["properties"]["assessment"]["enum"].as_array().unwrap().len(), evidence_desk::intelligence::ASSESSMENTS.len());
+}
+
+#[test]
+fn a_looping_unit_is_paused_at_the_step_guard_and_then_blocked() {
+    let (_dir, mut case, _source, task) = unit_setup();
+    case.db.execute("UPDATE tasks SET step=? WHERE id=?", rusqlite::params![evidence_desk::intelligence::MAX_UNIT_STEPS, task]).unwrap();
+    let error = agent::prepare_request(&mut case, &task).err().unwrap().to_string();
+    assert!(error.contains("model steps"), "{error}");
+    let status: String = case.db.query_row("SELECT status FROM tasks WHERE id=?", [&task], |r| r.get(0)).unwrap();
+    assert_eq!(status, "paused");
+    evidence_desk::intelligence::next_task(&mut case, false, "synthetic-model/high").unwrap();
+    let (state, reason): (String, String) = case.db.query_row("SELECT state,reason FROM case_analysis_units WHERE task_id=?", [&task], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!(state, "blocked");
+    assert!(reason.contains("model steps"), "{reason}");
+}
+
+#[test]
+fn repeated_blocked_units_pause_the_run_with_a_visible_reason_until_resumed() {
+    let (_dir, mut case, _source, interactive) = setup();
+    agent::pause(&mut case, &interactive, "Stopped by user").unwrap();
+    case.publish_extract(&case.sources().unwrap()[0].id.clone(), &"A synthetic line.\n".repeat(900), "Synthetic", true).unwrap();
+    let mut failures = 0;
+    while let Some(task) = evidence_desk::intelligence::next_task(&mut case, false, "synthetic-model/high").unwrap() {
+        agent::pause(&mut case, &task, "Codex turn did not complete: failed: usage limit reached").unwrap();
+        failures += 1;
+        assert!(failures <= 4, "The run kept dispatching after repeated failures");
+    }
+    assert_eq!(failures, 4);
+    let status = evidence_desk::intelligence::status(&case).unwrap().unwrap();
+    assert_eq!(status["state"], "paused");
+    assert!(status["pause_reason"].as_str().unwrap().contains("usage limit"), "{status}");
+    evidence_desk::intelligence::control(&mut case, "resume").unwrap();
+    assert!(evidence_desk::intelligence::status(&case).unwrap().unwrap()["pause_reason"].is_null());
+    assert!(evidence_desk::intelligence::next_task(&mut case, false, "synthetic-model/high").unwrap().is_some());
+}
+
+#[test]
+fn outdated_worker_output_is_refused_with_a_rebuild_instruction() {
+    let old = json!({"version":1,"status":"failed","error":"[Errno 2] No such file or directory: 'input'"});
+    let error = evidence_desk::processing::check_worker_protocol(&old).unwrap_err().to_string();
+    assert!(evidence_desk::processing::worker_outdated(&error) && error.contains("build-worker.ps1"), "{error}");
+    assert!(evidence_desk::processing::check_worker_protocol(&json!({"version":1,"status":"complete","protocol":evidence_desk::processing::WORKER_PROTOCOL})).is_ok());
+}

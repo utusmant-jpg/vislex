@@ -13,6 +13,9 @@ try {
   const mock = async () => (await fetch(`http://127.0.0.1:${mockPort}/state`)).json();
   const opened = await invoke('open_case', { path: casePath });
   const context = { case_id: opened.id, session_epoch: opened.session_epoch };
+  // A copied case may carry a per-case ChatGPT-subscription override; this
+  // harness measures the API-key route against the loopback synthetic provider.
+  await invoke('set_case_ai_access_route', { ...context, route: 'api_keys' });
   await invoke('save_ai_settings', { ...context, config: { provider: 'openai', execution: 'auto', review: 'standard', pool: [] }, settings: { ...opened.settings, offline: false, allow_text: true, allow_images: true, model: 'gpt-5.4' } });
   await invoke('control_analysis', { ...context, operation: 'resume' });
   const started = Date.now();

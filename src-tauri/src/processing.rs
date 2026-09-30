@@ -723,6 +723,7 @@ pub fn run_playback(job: &PlaybackJob) -> Result<Value> {
     let result_path=job.directory.path().join("result.json");
     ensure!(result_path.metadata()?.len()<=16*1024*1024,"Worker output too large");
     let result:Value=serde_json::from_slice(&fs::read(&result_path)?)?;
+    check_worker_protocol(&result)?;
     ensure!(result["status"]=="complete","{}",result["error"].as_str().unwrap_or("Playback conversion failed"));
     Ok(result)
 }

@@ -70,13 +70,58 @@ Answers also carried "Limitations / Next steps / Open issues" padding. Nothing i
 
 About 105 video segments, 27 transcript, 5 pages, 1–2 text, the DOCX, and about 20 synthesis units: roughly 160 units at 2–4 model requests each, compared with 3,267 units at up to 21 requests each. The synthetic run below measures the real number.
 
-## Verification
+## Verification (2026-09-30, branch claude/case-index)
 
-Recorded in the status section below as runs complete. Real-model quality (accuracy of answers such as handcuffing orientation) remains unverified until the ChatGPT subscription usage resets. Synthetic runs measure only call counts, request sizes and protocol correctness.
+Synthetic end-to-end run with `scripts/native-case-index-run.ps1` on a copy of sfd.ledcase (the original was never opened by the test build):
+- Setup: real desktop debug build, real worker and contact sheets, API-key route pointed at the loopback synthetic provider (`scripts/native-case-index-mock.mjs`).
+- The provider publishes placeholder findings citing real refs; it assesses no evidence.
+- Token figures are estimated from request sizes: 4 characters per text token and 1,105 per 1920x1080 image.
+
+| | v1 (logged on the real case) | v2 (measured, synthetic) |
+|---|---|---|
+| Units | 3,267 (0 video units complete) | 177: 170 complete, 7 coverage notes, 0 blocked, state `ready` |
+| Requests | >5,000 and still running | 427 |
+| Input tokens | ≥176.7M reported (300 failed turns unreported) | ≈2.55M estimated |
+| Wall time | never finished | 21.2 min |
+
+Per-kind estimates:
+- `video_segment`: 216 requests, about 1.39M tokens, plus 113 visual-review requests (435 sheet/page images, about 0.72M).
+- `transcript`: about 0.15M.
+- Synthesis: about 0.21M.
+- Pages and text: about 0.07M.
+- Largest single request: about 10.5k tokens.
+
+A real model writes longer publications, so expect several million tokens, not 2.55M exactly.
+
+Tests:
+- `cargo test --features subscription,research --no-fail-fast`: all binaries pass (case_intelligence 31, core 93, lib 83, others unchanged).
+- `npx tsc -b --noEmit`: clean.
+- `npx vitest run`: 365/365.
+- `npx playwright test e2e/accessibility.spec.ts e2e/harness-chat.spec.ts`: 9/9.
+- `scripts/native-intelligence-acceptance.ps1`: automatic_ready, hidden_tasks, exact_proof, human_revision_preserved, human_edit_reconciled and pause_and_resume all true; warm retrieval about 15 ms.
+- Worker unittests: contact_sheet 4, exact_frame 3, result_safety 6, video_discovery 5.
+
+Independent review: GLM-5.3 (max, read-only), run 20260930-043420-68548d96. No invariant breach found. Findings were fixed by Claude:
+- The image-revocation fence now covers the new kinds.
+- A failed host read no longer strands a running unit.
+- The sheet decode limit scales with frame rate.
+- Coverage checks allow the recording's own frame gap.
+- The count of units with no findings is shown.
+- Subscription context keeps the host-read input.
+- The audio inventory host receipt is accepted.
+- Playback output passes the protocol gate.
+- The speech truncation note is added.
+
+One finding was not applicable: cross-turn Codex error bleed. Each unit runs its own single-turn ephemeral thread.
+
+Not verified:
+- Real-model answer quality, and the real-model token figures for this case. The ChatGPT subscription usage was exhausted on 2026-09-30, so no real model could run.
+- The gold question set (for example which way the suspect faced when handcuffed) still needs a real-model run: re-run the analysis on the case copy with the subscription route, then ask questions in the app.
 
 ## Status
 
-- [x] Rust unit and integration tests updated for v2 (case_intelligence 26/26).
-- [ ] Full cargo suite, vitest and type check.
-- [ ] Synthetic end-to-end run on a copy of sfd.ledcase.
-- [ ] Real-model run and gold question set (blocked: ChatGPT subscription usage exhausted on 2026-09-30).
+- [x] Rust, frontend, accessibility and native acceptance suites.
+- [x] Synthetic end-to-end run on a copy of sfd.ledcase.
+- [x] Independent review and fixes.
+- [ ] Real-model run and gold question set (blocked on subscription usage).
+- [ ] Packaged release build for the installed app. The dev worker in the primary checkout must be rebuilt after merging (protocol 2).

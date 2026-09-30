@@ -992,8 +992,16 @@ pub fn next_task(
     case.db.execute("UPDATE case_analysis_units SET state='running',task_id=?,updated_at=? WHERE id=? AND state='queued'",params![task,now(),unit])?;
     // The host reads the assigned input itself and hands it over with a
     // host-labelled receipt, saving the model a round trip per unit.
-    let input = read_unit(case, &task)?;
-    agent::record_host_action(case, &task, "read_analysis_unit", json!({}), input)?;
+    let read = read_unit(case, &task)
+        .and_then(|input| agent::record_host_action(case, &task, "read_analysis_unit", json!({}), input));
+    if let Err(error) = read {
+        // Never leave a unit "running" on a task that will not execute: that
+        // would stall the run behind a phantom task that resume cannot heal.
+        let reason = format!("Host could not read the unit input: {}", error.to_string().chars().take(400).collect::<String>());
+        agent::pause(case, &task, &reason)?;
+        case.db.execute("UPDATE case_analysis_units SET state='blocked',reason=?,updated_at=? WHERE id=?", params![reason, now(), unit])?;
+        return Ok(None);
+    }
     case.db.execute(
         "UPDATE case_analysis_runs SET state='running',updated_at=? WHERE id=?",
         params![now(), run],
@@ -1162,6 +1170,9 @@ pub fn read_unit(case: &Case, task: &str) -> Result<Value> {
                         let count: i64 = case.db.query_row("SELECT count(*) FROM transcript_segments WHERE run_id=? AND end_seconds>=? AND start_seconds<=?",params![run,start,end],|r|r.get(0))?;
                         if let Some(first) = first {
                             let mut speech = compact_transcript(crate::transcription::segment_window(case, &source, &run, first, count.clamp(1, 80))?);
+                            if count > 80 {
+                                speech["truncated"] = json!(format!("Only the first 80 of {count} overlapping speech segments are included; read_artifact has the rest."));
+                            }
                             let locator = format!("evidence:{source}#artifact:{run}");
                             if let Some(segments) = speech["segments"].as_array_mut() {
                                 for segment in segments {
@@ -1226,9 +1237,13 @@ fn video_sheets_covered(output: &Value, spec: &Value) -> bool {
     let (Some(first), Some(last)) = (times.first(), times.last()) else {
         return false;
     };
-    *first <= start + interval + 0.05
-        && *last >= end - 2. * interval - 0.05
-        && times.windows(2).all(|w| w[1] - w[0] <= 2. * interval + 0.05)
+    // A recording whose own frames are further apart than two sample
+    // intervals (timelapse, parking-mode dashcam) is covered at its cadence.
+    let cadence = output["metadata"]["max_frame_gap_seconds"].as_f64().unwrap_or(0.);
+    let allowed = (2. * interval).max(cadence) + 0.05;
+    *first <= start + interval.max(cadence) + 0.05
+        && *last >= end - allowed
+        && times.windows(2).all(|w| w[1] - w[0] <= allowed)
 }
 fn video_grid_covered(output: &Value, spec: &Value) -> bool {
     let (Some(start), Some(end), Some(interval)) = (
@@ -1396,6 +1411,7 @@ fn publish_unit_inner(case: &mut Case, task: &str, args: &Value) -> Result<Value
                         && output["input"]["char_offset"] == spec["char_offset"]
                         && output["input"]["char_count"] == spec["char_count"]
                 }
+                "audio_inventory" => output["spec"]["run_id"] == spec["run_id"],
                 "transcript" => {
                     output["input"]["run_id"] == spec["run_id"]
                         && output["input"]["segments"]
@@ -2059,7 +2075,9 @@ pub fn status(case: &Case) -> Result<Option<Value>> {
     let current = manifest_current(case, &model)? && stale_finding_units(case, &run)?.is_empty();
     let findings:i64=case.db.query_row("SELECT count(*) FROM case_knowledge_payloads k JOIN case_analysis_run_units r ON r.unit_id=k.unit_id JOIN case_analysis_units u ON u.id=k.unit_id JOIN evidence_objects o ON o.id=k.object_id AND o.current_revision=k.revision JOIN evidence_versions v ON v.object_id=k.object_id AND v.revision=k.revision WHERE r.run_id=? AND v.stale=0 AND json_extract(u.result,'$.reviewed')=1 AND EXISTS(SELECT 1 FROM json_each(json_extract(u.result,'$.objects')) obj WHERE json_extract(obj.value,'$.id')=k.object_id AND json_extract(obj.value,'$.revision')=k.revision)",[&run],|r|r.get(0))?;
     let (input_tokens,output_tokens,cost,unreported):(i64,i64,Option<f64>,bool)=case.db.query_row("SELECT coalesce(sum(json_extract(t.usage,'$.input_tokens')),0),coalesce(sum(json_extract(t.usage,'$.output_tokens')),0),sum(t.actual),coalesce(sum(t.usage IS NULL OR t.usage='{}' OR t.usage='null' OR t.actual IS NULL),0)>0 FROM transmissions t JOIN case_analysis_attempts a ON a.task_id=t.task_id JOIN case_analysis_run_units r ON r.unit_id=a.unit_id WHERE r.run_id=?",[&run],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-    let (total,complete,running,blocked,gaps):(i64,i64,i64,i64,i64)=case.db.query_row("SELECT count(*),coalesce(sum(u.state='complete'),0),coalesce(sum(u.state='running'),0),coalesce(sum(u.state='blocked'),0),coalesce(sum(u.state='gap'),0) FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=?",[&run],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+    // Units that completed with zero findings are counted so a run that "finds
+    // nothing" everywhere is visible rather than looking like analysis.
+    let (total,complete,running,blocked,gaps,empty_units):(i64,i64,i64,i64,i64,i64)=case.db.query_row("SELECT count(*),coalesce(sum(u.state='complete'),0),coalesce(sum(u.state='running'),0),coalesce(sum(u.state='blocked'),0),coalesce(sum(u.state='gap'),0),coalesce(sum(u.state='complete' AND coalesce(json_array_length(json_extract(u.result,'$.objects')),0)=0),0) FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=?",[&run],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
     let mut q=case.db.prepare("SELECT u.id,u.source_id,u.kind,u.reason,u.state FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.state IN ('blocked','gap') ORDER BY u.state,r.ordinal LIMIT 80")?;
     let mut blockers=Vec::new();
     let mut coverage_gaps=Vec::new();
@@ -2070,7 +2088,7 @@ pub fn status(case: &Case) -> Result<Option<Value>> {
     let paused=case.meta("case_analysis_paused")?.as_deref()==Some("true");
     let pause_reason=if paused {case.meta("case_analysis_pause_reason")?.filter(|r|!r.is_empty())} else {None};
     Ok(Some(
-        json!({"run_id":run,"state":if paused{if state=="cancelled"{"cancelled"}else{"paused"}}else if !current{"stale"}else{&state},"pause_reason":pause_reason,"current":current,"findings":findings,"usage":{"input_tokens":input_tokens,"output_tokens":output_tokens,"cost":cost,"unreported":unreported},"model_manifest":model,"total":total,"complete":complete,"running":running,"blocked":blocked,"gaps":gaps,"blockers":blockers,"coverage_gaps":coverage_gaps,"version":ANALYSIS_VERSION,"human_review":"separate"}),
+        json!({"run_id":run,"state":if paused{if state=="cancelled"{"cancelled"}else{"paused"}}else if !current{"stale"}else{&state},"pause_reason":pause_reason,"current":current,"findings":findings,"usage":{"input_tokens":input_tokens,"output_tokens":output_tokens,"cost":cost,"unreported":unreported},"model_manifest":model,"total":total,"complete":complete,"running":running,"blocked":blocked,"gaps":gaps,"empty_units":empty_units,"blockers":blockers,"coverage_gaps":coverage_gaps,"version":ANALYSIS_VERSION,"human_review":"separate"}),
     ))
 }
 
