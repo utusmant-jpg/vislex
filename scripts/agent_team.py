@@ -124,7 +124,8 @@ def worker_command(args, workspace, env):
         config = json.loads((ROOT / "opencode.json").read_text(encoding="utf-8"))
         config["provider"]["zai-coding-plan"]["models"]["glm-5.3"]["options"]["reasoningEffort"] = effort
         env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config)
-        command = [executable("glm"), "run", "--pure", "--format", "json", "--model",
+        env["PWD"] = str(workspace)  # OpenCode resolves its project from PWD, not the process cwd
+        command = [executable("glm"), "run", "--pure", "--dir", str(workspace), "--format", "json", "--model",
                    model, "--variant", effort, "--agent", "team-" + args.mode,
                    "Read the task packet supplied on standard input and complete only that task."]
     return command, model, effort
