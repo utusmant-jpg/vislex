@@ -1195,3 +1195,44 @@ fn outdated_worker_output_is_refused_with_a_rebuild_instruction() {
     assert!(evidence_desk::processing::worker_outdated(&error) && error.contains("build-worker.ps1"), "{error}");
     assert!(evidence_desk::processing::check_worker_protocol(&json!({"version":1,"status":"complete","protocol":evidence_desk::processing::WORKER_PROTOCOL})).is_ok());
 }
+
+#[test]
+fn flagged_moments_get_bounded_dense_looks_in_time_order() {
+    let (_dir, mut case, _source, _task) = setup();
+    let (source, transcript) = media_inventory_fixture(&mut case, json!(2));
+    // Declare a five-minute recording so the dense-look budget is three.
+    let discovery: String = case.db.query_row("SELECT id FROM processing_jobs WHERE source_id=? AND kind='video_overview_index'", [&source], |r| r.get(0)).unwrap();
+    case.db.execute("UPDATE processing_jobs SET result=? WHERE id=?", rusqlite::params![json!({"last_chunk":{"eof":true,"last_decoded_seconds":300.},"has_gaps":false}).to_string(), discovery]).unwrap();
+    let say = |case: &Case, ordinal: i64, seconds: f64, text: &str| {
+        case.db.execute("INSERT OR REPLACE INTO transcript_segments VALUES(?,?,?,0,?,?,?,'[]','{}')", rusqlite::params![transcript, ordinal, source, seconds, seconds + 1., text]).unwrap();
+    };
+    say(&case, 10, 2.0, "Stop resisting, put your hands behind your back");
+    say(&case, 11, 2.2, "Hands");
+    say(&case, 300, 100.0, "Drop the gun");
+    say(&case, 301, 150.0, "Can you turn around");
+    say(&case, 302, 200.0, "He has a knife");
+    say(&case, 303, 250.0, "Step out of the car");
+    say(&case, 304, 400.0, "Get on the ground");
+    case.db.execute("INSERT INTO discovery_samples VALUES(?,?,'video_overview',60.0,?,?,'')", rusqlite::params![discovery, source, evidence_desk::case::id(), json!({"scene_boundary":true}).to_string()]).unwrap();
+    let run = evidence_desk::intelligence::ensure_run(&mut case, "synthetic/high").unwrap().unwrap();
+    let mut q = case.db.prepare("SELECT u.spec FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.source_id=? AND u.kind='video_focus' ORDER BY r.ordinal").unwrap();
+    let focus: Vec<serde_json::Value> = q.query_map(rusqlite::params![run, source], |r| r.get::<_, String>(0)).unwrap().map(|s| serde_json::from_str(&s.unwrap()).unwrap()).collect();
+    drop(q);
+    let starts: Vec<f64> = focus.iter().map(|s| s["start"].as_f64().unwrap()).collect();
+    assert_eq!(starts, vec![0., 97., 197.], "Strongest cues within the budget, in time order; past-the-end speech is ignored: {focus:?}");
+    for spec in &focus {
+        assert_eq!(spec["interval"], json!(0.5));
+        assert_eq!(spec["layout"], json!("detail"));
+        let (start, end) = (spec["start"].as_f64().unwrap(), spec["end"].as_f64().unwrap());
+        assert!(end > start && end - start <= 16. && end <= 300.001);
+        assert!(spec["cues"].as_array().is_some_and(|c| !c.is_empty() && c.iter().all(|c| c["seconds"].is_number())));
+    }
+    assert_eq!(focus[0]["cues"].as_array().unwrap().len(), 2, "Overlapping cues share one window");
+    let segment: String = case.db.query_row("SELECT u.spec FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.kind='video_segment' ORDER BY r.ordinal LIMIT 1", [&run], |r| r.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&segment).unwrap()["interval"], json!(evidence_desk::intelligence::VIDEO_SAMPLE_SECONDS));
+    // Identical inputs plan identical units, so completed dense looks are reused.
+    case.db.execute("DELETE FROM meta WHERE key='case_analysis_run'", []).unwrap();
+    let again = evidence_desk::intelligence::ensure_run(&mut case, "synthetic/high").unwrap().unwrap();
+    let ids = |run: &str| -> Vec<String> { case.db.prepare("SELECT u.id FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.kind='video_focus' ORDER BY r.ordinal").unwrap().query_map([run], |r| r.get(0)).unwrap().map(Result::unwrap).collect() };
+    assert_eq!(ids(&run), ids(&again));
+}

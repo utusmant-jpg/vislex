@@ -1,4 +1,4 @@
-# Case index (case-intelligence-v2) handoff
+# Case index (case-intelligence-v3) handoff
 
 Branch `claude/case-index`, based on local `main` 99897e4. Owner: Claude (coordinator). Worker change delegated to GLM-5.3 (max), reviewed and amended by Claude.
 
@@ -125,3 +125,27 @@ Not verified:
 - [x] Independent review and fixes.
 - [ ] Real-model run and gold question set (blocked on subscription usage).
 - [ ] Packaged release build for the installed app. The dev worker in the primary checkout must be rebuilt after merging (protocol 2).
+
+## v3: denser video review (2026-10-01)
+
+v2 reviewed video only as 640 px contact-sheet tiles every 3 s, with no scene-cut frames and no in-unit refinement. Brief actions (a strike, a grab, a draw, a throw, the moment of handcuffing, which way someone faced) could fall between tiles, and the chat agent answered from the index first. v3 spends more on images, which were a small share of v2's cost, instead of adding conversations:
+
+- `video_segment` samples every 1.5 s (60 tiles per 90 s window; the sheet limit is 64). The prompt reports changes between tiles with both tile times and marks the motion in between as unresolved instead of describing it.
+- New `video_focus` units: dense looks at flagged moments, 0.5 s frames on 2x2 sheets of 960 px tiles (`inspect_video_sheets` `layout: "detail"`, at most 30 s). The planner (`focus_windows`) takes cues from the immutable transcript (strong cues: force, weapons, restraints, flight and commands such as "get on the ground"; procedural cues: hands, search, consent, injury) and from discovery scene changes. Each cue opens a window 3 s before to 7 s after it; overlapping windows merge up to 16 s. The strongest are kept within a budget of one per 120 s of footage (at least two per recording), in time order. Identical inputs plan identical units.
+- Publication of a `video_focus` unit requires the detail-layout sheets to cover the window. It is part of the image-permission fence and the retry set like the other visual kinds.
+- Model-facing findings carry `coverage` (`overview_sheets` / `dense_sheets` / `frames`, window, sample seconds, tile width). The chat instructions say that overview findings cannot settle a brief action on their own. When no dense look covers that moment, the agent inspects at 0.5 s or denser around the indexed time, and an absent finding is not evidence that nothing happened.
+- `ANALYSIS_VERSION = case-intelligence-v3`, so existing cases re-plan.
+
+Synthetic end-to-end run (same method, the same sfd.ledcase copy, debug build of this branch):
+
+| | v2 | v3 |
+|---|---|---|
+| Units | 177 | 230: 223 complete, 7 coverage notes, 0 blocked, state `ready` (49 dense looks) |
+| Requests | 427 | 582 |
+| Images sent | 435 | 1,061 |
+| Estimated input tokens | about 2.55M | about 4.63M |
+| Wall time | 21.2 min | 33.4 min |
+
+Output tokens are not measured, because the synthetic provider returns a fixed reply. Real-model quality is still unverified.
+
+Tests: `cargo test --features subscription,research --no-fail-fast` all pass (case_intelligence 32 with the new `flagged_moments_get_bounded_dense_looks_in_time_order`, core 93, lib 83); `npx tsc -b --noEmit` clean; `npx vitest run` 365/365. The worker is unchanged; layouts use the existing sheet parameters.
