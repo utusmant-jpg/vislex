@@ -291,5 +291,5 @@ pub fn models(case: &Case, task: &str) -> Result<Value> {
     let config=policy(case,task)?;
     let mut profiles=vec![providers::task_profile(case,task)?];
     profiles.extend(config.pool.into_iter().filter(|p|p.allow_text));
-    Ok(json!({"execution":config.execution,"can_delegate":config.execution!=Execution::Single && !is_child(case,task)?,"models":profiles.iter().enumerate().map(|(i,p)|json!({"index":i,"provider":p.provider,"model":p.model,"allow_images":p.allow_images})).collect::<Vec<_>>() }))
+    Ok(json!({"execution":config.execution,"can_delegate":config.execution!=Execution::Single && !is_child(case,task)?,"models":profiles.iter().enumerate().map(|(i,p)|json!({"index":i,"provider":p.provider,"model":p.model,"allow_images":p.allow_images && providers::model_sees_images(p.provider,&p.model)})).collect::<Vec<_>>() }))
 }

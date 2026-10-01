@@ -290,3 +290,21 @@ it('keeps keyboard focus on Load models while the catalogue loads', async () => 
   await waitFor(() => expect(load.hasAttribute('aria-disabled')).toBe(false));
   expect(document.activeElement).toBe(load);
 });
+
+it('lists Z.ai and never offers case images to the text-only GLM-5.3', async () => {
+  const pooled: Snapshot = { ...snapshot, ai_config: { ...snapshot.ai_config!, pool: [
+    { provider: 'zai', model: 'glm-5.3', allow_text: true, allow_images: true },
+    { provider: 'zai', model: 'glm-5.3-flash', allow_text: true, allow_images: true },
+  ] } };
+  api.mockImplementation(async (action: string) => action === 'app_ai_settings' ? { configured: true, config: pooled.ai_config, settings: pooled.settings } : action === 'case_ai_scope' ? { scope: 'case' } : action === 'direct_media_permission' ? { enabled: false } : action === 'provider_key_status' ? { configured: true } : undefined);
+  render(<SettingsDialog snapshot={pooled} refresh={async () => undefined} onClose={vi.fn()} run={fn => { void fn(); }} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'This case · customized' }));
+  const zai = screen.getByRole('group', { name: /Z\.ai · GLM Coding Plan/ });
+  expect(within(zai).getByLabelText('Z.ai · GLM Coding Plan API key')).toBeTruthy();
+  expect(within(zai).getByText(/GLM-5.3 is text-only; GLM-5.3-Flash also sees images/)).toBeTruthy();
+  expect(within(zai).getByText(/glm-5.3 is text-only and never receives images/)).toBeTruthy();
+  const images = within(zai).getAllByRole('checkbox', { name: /May receive case images/ }) as HTMLInputElement[];
+  expect(images.map(box => [box.checked, box.disabled])).toEqual([[false, true], [true, false]]);
+  fireEvent.click(screen.getByRole('button', { name: 'Case permissions' }));
+  expect(screen.getByText('Text-only model')).toBeTruthy();
+});

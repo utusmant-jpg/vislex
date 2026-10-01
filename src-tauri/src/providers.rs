@@ -12,6 +12,7 @@ pub enum Provider {
     Gemini,
     Xai,
     Openrouter,
+    Zai,
 }
 impl Provider {
     pub fn credential(self) -> &'static str {
@@ -21,6 +22,7 @@ impl Provider {
             Self::Gemini => "gemini-api-key",
             Self::Xai => "xai-api-key",
             Self::Openrouter => "openrouter-api-key",
+            Self::Zai => "zai-api-key",
         }
     }
     pub fn name(self) -> &'static str {
@@ -30,6 +32,7 @@ impl Provider {
             Self::Gemini => "Gemini",
             Self::Xai => "xAI",
             Self::Openrouter => "OpenRouter",
+            Self::Zai => "Z.ai",
         }
     }
 }
@@ -104,6 +107,22 @@ pub fn validate_model(model: &str) -> Result<()> {
     );
     Ok(())
 }
+/// Z.ai's GLM Coding Plan publishes GLM-5.3 as text-only and GLM-5.3-Flash
+/// (plus the "V" vision family such as glm-4.6v) as image-capable. Other
+/// providers' image support is left to their own APIs, as before.
+pub fn model_sees_images(provider: Provider, model: &str) -> bool {
+    if provider != Provider::Zai { return true; }
+    let lower = base_model_id(model).to_ascii_lowercase();
+    lower.starts_with("glm-5.3-flash")
+        || lower.split('-').nth(1).is_some_and(|version| version.ends_with('v') && version.starts_with(|c: char| c.is_ascii_digit()))
+}
+/// The documented models a GLM Coding Plan key may call.
+pub const ZAI_CODING_MODELS: [(&str, &str); 2] = [
+    ("glm-5.3", "GLM-5.3 · max reasoning · text only"),
+    ("glm-5.3-flash", "GLM-5.3-Flash · max reasoning · sees images"),
+];
+pub const ZAI_CODING_URL: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+pub const TEXT_ONLY_VISUAL_REASON: &str = "vision_model_required: the default model is text-only (GLM-5.3 cannot see images). Add an image-capable model such as GLM-5.3-Flash with image permission in Settings → Accounts & models";
 pub fn load(case: &crate::case::Case) -> Result<Config> {
     Ok(case
         .meta("ai_config")?
@@ -141,17 +160,40 @@ pub fn save(case: &mut crate::case::Case, config: Config) -> Result<()> {
     case.db.execute_batch("RELEASE provider_config")?;
     Ok(())
 }
+/// A text-only model never carries image permission, so image tools, forced
+/// visual steps and image attachments are all withheld for it.
 pub fn task_profile(case: &crate::case::Case, task: &str) -> Result<Profile> {
-    if let Some(v) = case.meta(&format!("task_profile:{task}"))? {
-        return Ok(serde_json::from_str(&v)?);
+    let mut profile = if let Some(v) = case.meta(&format!("task_profile:{task}"))? {
+        serde_json::from_str::<Profile>(&v)?
+    } else {
+        let s = case.settings()?;
+        Profile {
+            provider: load(case)?.provider,
+            model: s.model,
+            allow_text: s.allow_text,
+            allow_images: s.allow_images,
+        }
+    };
+    profile.allow_images &= model_sees_images(profile.provider, &profile.model);
+    Ok(profile)
+}
+/// When the case default cannot see images, the first approved pool profile
+/// that can and holds an image grant takes visual work. None means the default
+/// handles it (or no image-capable route exists; see `visual_route_missing`).
+pub fn visual_profile(case: &crate::case::Case) -> Result<Option<Profile>> {
+    let settings = case.settings()?;
+    let config = load(case)?;
+    if !settings.allow_images || model_sees_images(config.provider, &settings.model) {
+        return Ok(None);
     }
-    let s = case.settings()?;
-    Ok(Profile {
-        provider: load(case)?.provider,
-        model: s.model,
-        allow_text: s.allow_text,
-        allow_images: s.allow_images,
-    })
+    Ok(config.pool.into_iter().find(|p| {
+        p.allow_text && p.allow_images && model_sees_images(p.provider, &p.model) && check_permission(case, p).is_ok()
+    }))
+}
+pub fn visual_route_missing(case: &crate::case::Case) -> Result<bool> {
+    let settings = case.settings()?;
+    let config = load(case)?;
+    Ok(settings.allow_images && !model_sees_images(config.provider, &settings.model) && visual_profile(case)?.is_none())
 }
 pub fn check_permission(case: &crate::case::Case, p: &Profile) -> Result<()> {
     ensure!(
@@ -205,6 +247,88 @@ fn image_data(url: &str) -> Result<(&str, &str)> {
     );
     Ok((mime, data))
 }
+/// Our Responses-shaped transcript as OpenAI-compatible chat messages
+/// (OpenRouter and Z.ai). Tool results stay structured tool messages.
+fn chat_completions_messages(body: &Value) -> Result<Vec<Value>> {
+    let mut messages: Vec<Value> = Vec::new();
+    if let Some(instructions) = body["instructions"].as_str().filter(|s| !s.is_empty()) {
+        messages.push(json!({"role":"system","content":instructions}));
+    }
+    for item in body["input"].as_array().context("Missing input")? {
+        let kind = item["type"].as_str().unwrap_or("message");
+        let message = match kind {
+            "reasoning" | "provider_native" => continue,
+            "function_call" => {
+                let cid = item["call_id"].as_str().context("Missing call ID")?;
+                let name = item["name"].as_str().context("Missing tool name")?;
+                let args = item["arguments"].as_str().context("Missing tool arguments")?;
+                serde_json::from_str::<Value>(args).context("Malformed tool arguments")?;
+                json!({"role":"assistant","tool_calls":[{"id":cid,"type":"function","function":{"name":name,"arguments":args}}]})
+            }
+            "function_call_output" => {
+                let cid = item["call_id"].as_str().context("Missing result call ID")?;
+                json!({"role":"tool","tool_call_id":cid,"content":item["output"].as_str().unwrap_or("")})
+            }
+            _ => {
+                let role = if item["role"] == "assistant" { "assistant" } else { "user" };
+                let content = if let Some(text) = item["content"].as_str() {
+                    if text.is_empty() { continue; }
+                    json!(text)
+                } else if let Some(parts) = item["content"].as_array() {
+                    let mapped: Vec<Value> = parts.iter().filter_map(|part| {
+                        if let Some(text) = part["text"].as_str().filter(|t| !t.is_empty()) {
+                            Some(json!({"type":"text","text":text}))
+                        } else if let Some(url) = part["image_url"].as_str() {
+                            Some(json!({"type":"image_url","image_url":{"url":url}}))
+                        } else {
+                            None
+                        }
+                    }).collect();
+                    if mapped.is_empty() { continue; }
+                    json!(mapped)
+                } else {
+                    continue;
+                };
+                json!({"role":role,"content":content})
+            }
+        };
+        // Merge consecutive assistant messages so text and tool calls share one turn.
+        if message["role"] == "assistant"
+            && messages.last().is_some_and(|last| last["role"] == "assistant" && last["tool_calls"].is_array())
+            && message["tool_calls"].is_array()
+        {
+            messages.last_mut().unwrap()["tool_calls"].as_array_mut().unwrap().extend(message["tool_calls"].as_array().unwrap().iter().cloned());
+        } else {
+            messages.push(message);
+        }
+    }
+    Ok(messages)
+}
+/// Z.ai GLM Coding Plan, OpenAI Chat Completions protocol. Thinking cannot be
+/// disabled on GLM-5.3; reasoning runs at "max", the documented default and
+/// the effort the user chose for this route. Z.ai accepts only
+/// tool_choice "auto", so a required tool is stated as a directive and the
+/// tool list (already narrowed by the coordinator) does the rest.
+fn encode_zai(model: &str, body: &Value, mut messages: Vec<Value>, tools: Vec<Value>) -> Result<WireRequest> {
+    let has_images = messages.iter().any(|m| m["content"].as_array().is_some_and(|parts| parts.iter().any(|p| p["type"] == "image_url")));
+    ensure!(!has_images || model_sees_images(Provider::Zai, model), "{model} is text-only and cannot see images. Use an image-capable Z.ai model such as glm-5.3-flash for visual work");
+    if let Some(name) = body["tool_choice"]["name"].as_str() {
+        let directive = format!("Respond by calling the {name} tool now.");
+        match messages.first_mut().filter(|m| m["role"] == "system") {
+            Some(system) => system["content"] = json!(format!("{}
+{directive}", system["content"].as_str().unwrap_or(""))),
+            None => messages.insert(0, json!({"role":"system","content":directive})),
+        }
+    }
+    let mut request = json!({"model":model,"messages":messages,"stream":true,"max_tokens":body["max_output_tokens"],"thinking":{"type":"enabled"},"reasoning_effort":"max"});
+    if !tools.is_empty() {
+        request["tools"] = json!(tools);
+        request["tool_choice"] = json!("auto");
+        // Streams tool arguments as they are generated (GLM-4.6 and later).
+        if base_model_id(model).to_ascii_lowercase().starts_with("glm-5") { request["tool_stream"] = json!(true); }
+    }
+    Ok(WireRequest { url: ZAI_CODING_URL.into(), body: request })
+}
 /// Translate our persisted Responses-shaped tool transcript without flattening tool results into prose.
 pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
     let model = body["model"].as_str().context("Missing model")?;
@@ -232,62 +356,14 @@ pub fn encode(provider: Provider, body: &Value) -> Result<WireRequest> {
             body: request,
         });
     }
-    if provider == Provider::Openrouter {
+    if matches!(provider, Provider::Openrouter | Provider::Zai) {
         ensure!(!body["input"].as_array().into_iter().flatten().flat_map(|i|i["content"].as_array().into_iter().flatten()).any(|p|p["type"]=="input_media"),"Direct media is supported only by Gemini");
-        let mut messages: Vec<Value> = Vec::new();
-        if let Some(instructions) = body["instructions"].as_str().filter(|s| !s.is_empty()) {
-            messages.push(json!({"role":"system","content":instructions}));
-        }
-        for item in body["input"].as_array().context("Missing input")? {
-            let kind = item["type"].as_str().unwrap_or("message");
-            let message = match kind {
-                "reasoning" | "provider_native" => continue,
-                "function_call" => {
-                    let cid = item["call_id"].as_str().context("Missing call ID")?;
-                    let name = item["name"].as_str().context("Missing tool name")?;
-                    let args = item["arguments"].as_str().context("Missing tool arguments")?;
-                    serde_json::from_str::<Value>(args).context("Malformed tool arguments")?;
-                    json!({"role":"assistant","tool_calls":[{"id":cid,"type":"function","function":{"name":name,"arguments":args}}]})
-                }
-                "function_call_output" => {
-                    let cid = item["call_id"].as_str().context("Missing result call ID")?;
-                    json!({"role":"tool","tool_call_id":cid,"content":item["output"].as_str().unwrap_or("")})
-                }
-                _ => {
-                    let role = if item["role"] == "assistant" { "assistant" } else { "user" };
-                    let content = if let Some(text) = item["content"].as_str() {
-                        if text.is_empty() { continue; }
-                        json!(text)
-                    } else if let Some(parts) = item["content"].as_array() {
-                        let mapped: Vec<Value> = parts.iter().filter_map(|part| {
-                            if let Some(text) = part["text"].as_str().filter(|t| !t.is_empty()) {
-                                Some(json!({"type":"text","text":text}))
-                            } else if let Some(url) = part["image_url"].as_str() {
-                                Some(json!({"type":"image_url","image_url":{"url":url}}))
-                            } else {
-                                None
-                            }
-                        }).collect();
-                        if mapped.is_empty() { continue; }
-                        json!(mapped)
-                    } else {
-                        continue;
-                    };
-                    json!({"role":role,"content":content})
-                }
-            };
-            // Merge consecutive assistant messages so text and tool calls share one turn.
-            if message["role"] == "assistant"
-                && messages.last().is_some_and(|last| last["role"] == "assistant" && last["tool_calls"].is_array())
-                && message["tool_calls"].is_array()
-            {
-                messages.last_mut().unwrap()["tool_calls"].as_array_mut().unwrap().extend(message["tool_calls"].as_array().unwrap().iter().cloned());
-            } else {
-                messages.push(message);
-            }
-        }
+        let messages = chat_completions_messages(body)?;
         let defs = body["tools"].as_array().cloned().unwrap_or_default();
         let tools: Vec<Value> = defs.iter().map(|t| json!({"type":"function","function":{"name":t["name"],"description":t["description"],"parameters":t["parameters"]}})).collect();
+        if provider == Provider::Zai {
+            return encode_zai(model, body, messages, tools);
+        }
         // "deny" restricts routing to upstreams that do not store or train on
         // requests; OpenRouter's documented default is "allow".
         let mut request = json!({"model":model,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true},"max_tokens":body["max_output_tokens"],"provider":{"data_collection":"deny"}});
@@ -450,28 +526,32 @@ pub fn decode(provider: Provider, response: Value) -> Result<Value> {
     if matches!(provider, Provider::Openai | Provider::Xai) {
         return Ok(response);
     }
-    if provider == Provider::Openrouter {
-        let choice = response["choices"].get(0).context("OpenRouter returned no choices")?;
+    if matches!(provider, Provider::Openrouter | Provider::Zai) {
+        let vendor = provider.name();
+        let choice = response["choices"].get(0).with_context(|| format!("{vendor} returned no choices"))?;
         match choice["finish_reason"].as_str() {
             Some("stop" | "tool_calls") => {},
-            Some("length") => bail!("OpenRouter response incomplete: output token limit reached"),
-            Some("content_filter") => bail!("OpenRouter response blocked by provider policy"),
-            _ => bail!("OpenRouter did not complete the response"),
+            Some("length") => bail!("{vendor} response incomplete: output token limit reached"),
+            Some("model_context_window_exceeded") => bail!("{vendor} response incomplete: context window exceeded"),
+            Some("content_filter" | "sensitive") => bail!("{vendor} response blocked by provider policy"),
+            Some("network_error") => bail!("{vendor} reported a network error before completing the response"),
+            _ => bail!("{vendor} did not complete the response"),
         }
         let mut output = Vec::new();
         if let Some(text) = choice["message"]["content"].as_str().filter(|t| !t.is_empty()) {
             output.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}));
         }
         for call in choice["message"]["tool_calls"].as_array().unwrap_or(&Vec::new()) {
-            let function = call["function"].as_object().context("Missing OpenRouter tool function")?;
-            let id = call["id"].as_str().context("Missing OpenRouter tool call ID")?;
-            let name = function["name"].as_str().context("Missing OpenRouter tool name")?;
-            let arguments = function["arguments"].as_str().unwrap_or("{}");
-            serde_json::from_str::<Value>(arguments).context("Malformed OpenRouter tool arguments")?;
+            let function = call["function"].as_object().with_context(|| format!("Missing {vendor} tool function"))?;
+            let id = call["id"].as_str().with_context(|| format!("Missing {vendor} tool call ID"))?;
+            let name = function["name"].as_str().with_context(|| format!("Missing {vendor} tool name"))?;
+            let arguments = match function["arguments"].as_str() { Some(a) if !a.trim().is_empty() => a, _ => "{}" };
+            serde_json::from_str::<Value>(arguments).with_context(|| format!("Malformed {vendor} tool arguments"))?;
             output.push(json!({"type":"function_call","call_id":id,"name":name,"arguments":arguments}));
         }
-        ensure!(!output.is_empty(), "OpenRouter completed without text or tool calls");
-        return Ok(json!({"status":"completed","output":output,"usage":openrouter_usage(&response)}));
+        ensure!(!output.is_empty(), "{vendor} completed without text or tool calls");
+        let usage = if provider == Provider::Zai { zai_usage(&response) } else { openrouter_usage(&response) };
+        return Ok(json!({"status":"completed","output":output,"usage":usage}));
     }
     let mut output = Vec::new();
     if provider == Provider::Anthropic {
@@ -591,11 +671,12 @@ pub struct GeminiStream {
     parts: Vec<Value>,
     usage: Value,
 }
-/// OpenAI-compatible chat/completions SSE (OpenRouter). Tool call fragments
-/// arrive by index across chunks; completion is emitted on the trailing usage
-/// chunk when present, or on finish_reason otherwise.
+/// OpenAI-compatible chat/completions SSE (OpenRouter, Z.ai). Tool call
+/// fragments arrive by index across chunks; completion is emitted on the
+/// trailing usage chunk when present, or on finish_reason otherwise.
 #[derive(Default)]
 pub struct ChatCompletionsStream {
+    provider: Provider,
     text: String,
     tool_calls: std::collections::BTreeMap<usize, (String, String, String)>,
     finish_reason: Option<String>,
@@ -606,10 +687,14 @@ pub struct ChatCompletionsStream {
     announced_generation: bool,
 }
 impl ChatCompletionsStream {
+    pub fn new(provider: Provider) -> Self {
+        Self { provider, ..Self::default() }
+    }
     /// The generation id from the first chunk, reported once so the caller
     /// can persist it before the stream finishes (cost lookup after cancel).
     pub fn take_new_generation_id(&mut self) -> Option<String> {
-        if self.announced_generation { return None; }
+        // Only OpenRouter offers a cost lookup by generation id.
+        if self.announced_generation || self.provider != Provider::Openrouter { return None; }
         let id = self.generation_id.clone()?;
         self.announced_generation = true;
         Some(id)
@@ -618,13 +703,14 @@ impl ChatCompletionsStream {
     pub fn push(&mut self, chunk: &Value) -> Result<(Vec<String>, Vec<String>, Option<Value>)> {
         // An upstream failure after HTTP 200 arrives as an error object and/or
         // finish_reason "error"; report the bounded provider message.
+        let vendor = self.provider.name();
         if chunk["error"].is_object() {
-            bail!("OpenRouter stream error: {}", stream_failure_detail(chunk));
+            bail!("{vendor} stream error: {}", stream_failure_detail(chunk));
         }
         if self.generation_id.is_none() {
             if let Some(id) = chunk["id"].as_str().filter(|id| valid_generation_id(id)) { self.generation_id = Some(id.into()); }
         }
-        if self.upstream.is_none() {
+        if self.upstream.is_none() && self.provider == Provider::Openrouter {
             if let Some(p) = chunk["provider"].as_str().filter(|p| !p.is_empty() && p.len() <= 80) { self.upstream = Some(p.into()); }
         }
         if !chunk["usage"].is_null() { self.usage = chunk["usage"].clone(); }
@@ -632,10 +718,10 @@ impl ChatCompletionsStream {
         let mut activity = Vec::new();
         if let Some(choice) = chunk["choices"].get(0) {
             if choice["finish_reason"].as_str() == Some("error") {
-                bail!("OpenRouter stream error: {}", stream_failure_detail(chunk));
+                bail!("{vendor} stream error: {}", stream_failure_detail(chunk));
             }
             if let Some(reason) = choice["finish_reason"].as_str() {
-                ensure!(self.finish_reason.is_none(), "Duplicate OpenRouter finish reason");
+                ensure!(self.finish_reason.is_none(), "Duplicate {vendor} finish reason");
                 self.finish_reason = Some(reason.into());
             }
             if let Some(delta) = choice["delta"].as_object() {
@@ -644,8 +730,16 @@ impl ChatCompletionsStream {
                     deltas.push(text.to_string());
                 }
                 for call in delta.get("tool_calls").and_then(Value::as_array).unwrap_or(&Vec::new()) {
-                    let index = call["index"].as_u64().unwrap_or(0) as usize;
-                    ensure!(index < 100, "Excessive OpenRouter tool call index");
+                    // A whole (unstreamed) call may omit its index; a new id
+                    // then opens the next slot rather than merging into slot 0.
+                    let index = match call["index"].as_u64() {
+                        Some(index) => index as usize,
+                        None => match call["id"].as_str().filter(|id| !id.is_empty()) {
+                            Some(id) => self.tool_calls.iter().find(|(_, slot)| slot.0 == id).map(|(i, _)| *i).unwrap_or(self.tool_calls.len()),
+                            None => self.tool_calls.keys().last().copied().unwrap_or(0),
+                        },
+                    };
+                    ensure!(index < 100, "Excessive {vendor} tool call index");
                     let slot = self.tool_calls.entry(index).or_default();
                     if let Some(id) = call["id"].as_str().filter(|v| !v.is_empty()) { slot.0 = id.into(); }
                     if let Some(name) = call["function"]["name"].as_str().filter(|v| !v.is_empty()) {
@@ -671,18 +765,16 @@ impl ChatCompletionsStream {
             // after the loop emits what arrived.
         }
         if !chunk["usage"].is_null() && self.completed.is_some() {
-            let mut response = self.completed.take().context("OpenRouter completion vanished")?;
+            let mut response = self.completed.take().context("Chat completion vanished")?;
             response["usage"] = self.usage.clone();
-            return Ok((deltas, activity, Some(decode(Provider::Openrouter, response)?)));
+            return Ok((deltas, activity, Some(decode(self.provider, response)?)));
         }
         Ok((deltas, activity, None))
     }
     pub fn take_completed(&mut self) -> Option<anyhow::Result<Value>> {
-        self.completed.take().map(decode_openrouter)
+        let provider = self.provider;
+        self.completed.take().map(|response| decode(provider, response))
     }
-}
-fn decode_openrouter(response: Value) -> Result<Value> {
-    decode(Provider::Openrouter, response)
 }
 /// Usage as OpenRouter reported it. Cost is copied only when the provider
 /// reported a finite, non-negative number; absence stays absent so the UI can
@@ -695,6 +787,15 @@ fn openrouter_usage(response: &Value) -> Value {
     if let Some(n) = usage["completion_tokens_details"]["reasoning_tokens"].as_u64() { out["reasoning_tokens"] = json!(n); }
     if let Some(id) = response["id"].as_str().filter(|id| valid_generation_id(id)) { out["generation_id"] = json!(id); }
     if let Some(upstream) = response["provider"].as_str().filter(|p| p.len() <= 80) { out["upstream_provider"] = json!(upstream); }
+    out
+}
+/// Z.ai reports tokens only; the coding plan bills in quota points, so no
+/// cost is recorded and the UI says it was not reported.
+fn zai_usage(response: &Value) -> Value {
+    let usage = &response["usage"];
+    let mut out = json!({"input_tokens":usage["prompt_tokens"],"output_tokens":usage["completion_tokens"]});
+    if let Some(n) = usage["prompt_tokens_details"]["cached_tokens"].as_u64() { out["cached_tokens"] = json!(n); }
+    if let Some(n) = usage["completion_tokens_details"]["reasoning_tokens"].as_u64() { out["reasoning_tokens"] = json!(n); }
     out
 }
 /// Generation identifiers are opaque; accept only short printable ASCII so a
@@ -884,7 +985,7 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
     let mut stream = crate::agent::ResponseStream::default();
     let mut claude = ClaudeStream::default();
     let mut gemini = GeminiStream::default();
-    let mut chat = ChatCompletionsStream::default();
+    let mut chat = ChatCompletionsStream::new(provider);
     while let Some(chunk) = response.chunk().await? {
         for event in stream.push(&chunk)? {
             if provider == Provider::Anthropic {
@@ -909,7 +1010,7 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
                 if let Some(value) = completed { return Ok(value); }
                 continue;
             }
-            if provider == Provider::Openrouter {
+            if matches!(provider, Provider::Openrouter | Provider::Zai) {
                 let (deltas, activity, completed) = chat.push(&event)?;
                 if let Some(id) = chat.take_new_generation_id() { progress(json!({"generation_id":id})); }
                 for delta in deltas { progress(json!({"text":delta})); }
@@ -933,7 +1034,7 @@ async fn send_wire(provider: Provider, key: &str, wire: WireRequest, mut progres
             }
         }
     }
-    if provider == Provider::Openrouter {
+    if matches!(provider, Provider::Openrouter | Provider::Zai) {
         if let Some(result) = chat.take_completed() { return result; }
     }
     bail!("Provider stream ended without completion; no final result published")
@@ -964,6 +1065,8 @@ pub fn select_profile(case: &crate::case::Case, provider: Provider, model: &str)
         config.pool.into_iter().find(|p| p.provider == provider && p.model == model)
             .context("Enable this provider/model in AI settings first")?
     };
+    let mut profile = profile;
+    profile.allow_images &= model_sees_images(profile.provider, &profile.model);
     validate_model(&profile.model)?;
     check_permission(case, &profile)?;
     Ok(profile)
@@ -998,6 +1101,7 @@ pub fn model_options(provider: Provider, value: &Value) -> Result<Vec<ModelOptio
             Provider::Anthropic => lower.starts_with("claude-"),
             Provider::Gemini => row["supportedGenerationMethods"].as_array().is_some_and(|methods|methods.iter().any(|m|m=="generateContent")) && !["tts","image","robotics"].iter().any(|part|lower.contains(part)),
             Provider::Xai => lower.starts_with("grok-") && !["image","video","imagine"].iter().any(|part|lower.contains(part)),
+            Provider::Zai => lower.starts_with("glm-") && !["ocr","asr","image","video","tts","embedding"].iter().any(|part|lower.contains(part)),
             // OpenRouter publishes capabilities: keep models that answer in text
             // and accept tool calls (the agent needs them). Only when that
             // metadata is missing fall back to excluding non-chat name families.
@@ -1025,13 +1129,30 @@ pub fn model_options(provider: Provider, value: &Value) -> Result<Vec<ModelOptio
     }
     result.sort_by(|a,b|a.id.cmp(&b.id));result.dedup_by(|a,b|a.id==b.id);Ok(result)
 }
+/// The GLM Coding Plan publishes no model catalogue on its endpoint; offer
+/// the documented plan models with their documented input modalities.
+pub fn zai_coding_models() -> Vec<ModelOption> {
+    ZAI_CODING_MODELS.iter().map(|(id, name)| ModelOption {
+        id: (*id).into(),
+        name: (*name).into(),
+        input_modalities: Some(if model_sees_images(Provider::Zai, id) { vec!["text".into(), "image".into()] } else { vec!["text".into()] }),
+        context_length: Some(1_000_000),
+        prompt_price: None,
+        completion_price: None,
+    }).collect()
+}
 pub async fn list_models(provider: Provider, key: &str) -> Result<Vec<ModelOption>> {
+    if provider == Provider::Zai {
+        ensure!(!key.trim().is_empty(), "Add a Z.ai GLM Coding Plan API key");
+        return Ok(zai_coding_models());
+    }
     let url=match provider {
         Provider::Openai=>"https://api.openai.com/v1/models",
         Provider::Anthropic=>"https://api.anthropic.com/v1/models",
         Provider::Gemini=>"https://generativelanguage.googleapis.com/v1beta/models",
         Provider::Xai=>"https://api.x.ai/v1/models",
         Provider::Openrouter=>"https://openrouter.ai/api/v1/models",
+        Provider::Zai=>unreachable!("Z.ai models are documented, not fetched"),
     };
     let client=catalogue_client()?;
     let mut cursor=String::new();let mut models=Vec::new();let mut seen=std::collections::HashSet::new();
@@ -1342,6 +1463,111 @@ mod stream_transport_tests {
         for model in ["openai/gpt-5", "anthropic/claude-sonnet-5", "deepseek/deepseek-chat", "google/gemini-2.5-flash", "vendor/research-assistant"] {
             assert!(!openrouter_model_is_search(model), "{model}");
         }
+    }
+
+    #[test]
+    fn zai_vision_support_follows_the_published_model_cards() {
+        assert!(!model_sees_images(Provider::Zai, "glm-5.3"));
+        assert!(!model_sees_images(Provider::Zai, "glm-4.7-flash"));
+        assert!(model_sees_images(Provider::Zai, "glm-5.3-flash"));
+        assert!(model_sees_images(Provider::Zai, "GLM-5.3-Flash"));
+        assert!(model_sees_images(Provider::Zai, "glm-4.6v"));
+        assert!(model_sees_images(Provider::Openai, "gpt-5"));
+        let models = zai_coding_models();
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["glm-5.3", "glm-5.3-flash"]);
+        assert_eq!(models[0].input_modalities, Some(vec!["text".to_string()]));
+        assert_eq!(models[1].input_modalities, Some(vec!["text".to_string(), "image".to_string()]));
+    }
+
+    #[test]
+    fn zai_encode_uses_the_coding_plan_endpoint_with_max_reasoning() {
+        let body = json!({
+            "model":"glm-5.3",
+            "instructions":"Case rules",
+            "max_output_tokens":32768,
+            "reasoning":{"effort":"high"},
+            "tool_choice":{"type":"function","name":"finish_task"},
+            "tools":[{"name":"finish_task","description":"Finish","parameters":{"type":"object"}}],
+            "input":[
+                {"type":"message","role":"user","content":"Check the statement"},
+                {"type":"function_call","call_id":"call-1","name":"finish_task","arguments":"{}"},
+                {"type":"function_call_output","call_id":"call-1","output":"review needed"},
+            ]
+        });
+        let wire = encode(Provider::Zai, &body).unwrap();
+        assert_eq!(wire.url, "https://api.z.ai/api/coding/paas/v4/chat/completions");
+        assert_eq!(wire.body["model"], "glm-5.3");
+        assert_eq!(wire.body["thinking"], json!({"type":"enabled"}));
+        assert_eq!(wire.body["reasoning_effort"], "max");
+        assert_eq!(wire.body["max_tokens"], 32768);
+        assert_eq!(wire.body["stream"], true);
+        assert_eq!(wire.body["tool_stream"], true);
+        // Z.ai accepts only "auto"; the required tool becomes a directive.
+        assert_eq!(wire.body["tool_choice"], "auto");
+        assert!(wire.body["messages"][0]["content"].as_str().unwrap().ends_with("Respond by calling the finish_task tool now."));
+        assert_eq!(wire.body["messages"][2]["tool_calls"][0]["function"]["name"], "finish_task");
+        assert_eq!(wire.body["messages"][3]["role"], "tool");
+        // OpenRouter-only routing fields never reach Z.ai.
+        assert!(wire.body.get("provider").is_none());
+        assert!(wire.body.get("stream_options").is_none());
+        assert!(wire.body.get("reasoning").is_none());
+        let plain = encode(Provider::Zai, &json!({"model":"glm-5.3","instructions":"","max_output_tokens":10,"tools":[],"input":[{"type":"message","role":"user","content":"Hi"}]})).unwrap();
+        assert!(plain.body.get("tools").is_none() && plain.body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn zai_text_only_model_refuses_images_and_flash_accepts_them() {
+        let image = |model: &str| json!({"model":model,"instructions":"Rules","max_output_tokens":10,"tools":[],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Frame"},{"type":"input_image","image_url":"data:image/jpeg;base64,AAAA"}]}]});
+        let error = encode(Provider::Zai, &image("glm-5.3")).err().expect("text-only image request must fail").to_string();
+        assert!(error.contains("text-only") && error.contains("glm-5.3-flash"), "{error}");
+        let wire = encode(Provider::Zai, &image("glm-5.3-flash")).unwrap();
+        assert_eq!(wire.body["messages"][1]["content"][1], json!({"type":"image_url","image_url":{"url":"data:image/jpeg;base64,AAAA"}}));
+    }
+
+    #[tokio::test]
+    async fn zai_transport_streams_text_and_whole_tool_calls() {
+        let lines = vec![
+            sse_data(json!({"id":"zai-1","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking privately"}}]})),
+            sse_data(json!({"id":"zai-1","choices":[{"index":0,"delta":{"content":"Synthetic "}}]})),
+            sse_data(json!({"id":"zai-1","choices":[{"index":0,"delta":{"content":"answer"}}]})),
+            sse_data(json!({"id":"zai-1","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_a","type":"function","function":{"name":"search_passages","arguments":"{\"query\":\"door\"}"}},{"id":"call_b","type":"function","function":{"name":"read_text","arguments":"{}"}}]}}]})),
+            sse_data(json!({"id":"zai-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":3}}})),
+            "data: [DONE]".to_string(),
+        ];
+        let (url, server) = local_sse_lines(lines);
+        let mut progress = Vec::new();
+        let response = send_wire(Provider::Zai, "synthetic-key", WireRequest { url, body: json!({"model":"glm-5.3","stream":true}) }, |delta| progress.push(delta)).await.unwrap();
+        server.join().unwrap();
+        // Hidden reasoning is never shown; no OpenRouter generation id is announced.
+        assert_eq!(progress, vec![
+            json!({"text":"Synthetic "}),
+            json!({"text":"answer"}),
+            json!({"activity":"search_passages"}),
+            json!({"activity":"read_text"}),
+        ]);
+        assert_eq!(response["output"][0]["content"][0]["text"], "Synthetic answer");
+        assert_eq!(response["output"][1]["call_id"], "call_a");
+        assert_eq!(response["output"][1]["arguments"], "{\"query\":\"door\"}");
+        assert_eq!(response["output"][2]["call_id"], "call_b");
+        let usage = &response["usage"];
+        assert_eq!((usage["input_tokens"].as_u64(), usage["output_tokens"].as_u64()), (Some(9), Some(4)));
+        assert_eq!(usage["cached_tokens"], 2);
+        assert_eq!(usage["reasoning_tokens"], 3);
+        assert!(usage.get("cost").is_none() && usage.get("generation_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn zai_transport_reports_policy_blocks_and_errors_by_name() {
+        let lines = vec![sse_data(json!({"choices":[{"index":0,"delta":{"content":"Partial"},"finish_reason":"sensitive"}]}))];
+        let (url, server) = local_sse_lines(lines);
+        let error = send_wire(Provider::Zai, "synthetic-key", WireRequest { url, body: json!({"model":"glm-5.3"}) }, |_| {}).await.unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().contains("Z.ai response blocked by provider policy"), "{error}");
+        let lines = vec![sse_data(json!({"error":{"code":"1302","message":"Synthetic rate limit"}}))];
+        let (url, server) = local_sse_lines(lines);
+        let error = send_wire(Provider::Zai, "synthetic-key", WireRequest { url, body: json!({"model":"glm-5.3"}) }, |_| {}).await.unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().contains("Z.ai stream error: Synthetic rate limit"), "{error}");
     }
 
     #[tokio::test]

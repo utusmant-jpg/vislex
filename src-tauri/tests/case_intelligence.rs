@@ -1236,3 +1236,78 @@ fn flagged_moments_get_bounded_dense_looks_in_time_order() {
     let ids = |run: &str| -> Vec<String> { case.db.prepare("SELECT u.id FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.kind='video_focus' ORDER BY r.ordinal").unwrap().query_map([run], |r| r.get(0)).unwrap().map(Result::unwrap).collect() };
     assert_eq!(ids(&run), ids(&again));
 }
+
+fn use_zai(case: &mut Case, pool: serde_json::Value) {
+    case.set_meta("ai_config", &json!({"provider":"zai","execution":"auto","review":"standard","pool":pool}).to_string()).unwrap();
+    let mut settings = case.settings().unwrap();
+    settings.model = "glm-5.3".into();
+    case.save_settings(settings).unwrap();
+}
+
+#[test]
+fn text_only_glm_default_gets_no_image_tools_and_names_the_vision_route() {
+    let (_dir, mut case, source, task) = setup();
+    case.db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", [&task]).unwrap();
+    let flash = json!({"provider":"zai","model":"glm-5.3-flash","allow_text":true,"allow_images":true});
+    use_zai(&mut case, json!([flash]));
+    let task = agent::start(&mut case, "What does the frame show?", "investigate", vec![source], vec![], 0.).unwrap();
+    let profile = evidence_desk::providers::task_profile(&case, &task).unwrap();
+    assert_eq!(profile.model, "glm-5.3");
+    assert!(!profile.allow_images, "a text-only model never carries image permission");
+    let tools = agent::available_tools(&case, &task).unwrap();
+    for name in ["inspect_artifact_image", "inspect_video_interval", "inspect_document_pages", "inspect_image"] {
+        assert!(!tools.iter().any(|t| t["name"] == name), "{name}");
+    }
+    let models = evidence_desk::teams::models(&case, &task).unwrap();
+    assert_eq!(models["models"][0]["allow_images"], false);
+    assert_eq!(models["models"][1]["model"], "glm-5.3-flash");
+    assert_eq!(models["models"][1]["allow_images"], true);
+    assert_eq!(evidence_desk::providers::visual_profile(&case).unwrap().unwrap().model, "glm-5.3-flash");
+    assert!(!evidence_desk::providers::visual_route_missing(&case).unwrap());
+}
+
+#[test]
+fn case_analysis_routes_visual_units_from_text_only_glm_to_flash() {
+    let (_dir, mut case, _source, task) = setup();
+    case.db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", [&task]).unwrap();
+    media_inventory_fixture(&mut case, serde_json::Value::Null);
+    use_zai(&mut case, json!([{"provider":"zai","model":"glm-5.3-flash","allow_text":true,"allow_images":true}]));
+    let visual = ["page","pages","image","video","video_segment","video_focus","frame","image_frame","office_image"];
+    for _ in 0..12 {
+        // The synthetic fixture has no frame artifacts, so host reads may fail
+        // and block a unit; routing happens before the read either way.
+        if let Some(unit_task) = evidence_desk::intelligence::next_task(&mut case, false, "api_keys:Z.ai:glm-5.3").unwrap() {
+            case.db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", [&unit_task]).unwrap();
+        }
+    }
+    let attempts: Vec<(String, String)> = case.db.prepare("SELECT u.kind,a.task_id FROM case_analysis_attempts a JOIN case_analysis_units u ON u.id=a.unit_id").unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+    let (mut routed, mut text_units) = (0, 0);
+    for (kind, unit_task) in &attempts {
+        let profile = evidence_desk::providers::task_profile(&case, unit_task).unwrap();
+        if visual.contains(&kind.as_str()) {
+            assert_eq!(profile.model, "glm-5.3-flash", "{kind}");
+            assert!(profile.allow_images);
+            assert!(agent::available_tools(&case, unit_task).unwrap().iter().any(|t| t["name"] == "inspect_video_sheets" || t["name"] == "inspect_video_interval"));
+            routed += 1;
+        } else {
+            assert_eq!(profile.model, "glm-5.3", "{kind}");
+            text_units += 1;
+        }
+    }
+    assert!(routed > 0 && text_units > 0, "expected both unit kinds: {attempts:?}");
+}
+
+#[test]
+fn case_analysis_without_a_vision_model_blocks_visual_units_with_the_reason() {
+    let (_dir, mut case, _source, task) = setup();
+    case.db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", [&task]).unwrap();
+    media_inventory_fixture(&mut case, serde_json::Value::Null);
+    use_zai(&mut case, json!([]));
+    assert!(evidence_desk::providers::visual_route_missing(&case).unwrap());
+    evidence_desk::intelligence::next_task(&mut case, false, "api_keys:Z.ai:glm-5.3").unwrap();
+    let blocked: Vec<String> = case.db.prepare("SELECT reason FROM case_analysis_units WHERE state='blocked' AND kind IN ('video','video_segment','video_focus','frame')").unwrap()
+        .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+    assert!(!blocked.is_empty(), "visual units should wait for a vision model");
+    assert!(blocked.iter().all(|r| r.starts_with("vision_model_required:") && r.contains("GLM-5.3-Flash")), "{blocked:?}");
+}

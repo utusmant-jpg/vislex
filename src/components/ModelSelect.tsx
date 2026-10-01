@@ -1,6 +1,6 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react';
 import { Combobox, modelBadges } from '../ui';
-import type { ModelOption } from '../types';
+import type { ModelOption, Provider } from '../types';
 
 /** The clear row's value. cmdk never highlights an item whose value is '', and
  *  the value also takes part in filtering, so it is a symbol no model id or
@@ -11,11 +11,13 @@ const CLEAR_VALUE = '\u2205';
  *  lists. Keeps the accessible name of the native <select> it replaced; a saved
  *  value missing from the list stays visible as "(saved)" instead of being
  *  silently replaced. */
-export default function ModelSelect({ label, value, onChange, options, loading, disabled, placeholder, noun = 'models', hideIds = false }: {
+export default function ModelSelect({ label, value, onChange, options, loading, disabled, placeholder, noun = 'models', hideIds = false, provider }: {
   label: string; value: string; onChange: (model: string) => void;
   options: ModelOption[]; loading?: boolean; disabled?: boolean; placeholder?: string; noun?: string;
   /** Show only display names in the trigger and list (ids still match the filter). */
   hideIds?: boolean;
+  /** Provider whose published capabilities may add badges. */
+  provider?: Provider;
 }) {
   const rows: (ModelOption & { saved?: boolean })[] = [
     ...(value && !options.some(option => option.id === value) ? [{ id: value, name: `${value} (saved)`, saved: true }] : []),
@@ -29,7 +31,7 @@ export default function ModelSelect({ label, value, onChange, options, loading, 
       label: row.name === row.id ? row.id : row.name,
       description: row.name === row.id || row.saved || hideIds ? undefined : row.id,
       keywords: [row.id],
-      meta: modelBadges(row.id, false, row).map(badge => <span className="badge" key={badge}>{badge}</span>),
+      meta: modelBadges(row.id, false, row, provider).map(badge => <span className="badge" key={badge}>{badge}</span>),
     })),
   ];
   const selected = rows.find(row => row.id === value);

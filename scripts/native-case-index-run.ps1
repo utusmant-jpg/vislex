@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$CasePath,[int]$Port=9383,[int]$MockPort=9382,[int]$MaxMinutes=240,[string]$BinaryPath='')
+param([Parameter(Mandatory=$true)][string]$CasePath,[int]$Port=9383,[int]$MockPort=9382,[int]$MaxMinutes=240,[string]$BinaryPath='',[ValidateSet('openai','zai')][string]$Provider='openai')
 # Measure the bounded case-index pipeline on a COPY of a real case with the
 # synthetic provider. Never point this at an original case: analysis writes to it.
 $ErrorActionPreference='Stop'
@@ -10,20 +10,23 @@ $case=(Resolve-Path -LiteralPath $CasePath).Path
 $runId=[Guid]::NewGuid().ToString('N')
 $out=Join-Path $repo "artifacts\case-index-run-$runId"
 New-Item -ItemType Directory -Force $out | Out-Null
-$mock=Start-Process -FilePath (Get-Command node).Source -ArgumentList @("`"$(Join-Path $PSScriptRoot 'native-case-index-mock.mjs')`"","$MockPort") -WindowStyle Hidden -PassThru
+# -Provider zai uses the Z.ai GLM Coding Plan stand-in (chat completions, wire checks).
+$mockScript=if($Provider -eq 'zai'){'native-zai-mock.mjs'}else{'native-case-index-mock.mjs'}
+$mockPath=if($Provider -eq 'zai'){'/api/coding/paas/v4/chat/completions'}else{'/v1/responses'}
+$mock=Start-Process -FilePath (Get-Command node).Source -ArgumentList @("`"$(Join-Path $PSScriptRoot $mockScript)`"","$MockPort") -WindowStyle Hidden -PassThru
 try {
     for($i=0;$i -lt 80;$i++){try{$null=Invoke-RestMethod -Uri "http://127.0.0.1:$MockPort/state";break}catch{Start-Sleep -Milliseconds 150}}
     $env:VISLEX_TEST_MODE='1'
     $env:VISLEX_TEST_CASE_ROOT=Split-Path -Parent $case
     $env:VISLEX_TEST_ANALYSIS_AUTORUN='1'
-    $env:VISLEX_TEST_PROVIDER_URL="http://127.0.0.1:$MockPort/v1/responses"
+    $env:VISLEX_TEST_PROVIDER_URL="http://127.0.0.1:$MockPort$mockPath"
     $env:VISLEX_TEST_AI_DEFAULTS_PATH=Join-Path $out 'defaults.json'
     $env:WEBVIEW2_USER_DATA_FOLDER=Join-Path $out 'webview'
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$Port"
     $app=Start-Process -FilePath $binary -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $out 'app.out.log') -RedirectStandardError (Join-Path $out 'app.err.log')
     try {
         for($i=0;$i -lt 200;$i++){try{$null=Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/version";break}catch{Start-Sleep -Milliseconds 150}}
-        & node (Join-Path $PSScriptRoot 'native-case-index-cdp.mjs') $Port ($case -replace '\\','/') $MockPort (Join-Path $out 'result.json') $MaxMinutes
+        & node (Join-Path $PSScriptRoot 'native-case-index-cdp.mjs') $Port ($case -replace '\\','/') $MockPort (Join-Path $out 'result.json') $MaxMinutes $Provider
         if($LASTEXITCODE -ne 0){throw "Case-index run failed (see $out)"}
     } finally {
         if(-not $app.HasExited){Stop-Process -Id $app.Id}

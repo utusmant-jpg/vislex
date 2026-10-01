@@ -177,6 +177,7 @@
     --provider-gemini: oklch(74% 0.11 250);
     --provider-xai: oklch(78% 0.01 265);
     --provider-openrouter: oklch(74% 0.10 300);
+    --provider-zai: oklch(72% 0.12 230);
   }
 
   /* ---------- colour: light (warm paper) ---------- */
@@ -253,6 +254,7 @@
     --provider-gemini: oklch(52% 0.14 255);
     --provider-xai: oklch(35% 0.01 265);
     --provider-openrouter: oklch(50% 0.14 300);
+    --provider-zai: oklch(48% 0.14 230);
   }
 
   /* ---------- density: compact shares every semantic role ---------- */

@@ -54,6 +54,8 @@ it('never presents capability guesses as badges', () => {
   expect(modelBadges('vendor/model:free', false)).toEqual(['Free · may fail privacy routing']);
   expect(modelBadges('google/gemini-2.5-flash', false, { input_modalities: ['text', 'audio'], context_length: 1_048_576 })).toEqual(['Audio input', '1M context']);
   expect(modelBadges('vendor/model', false, {})).toEqual([]);
+  expect(modelBadges('glm-5.3', true, undefined, 'zai')).toEqual(['Default', 'Text only · no images']);
+  expect(modelBadges('glm-5.3-flash', false, undefined, 'zai')).toEqual(['Sees images']);
 });
 
 it('renders overlays opened from inside an open modal dialog within that dialog', () => {

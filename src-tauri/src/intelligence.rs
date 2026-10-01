@@ -1040,6 +1040,14 @@ pub fn next_task(
     } else {
         case.db.execute("UPDATE case_analysis_units SET state='queued',reason='',updated_at=? WHERE id IN (SELECT unit_id FROM case_analysis_run_units WHERE run_id=?) AND state='blocked' AND reason LIKE 'image_permission_denied:%'",params![now(),run])?;
     }
+    // A text-only default (GLM-5.3) hands visual units to an approved
+    // image-capable profile; without one they wait with a stated reason.
+    let visual_profile = if subscription { None } else { crate::providers::visual_profile(case)? };
+    if !subscription && crate::providers::visual_route_missing(case)? {
+        case.db.execute("UPDATE case_analysis_units SET state='blocked',reason=?,updated_at=? WHERE id IN (SELECT unit_id FROM case_analysis_run_units WHERE run_id=?) AND state='queued' AND kind IN ('page','pages','image','video','video_segment','video_focus','frame','image_frame','office_image')",params![crate::providers::TEXT_ONLY_VISUAL_REASON,now(),run])?;
+    } else {
+        case.db.execute("UPDATE case_analysis_units SET state='queued',reason='',updated_at=? WHERE id IN (SELECT unit_id FROM case_analysis_run_units WHERE run_id=?) AND state='blocked' AND reason LIKE 'vision_model_required:%'",params![now(),run])?;
+    }
     let row:Option<(String,Option<String>,String,String)> = case.db.query_row("SELECT u.id,u.source_id,u.kind,u.spec FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.state='queued' ORDER BY r.ordinal LIMIT 1",[&run],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     let Some((unit, source, kind, _spec)) = row else {
         let blocked:bool=case.db.query_row("SELECT EXISTS(SELECT 1 FROM case_analysis_units u JOIN case_analysis_run_units r ON r.unit_id=u.id WHERE r.run_id=? AND u.state='blocked')",[&run],|r|r.get(0))?;
@@ -1064,6 +1072,11 @@ pub fn next_task(
         .collect();
     let prompt = unit_prompt(&unit, &kind, &source_name);
     let task = agent::start_analysis_unit(case, &prompt, sources, records, subscription)?;
+    let visual_kind = ["page","pages","image","video","video_segment","video_focus","frame","image_frame","office_image"].contains(&kind.as_str());
+    if let Some(profile) = visual_profile.filter(|_| visual_kind) {
+        case.set_meta(&format!("task_profile:{task}"), &serde_json::to_string(&profile)?)?;
+        case.audit("analysis_unit_visual_route", json!({"task":task,"unit":unit,"provider":profile.provider,"model":profile.model}))?;
+    }
     case.db.execute(
         "INSERT INTO case_analysis_attempts VALUES(?,?)",
         params![unit, task],

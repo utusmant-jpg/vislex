@@ -8,9 +8,9 @@ import {
   Moon, Search, Settings2, Sun, X, XCircle,
 } from 'lucide-react';
 import { api, citationParts } from './bridge';
-import { configuredProfiles, profileKey, providerNames } from './aiProfiles';
+import { configuredProfiles, modelSeesImages, profileKey, providerNames } from './aiProfiles';
 import { MotionConfig } from 'motion/react';
-import type { AIProfile, Snapshot } from './types';
+import type { AIProfile, Provider, Snapshot } from './types';
 import { SourceKindIcon, locatorWords, useCitationScope, type SourceInfo } from './chat/citation-context';
 
 /* ---------------------------------- status --------------------------------- */
@@ -691,10 +691,13 @@ function CitationPreviewCard({ anchor, preview, hasLines, pinnedRevision, locato
 
 /** Only facts VisLex actually knows: the saved default, OpenRouter's
  *  published ":free" variant naming, and capabilities the catalogue itself
- *  published. Capability is never guessed from a name. */
-export function modelBadges(model: string, isDefault: boolean, facts?: { input_modalities?: string[]; context_length?: number }): string[] {
+ *  published, plus Z.ai's published per-model image support. Capability is
+ *  never guessed from a name otherwise. */
+export function modelBadges(model: string, isDefault: boolean, facts?: { input_modalities?: string[]; context_length?: number }, provider?: Provider): string[] {
   const badges: string[] = [];
   if (isDefault) badges.push('Default');
+  // Z.ai publishes which GLM models see images; the badge states that fact.
+  if (provider === 'zai') badges.push(modelSeesImages(provider, model) ? 'Sees images' : 'Text only · no images');
   // Free endpoints often log or train on requests, so VisLex's no-retention
   // routing may find no eligible endpoint for them.
   if (/:free$/i.test(model)) badges.push('Free · may fail privacy routing');
@@ -729,7 +732,7 @@ export function ModelPicker({ snapshot, selected, onSelect, onManage, disabled }
     group: providerNames[profile.provider],
     keywords: [providerNames[profile.provider]],
     leading: <span className="provider-dot" data-provider={profile.provider} aria-hidden="true" />,
-    meta: modelBadges(profile.model, profileKey(profile) === defaultKey).map(badge => <span className="badge" key={badge}>{badge}</span>),
+    meta: modelBadges(profile.model, profileKey(profile) === defaultKey, undefined, profile.provider).map(badge => <span className="badge" key={badge}>{badge}</span>),
   }));
   return <Combobox
     label="Model for your next message"

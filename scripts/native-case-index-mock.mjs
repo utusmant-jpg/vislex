@@ -5,13 +5,13 @@
 // request sizes can be measured without spending a real model subscription.
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
-const port = Number(process.argv[2]);
+import { pathToFileURL } from 'node:url';
 const requests = [], errors = [];
 const tool = (name, args) => ({ type: 'function_call', call_id: randomUUID(), name, arguments: JSON.stringify(args) });
 const text = input => JSON.stringify(input ?? []);
 // Tokens are estimated, not measured: ~4 characters per text token and 1,105
 // tokens per 1920x1080 high-detail image (OpenAI tiling). Image bytes are excluded.
-function measure(body) {
+export function measure(body) {
   let images = 0, textChars = 0;
   for (const item of body.input ?? []) {
     if (Array.isArray(item.content)) {
@@ -41,11 +41,12 @@ function firstRef(value) {
   return null;
 }
 const finding = (ref, kind = 'observation') => ({ kind, title: 'Synthetic placeholder finding', text: 'Synthetic protocol placeholder; not an evidence assessment.', supporting: [ref], contrary: [], assessment: 'unresolved', data_json: '{}', support: { state: 'unresolved', reason: 'Synthetic fixture; no evidence was assessed.' } });
-function next(body) {
+export function next(body) {
   const input = body.input ?? [];
   const all = text(input);
   const unitMatch = all.match(/VisLex internal analysis unit ([0-9a-f]{64}) \((\w+)\)/);
-  const visual = body.tool_choice?.name === 'record_visual_observations';
+  // Chat-completions routes (Z.ai) cannot force a tool; a lone visual tool marks the review.
+  const visual = body.tool_choice?.name === 'record_visual_observations' || (body.tools?.length === 1 && body.tools[0].name === 'record_visual_observations');
   if (visual) {
     const observations = [];
     for (const item of input) for (const part of item.content ?? []) {
@@ -75,7 +76,7 @@ function next(body) {
   const ref = firstRef(last?.observations ? done : read.unit.input ?? read.unit) ?? firstRef(read.unit);
   return { kind, call: tool('publish_analysis_unit', { receipts, findings: ref ? [finding(ref)] : [] }) };
 }
-http.createServer((request, response) => {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) http.createServer((request, response) => {
   if (request.url === '/state') { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ requests, errors })); return; }
   if (request.url !== '/v1/responses' || request.method !== 'POST') { response.writeHead(404); response.end(); return; }
   let raw = ''; request.on('data', chunk => { raw += chunk; });
@@ -92,4 +93,4 @@ http.createServer((request, response) => {
       response.writeHead(500, { 'content-type': 'application/json' }); response.end(JSON.stringify({ error: String(error) }));
     }
   });
-}).listen(port, '127.0.0.1');
+}).listen(Number(process.argv[2]), '127.0.0.1');

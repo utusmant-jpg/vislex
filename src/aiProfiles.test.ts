@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configuredProfiles } from './aiProfiles';
+import { configuredProfiles, modelSeesImages } from './aiProfiles';
 import { sampleSnapshot } from './bridge';
 describe('enabled model choices', () => {
   it('keeps all configured companies and removes duplicate primary models', () => {
@@ -14,5 +14,14 @@ describe('enabled model choices', () => {
   });
   it('does not invent a model before configuration', () => {
     expect(configuredProfiles(sampleSnapshot())).toEqual([]);
+  });
+});
+describe('Z.ai image capability', () => {
+  it('follows the published GLM model cards and leaves other providers alone', () => {
+    expect(modelSeesImages('zai', 'glm-5.3')).toBe(false);
+    expect(modelSeesImages('zai', 'glm-4.7-flash')).toBe(false);
+    expect(modelSeesImages('zai', 'glm-5.3-flash')).toBe(true);
+    expect(modelSeesImages('zai', 'glm-4.6v')).toBe(true);
+    expect(modelSeesImages('openai', 'gpt-5')).toBe(true);
   });
 });

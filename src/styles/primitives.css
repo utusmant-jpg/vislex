@@ -219,6 +219,7 @@ kbd, .kbd {
 .provider-dot[data-provider="gemini"] { background: var(--provider-gemini); }
 .provider-dot[data-provider="xai"] { background: var(--provider-xai); }
 .provider-dot[data-provider="openrouter"] { background: var(--provider-openrouter); }
+.provider-dot[data-provider="zai"] { background: var(--provider-zai); }
 
 /* ------------------------------------------------------------ toasts */
 .toast-stack {

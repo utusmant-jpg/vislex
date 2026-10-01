@@ -6,7 +6,7 @@ import {
 import { motion, useReducedMotion } from 'motion/react';
 import { api, native } from '../bridge';
 import { caseSessionArgs } from '../caseSession';
-import { configuredProfiles, defaultConfig, providerNames } from '../aiProfiles';
+import { configuredProfiles, defaultConfig, modelSeesImages, providerNames } from '../aiProfiles';
 import { springs } from '../lib/motion';
 import { StatusPill } from '../ui';
 import SecondOpinionGrantCard from '../features/escalation/SecondOpinionGrantCard';
@@ -357,6 +357,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                   {stored[provider] ? <button type="button" className="icon-button" aria-label={`Remove saved ${providerNames[provider]} key`} title="Remove stored key" onClick={() => void removeKey(provider)}><Trash2 size={16} /></button> : null}
                 </div>
                 {catalogErrors[provider] ? <p role="alert" className="small danger-text">{catalogErrors[provider]}</p> : null}
+                {provider === 'zai' ? <p className="field-hint">Use a GLM Coding Plan key. Requests go to the plan’s coding endpoint with maximum reasoning. GLM-5.3 is text-only; GLM-5.3-Flash also sees images.</p> : null}
                 {profiles.map((p, i) => p.provider !== provider ? null : <div className="settings-model" key={i}>
                   <div className="settings-model-row">
                     <label className="settings-model-select"><span>Model</span><ModelSelect
@@ -366,12 +367,14 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                       options={models[provider] ?? []}
                       loading={loading[provider]}
                       disabled={saving}
+                      provider={provider}
                     /></label>
                     <label className="settings-default-choice"><input type="radio" name="default-model" checked={primary === i} onChange={() => setPrimary(i)} /> Default chat model</label>
                     {profiles.filter(x => x.provider === provider).length > 1 && primary !== i ? <button type="button" className="quiet" onClick={() => { setProfiles(ps => ps.filter((_, j) => j !== i)); if (primary > i) setPrimary(primary - 1); }}>Remove</button> : null}
                   </div>
                   {p.model && primary === i ? <p className="field-hint">The default model is governed by the case permissions in Case permissions — selecting it grants nothing by itself.</p> : null}
-                  {p.model && primary !== i ? <div className="settings-grants-inline"><label><input type="checkbox" checked={p.allow_text} onChange={e => updateProfile(i, { allow_text: e.target.checked, allow_images: e.target.checked ? p.allow_images : false })} /> May receive case text</label><label><input type="checkbox" checked={p.allow_images} disabled={!p.allow_text} onChange={e => updateProfile(i, { allow_images: e.target.checked })} /> May receive case images</label></div> : null}
+                  {p.model && primary !== i ? <div className="settings-grants-inline"><label><input type="checkbox" checked={p.allow_text} onChange={e => updateProfile(i, { allow_text: e.target.checked, allow_images: e.target.checked ? p.allow_images : false })} /> May receive case text</label><label><input type="checkbox" checked={p.allow_images && modelSeesImages(provider, p.model)} disabled={!p.allow_text || !modelSeesImages(provider, p.model)} onChange={e => updateProfile(i, { allow_images: e.target.checked })} /> May receive case images</label></div> : null}
+                  {p.model && !modelSeesImages(provider, p.model) ? <p className="field-hint">{p.model} is text-only and never receives images. Visual work (video frames, scanned pages, photos) goes to a selected model that can see images, such as GLM-5.3-Flash with image permission; without one, visual analysis waits and says why.</p> : null}
                 </div>)}
                 <button type="button" className="quiet settings-add-model" disabled={profiles.length >= 16} onClick={() => setProfiles(ps => [...ps, { provider, model: '', allow_text: false, allow_images: false }])}><Plus size={14} />Add another model</button>
               </fieldset>)}
@@ -406,7 +409,7 @@ export default function SettingsDialog({ snapshot, onClose, refresh, initialSect
                     ? <span className="settings-grant-state">Uses the grants above</span>
                     : <span className="settings-grant-pills">
                       {profile.allow_text ? <StatusPill state="accepted" label="Text allowed" small /> : <StatusPill state="protected" label="No text" small />}
-                      {profile.allow_images ? <StatusPill state="accepted" label="Images allowed" small /> : <StatusPill state="protected" label="No images" small />}
+                      {!modelSeesImages(profile.provider, profile.model) ? <StatusPill state="protected" label="Text-only model" small /> : profile.allow_images ? <StatusPill state="accepted" label="Images allowed" small /> : <StatusPill state="protected" label="No images" small />}
                     </span>}
                 </li>)}</ul> : <p className="settings-empty">No model is selected, so no case material can be sent.</p>}
               </section>
